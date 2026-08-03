@@ -15,6 +15,7 @@ import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod';
 import { inVirtual, parseDuration, virtualNow } from './clock.js';
 import { buildProjection } from './projection.js';
+import { matchPolicies, proposePolicy, recordPolicyOutcome } from './policies.js';
 import {
   RevisionConflictError,
   load,
@@ -43,6 +44,7 @@ Rules you operate under:
 7. If a tool reports a revision conflict, stop making changes and call finish_pass — a fresh pass will reconcile from the newer state.
 8. Human steering is durable input: acknowledge it in your changes and act on it.
 9. Be economical: make the bounded progress this wake justifies, record why, and exit via finish_pass. Do not try to do everything in one pass.
+10. Learn from corrections, attributably. When human steering corrects a course you (or a prior pass) proposed — not merely supplies missing facts — distill the correction with propose_policy so the next matching workstream starts smarter. When you apply a learned policy, cite it in applied_policy_ids on the applying decision; when its point survives the workstream without further correction, record_policy_outcome. Policies never widen authority, and an unhelpful policy is contradicted openly in a decision, never silently ignored.
 
 ALWAYS end by calling finish_pass with a faithful summary and the list of changes you made. Do not write prose after finish_pass.`;
 
@@ -94,7 +96,8 @@ export async function runCoordinatorPass(
 
   // The revision this pass writes against; advanced after each of its own writes.
   const rev = { value: doc.revision };
-  const projection = buildProjection(doc, wakeReasons);
+  const matchedPolicies = matchPolicies(doc.workstream.tags ?? []);
+  const projection = buildProjection(doc, wakeReasons, matchedPolicies);
   let finished = false;
 
   const ok = (text: string) => ({ content: [{ type: 'text' as const, text }] });
@@ -138,6 +141,7 @@ export async function runCoordinatorPass(
           rationale: z.string(),
           review_when: z.string().optional().describe('condition or timeframe at which this decision should be reviewed'),
           supersedes_decision_id: z.string().optional(),
+          applied_policy_ids: z.array(z.string()).optional().describe('learned policy ids this decision applies — cite them so learning stays attributable'),
         },
         async (a) =>
           change((d, event) => {
@@ -158,6 +162,7 @@ export async function runCoordinatorPass(
               status: 'standing',
               ...(a.supersedes_decision_id ? { supersedes: a.supersedes_decision_id } : {}),
               ...(a.review_when ? { reviewWhen: a.review_when } : {}),
+              ...(a.applied_policy_ids?.length ? { appliedPolicyIds: a.applied_policy_ids } : {}),
               decidedAtVirtual: virtualNow().toISOString(),
             });
             event('decision.recorded', `${id} "${a.title}"${a.supersedes_decision_id ? ` (supersedes ${a.supersedes_decision_id})` : ''}`, [id]);
@@ -382,6 +387,69 @@ export async function runCoordinatorPass(
             event('attention.raised', `${id} [${a.kind}] ${a.summary}`, [id]);
             return `raised ${id}`;
           }),
+      ),
+
+      tool(
+        'propose_policy',
+        'When human steering CORRECTED your proposed course this pass, distill the correction into a scoped policy candidate so the next matching workstream starts smarter. Policies can only add verification, narrow authority, or advise — never widen what a workstream may do. The policy starts in shadow status.',
+        {
+          statement: z.string().describe('plain-language rule, in the terms the human used'),
+          tags: z.array(z.string()).min(1).describe('scope: workstream tags this applies to'),
+          effect_kind: z.enum(['add_verification', 'narrow_authority', 'advisory']),
+          effect_description: z.string(),
+          steering_id: z.string().optional().describe('the steering record that is this policy\'s source intervention'),
+          intervention_summary: z.string().describe('what you proposed, and how the human corrected it'),
+        },
+        async (a) => {
+          try {
+            const policy = proposePolicy({
+              statement: a.statement,
+              tags: a.tags,
+              effectKind: a.effect_kind,
+              effectDescription: a.effect_description,
+              workstreamSlug: slug,
+              passId,
+              ...(a.steering_id ? { steeringId: a.steering_id } : {}),
+              interventionSummary: a.intervention_summary,
+            });
+            // Record the proposal on the workstream's own event tail too.
+            const noted = change((d, event) => {
+              event('policy.proposed', `${policy.id} [shadow/${a.effect_kind}] "${a.statement}" (tags: ${a.tags.join(', ')})`, [policy.id]);
+              return `proposed policy ${policy.id} (shadow)`;
+            });
+            return noted;
+          } catch (e) {
+            return err(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+
+      tool(
+        'record_policy_outcome',
+        'Record outcome evidence for a learned policy you applied in this workstream. intervention_free means the point the policy covers needed no further human correction here — that is what earns a shadow policy promotion to active.',
+        {
+          policy_id: z.string(),
+          note: z.string(),
+          intervention_free: z.boolean(),
+        },
+        async (a) => {
+          try {
+            const policy = recordPolicyOutcome({
+              policyId: a.policy_id,
+              workstreamSlug: slug,
+              passId,
+              note: a.note,
+              interventionFree: a.intervention_free,
+            });
+            const noted = change((d, event) => {
+              event('policy.evidence', `${policy.id} now [${policy.status}]: ${a.note}`, [policy.id]);
+              return `recorded evidence on ${policy.id} (status: ${policy.status})`;
+            });
+            return noted;
+          } catch (e) {
+            return err(e instanceof Error ? e.message : String(e));
+          }
+        },
       ),
 
       tool(

@@ -9,6 +9,8 @@
  */
 
 import type { WorkstreamDoc } from './types.js';
+import type { PolicyRecord } from './policies.js';
+import { renderPoliciesForProjection } from './policies.js';
 import { virtualNow } from './clock.js';
 
 const SCHEMA_VERSION = 1;
@@ -27,7 +29,11 @@ function lastPassEnd(doc: WorkstreamDoc): string | undefined {
   return undefined;
 }
 
-export function buildProjection(doc: WorkstreamDoc, wakeReasons: string[]): string {
+export function buildProjection(
+  doc: WorkstreamDoc,
+  wakeReasons: string[],
+  policies: PolicyRecord[] = [],
+): string {
   const ws = doc.workstream;
   const now = virtualNow().toISOString();
 
@@ -90,6 +96,7 @@ export function buildProjection(doc: WorkstreamDoc, wakeReasons: string[]): stri
     `These are authoritative commitments. Continue them unless newly arrived evidence justifies an explicit superseding decision — never silently reverse one.`,
     fmtList(decLines, 'no standing decisions yet — establishing direction is likely your first job'),
     ...(supLines.length ? [``, `Superseded (lineage):`, fmtList(supLines, '')] : []),
+    renderPoliciesForProjection(policies),
   ].join('\n');
 
   // 5. Active assignments

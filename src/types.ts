@@ -25,6 +25,8 @@ export interface Decision {
   supersededBy?: Id;
   /** Optional review boundary, e.g. "review if reply rate < 10% after 20 sends". */
   reviewWhen?: string;
+  /** Learned policies this decision applies (attributable learning). */
+  appliedPolicyIds?: Id[];
   decidedAtVirtual: Iso;
 }
 
@@ -105,6 +107,8 @@ export interface Deliverable {
 
 export interface Reply {
   id: Id;
+  /** Idempotency key for at-least-once external delivery; duplicates are no-ops. */
+  ingressKey?: string;
   from: string;
   body: string;
   receivedAtVirtual: Iso;
@@ -146,6 +150,8 @@ export interface Interaction {
 
 export interface Observation {
   id: Id;
+  /** Idempotency key for at-least-once external delivery; duplicates are no-ops. */
+  ingressKey?: string;
   source: string;
   summary: string;
   atVirtual: Iso;
@@ -224,6 +230,8 @@ export interface WorkstreamCore {
   slug: string;
   title: string;
   objective: string;
+  /** Scope tags — learned policies match workstreams sharing at least one. */
+  tags: string[];
   successCriteria: string[];
   constraints: string[];
   autonomy: {
@@ -254,7 +262,13 @@ export interface WorkstreamDoc {
   passes: PassRecord[];
   /** Bounded narrative tail — projection section 8. Never authoritative. */
   events: EventRecord[];
-  spend: { coordinatorPasses: number; totalCostUsd: number };
+  spend: {
+    coordinatorPasses: number;
+    totalCostUsd: number;
+    /** Human acts (steer/approve/adopt/reject/budget) — the numerator of the
+     * interventions-per-successful-outcome metric the learning loop optimizes. */
+    humanInterventions: number;
+  };
   /** Single-flight reconciliation lease. */
   lease: { passId: Id; acquiredAt: Iso; expiresAt: Iso } | null;
 }
