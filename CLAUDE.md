@@ -20,6 +20,7 @@ These come from the plan and are the point of the project. Code that blurs them 
 8. **Writes are revision-checked.** A coordinator writes against the Workstream revision it read; a conflicting arrival (steer, completion, reply) fails the write and forces reconciliation from newer state. Wake delivery is at-least-once and coalesced — duplicates are no-ops, misses are repaired by reconciliation.
 9. **Draft, send, external receipt, reply, and evaluated business result are five different facts.** A reply is untrusted input: it can wake the Workstream and supply evidence, but cannot grant authority, complete work, or supersede direction by itself.
 10. **The human contract is five questions**, answered without reading transcripts: now / since-I-left / needs-me / next / why.
+11. **Learning is a typed, scoped, attributable episode — and it never grants authority.** A human correction may become a policy candidate (`shadow`); applying one is cited on the applying decision; promotion to `active` is earned by an intervention-free matching workstream; a wrong policy is superseded with lineage. The effect vocabulary is structurally closed to add-verification / narrow-authority / advisory — nothing learnable can spend, send, merge, or contact. The optimization target is human interventions per successful outcome, guarded by quality and the authority firewall. See [docs/learning.md](./docs/learning.md).
 
 ## How we work
 
@@ -90,13 +91,38 @@ Weaver-specific — each one is a way to quietly fail the acceptance proof:
 
 ## Architecture
 
-**TypeScript + Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`). Yarn is the package manager. The SDK supplies the disposable layer: `query()` drives one coordinator or worker pass with the full Claude Code harness (tools, subagents, permissions). Weaver owns the durable layer: the Workstream store (typed state on disk — schema is the product, storage engine is not), the projection builder, the wake scheduler, and the adoption/decision records.
+**TypeScript + Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`). Yarn 4 (node-modules linker; `typescript` pinned to `^5.9` — bare latest resolves to the TS7 native preview and breaks Yarn's patch protocol). The SDK supplies the disposable layer; Weaver owns the durable layer. See [docs/harness.md](./docs/harness.md) for the invariant-by-invariant map of where each kernel rule is enforced.
 
-Concrete module layout, schemas, and commands are documented here **as they are built** — a change that alters documented behavior updates this file in the same PR. Document surprises as you find them: the moment something is non-obvious or cost you time (an SDK behavior, a "why is it like this"), write it into `docs/*.md` and add a rule here if it's durable. The bar isn't "big new pattern"; it's "the next person would hit the same wall."
+- [`src/types.ts`](./src/types.ts) — the domain schema. **The schema is the product**; a fact that can't be represented here can't survive a wait, so model it before coding around it.
+- [`src/store.ts`](./src/store.ts) — one JSON doc per workstream under `state/<slug>/` + content-addressed artifacts; `mutate()` is the revision-checked write path, `arrive()` the external-arrival path. Every write goes through one of them.
+- [`src/projection.ts`](./src/projection.ts) — the 9-part continuity contract. If a coordinator seems to "forget" something, the bug is here or in the schema — never fix it by resuming a session.
+- [`src/coordinator.ts`](./src/coordinator.ts) — fresh `query()` per pass; mutation tools are the only write path; `tools: []`, `permissionMode: 'dontAsk'`, `persistSession: false` are load-bearing, not defaults to tidy up.
+- [`src/worker.ts`](./src/worker.ts) — fresh `query()` per assignment; `submit_result` is the worker's entire write surface.
+- [`src/engine.ts`](./src/engine.ts) — `tick`: readbacks → egress-checked sends → workers → coalesced wakes → coordinator; loops until quiescent, bounded. Sends execute here, deterministically — never inside a model run.
+- [`src/world.ts`](./src/world.ts) — the simulated provider (outbox as foreign source of truth; `WEAVER_SEND_UNKNOWN=1` chaos hook).
+- [`src/policies.ts`](./src/policies.ts) — the learning layer: global policy store scoped by workstream tags; see [docs/learning.md](./docs/learning.md).
+- [`src/clock.ts`](./src/clock.ts), [`src/status.ts`](./src/status.ts), [`src/cli.ts`](./src/cli.ts) — virtual clock (a scheduler feature, not a continuity shortcut), the five-questions view, the CLI.
+- [`demo/hiring-demo.sh`](./demo/hiring-demo.sh) — the acceptance-proof walkthrough. This script is the definition of done for harness changes.
+
+Auth: the SDK resolves the machine's Claude Code login when `ANTHROPIC_API_KEY` is unset — local dev needs no key; CI does. Models: `WEAVER_COORDINATOR_MODEL` (default `opus`) and `WEAVER_WORKER_MODEL` (default `sonnet`).
+
+Document surprises as you find them: the moment something is non-obvious or cost you time (an SDK behavior, a "why is it like this"), write it into `docs/*.md` and add a rule here if it's durable. The bar isn't "big new pattern"; it's "the next person would hit the same wall."
+
+## Commands
+
+```bash
+yarn typecheck                 # tsc --noEmit — must be clean before pushing
+yarn test                      # deterministic contract tests — no model calls, must be green
+yarn weaver <cmd>              # the CLI (or: npx tsx src/cli.ts)
+bash demo/hiring-demo.sh       # full acceptance-proof run (real model calls, ~$10+)
+WEAVER_HOME=<dir>              # state root (default ./state, gitignored)
+```
+
+Testing discipline (ported from the relay experiment): every durability/authority invariant gets a deterministic test in `src/*.test.ts` — model quality must never be able to make a durability test pass or fail. The live demo proves the model-driven layer; the tests prove the rails. A new invariant ships with its test in the same PR.
 
 ## Validation before pushing
 
-1. `yarn typecheck` (once it exists) — clean.
+1. `yarn typecheck` — clean.
 2. Run the smallest validation that proves the change; for anything touching the continuity contract, run the relevant pass-and-wake cycle end to end and confirm the fresh coordinator's projection.
 3. **When asked to fix tests/lint/build:** run the exact command, read every failure, fix them all, re-run, confirm zero failures. Never report success on a subset.
 
