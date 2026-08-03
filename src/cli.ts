@@ -49,6 +49,7 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver reject-send <slug> <interactionId>  reject a pending send
   weaver approve-action <slug> <asgId>       approve a gated real-world action (runs on next tick, confirmed by readback)
   weaver reject-action <slug> <asgId> [why]  reject a gated action
+  weaver assign-action <slug> --objective <o> --briefing <b> --cwd <dir> --verify <cmd> [--depends-on id]...   author a real-world action yourself (arrives pre-approved; harness executes + verifies)
   weaver constraint <slug> add <text>        add a hard constraint (human-owned direction)
   weaver constraint <slug> remove <match>    remove the constraint containing <match>
   weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
@@ -160,6 +161,40 @@ async function main(): Promise<void> {
         event('send.approved', `${intId} approved by human`, [intId]);
       });
       process.stdout.write(`approved — the harness will execute it on the next tick\n`);
+      break;
+    }
+
+    case 'assign-action': {
+      // A human-AUTHORED real-world action. The coordinator model declines to
+      // authorize certain acts (e.g. merging) on the grounds that they are
+      // human decisions — this command is the structural answer: the human IS
+      // the author, so the act arrives already approved. Execution and
+      // readback still belong to the harness like any other action.
+      const slug = rest[0] ?? fail('slug required');
+      const objective = opt(rest, 'objective') ?? fail('--objective required');
+      const briefing = opt(rest, 'briefing') ?? fail('--briefing required');
+      const cwd = opt(rest, 'cwd') ?? fail('--cwd required');
+      const verify = opt(rest, 'verify') ?? fail('--verify required');
+      const deps = optAll(rest, 'depends-on');
+      const asgId = newId('asg');
+      arrive(slug, (d, event) => {
+        d.assignments.push({
+          id: asgId,
+          objective,
+          briefing,
+          kind: 'action',
+          exec: { cwd, verify, approval: { by: 'human', at: new Date().toISOString() } },
+          acceptanceCriteria: ['Perform exactly the act in the briefing; report exact references; the harness verifies by readback'],
+          dependsOn: deps,
+          state: 'queued',
+          attempts: [],
+          adoption: { state: 'none' },
+          createdAtVirtual: virtualNow().toISOString(),
+        });
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+        event('action.human_authored', `${asgId} authored AND approved by human: "${objective}"`, [asgId]);
+      });
+      process.stdout.write(`${asgId} created (human-authored, pre-approved) — it will run on the next tick and be confirmed by readback\n`);
       break;
     }
 
