@@ -70,6 +70,10 @@ export interface Assignment {
   exec?: {
     cwd: string;
     verify: string;
+    /** When set (human-authored acts), the ENGINE runs this exact command
+     * deterministically — no model in the execution loop. Same principle as
+     * executeApprovedSends: once a human has decided, code executes. */
+    run?: string;
     approval?: { by: 'human'; at: Iso };
     verified?: { ok: boolean; output: string; at: Iso };
   };

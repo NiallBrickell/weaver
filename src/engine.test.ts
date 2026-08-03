@@ -259,6 +259,37 @@ test('a crashed action is NOT re-queued: it fails, readback runs, attention is r
   assert.ok(doc.attention.some((a) => a.refId === 'asg_act' && a.status === 'open'));
 });
 
+test('a human-authored exec.run action is executed by the ENGINE (no worker) and judged by readback', async () => {
+  makeActionWorkstream('engine-act-ws', {
+    state: 'queued',
+    exec: {
+      cwd: process.env.WEAVER_HOME!,
+      run: 'echo did-the-real-thing > effect.txt',
+      verify: 'grep -q did-the-real-thing effect.txt',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+  const report = await tick('engine-act-ws', { maxPasses: 0 });
+  assert.deepEqual(report.workersRun, []); // engine path, never a model worker
+  const doc = load('engine-act-ws');
+  const asg = doc.assignments[0]!;
+  assert.equal(asg.state, 'awaiting_review');
+  assert.equal(asg.attempts[0]!.model, 'engine');
+  assert.equal(asg.attempts[0]!.terminalReason, 'executed');
+  assert.equal(asg.exec!.verified!.ok, true);
+  assert.ok(doc.deliverables.some((d) => d.kind === 'execution_record'));
+});
+
+test('an exec.run action without approval is not executed', async () => {
+  makeActionWorkstream('engine-gated-ws', {
+    state: 'gated',
+    exec: { cwd: process.env.WEAVER_HOME!, run: 'echo nope > leaked.txt', verify: 'true' },
+  });
+  await tick('engine-gated-ws', { maxPasses: 0 });
+  assert.equal(load('engine-gated-ws').assignments[0]!.state, 'gated');
+  assert.equal(fs.existsSync(path.join(process.env.WEAVER_HOME!, 'leaked.txt')), false);
+});
+
 test('a fresh running attempt is NOT treated as crashed', async () => {
   createWorkstream({
     slug: 'fresh-ws',
