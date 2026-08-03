@@ -20,6 +20,10 @@ One scenario, lifted from the plan's acceptance proof, that no session-scoped ha
 
 The proof fails if continuity ever depends on resuming a chat, keeping workers alive, parsing free-form logs, or trusting an unverified worker result as current state.
 
+## Demo domain: a hiring pipeline
+
+The demo workstream runs **hiring for one role**, deliberately *not* marketing — erdo's home turf is marketing-adjacent, so proving the harness on a different domain is what shows general applicability. Hiring maps perfectly onto the kernel: the candidate profile is a standing decision (superseded when pipeline data says it's too narrow), the job description and outreach messages are deliverables with draft→adopt→send lifecycles, candidate replies are untrusted interactions that wake the workstream days later, screening outcomes are evaluated results, and "review this candidate / approve this offer" is exactly the needs-you queue of the human contract. No session-scoped agent can run week three of a hiring pipeline; a Workstream can.
+
 ## Why this repo exists (and why it's separate from erdo)
 
 Erdo is implementing this properly across `backend/workstream`, `backend/agent`, and `backend/job` — a months-long program. Weaver is the fast falsification vehicle: the smallest harness that exhibits the continuity contract, on top of the Claude Agent SDK's existing agent loop, so we can (a) prove the kernel works before erdo finishes the full build, (b) find where the plan's contracts are wrong while they're still cheap to change, and (c) have a crisp demo of *why we're different from everyone else with an agent harness* — the durable layer, not the loop, is the product.
