@@ -47,6 +47,8 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver steer <slug> <message>              durable human steering (wakes the workstream)
   weaver approve <slug> <interactionId>      approve a pending send
   weaver reject-send <slug> <interactionId>  reject a pending send
+  weaver approve-action <slug> <asgId>       approve a gated real-world action (runs on next tick, confirmed by readback)
+  weaver reject-action <slug> <asgId> [why]  reject a gated action
   weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
   weaver policies                            list learned policies (shadow/active/superseded)
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
@@ -156,6 +158,56 @@ async function main(): Promise<void> {
         event('send.approved', `${intId} approved by human`, [intId]);
       });
       process.stdout.write(`approved — the harness will execute it on the next tick\n`);
+      break;
+    }
+
+    case 'approve-action': {
+      const slug = rest[0] ?? fail('slug required');
+      const asgId = rest[1] ?? fail('assignment id required');
+      arrive(slug, (d, event) => {
+        const asg = d.assignments.find((a) => a.id === asgId) ?? fail(`no assignment ${asgId}`);
+        if (asg.kind !== 'action' || !asg.exec) fail(`${asgId} is not an action assignment`);
+        if (asg.state !== 'gated') fail(`${asgId} is ${asg.state}, not gated`);
+        asg.state = 'queued';
+        asg.exec!.approval = { by: 'human', at: new Date().toISOString() };
+        for (const a of d.attention) {
+          if (a.refId === asgId && a.status === 'open') {
+            a.status = 'resolved';
+            a.resolvedAt = new Date().toISOString();
+          }
+        }
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+        event('action.approved', `${asgId} approved by human — queued to run`, [asgId]);
+      });
+      process.stdout.write(`approved — the action will run on the next tick and be confirmed by readback\n`);
+      break;
+    }
+
+    case 'reject-action': {
+      const slug = rest[0] ?? fail('slug required');
+      const asgId = rest[1] ?? fail('assignment id required');
+      const reason = rest.slice(2).join(' ') || 'rejected by human';
+      arrive(slug, (d, event) => {
+        const asg = d.assignments.find((a) => a.id === asgId) ?? fail(`no assignment ${asgId}`);
+        if (asg.state !== 'gated') fail(`${asgId} is ${asg.state}, not gated`);
+        asg.state = 'cancelled';
+        for (const a of d.attention) {
+          if (a.refId === asgId && a.status === 'open') {
+            a.status = 'resolved';
+            a.resolvedAt = new Date().toISOString();
+          }
+        }
+        d.wakes.push({
+          id: newId('wake'),
+          reason: `human rejected action ${asgId}: ${reason}`,
+          condition: { type: 'immediate' },
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+        event('action.rejected', `${asgId} rejected by human: ${reason}`, [asgId]);
+      });
+      process.stdout.write(`rejected — the coordinator will reconcile on the next tick\n`);
       break;
     }
 

@@ -10,10 +10,11 @@
  *   3. If wakes are due, fire them (coalesced) into one coordinator pass.
  */
 
+import { execSync } from 'node:child_process';
 import { runCoordinatorPass } from './coordinator.js';
 import { runWorker } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
-import { arrive, load, readArtifact, verifyArtifact } from './store.js';
+import { arrive, load, newId, readArtifact, verifyArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { WorkstreamDoc } from './types.js';
 
@@ -100,10 +101,51 @@ function resolveUnknownSends(slug: string): number {
 }
 
 /**
+ * Deterministic readback for an action assignment: run its declared verify
+ * command with NO model involved. Exit 0 confirms the real-world effect; the
+ * result is recorded on the assignment so adoption can require it. This is
+ * the same principle as email readback — after an act (or a crash), truth
+ * comes from re-inspecting the world, never from re-doing the act.
+ */
+export function verifyAction(slug: string, assignmentId: string): boolean {
+  const doc = load(slug);
+  const asg = doc.assignments.find((a) => a.id === assignmentId);
+  if (!asg?.exec) throw new Error(`${assignmentId} is not an action assignment`);
+  let ok = false;
+  let output = '';
+  try {
+    output = execSync(asg.exec.verify, {
+      cwd: asg.exec.cwd,
+      timeout: 60_000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    ok = true;
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
+  }
+  arrive(slug, (d, event) => {
+    const a2 = d.assignments.find((x) => x.id === assignmentId)!;
+    a2.exec!.verified = { ok, output: output.slice(0, 2000), at: new Date().toISOString() };
+    event(
+      ok ? 'action.verified' : 'action.verify_failed',
+      `${assignmentId} readback ${ok ? 'CONFIRMED' : 'FAILED'}: ${output.trim().slice(0, 200) || '(no output)'}`,
+      [assignmentId],
+    );
+  });
+  return ok;
+}
+
+/**
  * Crash recovery: an assignment stuck in 'running' whose latest attempt never
  * ended and is older than the staleness window was orphaned by a dead worker
  * process. Record the crash on the attempt and re-queue the assignment — the
  * attempt lineage keeps the failure inspectable.
+ *
+ * EXCEPT actions: a crashed action may or may not have already changed the
+ * world, so it is never blindly re-queued. The verify readback runs instead,
+ * and a coordinator (or human) decides from that evidence.
  */
 function recoverCrashedAttempts(slug: string): number {
   const staleMs = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 10 * 60_000);
@@ -113,6 +155,7 @@ function recoverCrashedAttempts(slug: string): number {
     const attempt = asg.attempts[asg.attempts.length - 1];
     if (!attempt || attempt.endedAt) continue;
     if (Date.now() - new Date(attempt.startedAt).getTime() < staleMs) continue;
+    const isAction = asg.kind === 'action';
     arrive(slug, (d, event) => {
       const a2 = d.assignments.find((x) => x.id === asg.id)!;
       const t2 = a2.attempts.find((t) => t.runId === attempt.runId);
@@ -120,9 +163,30 @@ function recoverCrashedAttempts(slug: string): number {
         t2.endedAt = new Date().toISOString();
         t2.terminalReason = 'crashed';
       }
-      if (a2.state === 'running') a2.state = 'queued';
-      event('worker.crash_recovered', `${asg.id} attempt ${attempt.runId} presumed crashed (stale ${Math.round(staleMs / 1000)}s); re-queued`, [asg.id]);
+      if (a2.state === 'running') a2.state = isAction ? 'failed' : 'queued';
+      if (isAction) {
+        d.attention.push({
+          id: newId('att'),
+          kind: 'blocker',
+          summary: `Action ${asg.id} crashed mid-run — world state unknown; readback has run, review its result before any redo`,
+          refId: asg.id,
+          status: 'open',
+          createdAt: new Date().toISOString(),
+        });
+      }
+      event(
+        'worker.crash_recovered',
+        `${asg.id} attempt ${attempt.runId} presumed crashed (stale ${Math.round(staleMs / 1000)}s); ${isAction ? 'action NOT re-queued — readback decides' : 're-queued'}`,
+        [asg.id],
+      );
     });
+    if (isAction) {
+      try {
+        verifyAction(slug, asg.id);
+      } catch (e) {
+        process.stderr.write(`readback for crashed action ${asg.id} failed to run: ${e instanceof Error ? e.message : e}\n`);
+      }
+    }
     recovered++;
   }
   return recovered;
@@ -176,6 +240,13 @@ export async function tick(
       process.stderr.write(`[tick] running worker for ${id}…\n`);
       await runWorker(slug, id);
       report.workersRun.push(id);
+      // Action assignments: the worker's claim settles nothing — run the
+      // deterministic readback now so the reviewing pass sees verified truth.
+      const after = load(slug).assignments.find((a) => a.id === id);
+      if (after?.kind === 'action' && after.exec) {
+        const ok = verifyAction(slug, id);
+        process.stderr.write(`[tick] action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
+      }
       progressed = true;
     }
 
