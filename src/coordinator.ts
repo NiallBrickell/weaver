@@ -179,6 +179,7 @@ export async function runCoordinatorPass(
           kind: z.enum(['research', 'work_product', 'communication_draft', 'evidence']),
           acceptance_criteria: z.array(z.string()).min(1),
           depends_on: z.array(z.string()).optional(),
+          read_dirs: z.array(z.string()).optional().describe('absolute paths of directories the worker may READ (Read/Grep/Glob only — sight, never mutation); only directories the workstream objective or human steering has named'),
         },
         async (a) =>
           change((d, event) => {
@@ -191,6 +192,7 @@ export async function runCoordinatorPass(
               objective: a.objective,
               briefing: a.briefing,
               kind: a.kind,
+              ...(a.read_dirs?.length ? { readDirs: a.read_dirs } : {}),
               acceptanceCriteria: a.acceptance_criteria,
               dependsOn: a.depends_on ?? [],
               state: 'queued',

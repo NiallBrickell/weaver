@@ -56,6 +56,9 @@ export interface Assignment {
   /** Full brief handed to the worker — declared inputs, never a parent transcript. */
   briefing: string;
   kind: AssignmentKind;
+  /** Read-only resource handles: directories the worker may Read/Grep/Glob.
+   * Workers stay side-effect-free — these grant sight, never mutation. */
+  readDirs?: string[];
   acceptanceCriteria: string[];
   dependsOn: Id[];
   /** Work state — distinct from any worker run's own status. */
