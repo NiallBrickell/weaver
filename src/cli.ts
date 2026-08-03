@@ -49,6 +49,8 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver reject-send <slug> <interactionId>  reject a pending send
   weaver approve-action <slug> <asgId>       approve a gated real-world action (runs on next tick, confirmed by readback)
   weaver reject-action <slug> <asgId> [why]  reject a gated action
+  weaver constraint <slug> add <text>        add a hard constraint (human-owned direction)
+  weaver constraint <slug> remove <match>    remove the constraint containing <match>
   weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
   weaver policies                            list learned policies (shadow/active/superseded)
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
@@ -158,6 +160,37 @@ async function main(): Promise<void> {
         event('send.approved', `${intId} approved by human`, [intId]);
       });
       process.stdout.write(`approved — the harness will execute it on the next tick\n`);
+      break;
+    }
+
+    case 'constraint': {
+      // Constraints are human-owned direction: only this first-class human
+      // mutation may change them — never a coordinator, never a hand-edit.
+      const slug = rest[0] ?? fail('slug required');
+      const verb = rest[1] ?? fail('add or remove required');
+      const text = rest.slice(2).join(' ') || fail('constraint text required');
+      arrive(slug, (d, event) => {
+        if (verb === 'add') {
+          d.workstream.constraints.push(text);
+          event('constraint.added', `human added constraint: "${text}"`);
+        } else if (verb === 'remove') {
+          const i = d.workstream.constraints.findIndex((c) => c.toLowerCase().includes(text.toLowerCase()));
+          if (i < 0) fail(`no constraint matching "${text}"`);
+          const [gone] = d.workstream.constraints.splice(i, 1);
+          event('constraint.removed', `human removed constraint: "${gone}"`);
+        } else {
+          fail(`unknown verb ${verb} (add|remove)`);
+        }
+        d.wakes.push({
+          id: newId('wake'),
+          reason: `human ${verb === 'add' ? 'added' : 'removed'} a constraint: ${text}`,
+          condition: { type: 'immediate' },
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+      });
+      process.stdout.write(`constraint ${verb === 'add' ? 'added' : 'removed'} — the coordinator will reconcile on the next tick\n`);
       break;
     }
 
