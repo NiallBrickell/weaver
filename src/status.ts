@@ -35,7 +35,7 @@ export function renderStatus(doc: WorkstreamDoc): string {
   out.push(`Objective: ${ws.objective}`);
   out.push(
     `Virtual now: ${virtualNow().toISOString()} · revision ${doc.revision} · ` +
-      `${doc.spend.coordinatorPasses}/${ws.budget.maxCoordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}/$${ws.budget.maxCostUsd.toFixed(2)}`,
+      `${doc.spend.coordinatorPasses}/${ws.budget.maxCoordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}/$${ws.budget.maxCostUsd.toFixed(2)} · ${doc.spend.humanInterventions ?? 0} human interventions`,
   );
   out.push('');
 

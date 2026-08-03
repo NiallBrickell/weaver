@@ -20,6 +20,7 @@ These come from the plan and are the point of the project. Code that blurs them 
 8. **Writes are revision-checked.** A coordinator writes against the Workstream revision it read; a conflicting arrival (steer, completion, reply) fails the write and forces reconciliation from newer state. Wake delivery is at-least-once and coalesced — duplicates are no-ops, misses are repaired by reconciliation.
 9. **Draft, send, external receipt, reply, and evaluated business result are five different facts.** A reply is untrusted input: it can wake the Workstream and supply evidence, but cannot grant authority, complete work, or supersede direction by itself.
 10. **The human contract is five questions**, answered without reading transcripts: now / since-I-left / needs-me / next / why.
+11. **Learning is a typed, scoped, attributable episode — and it never grants authority.** A human correction may become a policy candidate (`shadow`); applying one is cited on the applying decision; promotion to `active` is earned by an intervention-free matching workstream; a wrong policy is superseded with lineage. The effect vocabulary is structurally closed to add-verification / narrow-authority / advisory — nothing learnable can spend, send, merge, or contact. The optimization target is human interventions per successful outcome, guarded by quality and the authority firewall. See [docs/learning.md](./docs/learning.md).
 
 ## How we work
 
@@ -99,6 +100,7 @@ Weaver-specific — each one is a way to quietly fail the acceptance proof:
 - [`src/worker.ts`](./src/worker.ts) — fresh `query()` per assignment; `submit_result` is the worker's entire write surface.
 - [`src/engine.ts`](./src/engine.ts) — `tick`: readbacks → egress-checked sends → workers → coalesced wakes → coordinator; loops until quiescent, bounded. Sends execute here, deterministically — never inside a model run.
 - [`src/world.ts`](./src/world.ts) — the simulated provider (outbox as foreign source of truth; `WEAVER_SEND_UNKNOWN=1` chaos hook).
+- [`src/policies.ts`](./src/policies.ts) — the learning layer: global policy store scoped by workstream tags; see [docs/learning.md](./docs/learning.md).
 - [`src/clock.ts`](./src/clock.ts), [`src/status.ts`](./src/status.ts), [`src/cli.ts`](./src/cli.ts) — virtual clock (a scheduler feature, not a continuity shortcut), the five-questions view, the CLI.
 - [`demo/hiring-demo.sh`](./demo/hiring-demo.sh) — the acceptance-proof walkthrough. This script is the definition of done for harness changes.
 
@@ -110,10 +112,13 @@ Document surprises as you find them: the moment something is non-obvious or cost
 
 ```bash
 yarn typecheck                 # tsc --noEmit — must be clean before pushing
+yarn test                      # deterministic contract tests — no model calls, must be green
 yarn weaver <cmd>              # the CLI (or: npx tsx src/cli.ts)
-bash demo/hiring-demo.sh       # full acceptance-proof run (real model calls, ~$1-2)
+bash demo/hiring-demo.sh       # full acceptance-proof run (real model calls, ~$10+)
 WEAVER_HOME=<dir>              # state root (default ./state, gitignored)
 ```
+
+Testing discipline (ported from the relay experiment): every durability/authority invariant gets a deterministic test in `src/*.test.ts` — model quality must never be able to make a durability test pass or fail. The live demo proves the model-driven layer; the tests prove the rails. A new invariant ships with its test in the same PR.
 
 ## Validation before pushing
 

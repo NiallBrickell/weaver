@@ -19,6 +19,7 @@
   "bin": "./bin/weaver.mjs",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "weaver": "tsx src/cli.ts"
+    "weaver": "tsx src/cli.ts",
+    "test": "tsx --test src/store.test.ts src/engine.test.ts src/policies.test.ts"
   }
 }

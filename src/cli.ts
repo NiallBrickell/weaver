@@ -39,7 +39,7 @@ function fail(msg: string): never {
 
 const USAGE = `weaver — durable workstream harness (MVP)
 
-  weaver create --slug <s> --title <t> --objective <o> [--success <c>]... [--constraint <c>]... [--max-passes N] [--max-cost USD]
+  weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--max-passes N] [--max-cost USD]
   weaver list
   weaver status <slug>
   weaver log <slug>                          full event tail
@@ -47,7 +47,8 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver steer <slug> <message>              durable human steering (wakes the workstream)
   weaver approve <slug> <interactionId>      approve a pending send
   weaver reject-send <slug> <interactionId>  reject a pending send
-  weaver reply <slug> --interaction <id> --from <who> --body <text>   simulate an inbound reply
+  weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
+  weaver policies                            list learned policies (shadow/active/superseded)
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
@@ -64,6 +65,7 @@ async function main(): Promise<void> {
         slug,
         title,
         objective,
+        tags: optAll(rest, 'tag'),
         successCriteria: optAll(rest, 'success'),
         constraints: optAll(rest, 'constraint'),
         autonomy: { sendsRequireApproval: true },
@@ -128,6 +130,7 @@ async function main(): Promise<void> {
           status: 'pending',
           createdAt: new Date().toISOString(),
         });
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
         event('steering.arrived', body, [id]);
       });
       process.stdout.write(`steering recorded — run: weaver tick ${slug}\n`);
@@ -149,6 +152,7 @@ async function main(): Promise<void> {
             a.resolvedAt = new Date().toISOString();
           }
         }
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
         event('send.approved', `${intId} approved by human`, [intId]);
       });
       process.stdout.write(`approved — the harness will execute it on the next tick\n`);
@@ -174,6 +178,7 @@ async function main(): Promise<void> {
           status: 'pending',
           createdAt: new Date().toISOString(),
         });
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
         event('send.rejected', `${intId} rejected by human`, [intId]);
       });
       process.stdout.write(`rejected — the coordinator will reconcile on the next tick\n`);
@@ -185,6 +190,14 @@ async function main(): Promise<void> {
       const intId = opt(rest, 'interaction') ?? fail('--interaction required');
       const from = opt(rest, 'from') ?? fail('--from required');
       const body = opt(rest, 'body') ?? fail('--body required');
+      const ingressKey = opt(rest, 'key');
+      if (ingressKey) {
+        const existing = load(slug).interactions.flatMap((i) => i.replies).find((r) => r.ingressKey === ingressKey);
+        if (existing) {
+          process.stdout.write(`duplicate ingress key '${ingressKey}' — already recorded as ${existing.id}; no-op\n`);
+          break;
+        }
+      }
       arrive(slug, (d, event) => {
         const int = d.interactions.find((i) => i.id === intId) ?? fail(`no interaction ${intId}`);
         if (!['sent', 'confirmed'].includes(int.status)) {
@@ -193,6 +206,7 @@ async function main(): Promise<void> {
         const id = newId('reply');
         int.replies.push({
           id,
+          ...(ingressKey ? { ingressKey } : {}),
           from,
           body,
           receivedAtVirtual: virtualNow().toISOString(),
@@ -214,9 +228,17 @@ async function main(): Promise<void> {
       const slug = rest[0] ?? fail('slug required');
       const source = opt(rest, 'source') ?? fail('--source required');
       const summary = opt(rest, 'summary') ?? fail('--summary required');
+      const obsKey = opt(rest, 'key');
+      if (obsKey) {
+        const existing = load(slug).observations.find((o) => o.ingressKey === obsKey);
+        if (existing) {
+          process.stdout.write(`duplicate ingress key '${obsKey}' — already recorded as ${existing.id}; no-op\n`);
+          break;
+        }
+      }
       arrive(slug, (d, event) => {
         const id = newId('obs');
-        d.observations.push({ id, source, summary, atVirtual: virtualNow().toISOString() });
+        d.observations.push({ id, ...(obsKey ? { ingressKey: obsKey } : {}), source, summary, atVirtual: virtualNow().toISOString() });
         d.wakes.push({
           id: newId('wake'),
           reason: `new observation from ${source}`,
@@ -259,6 +281,7 @@ async function main(): Promise<void> {
           status: 'pending',
           createdAt: new Date().toISOString(),
         });
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
         event('submission.adopted', `${asgId} adopted by HUMAN${del ? ` (pinned ${del.contentHash.slice(0, 8)})` : ''}: ${reason}`, [asgId]);
       });
       process.stdout.write(`adopted ${asgId}\n`);
@@ -275,9 +298,22 @@ async function main(): Promise<void> {
       arrive(slug, (d, event) => {
         if (maxCost) d.workstream.budget.maxCostUsd = Number(maxCost);
         if (maxPasses) d.workstream.budget.maxCoordinatorPasses = Number(maxPasses);
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
         event('budget.updated', `human set budget to ${d.workstream.budget.maxCoordinatorPasses} passes / $${d.workstream.budget.maxCostUsd}`);
       });
       process.stdout.write(`budget updated\n`);
+      break;
+    }
+
+    case 'policies': {
+      const { loadPolicies } = await import('./policies.js');
+      for (const p of loadPolicies().policies) {
+        process.stdout.write(
+          `${p.id} [${p.status}/${p.effect.kind}] tags=[${p.scope.tags.join(',')}] "${p.statement}"\n` +
+          `    from ${p.provenance.workstreamSlug} (${p.provenance.interventionSummary.slice(0, 100)})\n` +
+          `    evidence: ${p.evidence.length} (${p.evidence.filter((e) => e.interventionFree).length} intervention-free)${p.supersededBy ? ` superseded by ${p.supersededBy}` : ''}\n`,
+        );
+      }
       break;
     }
 
