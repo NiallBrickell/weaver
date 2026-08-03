@@ -99,6 +99,35 @@ function resolveUnknownSends(slug: string): number {
   return resolved;
 }
 
+/**
+ * Crash recovery: an assignment stuck in 'running' whose latest attempt never
+ * ended and is older than the staleness window was orphaned by a dead worker
+ * process. Record the crash on the attempt and re-queue the assignment — the
+ * attempt lineage keeps the failure inspectable.
+ */
+function recoverCrashedAttempts(slug: string): number {
+  const staleMs = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 10 * 60_000);
+  const doc = load(slug);
+  let recovered = 0;
+  for (const asg of doc.assignments.filter((a) => a.state === 'running')) {
+    const attempt = asg.attempts[asg.attempts.length - 1];
+    if (!attempt || attempt.endedAt) continue;
+    if (Date.now() - new Date(attempt.startedAt).getTime() < staleMs) continue;
+    arrive(slug, (d, event) => {
+      const a2 = d.assignments.find((x) => x.id === asg.id)!;
+      const t2 = a2.attempts.find((t) => t.runId === attempt.runId);
+      if (t2 && !t2.endedAt) {
+        t2.endedAt = new Date().toISOString();
+        t2.terminalReason = 'crashed';
+      }
+      if (a2.state === 'running') a2.state = 'queued';
+      event('worker.crash_recovered', `${asg.id} attempt ${attempt.runId} presumed crashed (stale ${Math.round(staleMs / 1000)}s); re-queued`, [asg.id]);
+    });
+    recovered++;
+  }
+  return recovered;
+}
+
 function runnableAssignments(doc: WorkstreamDoc): string[] {
   return doc.assignments
     .filter((a) => a.state === 'queued')
@@ -136,6 +165,7 @@ export async function tick(
     report.cycles = cycle + 1;
     let progressed = false;
 
+    if (recoverCrashedAttempts(slug) > 0) progressed = true;
     report.unknownsResolved += resolveUnknownSends(slug);
     const sent = executeApprovedSends(slug);
     report.sendsExecuted += sent;
@@ -155,13 +185,16 @@ export async function tick(
       // Mark fired BEFORE the pass (coalesced, at-least-once): a crash mid-pass
       // loses the wake but the projection's arrivals still carry the facts,
       // and reconciliation repairs the rest.
+      // Event/log lines truncate long wake reasons (coordinators write rich
+      // handoff notes into them); the pass itself still receives them in full.
+      const brief = reasons.map((r) => (r.length > 160 ? `${r.slice(0, 157)}…` : r));
       arrive(slug, (d, event) => {
         for (const w of d.wakes) {
           if (due.some((x) => x.id === w.id)) w.status = 'fired';
         }
-        event('wakes.fired', `${due.length} wake(s) coalesced into one pass: ${reasons.join('; ')}`);
+        event('wakes.fired', `${due.length} wake(s) coalesced into one pass: ${brief.join('; ')}`);
       });
-      process.stderr.write(`[tick] coordinator pass (${reasons.join('; ')})…\n`);
+      process.stderr.write(`[tick] coordinator pass (${brief.join('; ').slice(0, 200)})…\n`);
       const outcome = await runCoordinatorPass(slug, reasons);
       report.passes.push(outcome);
       progressed = true;

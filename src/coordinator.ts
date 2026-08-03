@@ -84,7 +84,7 @@ export async function runCoordinatorPass(
       id: passId,
       startedAt: new Date().toISOString(),
       baseRevision: d.revision + 1,
-      wakeReasons,
+      wakeReasons: wakeReasons.map((r) => (r.length > 300 ? `${r.slice(0, 297)}…` : r)),
       model: coordinatorModel(),
       changes: [],
       outcome: 'running',
