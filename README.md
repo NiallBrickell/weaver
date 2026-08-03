@@ -39,4 +39,4 @@ Weaver holds none of erdo's internals and never grows into a second platform. Le
 
 ## Status
 
-Scaffolding. See [CLAUDE.md](./CLAUDE.md) / [AGENTS.md](./AGENTS.md) for the working rules and the kernel invariants; architecture is documented there as it's built.
+Working MVP — the longitudinal acceptance proof has passed with real model runs (see [demo/TRANSCRIPT.md](./demo/TRANSCRIPT.md)), and the durability/authority rails are covered by a deterministic test suite (`yarn test`, no model calls). The learning loop — human interventions distilled into scoped, attributable, authority-capped policies that later matching workstreams apply and either promote or supersede — is ported from the parallel `relay` experiment; see [docs/learning.md](./docs/learning.md) for why it is deliberately shaped as an RL substrate (episodes = trajectories, policies = action space, interventions-per-successful-outcome = reward). See [CLAUDE.md](./CLAUDE.md) / [AGENTS.md](./AGENTS.md) for the working rules and the kernel invariants; architecture is documented there as it's built.
