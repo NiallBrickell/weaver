@@ -179,8 +179,12 @@ export async function tick(
       progressed = true;
     }
 
-    const due = dueWakes(load(slug));
-    if (due.length > 0 && report.passes.length < maxPasses) {
+    const preDoc = load(slug);
+    const due = dueWakes(preDoc);
+    // A live lease means no pass can start: leave the wakes PENDING for the
+    // next tick rather than burning them against a pass that cannot run.
+    const leaseLive = preDoc.lease && new Date(preDoc.lease.expiresAt).getTime() > Date.now();
+    if (due.length > 0 && !leaseLive && report.passes.length < maxPasses) {
       const reasons = [...new Set(due.map((w) => w.reason))];
       // Mark fired BEFORE the pass (coalesced, at-least-once): a crash mid-pass
       // loses the wake but the projection's arrivals still carry the facts,
@@ -195,8 +199,22 @@ export async function tick(
         event('wakes.fired', `${due.length} wake(s) coalesced into one pass: ${brief.join('; ')}`);
       });
       process.stderr.write(`[tick] coordinator pass (${brief.join('; ').slice(0, 200)})…\n`);
-      const outcome = await runCoordinatorPass(slug, reasons);
-      report.passes.push(outcome);
+      try {
+        const outcome = await runCoordinatorPass(slug, reasons);
+        report.passes.push(outcome);
+      } catch (e) {
+        // The pass never started (lease race, budget ceiling): restore the
+        // wakes so the arrival is not silently lost.
+        arrive(slug, (d, event) => {
+          for (const w of d.wakes) {
+            if (due.some((x) => x.id === w.id) && w.status === 'fired' && !w.firedInPass) {
+              w.status = 'pending';
+            }
+          }
+          event('wakes.restored', `pass could not start (${e instanceof Error ? e.message.slice(0, 120) : e}); ${due.length} wake(s) restored to pending`);
+        });
+        throw e;
+      }
       progressed = true;
     }
 
