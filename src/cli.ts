@@ -49,7 +49,7 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver reject-send <slug> <interactionId>  reject a pending send
   weaver approve-action <slug> <asgId>       approve a gated real-world action (runs on next tick, confirmed by readback)
   weaver reject-action <slug> <asgId> [why]  reject a gated action
-  weaver assign-action <slug> --objective <o> --briefing <b> --cwd <dir> --verify <cmd> [--depends-on id]...   author a real-world action yourself (arrives pre-approved; harness executes + verifies)
+  weaver assign-action <slug> --objective <o> --briefing <b> --cwd <dir> --verify <cmd> [--run <cmd>] [--depends-on id]...   author a real-world action yourself (pre-approved; --run = engine executes the exact command deterministically, no model)
   weaver constraint <slug> add <text>        add a hard constraint (human-owned direction)
   weaver constraint <slug> remove <match>    remove the constraint containing <match>
   weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
@@ -175,6 +175,7 @@ async function main(): Promise<void> {
       const briefing = opt(rest, 'briefing') ?? fail('--briefing required');
       const cwd = opt(rest, 'cwd') ?? fail('--cwd required');
       const verify = opt(rest, 'verify') ?? fail('--verify required');
+      const run = opt(rest, 'run');
       const deps = optAll(rest, 'depends-on');
       const asgId = newId('asg');
       arrive(slug, (d, event) => {
@@ -183,7 +184,7 @@ async function main(): Promise<void> {
           objective,
           briefing,
           kind: 'action',
-          exec: { cwd, verify, approval: { by: 'human', at: new Date().toISOString() } },
+          exec: { cwd, verify, ...(run ? { run } : {}), approval: { by: 'human', at: new Date().toISOString() } },
           acceptanceCriteria: ['Perform exactly the act in the briefing; report exact references; the harness verifies by readback'],
           dependsOn: deps,
           state: 'queued',

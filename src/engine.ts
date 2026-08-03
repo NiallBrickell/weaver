@@ -11,10 +11,11 @@
  */
 
 import { execSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
 import { runCoordinatorPass } from './coordinator.js';
 import { runWorker } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
-import { arrive, load, newId, readArtifact, verifyArtifact } from './store.js';
+import { arrive, load, newId, readArtifact, verifyArtifact, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { WorkstreamDoc } from './types.js';
 
@@ -138,6 +139,94 @@ export function verifyAction(slug: string, assignmentId: string): boolean {
 }
 
 /**
+ * Deterministic execution of human-authored actions: when a human both
+ * decided and spelled out the exact command (exec.run), the engine executes
+ * it directly — no model in the loop to refuse, drift, or embellish. Exactly
+ * one execution attempt is recorded before running (a crash mid-run leaves a
+ * dangling attempt that action crash-recovery resolves by readback, never by
+ * re-running). The result is submitted for coordinator review like any other
+ * action, and only the verify readback can call the effect real.
+ */
+function executeHumanActions(slug: string): number {
+  const doc = load(slug);
+  let executed = 0;
+  const due = doc.assignments.filter(
+    (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.exec.approval,
+  );
+  for (const asg of due) {
+    const runId = newId('run');
+    arrive(slug, (d, event) => {
+      const a2 = d.assignments.find((x) => x.id === asg.id)!;
+      a2.state = 'running';
+      a2.attempts.push({ runId, model: 'engine', startedAt: new Date().toISOString() });
+      event('action.engine_started', `${asg.id} engine executing human-authored command`, [asg.id]);
+    });
+    mkdirSync(asg.exec!.cwd, { recursive: true });
+    let ok = false;
+    let output = '';
+    try {
+      output = execSync(asg.exec!.run!, {
+        cwd: asg.exec!.cwd,
+        timeout: 120_000,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      ok = true;
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string; message?: string };
+      output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
+    }
+    const report = [
+      `# Engine execution of ${asg.id}`,
+      ``,
+      `Command (human-authored, executed verbatim by the engine — no model):`,
+      '```',
+      asg.exec!.run!,
+      '```',
+      ``,
+      `Exit: ${ok ? '0' : 'non-zero'}`,
+      ``,
+      `Output:`,
+      '```',
+      output.slice(0, 8000) || '(none)',
+      '```',
+    ].join('\n');
+    const { relPath, hash } = writeArtifact(slug, `${asg.id}-engine-execution.md`, report);
+    arrive(slug, (d, event) => {
+      const a2 = d.assignments.find((x) => x.id === asg.id)!;
+      const delId = newId('del');
+      d.deliverables.push({
+        id: delId,
+        title: `Engine execution record: ${asg.objective.slice(0, 60)}`,
+        kind: 'execution_record',
+        path: relPath,
+        contentHash: hash,
+        producedByAssignment: asg.id,
+        createdAtVirtual: virtualNow().toISOString(),
+      });
+      a2.submission = { summary: `Engine executed the human-authored command (exit ${ok ? '0' : 'non-zero'}); readback is the arbiter.`, deliverableId: delId };
+      a2.state = 'awaiting_review';
+      a2.adoption = { state: 'proposed' };
+      const attempt = a2.attempts.find((t) => t.runId === runId);
+      if (attempt) {
+        attempt.endedAt = new Date().toISOString();
+        attempt.terminalReason = ok ? 'executed' : 'command_failed';
+      }
+      d.wakes.push({
+        id: newId('wake'),
+        reason: `human-authored action ${asg.id} was executed by the engine and awaits review`,
+        condition: { type: 'immediate' },
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      });
+      event('action.engine_executed', `${asg.id} command exited ${ok ? '0' : 'non-zero'} → ${delId}`, [asg.id, delId]);
+    });
+    executed++;
+  }
+  return executed;
+}
+
+/**
  * Crash recovery: an assignment stuck in 'running' whose latest attempt never
  * ended and is older than the staleness window was orphaned by a dead worker
  * process. Record the crash on the attempt and re-queue the assignment — the
@@ -195,6 +284,8 @@ function recoverCrashedAttempts(slug: string): number {
 function runnableAssignments(doc: WorkstreamDoc): string[] {
   return doc.assignments
     .filter((a) => a.state === 'queued')
+    // exec.run actions belong to the engine, never to a model worker
+    .filter((a) => !a.exec?.run)
     .filter((a) =>
       a.dependsOn.every((dep) => {
         const d = doc.assignments.find((x) => x.id === dep);
@@ -234,6 +325,18 @@ export async function tick(
     const sent = executeApprovedSends(slug);
     report.sendsExecuted += sent;
     if (sent > 0) progressed = true;
+
+    // Human-authored commands: engine executes, then readback judges.
+    const engineActs = load(slug).assignments
+      .filter((a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.exec.approval)
+      .map((a) => a.id);
+    if (executeHumanActions(slug) > 0) {
+      for (const id of engineActs) {
+        const ok = verifyAction(slug, id);
+        process.stderr.write(`[tick] engine action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
+      }
+      progressed = true;
+    }
 
     const runnable = runnableAssignments(load(slug));
     for (const id of runnable) {
