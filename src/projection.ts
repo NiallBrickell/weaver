@@ -109,7 +109,14 @@ export function buildProjection(
     const sub = a.submission
       ? ` submission: "${a.submission.summary.slice(0, 120)}"${a.submission.deliverableId ? ` → ${a.submission.deliverableId}` : ''}`
       : '';
-    return `${a.id} [${a.state}/adoption:${a.adoption.state}] (${a.kind}) "${a.objective}"${dep} attempts=${attempts}${sub}`;
+    const act = a.exec
+      ? a.exec.verified
+        ? ` readback:${a.exec.verified.ok ? 'CONFIRMED' : `FAILED (${a.exec.verified.output.trim().slice(0, 80)})`}`
+        : a.state === 'gated'
+          ? ' AWAITING HUMAN APPROVAL'
+          : ' readback:not-yet-run'
+      : '';
+    return `${a.id} [${a.state}/adoption:${a.adoption.state}] (${a.kind}) "${a.objective}"${dep} attempts=${attempts}${sub}${act}`;
   });
   const s5 = [
     `## 5. Assignments`,

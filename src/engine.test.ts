@@ -10,9 +10,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { tick } from './engine.js';
+import { tick, verifyAction } from './engine.js';
 import { arrive, createWorkstream, load, newId, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
+import type { Assignment } from './types.js';
 
 function freshHome(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-test-'));
@@ -169,6 +170,93 @@ test('a stale running attempt is recovered: crash recorded, assignment re-queued
   const attempt = asg.attempts[0]!;
   assert.equal(attempt.terminalReason, 'crashed');
   assert.ok(attempt.endedAt);
+});
+
+// ---------------------------------------------------------------------------
+// Action assignments: gated until approval, confirmed only by readback.
+
+function makeActionWorkstream(slug: string, action: Partial<Assignment>): void {
+  createWorkstream({
+    slug,
+    title: 'Action test',
+    objective: 'test actions',
+    tags: [],
+    successCriteria: [],
+    constraints: [],
+    autonomy: { sendsRequireApproval: true },
+    budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+  });
+  arrive(slug, (d) => {
+    d.assignments.push({
+      id: 'asg_act',
+      objective: 'perform the act',
+      briefing: 'n/a',
+      kind: 'action',
+      exec: { cwd: process.env.WEAVER_HOME!, verify: 'true' },
+      acceptanceCriteria: ['n/a'],
+      dependsOn: [],
+      state: 'gated',
+      attempts: [],
+      adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+      ...action,
+    } as Assignment);
+  });
+}
+
+test('a gated action never runs: tick launches no worker for it', async () => {
+  makeActionWorkstream('gated-ws', {});
+  const report = await tick('gated-ws', { maxPasses: 0 });
+  assert.deepEqual(report.workersRun, []);
+  assert.equal(load('gated-ws').assignments[0]!.state, 'gated');
+});
+
+test('readback records CONFIRMED on exit 0 and FAILED (with output) otherwise', () => {
+  makeActionWorkstream('verify-ws', {
+    exec: { cwd: process.env.WEAVER_HOME!, verify: 'echo effect-present' },
+  });
+  assert.equal(verifyAction('verify-ws', 'asg_act'), true);
+  let asg = load('verify-ws').assignments[0]!;
+  assert.equal(asg.exec!.verified!.ok, true);
+  assert.match(asg.exec!.verified!.output, /effect-present/);
+
+  makeActionWorkstream('verify-fail-ws', {
+    exec: { cwd: process.env.WEAVER_HOME!, verify: 'echo no-effect >&2; false' },
+  });
+  assert.equal(verifyAction('verify-fail-ws', 'asg_act'), false);
+  asg = load('verify-fail-ws').assignments[0]!;
+  assert.equal(asg.exec!.verified!.ok, false);
+  assert.match(asg.exec!.verified!.output, /no-effect/);
+  const types = load('verify-fail-ws').events.map((e) => e.type);
+  assert.ok(types.includes('action.verify_failed'));
+});
+
+test('a crashed action is NOT re-queued: it fails, readback runs, attention is raised', async () => {
+  makeActionWorkstream('action-crash-ws', {
+    state: 'running',
+    exec: {
+      cwd: process.env.WEAVER_HOME!,
+      verify: 'echo world-already-changed',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+    attempts: [{ runId: 'run_dead', startedAt: new Date(Date.now() - 60_000).toISOString() }],
+  });
+
+  process.env.WEAVER_ATTEMPT_STALE_MS = '1000';
+  try {
+    const report = await tick('action-crash-ws', { maxPasses: 0 });
+    // The load-bearing assertion: recovery must not blindly re-run the act.
+    assert.deepEqual(report.workersRun, []);
+  } finally {
+    delete process.env.WEAVER_ATTEMPT_STALE_MS;
+  }
+
+  const doc = load('action-crash-ws');
+  const asg = doc.assignments[0]!;
+  assert.equal(asg.state, 'failed');
+  assert.equal(asg.attempts[0]!.terminalReason, 'crashed');
+  assert.equal(asg.exec!.verified!.ok, true); // readback discovered the effect landed
+  assert.ok(doc.attention.some((a) => a.refId === 'asg_act' && a.status === 'open'));
 });
 
 test('a fresh running attempt is NOT treated as crashed', async () => {
