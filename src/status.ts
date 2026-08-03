@@ -6,8 +6,15 @@
 import type { WorkstreamDoc } from './types.js';
 import { virtualNow } from './clock.js';
 
+const LINE_MAX = 300;
+
+function clip(s: string): string {
+  const oneLine = s.replace(/\s*\n\s*/g, ' ');
+  return oneLine.length > LINE_MAX ? `${oneLine.slice(0, LINE_MAX - 1)}…` : oneLine;
+}
+
 function section(title: string, lines: string[], empty: string): string {
-  const body = lines.length ? lines.map((l) => `  ${l}`).join('\n') : `  (${empty})`;
+  const body = lines.length ? lines.map((l) => `  ${clip(l)}`).join('\n') : `  (${empty})`;
   return `${title}\n${body}`;
 }
 

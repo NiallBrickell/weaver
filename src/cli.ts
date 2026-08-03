@@ -230,6 +230,57 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'adopt': {
+      // Human adoption: the operator can accept a submission directly — e.g.
+      // when they authored the content themselves, or to overrule the
+      // coordinator. Same pinning semantics as coordinator adoption.
+      const slug = rest[0] ?? fail('slug required');
+      const asgId = rest[1] ?? fail('assignment id required');
+      const reason = opt(rest, 'reason') ?? 'adopted by human';
+      arrive(slug, (d, event) => {
+        const asg = d.assignments.find((x) => x.id === asgId) ?? fail(`no assignment ${asgId}`);
+        if (asg.state !== 'awaiting_review' || !asg.submission) fail(`${asgId} has no submission awaiting review`);
+        const del = asg.submission.deliverableId
+          ? d.deliverables.find((x) => x.id === asg.submission!.deliverableId)
+          : undefined;
+        if (del) {
+          del.adopted = {
+            contentHash: del.contentHash,
+            passId: 'human',
+            atVirtual: virtualNow().toISOString(),
+          };
+        }
+        asg.adoption = { state: 'accepted', passId: 'human', reason };
+        asg.state = 'completed';
+        d.wakes.push({
+          id: newId('wake'),
+          reason: `human adopted ${asgId}`,
+          condition: { type: 'immediate' },
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        event('submission.adopted', `${asgId} adopted by HUMAN${del ? ` (pinned ${del.contentHash.slice(0, 8)})` : ''}: ${reason}`, [asgId]);
+      });
+      process.stdout.write(`adopted ${asgId}\n`);
+      break;
+    }
+
+    case 'budget': {
+      // Budgets are operator-owned config: the human sets the ceiling, the
+      // harness enforces it. This is the only sanctioned way to widen one.
+      const slug = rest[0] ?? fail('slug required');
+      const maxCost = opt(rest, 'max-cost');
+      const maxPasses = opt(rest, 'max-passes');
+      if (!maxCost && !maxPasses) fail('--max-cost and/or --max-passes required');
+      arrive(slug, (d, event) => {
+        if (maxCost) d.workstream.budget.maxCostUsd = Number(maxCost);
+        if (maxPasses) d.workstream.budget.maxCoordinatorPasses = Number(maxPasses);
+        event('budget.updated', `human set budget to ${d.workstream.budget.maxCoordinatorPasses} passes / $${d.workstream.budget.maxCostUsd}`);
+      });
+      process.stdout.write(`budget updated\n`);
+      break;
+    }
+
     case 'advance': {
       const spec = rest[0] ?? fail('duration required (e.g. 5d)');
       const now = advanceClock(spec);
