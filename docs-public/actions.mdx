@@ -9,7 +9,7 @@ Weaver has no channel adapters, no integration layer, no per-service plumbing. A
 
 <Steps>
   <Step title="Gated">
-    Every action is created gated with a mandatory plain-language approval card — what approving allows, why the workstream wants it, the blast radius. It cannot run until a human approves; the gate is checked structurally in both the scheduler and the worker.
+    Every action is created gated with a mandatory plain-language approval card — what approving allows, why the workstream wants it, the blast radius. The operator's pilot reviews the exact commands first: routine-safe ones auto-approve (recorded as `by:pilot`, so the audit trail names who let it run), and anything with real blast radius fails closed to the human. Either way the gate is checked structurally in both the scheduler and the worker — nothing runs unapproved.
   </Step>
   <Step title="Executed">
     The approved worker performs exactly the briefed act, sandboxed to its working directory, with the workstream's secrets in its environment. When a human authored the exact command, the engine executes it verbatim instead — no model in the loop: models judge, humans decide, code executes.
