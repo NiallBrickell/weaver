@@ -24,6 +24,6 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "weaver": "tsx src/cli.ts",
-    "test": "tsx --test src/store.test.ts src/engine.test.ts src/policies.test.ts src/secrets.test.ts"
+    "test": "tsx --test src/store.test.ts src/engine.test.ts src/policies.test.ts src/secrets.test.ts src/backfill.test.ts"
   }
 }

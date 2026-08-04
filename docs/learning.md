@@ -39,6 +39,10 @@ This bookkeeping is deliberately shaped like a reinforcement-learning problem so
 
 The optimization order is fixed: the bookkeeping must be trustworthy before anything trains against it. Concretely, before any learned proposal/application model: (1) episodes must be complete (every intervention linked to the proposal it corrected), (2) attribution must be enforced (unattributed policy influence is a bug), and (3) the reward must be adversarially audited (interventions can be *good* — an approval gate firing is the system working). Only then is "build agents that do RL over the policy space" — proposing better policies, scoping them tighter, pruning bad ones — a well-posed problem rather than vibes with a database.
 
+## Backfill: seeding from pre-Weaver practice
+
+`weaver backfill` (src/backfill.ts) seeds the store from practice that predates Weaver: deterministic parsing of CLAUDE.md/AGENTS.md-style rules files, and — optionally, behind `--claude-projects` — one bounded model pass that distills durable corrections from recent Claude Code transcripts. Backfill changes where candidates come from, never what they are: every seeded policy is shadow, carries a `backfill:*` provenance variant (file § heading, or session id + quote), and earns promotion through the normal evidence loop. The authority firewall applies at import — grant-shaped text (merge/send/spend/bypass without restricting language) is refused with a note, not converted — and re-runs dedup on normalized statement, so backfill is idempotent.
+
 ## What's deliberately not here yet
 
 - Automatic intervention classification (correction vs. fact-supply vs. approval) — the coordinator judges this today; a classifier is future work and its errors must be inspectable.
