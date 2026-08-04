@@ -1,42 +1,58 @@
 # Weaver
 
-**Weaver is an MVP of the Workstream durable-agent-harness thesis, built standalone on the Claude Agent SDK.**
+**A durable execution layer that gives real-world agent work what code always had: history, review, and verified outcomes.**
 
-The thesis (from [erdo#1812](https://github.com/erdoai/erdo/pull/1812)): coding agents only *appear* continuous because a durable harness surrounds a disposable model — the repo holds current truth, git holds accepted history, issues hold intended work, tests judge results. Real-world work (choosing an audience segment, launching a landing page, running outreach, reading the results weeks later) has no such harness, so every "agent product" for it collapses into one immortal chat that degrades and dies. Weaver builds the harness:
+Agent harnesses already run models for hours. Memory features already carry facts between sessions. Weaver is about the part nobody has: when an agent system works on something for weeks — a hiring pipeline, a growth experiment, a standing Sentry-triage routine — *where is the record of why the current course exists, what was actually done to the world, and what made the system better than it was last month?*
 
-> **A Workstream is the durable organizational execution. Coordinator runs and subagent workers are disposable — they enter it, advance bounded work, publish results, and leave.**
+For code, that layer has existed for decades: git history holds accepted work, PRs hold review, CI holds verified outcomes, and the repo outlives every editor session. For everything else agents do — outreach, operations, research, recurring business routines — there is nothing. Every "agent product" collapses into one immortal chat that degrades until someone starts over.
 
-## What Weaver must prove
+Weaver is that missing layer, built standalone on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk):
 
-One scenario, lifted from the plan's acceptance proof, that no session-scoped harness (Claude Code, Codex, a resumed chat) can do today:
+> **A Workstream is the durable organizational execution — direction, work, deliverables, interactions, results. Coordinator runs and workers are disposable: they enter, advance bounded work, publish results, and leave.**
 
-1. A human creates a Workstream with an outcome, constraints, and budget.
-2. Coordinator A records a strategy decision (e.g. which customer segment to target), dispatches research / build / outreach-draft assignments to isolated workers, and **exits**. No process stays alive.
-3. Workers return work products; a draft waits for review; a wake condition is stored data (time, completion, a reply arriving).
-4. Days later, completions and a human reply wake Coordinator B — a **fresh context, potentially a different model** — which receives the standing decision, active assignments, and candidate deliverables from typed state, not from a transcript. It adopts one deliverable, rejects another, and both lineages survive.
-5. Sending is a separate, authority-checked action from drafting; a crash after send triggers readback, never a re-send.
-6. A recipient reply and result observations wake Coordinator C, which evaluates against the objective and either continues the course or records a superseding decision.
-7. The returning human sees **now / since-you-left / needs-you / next / why** without opening any agent transcript.
+## What's actually new here
 
-The proof fails if continuity ever depends on resuming a chat, keeping workers alive, parsing free-form logs, or trusting an unverified worker result as current state.
+Not the agent loop (the SDK provides it), not scheduling, not "long-running agents". Three things:
 
-## Demo domain: a hiring pipeline
+### 1. A decision log with lineage — git history for work that doesn't live in git
 
-The demo workstream runs **hiring for one role**, deliberately *not* marketing — erdo's home turf is marketing-adjacent, so proving the harness on a different domain is what shows general applicability. Hiring maps perfectly onto the kernel: the candidate profile is a standing decision (superseded when pipeline data says it's too narrow), the job description and outreach messages are deliverables with draft→adopt→send lifecycles, candidate replies are untrusted interactions that wake the workstream days later, screening outcomes are evaluated results, and "review this candidate / approve this offer" is exactly the needs-you queue of the human contract. No session-scoped agent can run week three of a hiring pipeline; a Workstream can.
+Every course change is a typed **decision**: what became authoritative, why, superseding what. A fresh coordinator — days later, possibly a different model — receives standing decisions from state and *cannot silently reverse one*; supersession is explicit and keeps both sides. The returning human reads **now / since-you-left / needs-me / next / why** without opening a transcript, and "why" is a real lineage, not a summary's guess. (It turns out this helps even for work that *does* live in git: the code shows what changed; the decision log shows why the tenth approach was chosen over the nine that were corrected away.)
 
-## Why this repo exists (and why it's separate from erdo)
+### 2. Verified outcomes — the system cannot grade its own homework
 
-Erdo is implementing this properly across `backend/workstream`, `backend/agent`, and `backend/job` — a months-long program. Weaver is the fast falsification vehicle: the smallest harness that exhibits the continuity contract, on top of the Claude Agent SDK's existing agent loop, so we can (a) prove the kernel works before erdo finishes the full build, (b) find where the plan's contracts are wrong while they're still cheap to change, and (c) have a crisp demo of *why we're different from everyone else with an agent harness* — the durable layer, not the loop, is the product.
+A worker finishing is not the work being done. Adoption is a separate act that pins an immutable content hash. Real-world **actions** (open a PR, run a deploy, call an API) are gated on human approval, and count as done only when a deterministic **readback** — a shell command the engine runs, no model involved — confirms the effect in the outside world. A crashed action is never blindly re-run; the world is re-inspected instead. Self-reported success is structurally worthless here, which is exactly what makes the history trustworthy enough to build on.
 
-Weaver holds none of erdo's internals and never grows into a second platform. Learnings flow back as plans/PRs on [erdoai/erdo](https://github.com/erdoai/erdo).
+### 3. Improvement you can audit — corrections become policies that earn their place
 
-## Source material
+When a human corrects the course, the correction is distilled into a **policy**: plain language, typed scope, full provenance. New policies run in *shadow*; they're promoted to *active* only by evidence — a later matching workstream applied them and needed no correction on the same point. Wrong policies are superseded with lineage, like decisions. The reward being optimized is **human interventions per successful outcome** (tracked on every workstream), and a closed effect vocabulary guarantees a policy can add verification or narrow authority but can never spend, send, merge, or widen access. This is "improves over time" as a measurable, inspectable claim — not a memory feature's marketing copy.
 
-- [erdo#1812 — Plan: make Workstream the durable multi-agent harness](https://github.com/erdoai/erdo/pull/1812) (`plans/proposed/workstream-durable-agent-harness.md`)
-- [erdo plans/proposed/decision-lineage.md](https://github.com/erdoai/erdo/pull/1812/files) — decisions as the commitment/supersession layer
-- [Claude Agent SDK docs](https://code.claude.com/docs/en/agent-sdk) — the disposable coordinator/worker loop we build on
-- [Anthropic: effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents)
+## The shape
 
-## Status
+- **Durable**: one typed document per workstream (revision-checked writes, single-flight lease) + content-addressed artifacts. The projection every coordinator pass receives is assembled from this state — never from a transcript, never from a summary that could quietly become truth.
+- **Disposable**: every coordinator pass and worker run is a fresh SDK `query()` that exits. Nothing survives a wait except stored data; wakes (time, completions, replies, human steering) are rows, not sleeping processes.
+- **Human contract**: a **needs-you queue** of judgment calls — approve/reject an action with the exact commands visible, resolve a verdict, steer with a sentence. Everything mechanical stays out of it, and every intervention is counted, because driving that count down per outcome *is* the product.
 
-Working MVP — the longitudinal acceptance proof has passed with real model runs (see [demo/TRANSCRIPT.md](./demo/TRANSCRIPT.md)), and the durability/authority rails are covered by a deterministic test suite (`yarn test`, no model calls). The learning loop — human interventions distilled into scoped, attributable, authority-capped policies that later matching workstreams apply and either promote or supersede — is ported from the parallel `relay` experiment; see [docs/learning.md](./docs/learning.md) for why it is deliberately shaped as an RL substrate (episodes = trajectories, policies = action space, interventions-per-successful-outcome = reward). See [CLAUDE.md](./CLAUDE.md) / [AGENTS.md](./AGENTS.md) for the working rules and the kernel invariants; architecture is documented there as it's built.
+## Running it
+
+```bash
+yarn install
+yarn weaver create --slug my-stream --title "..." --objective "..." [--tag routine]
+yarn weaver steer my-stream "context, repo paths, what done looks like"
+yarn weaver run                # resident runner: ticks every active workstream (10 in parallel)
+yarn weaver watch              # interactive dashboard: the needs-you queue + fleet at a glance
+```
+
+- **Routines**: tag a workstream `routine` and have it schedule its own next wake — a standing loop (Sentry sweep, evals health, usage reports) that, unlike cron'd prompts, wakes with its decision log, constraints, and learned policies intact. Run #30 is smarter than run #1.
+- **Secrets**: `echo VALUE | yarn weaver secret set NAME [--ws slug]`. Models only ever see *names*; the engine injects values into approved action shells and scrubs them from everything captured back. The store refuses any write that embeds a known secret value.
+- **Operator access**: approved action workers inherit the MCP servers you've registered for the directories they touch, plus your real CLIs — they act as you, on your machine, inside the approval gate. Research workers stay isolated and side-effect-free.
+- Auth rides the local Claude Code subscription login; API keys are stripped from every spawned process. Cost figures are SDK-reported estimates, used only as a runaway backstop.
+
+## Docs
+
+- [docs/harness.md](./docs/harness.md) — where each kernel invariant lives in code
+- [docs/learning.md](./docs/learning.md) — the learning loop, and why it's deliberately shaped as an RL substrate
+- [CLAUDE.md](./CLAUDE.md) — the kernel rules and working agreements
+
+## Provenance
+
+Weaver is the fast falsification vehicle for the Workstream thesis being built properly inside [erdo](https://erdo.ai) (erdoai/erdo#1812). It holds none of erdo's internals and never grows into a second platform; findings flow back as plan changes. The longitudinal acceptance proof has passed with real model runs (see [demo/TRANSCRIPT.md](./demo/TRANSCRIPT.md)); durability and authority rails are covered by a deterministic test suite (`yarn test`, no model calls) — model quality can never make a durability test pass.
