@@ -63,6 +63,7 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
   weaver run [--interval N]                  resident runner: tick every active workstream every N seconds (default 30)
   weaver pause <slug> | resume <slug>        stop/restart a workstream being ticked (state is kept)
+  weaver resolve <slug> <attentionId> [note] mark an attention item handled (human act)
 `;
 
 async function main(): Promise<void> {
@@ -509,6 +510,24 @@ async function main(): Promise<void> {
         }
         await new Promise((r) => setTimeout(r, interval));
       }
+    }
+
+    case 'resolve': {
+      // Attention items are addressed TO the human; only the human closes
+      // them. The note (if any) lands in the event tail for the next pass.
+      const slug = rest[0] ?? fail('slug required');
+      const attId = rest[1] ?? fail('attention id required');
+      const note = rest.slice(2).join(' ');
+      arrive(slug, (d, event) => {
+        const att = d.attention.find((a) => a.id === attId && a.status === 'open');
+        if (!att) throw new Error(`no open attention ${attId}`);
+        att.status = 'resolved';
+        att.resolvedAt = new Date().toISOString();
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+        event('attention.resolved', `human resolved ${attId}${note ? `: ${note}` : ''}`, [attId]);
+      });
+      process.stdout.write(`${attId} resolved\n`);
+      break;
     }
 
     case 'pause':
