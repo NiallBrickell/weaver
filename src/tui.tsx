@@ -348,6 +348,24 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const vNow = virtualNow();
   const drift = Math.abs(vNow.getTime() - now.getTime()) > 60_000;
 
+  // HEIGHT BUDGET: the frame must NEVER exceed the terminal, or Ink loses
+  // control of the scrollback and ghost frames stack up. Every body line
+  // below is single-row (truncate-end), so line math is exact.
+  const termRows = process.stdout.rows ?? 40;
+  const chrome = 8; // header box (3) + section titles/margins (~4) + footer (1)
+  const selDetailLines = 5; // selected stream: details (4) + key hint
+  const streamCount = snap.streams.length;
+  const selPane = (() => {
+    const isExpandedSel =
+      rows[cursor]?.type === 'item' && expanded.has((rows[cursor] as { item: NeedsYouItem }).item.key);
+    const fixed = chrome + snap.items.length + streamCount + selDetailLines;
+    const room = Math.max(4, termRows - fixed - 2);
+    return isExpandedSel ? Math.min(18, room) : Math.min(4, room);
+  })();
+  // If even collapsed content overflows, trim the visible stream lists.
+  const overflow = Math.max(0, chrome + snap.items.length + selPane + 2 + selDetailLines + streamCount - termRows);
+  const streamsVisible = Math.max(3, streamCount - overflow);
+
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box borderStyle="round" borderDimColor paddingX={1} justifyContent="space-between">
@@ -381,22 +399,24 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                   <Text bold>{it.slug}</Text>
                   <Text>  {it.title}</Text>
                 </Text>
-                {(isSel || expanded.has(it.key)) && (() => {
+                {isSel && (() => {
+                  // Single-row lines only (truncate-end): the height budget
+                  // depends on exact line math, and long lines get the full
+                  // text via [ / ] scrolling rather than wrapping.
                   const all = it.body.split('\n');
                   const isExpanded = expanded.has(it.key);
-                  const pane = 14;
-                  const from = isExpanded ? Math.min(scroll, Math.max(0, all.length - pane)) : 0;
-                  const shown = all.slice(from, from + (isExpanded ? pane : 4));
+                  const pane = selPane;
+                  const from = Math.min(scroll, Math.max(0, all.length - pane));
+                  const shown = all.slice(from, from + pane);
                   return (
                     <Box flexDirection="column" marginLeft={4} marginBottom={0}>
                       {shown.map((l, j) => (
-                        <Text key={j} dimColor wrap="wrap">{l}</Text>
+                        <Text key={j} dimColor wrap="truncate-end">{l || ' '}</Text>
                       ))}
-                      {isExpanded && all.length > pane && (
-                        <Text color="cyan">— lines {from + 1}–{Math.min(from + pane, all.length)} of {all.length} · [ / ] (or PgUp/PgDn) to scroll —</Text>
-                      )}
-                      <Text color="cyan">
-                        {it.kind === 'attention' ? '[d] done/resolve  [s] steer  [enter] full text' : '[a] approve  [x] reject  [s] steer  [enter] details'}
+                      <Text color="cyan" wrap="truncate-end">
+                        {all.length > pane ? `— ${from + 1}–${Math.min(from + pane, all.length)}/${all.length} · [ ] scroll — ` : ''}
+                        {it.kind === 'attention' ? '[d] done/resolve  [s] steer' : '[a] approve  [x] reject  [s] steer'}
+                        {isExpanded ? '  [enter] collapse' : '  [enter] expand'}
                       </Text>
                     </Box>
                   );
@@ -407,10 +427,22 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         </Box>
       )}
 
-      {[
-        { label: 'WORKSTREAMS', list: snap.streams.filter((s) => !s.routine) },
-        { label: '↻ ROUTINES', list: snap.streams.filter((s) => s.routine) },
-      ].filter((sec) => sec.list.length).map((sec) => (
+      {(() => {
+        // Window the stream list to the height budget, keeping the selection
+        // visible; hidden rows are announced, never silently dropped.
+        const ordered = [...snap.streams.filter((s) => !s.routine), ...snap.streams.filter((s) => s.routine)];
+        const selIdx = rows[cursor]?.type === 'stream'
+          ? ordered.findIndex((s) => s.slug === (rows[cursor] as { stream: StreamRow }).stream.slug)
+          : 0;
+        const start = Math.max(0, Math.min(selIdx - streamsVisible + 1, ordered.length - streamsVisible));
+        const windowSet = new Set(ordered.slice(start, start + streamsVisible).map((s) => s.slug));
+        const hidden = ordered.length - windowSet.size;
+        return (
+          <>
+            {[
+              { label: 'WORKSTREAMS', list: snap.streams.filter((s) => !s.routine && windowSet.has(s.slug)) },
+              { label: '↻ ROUTINES', list: snap.streams.filter((s) => s.routine && windowSet.has(s.slug)) },
+            ].filter((sec) => sec.list.length).map((sec) => (
       <Box key={sec.label} flexDirection="column" marginTop={1}>
         <Text bold dimColor>{sec.label}</Text>
         {sec.list.map((st) => {
@@ -434,21 +466,23 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                   </>
                 )}
               </Text>
-              {(isSel || expanded.has(st.slug)) && (
+              {isSel && (
                 <>
-                  {st.details.map((l, j) => (
+                  {st.details.slice(0, 4).map((l, j) => (
                     <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
                   ))}
-                  {isSel && (
-                    <Text color="cyan">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [i] knowledge  [enter] expand</Text>
-                  )}
+                  <Text color="cyan" wrap="truncate-end">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [i] knowledge</Text>
                 </>
               )}
             </Box>
           );
         })}
       </Box>
-      ))}
+            ))}
+            {hidden > 0 && <Text dimColor> … {hidden} more workstream(s) — ↑↓ scrolls the window</Text>}
+          </>
+        );
+      })()}
 
       {steering ? (
         <Box marginTop={1}>
