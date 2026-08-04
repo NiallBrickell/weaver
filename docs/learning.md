@@ -48,3 +48,7 @@ The optimization order is fixed: the bookkeeping must be trustworthy before anyt
 - Automatic intervention classification (correction vs. fact-supply vs. approval) — the coordinator judges this today; a classifier is future work and its errors must be inspectable.
 - Confidence scores — evidence counts are stored raw; scorecard math belongs with acme's decision-lineage scorecard design, not improvised here.
 - Cross-tag generalization — a policy applies where its tags say, never further; broadening scope is a human or explicitly-superseding act.
+
+## Team seeds
+
+`weaver policies export --author <name>` produces a sanitized seed file (statements, scope tags, effect, short origin label — no ids, no evidence, no intervention summaries since session-derived ones can quote private transcripts, no absolute paths, and superseded policies stay home). `weaver policies import <file>` lands every seeded policy in shadow with `source: 'seed'` provenance naming the author; the importer's own evidence loop governs promotion, their supersessions outrank the seed with lineage, dedup makes re-import a no-op, and `grantsAuthority` refuses authority-shaped statements at the door. Sharing distributes guardrails and vocabulary — never trust, and never authority.
