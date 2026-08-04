@@ -54,6 +54,10 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver constraint <slug> remove <match>    remove the constraint containing <match>
   weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
   weaver policies                            list learned policies (shadow/active/superseded)
+  weaver secret set <NAME> [--ws slug]       store a secret (value read from stdin, never argv); global unless --ws
+  weaver secret list [--ws slug]             list secret NAMES (values are never printed)
+  weaver secret rm <NAME> [--ws slug]        remove a secret
+  weaver watch                               live terminal dashboard over all workstreams (q to quit)
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
@@ -177,6 +181,15 @@ async function main(): Promise<void> {
       const verify = opt(rest, 'verify') ?? fail('--verify required');
       const run = opt(rest, 'run');
       const deps = optAll(rest, 'depends-on');
+      {
+        // Commands are stored in typed state forever — a pasted secret VALUE
+        // would outlive every redaction layer. Reference secrets as $NAME.
+        const { assertNoSecretValues, loadSecrets } = await import('./secrets.js');
+        const secrets = loadSecrets(slug);
+        for (const text of [verify, run ?? '', briefing, objective]) {
+          assertNoSecretValues(text, secrets);
+        }
+      }
       const asgId = newId('asg');
       arrive(slug, (d, event) => {
         d.assignments.push({
@@ -435,6 +448,46 @@ async function main(): Promise<void> {
           `    evidence: ${p.evidence.length} (${p.evidence.filter((e) => e.interventionFree).length} intervention-free)${p.supersededBy ? ` superseded by ${p.supersededBy}` : ''}\n`,
         );
       }
+      break;
+    }
+
+    case 'secret': {
+      const { removeSecret, secretNames, setSecret } = await import('./secrets.js');
+      const [sub, ...f] = rest;
+      const ws = opt(f, 'ws');
+      switch (sub) {
+        case 'set': {
+          const name = f[0] && !f[0].startsWith('--') ? f[0] : fail('secret NAME required');
+          const { readFileSync } = await import('node:fs');
+          if (process.stdin.isTTY) {
+            process.stderr.write(`paste the value for ${name} and press Ctrl-D:\n`);
+          }
+          const value = readFileSync(0, 'utf8').trim();
+          setSecret(name, value, ws);
+          process.stdout.write(`secret ${name} stored (${ws ? `workstream ${ws}` : 'global'})\n`);
+          break;
+        }
+        case 'list': {
+          const names = secretNames(ws);
+          process.stdout.write(names.length ? names.map((n) => `${n}\n`).join('') : '(none)\n');
+          break;
+        }
+        case 'rm': {
+          const name = f[0] && !f[0].startsWith('--') ? f[0] : fail('secret NAME required');
+          process.stdout.write(
+            removeSecret(name, ws) ? `secret ${name} removed\n` : `no secret ${name}\n`,
+          );
+          break;
+        }
+        default:
+          fail('secret subcommand must be set|list|rm');
+      }
+      break;
+    }
+
+    case 'watch': {
+      const { runWatch } = await import('./watch.js');
+      await runWatch();
       break;
     }
 

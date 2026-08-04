@@ -13,6 +13,7 @@
 import { execSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { runCoordinatorPass } from './coordinator.js';
+import { loadSecrets, redactSecrets } from './secrets.js';
 import { runWorker } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
 import { arrive, load, newId, readArtifact, verifyArtifact, writeArtifact } from './store.js';
@@ -112,6 +113,7 @@ export function verifyAction(slug: string, assignmentId: string): boolean {
   const doc = load(slug);
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg?.exec) throw new Error(`${assignmentId} is not an action assignment`);
+  const secrets = loadSecrets(slug);
   let ok = false;
   let output = '';
   try {
@@ -120,12 +122,14 @@ export function verifyAction(slug: string, assignmentId: string): boolean {
       timeout: 60_000,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...secrets },
     });
     ok = true;
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string; message?: string };
     output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
   }
+  output = redactSecrets(output, secrets);
   arrive(slug, (d, event) => {
     const a2 = d.assignments.find((x) => x.id === assignmentId)!;
     a2.exec!.verified = { ok, output: output.slice(0, 2000), at: new Date().toISOString() };
@@ -162,6 +166,7 @@ function executeHumanActions(slug: string): number {
       event('action.engine_started', `${asg.id} engine executing human-authored command`, [asg.id]);
     });
     mkdirSync(asg.exec!.cwd, { recursive: true });
+    const secrets = loadSecrets(slug);
     let ok = false;
     let output = '';
     try {
@@ -170,18 +175,20 @@ function executeHumanActions(slug: string): number {
         timeout: 120_000,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, ...secrets },
       });
       ok = true;
     } catch (e) {
       const err = e as { stdout?: string; stderr?: string; message?: string };
       output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
     }
+    output = redactSecrets(output, secrets);
     const report = [
       `# Engine execution of ${asg.id}`,
       ``,
       `Command (human-authored, executed verbatim by the engine — no model):`,
       '```',
-      asg.exec!.run!,
+      redactSecrets(asg.exec!.run!, secrets),
       '```',
       ``,
       `Exit: ${ok ? '0' : 'non-zero'}`,

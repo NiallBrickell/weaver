@@ -11,6 +11,7 @@ import { mkdirSync } from 'node:fs';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { virtualNow } from './clock.js';
+import { loadSecrets, redactSecrets } from './secrets.js';
 import { arrive, load, newId, readArtifact, writeArtifact } from './store.js';
 
 export function workerModel(): string {
@@ -27,7 +28,7 @@ Rules:
 const WORKER_SYSTEM = `You are an isolated worker executing ONE bounded assignment inside a larger workstream you cannot see. You have no memory of anything outside this brief and no ability to affect the world: your single output channel is the submit_result tool. If the assignment declares read-only directories, you may Read/Grep/Glob within them to ground your work in the real source — cite real file paths and line numbers, never invented ones.
 ${SHARED_RULES}`;
 
-const ACTION_SYSTEM = `You are an isolated worker executing ONE human-approved real-world ACTION inside a larger workstream you cannot see. You have Bash in your working directory and real CLIs. Perform EXACTLY the act the briefing describes — nothing beyond it, nothing on targets the briefing does not name, and every "do not" the briefing states is absolute. If a step fails, report the failure honestly via submit_result; never improvise a different action to "make it work". Your submission is a report of what you did with exact references (identifiers, URLs, command output) — the harness will independently verify the effect, so precision matters and embellishment will be caught.
+const ACTION_SYSTEM = `You are an isolated worker executing ONE human-approved real-world ACTION inside a larger workstream you cannot see. You have Bash in your working directory and real CLIs. Perform EXACTLY the act the briefing describes — nothing beyond it, nothing on targets the briefing does not name, and every "do not" the briefing states is absolute. If a step fails, report the failure honestly via submit_result; never improvise a different action to "make it work". If the briefing lists credential environment variables, use them via the shell (\`$NAME\`) — never echo, print, or persist their values anywhere. Your submission is a report of what you did with exact references (identifiers, URLs, command output) — the harness will independently verify the effect, so precision matters and embellishment will be caught.
 ${SHARED_RULES}`;
 
 export async function runWorker(slug: string, assignmentId: string): Promise<void> {
@@ -64,6 +65,9 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
 
   let submitted = false;
   const sections: string[] = [];
+  // Action workers get secret VALUES as env vars only; every path back into
+  // durable state is scrubbed so a value can never outlive the process.
+  const secrets = asg.kind === 'action' ? loadSecrets(slug) : {};
 
   const server = createSdkMcpServer({
     name: 'weaver',
@@ -106,7 +110,9 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
             };
           }
           submitted = true;
-          const { relPath, hash } = writeArtifact(slug, a.artifact.file_name, fullContent);
+          const cleanContent = redactSecrets(fullContent, secrets);
+          const cleanSummary = redactSecrets(a.summary, secrets);
+          const { relPath, hash } = writeArtifact(slug, a.artifact.file_name, cleanContent);
           arrive(slug, (d, event) => {
             const asg2 = d.assignments.find((x) => x.id === assignmentId)!;
             const delId = newId('del');
@@ -119,7 +125,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
               producedByAssignment: assignmentId,
               createdAtVirtual: virtualNow().toISOString(),
             });
-            asg2.submission = { summary: a.summary, deliverableId: delId };
+            asg2.submission = { summary: cleanSummary, deliverableId: delId };
             asg2.state = 'awaiting_review';
             asg2.adoption = { state: 'proposed' };
             const attempt = asg2.attempts.find((t) => t.runId === runId);
@@ -149,6 +155,16 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
     ``,
     `## Acceptance criteria (you will be judged against these literally)`,
     ...asg.acceptanceCriteria.map((c) => `- ${c}`),
+    ...(Object.keys(secrets).length
+      ? [
+          ``,
+          `## Credentials`,
+          `These secrets are set as environment variables in your shell — use them directly (e.g. \`$${Object.keys(secrets).sort()[0]}\`), never echo their values or write them into files or your submission:`,
+          ...Object.keys(secrets)
+            .sort()
+            .map((n) => `- ${n}`),
+        ]
+      : []),
     ...(inputs.length ? [``, `## Declared inputs`, ...inputs] : []),
   ].join('\n');
 
@@ -178,7 +194,13 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
         systemPrompt: isAction ? ACTION_SYSTEM : WORKER_SYSTEM,
         tools: baseTools,
         ...(isAction
-          ? { cwd: asg.exec!.cwd, additionalDirectories: readDirs }
+          ? {
+              cwd: asg.exec!.cwd,
+              additionalDirectories: readDirs,
+              // SDK env REPLACES the subprocess environment — spread process.env
+              // so auth/PATH survive, then overlay the workstream's secrets.
+              env: { ...process.env, ...secrets },
+            }
           : readDirs.length
             ? { cwd: readDirs[0], additionalDirectories: readDirs }
             : {}),
