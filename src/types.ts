@@ -37,7 +37,10 @@ export type AssignmentKind =
   | 'research'
   | 'work_product'
   | 'communication_draft'
-  | 'evidence';
+  | 'evidence'
+  /** A real-world act (open a PR, run a CLI) — gated on human approval,
+   * confirmed by deterministic readback, never by the worker's prose. */
+  | 'action';
 
 export interface Attempt {
   runId: Id;
@@ -59,10 +62,26 @@ export interface Assignment {
   /** Read-only resource handles: directories the worker may Read/Grep/Glob.
    * Workers stay side-effect-free — these grant sight, never mutation. */
   readDirs?: string[];
+  /** Present only on kind 'action': the one place a worker touches the real
+   * world. There is no channel adapter layer — the worker uses real CLIs
+   * (git, gh, txb) via Bash inside cwd; Weaver's job is the gate before and
+   * the readback after. `verify` is a shell command the ENGINE runs
+   * deterministically (no model) whose exit status confirms the effect. */
+  exec?: {
+    cwd: string;
+    verify: string;
+    /** When set (human-authored acts), the ENGINE runs this exact command
+     * deterministically — no model in the execution loop. Same principle as
+     * executeApprovedSends: once a human has decided, code executes. */
+    run?: string;
+    approval?: { by: 'human'; at: Iso };
+    verified?: { ok: boolean; output: string; at: Iso };
+  };
   acceptanceCriteria: string[];
   dependsOn: Id[];
   /** Work state — distinct from any worker run's own status. */
   state:
+    | 'gated' // action awaiting human approval; can never run in this state
     | 'queued'
     | 'running'
     | 'awaiting_review'
