@@ -350,7 +350,7 @@ async function main(): Promise<void> {
         if (maxCost) d.workstream.budget.maxCostUsd = Number(maxCost);
         if (maxPasses) d.workstream.budget.maxCoordinatorPasses = Number(maxPasses);
         d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-        event('budget.updated', `human set budget to ${d.workstream.budget.maxCoordinatorPasses} passes / $${d.workstream.budget.maxCostUsd}`);
+        event('budget.updated', `config: ${(process.env.WEAVER_ACTOR ?? 'operator')} set budget to ${d.workstream.budget.maxCoordinatorPasses} passes / $${d.workstream.budget.maxCostUsd}`);
       });
       process.stdout.write(`budget updated\n`);
       break;
@@ -457,7 +457,7 @@ async function main(): Promise<void> {
       arrive(slug, (d, event) => {
         if (verb === 'add' && !d.workstream.tags.includes(tag)) d.workstream.tags.push(tag);
         if (verb === 'remove') d.workstream.tags = d.workstream.tags.filter((t) => t !== tag);
-        event('tags.changed', `human ${verb}ed tag '${tag}'`);
+        event('tags.changed', `config: ${(process.env.WEAVER_ACTOR ?? 'operator')} ${verb}ed tag '${tag}'`);
       });
       process.stdout.write(`tags now: ${load(slug).workstream.tags.join(', ')}\n`);
       break;
