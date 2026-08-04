@@ -1,0 +1,52 @@
+---
+title: "Giving it work"
+description: "The shapes of work a workstream can hold, and the arc every workstream follows from objective to verified effect"
+---
+
+A workstream is any bounded outcome you would otherwise have to supervise: something with a nameable "done", a reason to exist for longer than one sitting, and judgment calls along the way that are worth recording. If you can say what done looks like and what must stay under your control, Weaver can carry it.
+
+## Four shapes
+
+### Build something
+
+A feature, a migration, a redesign — work whose deliverable is a diff. The objective names the outcome and the evidence; the constraints name what stays yours.
+
+```bash
+yarn weaver create --slug lead-follow-up \
+  --title "Follow up with new leads by email" \
+  --objective "When a lead submits the form, send a follow-up email with a scheduling link. Design it, build it, open a PR with before/after evidence." \
+  --constraint "Repo mutations only via gated actions in a fresh worktree" \
+  --constraint "Open pull requests only — merging is the founder's act"
+```
+
+The coordinator researches the current code first, records the design as a decision, then builds through gated actions — worktree, targeted tests, pull request — each confirmed by readback. Weeks later, "why is it built this way?" has an answer with lineage, not a guess.
+
+### Keep something healthy
+
+Standing loops: an error-triage sweep, an evals-health check, a weekly usage report. Tag the workstream `routine` and it schedules its own next wake after each cycle — waking with its decision log, constraints, and learned policies intact, so run #30 surfaces only what run #30 genuinely can't settle alone. See [Routines](/routines).
+
+### Find something out
+
+An audit, a subsystem map, a root-cause investigation. The deliverable is an adopted report with citations — and *adopted* is the point: the coordinator verifies submissions against acceptance criteria before anything becomes authoritative, and the accepted version is pinned by content hash. The findings then seed the next workstream: an investigation's standing decisions are exactly the context a build workstream wants.
+
+### Run a real-world process
+
+A hiring pipeline, a growth experiment, an outreach sequence — work where the world talks back. Drafts are work products; sending is a separate, gated act with authority revalidated at egress; a reply is untrusted input that can wake the workstream and supply evidence but can never grant authority or complete work by itself. This is the shape where durability earns its keep: the process runs for weeks, people reply on their own schedule, and every coordinator that picks it up knows exactly which candidate was rejected, when, and why.
+
+## The arc every workstream follows
+
+Whatever the shape, a workstream moves through the same stages — and the dashboard vocabulary maps onto them directly:
+
+1. **Research first** (`WORKING`). Side-effect-free workers map the territory: read-only directory grants, no network effects, one submission tool as their entire write surface. Early life is deliberately research-heavy — the coordinator earns the right to act by understanding first.
+2. **Adoption** — the coordinator reviews each submission against its acceptance criteria and adopts or rejects it. Only adoption makes a result authoritative; the course it implies is recorded as a decision with lineage.
+3. **Action** — the workstream touches the world through a gated act: a worktree and a pull request, a send, an API call. The pilot auto-approves routine-safe commands; anything with real blast radius arrives on your [needs-you queue](/dashboard) as a one-keypress card. Your constraints are hard ceilings the whole way down.
+4. **Readback** — a deterministic shell check, run by the engine with no model in the loop, is the only thing that can call the effect real. See [Actions](/actions).
+5. **Wait** (`WAITING`). The workstream records what it's waiting for — a reply, a scheduled wake, your verdict — and everything exits. Nothing sleeps in a process; a fresh coordinator resumes from typed state whenever the wake condition arrives.
+
+## What a good objective looks like
+
+The `create` command is the contract, and steering supplies the context:
+
+- **Objective**: the outcome and its evidence, not the steps. "Find why signups stall at step 3, fix it, open a PR with before/after numbers" — not a task list.
+- **Constraints**: the ceilings that are yours alone — what may never happen without you (merges, sends, spend), which paths are read-only, which tests must pass.
+- **Steering**: the local knowledge a fresh coordinator needs — repo paths, where the dashboards live, what done looks like in your world. Steering is durable: it wakes the workstream, must be acknowledged, and a steering that *corrects* course becomes a candidate [policy](/learning) every future matching workstream inherits.
