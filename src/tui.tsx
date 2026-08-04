@@ -494,6 +494,14 @@ export async function runTui(): Promise<void> {
   }
   process.stdout.write('\x1b[?1049h'); // alt screen
   const instance = render(<App embeddedRunner={release !== null} />, { exitOnCtrlC: true });
+  // Terminal reflow leaves ghost frames above Ink's managed region — hard-clear
+  // and repaint whenever the window is resized.
+  const onResize = () => {
+    process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
+    instance.rerender(<App embeddedRunner={release !== null} />);
+  };
+  process.stdout.on('resize', onResize);
   await instance.waitUntilExit();
+  process.stdout.off('resize', onResize);
   process.stdout.write('\x1b[?1049l');
 }
