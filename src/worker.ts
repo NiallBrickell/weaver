@@ -7,7 +7,9 @@
  * which produces an artifact + submission record. Completion stores a wake.
  */
 
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { virtualNow } from './clock.js';
@@ -16,6 +18,33 @@ import { arrive, load, newId, readArtifact, writeArtifact } from './store.js';
 
 export function workerModel(): string {
   return process.env.WEAVER_WORKER_MODEL ?? 'sonnet';
+}
+
+/**
+ * MCP servers the OPERATOR already registered for the directories an action
+ * touches (global + every ~/.claude.json project entry that is an ancestor of
+ * the action's dirs, closest last so it wins). Action workers act as the
+ * operator on this machine, so they get the operator's MCPs — same servers,
+ * same stored auth — instead of asking the human to re-plumb access that
+ * already exists. Read-only workers stay isolated.
+ */
+export function operatorMcpServers(dirs: string[]): Record<string, unknown> {
+  try {
+    const cfg = JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8')) as {
+      mcpServers?: Record<string, unknown>;
+      projects?: Record<string, { mcpServers?: Record<string, unknown> }>;
+    };
+    const merged: Record<string, unknown> = { ...(cfg.mcpServers ?? {}) };
+    const paths = Object.keys(cfg.projects ?? {}).sort((a, b) => a.length - b.length);
+    for (const p of paths) {
+      if (dirs.some((d) => d === p || d.startsWith(p.endsWith('/') ? p : `${p}/`))) {
+        Object.assign(merged, cfg.projects![p]!.mcpServers ?? {});
+      }
+    }
+    return merged;
+  } catch {
+    return {};
+  }
 }
 
 const SHARED_RULES = `
@@ -187,6 +216,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
       : readDirs.length
         ? ['Read', 'Grep', 'Glob']
         : [];
+    const operatorMcp = isAction ? operatorMcpServers([asg.exec!.cwd, ...readDirs]) : {};
     for await (const message of query({
       prompt,
       options: {
@@ -211,8 +241,12 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
           : readDirs.length
             ? { cwd: readDirs[0], additionalDirectories: readDirs }
             : {}),
-        mcpServers: { weaver: server },
-        allowedTools: [...baseTools, 'mcp__weaver__*'],
+        mcpServers: { ...operatorMcp, weaver: server } as never,
+        allowedTools: [
+          ...baseTools,
+          'mcp__weaver__*',
+          ...Object.keys(operatorMcp).map((n) => `mcp__${n}__*`),
+        ],
         permissionMode: isAction ? 'bypassPermissions' : 'dontAsk',
         maxTurns: isAction || readDirs.length ? 80 : 30,
         persistSession: false,
