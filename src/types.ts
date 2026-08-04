@@ -70,6 +70,10 @@ export interface Assignment {
   exec?: {
     cwd: string;
     verify: string;
+    /** Plain-language decision summary FOR THE HUMAN: what approving allows,
+     * why it's wanted, and the blast radius. Rendered as the approval card —
+     * the briefing is for the worker, this is for the person. */
+    ask?: string;
     /** When set (human-authored acts), the ENGINE runs this exact command
      * deterministically — no model in the execution loop. Same principle as
      * executeApprovedSends: once a human has decided, code executes. */

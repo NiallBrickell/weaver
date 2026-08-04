@@ -116,10 +116,23 @@ function snapshot(): Snapshot {
     for (const a of gated) {
       needsYou++;
       const notes = commentary.get(a.id);
+      // The card is the plain-language ask; the worker briefing is the LAST
+      // thing shown, for the human who wants to audit the exact steps.
+      const ask = a.exec?.ask ?? a.objective;
       items.push({
         key: `${slug}:${a.id}`, slug, kind: 'action', refId: a.id,
-        title: `approve action? ${a.objective.slice(0, 110)}`,
-        body: `${a.briefing}\n\nverify: ${a.exec?.verify ?? '?'}${a.exec?.run ? `\nrun: ${a.exec.run}` : ''}${notes ? `\n\ncoordinator says:\n${notes.join('\n---\n')}` : ''}`,
+        title: `approve? ${ask.slice(0, 115)}`,
+        body: [
+          ask,
+          ``,
+          `where it runs: ${a.exec?.cwd ?? '?'}`,
+          `how the harness confirms it: ${a.exec?.verify ?? '?'}`,
+          ...(a.exec?.run ? [`exact command (engine-executed): ${a.exec.run}`] : []),
+          ...(notes ? [``, `coordinator notes:`, ...notes] : []),
+          ``,
+          `— full worker briefing (what the agent will be told) —`,
+          a.briefing,
+        ].join('\n'),
       });
     }
     for (const i of pendingSends) {
@@ -204,6 +217,7 @@ function App(): React.JSX.Element {
   const [snap, setSnap] = useState<Snapshot>(() => snapshot());
   const [cursor, setCursor] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [scroll, setScroll] = useState(0);
   const [steering, setSteering] = useState<{ slug: string; text: string } | null>(null);
   const [toast, setToast] = useState('');
 
@@ -230,8 +244,10 @@ function App(): React.JSX.Element {
   useInput((input, key) => {
     if (steering) return; // TextInput owns the keyboard
     if (input === 'q') { exit(); return; }
-    if (key.upArrow || input === 'k') setCursor((c) => Math.max(0, c - 1));
-    if (key.downArrow || input === 'j') setCursor((c) => Math.min(rows.length - 1, c + 1));
+    if (key.upArrow || input === 'k') { setCursor((c) => Math.max(0, c - 1)); setScroll(0); }
+    if (key.downArrow || input === 'j') { setCursor((c) => Math.min(rows.length - 1, c + 1)); setScroll(0); }
+    if (key.pageDown || input === ']') setScroll((s) => s + 12);
+    if (key.pageUp || input === '[') setScroll((s) => Math.max(0, s - 12));
     if (!sel) return;
     try {
       if (sel.type === 'item') {
@@ -304,16 +320,26 @@ function App(): React.JSX.Element {
                   <Text bold>{it.slug}</Text>
                   <Text>  {it.title}</Text>
                 </Text>
-                {(isSel || expanded.has(it.key)) && (
-                  <Box flexDirection="column" marginLeft={4} marginBottom={0}>
-                    {it.body.split('\n').slice(0, expanded.has(it.key) ? 40 : 4).map((l, j) => (
-                      <Text key={j} dimColor wrap="wrap">{l}</Text>
-                    ))}
-                    <Text color="yellow">
-                      {it.kind === 'attention' ? '[d] done/resolve  [s] steer  [enter] full text' : '[a] approve  [x] reject  [s] steer  [enter] details'}
-                    </Text>
-                  </Box>
-                )}
+                {(isSel || expanded.has(it.key)) && (() => {
+                  const all = it.body.split('\n');
+                  const isExpanded = expanded.has(it.key);
+                  const pane = 14;
+                  const from = isExpanded ? Math.min(scroll, Math.max(0, all.length - pane)) : 0;
+                  const shown = all.slice(from, from + (isExpanded ? pane : 4));
+                  return (
+                    <Box flexDirection="column" marginLeft={4} marginBottom={0}>
+                      {shown.map((l, j) => (
+                        <Text key={j} dimColor wrap="wrap">{l}</Text>
+                      ))}
+                      {isExpanded && all.length > pane && (
+                        <Text color="cyan">— lines {from + 1}–{Math.min(from + pane, all.length)} of {all.length} · [ / ] (or PgUp/PgDn) to scroll —</Text>
+                      )}
+                      <Text color="yellow">
+                        {it.kind === 'attention' ? '[d] done/resolve  [s] steer  [enter] full text' : '[a] approve  [x] reject  [s] steer  [enter] details'}
+                      </Text>
+                    </Box>
+                  );
+                })()}
               </Box>
             );
           })}
@@ -370,7 +396,7 @@ function App(): React.JSX.Element {
         </Box>
       ) : (
         <Box marginTop={1} justifyContent="space-between">
-          <Text dimColor>↑↓ select · enter expand · a approve · x reject · d resolve · s steer · p pause · q quit</Text>
+          <Text dimColor>↑↓ select · enter expand · [/] scroll · a approve · x reject · d resolve · s steer · p pause · q quit</Text>
           {toast ? <Text color="green">{toast}</Text> : <Text dimColor>{weaverHome()}</Text>}
         </Box>
       )}

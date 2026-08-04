@@ -184,6 +184,7 @@ export async function runCoordinatorPass(
           read_dirs: z.array(z.string()).optional().describe('absolute paths of directories the worker may READ (Read/Grep/Glob only — sight, never mutation); only directories the workstream objective or human steering has named'),
           exec_cwd: z.string().optional().describe('REQUIRED for kind "action": absolute working directory the worker\'s Bash runs in'),
           exec_verify: z.string().optional().describe('REQUIRED for kind "action": shell command run by the harness (never the worker) whose exit 0 confirms the real-world effect happened, e.g. `gh pr list --head <branch> --json url --jq ".[0].url" | grep .`'),
+          approval_ask: z.string().optional().describe('REQUIRED for kind "action": 1-3 plain sentences addressed to the busy HUMAN who must approve this — what approving allows, why the workstream wants it, and the blast radius (what can and cannot change as a result). Product language, no file paths or jargon unless essential. This is the approval card they see; the briefing is not shown to them.'),
         },
         async (a) =>
           change((d, event) => {
@@ -193,6 +194,9 @@ export async function runCoordinatorPass(
             }
             if (a.kind === 'action' && (!a.exec_cwd || !a.exec_verify)) {
               throw new Error('kind "action" requires exec_cwd and exec_verify');
+            }
+            if (a.kind === 'action' && !a.approval_ask?.trim()) {
+              throw new Error('kind "action" requires approval_ask — the plain-language card the human decides from');
             }
             if (a.exec_cwd && !isAbsolute(a.exec_cwd)) {
               throw new Error(`exec_cwd must be an absolute path, got '${a.exec_cwd}' — cwd is the action's scoping boundary and cannot depend on where the engine happens to run`);
@@ -207,7 +211,7 @@ export async function runCoordinatorPass(
               kind: a.kind,
               ...(a.read_dirs?.length ? { readDirs: a.read_dirs } : {}),
               ...(a.kind === 'action'
-                ? { exec: { cwd: a.exec_cwd!, verify: a.exec_verify! } }
+                ? { exec: { cwd: a.exec_cwd!, verify: a.exec_verify!, ask: a.approval_ask!.trim() } }
                 : {}),
               acceptanceCriteria: a.acceptance_criteria,
               dependsOn: a.depends_on ?? [],
