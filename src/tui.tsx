@@ -219,12 +219,12 @@ function snapshot(): Snapshot {
 // ---------------------------------------------------------------------------
 // UI
 
-// Color semantics: red = needs a human, yellow = in motion (nothing is
-// "done" about it), cyan = in line, blue = scheduled later, green = DONE
-// (reserved — green must never suggest completion where there is none).
+// Color semantics: red = needs a human, cyan = in motion, blue = in line or
+// scheduled, green = DONE only (never suggests completion where there is
+// none), yellow = reserved for warnings (stale/suspect), dim = at rest.
 const DOT: Record<number, { color: string; word: string; glyph: string }> = {
   0: { color: 'red', word: 'NEEDS YOU', glyph: '●' },
-  1: { color: 'yellow', word: 'WORKING', glyph: '▶' },
+  1: { color: 'cyan', word: 'WORKING', glyph: '▶' },
   2: { color: 'blue', word: 'WAITING', glyph: '○' },
   3: { color: 'gray', word: 'IDLE', glyph: '■' },
   4: { color: 'red', word: 'UNREADABLE', glyph: '✗' },
@@ -340,7 +340,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
           <Text bold color="white">W E A V E R</Text>
           <Text>   </Text>
           {snap.items.length ? <Text bold color="red">{snap.items.length} need you</Text> : <Text dimColor>0 need you</Text>}
-          <Text dimColor> · </Text><Text color="yellow">{counts[1]} working</Text>
+          <Text dimColor> · </Text><Text color="cyan">{counts[1]} working</Text>
           <Text dimColor> · </Text><Text color="blue">{counts[2]} waiting</Text>
           <Text dimColor> · </Text><Text dimColor>{counts[3]} idle</Text>
           {counts[5] ? <><Text dimColor> · </Text><Text color="green">{counts[5]} done</Text></> : null}
@@ -400,7 +400,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         <Text bold dimColor>{sec.label}</Text>
         {sec.list.map((st) => {
           const isSel = rows[cursor]?.type === 'stream' && (rows[cursor] as { stream: StreamRow }).stream.slug === st.slug;
-          const d = st.bucket === 2 && st.queuedNow ? { color: 'cyan', word: 'QUEUED', glyph: '●' } : DOT[st.bucket]!;
+          const d = st.bucket === 2 && st.queuedNow ? { color: 'blueBright', word: 'QUEUED', glyph: '●' } : DOT[st.bucket]!;
           return (
             <Box key={st.slug} flexDirection="column">
               <Text inverse={isSel} wrap="truncate-end">
