@@ -260,10 +260,12 @@ test('crashed action, effect LANDED: never re-run — submitted for review on re
 });
 
 test('crashed action, effect ABSENT: the approved idempotent act is re-queued, bounded; exhaustion escalates', async () => {
+  // exec.run keeps the re-run on the ENGINE path — deterministic, no model.
   makeActionWorkstream('action-requeue-ws', {
     state: 'running',
     exec: {
       cwd: process.env.WEAVER_HOME!,
+      run: 'echo redo',
       verify: 'false',
       approval: { by: 'human', at: new Date().toISOString() },
     },
@@ -276,10 +278,10 @@ test('crashed action, effect ABSENT: the approved idempotent act is re-queued, b
     delete process.env.WEAVER_ATTEMPT_STALE_MS;
   }
   let doc = load('action-requeue-ws');
-  // Approval attaches to the ACT: no human attention, straight back in line.
-  // (The same tick may already have launched a fresh attempt — queued or
-  // running are both "re-queued" from the human's point of view.)
-  assert.ok(['queued', 'running', 'failed'].includes(doc.assignments[0]!.state));
+  // Approval attaches to the ACT: no human in the loop — the same tick
+  // re-queued it and the engine already re-executed (attempt 2).
+  assert.equal(doc.assignments[0]!.attempts.length, 2);
+  assert.equal(doc.assignments[0]!.attempts[1]!.model, 'engine');
   assert.ok(!doc.attention.some((a) => a.kind === 'blocker' && a.status === 'open' && a.summary.includes('judgment')));
 
   // Exhaustion: with MAX attempts already burned, escalate instead of looping.
