@@ -28,7 +28,7 @@ import {
 } from './humanActs.js';
 import { execFile } from 'node:child_process';
 import { runInspect } from './inspect.js';
-import { acquireRunnerLock, liveRunnerPid, runLoop } from './runner.js';
+import { acquireRunnerLock, liveRunnerPid, runLoop, runnerLoopHealthy } from './runner.js';
 import { listWorkstreams, workstreamDir, weaverHome } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 
@@ -272,7 +272,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const { exit } = useApp();
   const [snap, setSnap] = useState<Snapshot>(() => snapshot());
   const lastSnapJson = React.useRef('');
-  const [runnerState, setRunnerState] = useState<'embedded' | 'external' | 'none'>(
+  const [runnerState, setRunnerState] = useState<'embedded' | 'external' | 'stalled' | 'none'>(
     embeddedRunner ? 'embedded' : liveRunnerPid() !== null ? 'external' : 'none',
   );
   const [cursor, setCursor] = useState(0);
@@ -289,7 +289,9 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         lastSnapJson.current = j;
         setSnap(s); // Ink diffs in place — no clear, no flicker
       }
-      if (!embeddedRunner) setRunnerState(liveRunnerPid() !== null ? 'external' : 'none');
+      // Heartbeat truth, embedded or not: a live pid with a dead loop must
+      // render STALLED, never ✓ — pid-aliveness lied to us once already.
+      setRunnerState(runnerLoopHealthy() ? (embeddedRunner ? 'embedded' : 'external') : liveRunnerPid() !== null ? 'stalled' : 'none');
     }, 2000);
     return () => clearInterval(t);
   }, [embeddedRunner]);
@@ -414,6 +416,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
           <Text dimColor> · </Text>
           {runnerState === 'embedded' ? <Text color="green">runner ✓</Text>
             : runnerState === 'external' ? <Text color="green">runner ✓ ext</Text>
+            : runnerState === 'stalled' ? <Text bold color="red">RUNNER STALLED — q and relaunch!</Text>
             : <Text bold color="red">NO RUNNER — nothing will advance!</Text>}
           <Text dimColor> · {drift ? `virtual ${vNow.toISOString().slice(0, 16)} ` : ''}{now.toTimeString().slice(0, 8)}</Text>
         </Text>

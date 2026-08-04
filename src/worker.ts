@@ -235,6 +235,10 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
 
   let costUsd = 0;
   let sessionId: string | undefined;
+  // Hard wall under the 45m stale/slot horizons: a hung SDK call must fail
+  // (→ no_submission → coordinator retries) rather than starve the runner.
+  const abort = new AbortController();
+  const wall = setTimeout(() => abort.abort(new Error('worker wall-clock limit (40m) — aborted')), 40 * 60_000);
   try {
     const readDirs = asg.readDirs ?? [];
     const isAction = asg.kind === 'action';
@@ -289,6 +293,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
         ...(isAction ? { canUseTool: pilotSupervisor(asg.exec!.cwd, slug) as never } : {}),
         maxTurns: isAction || readDirs.length ? 80 : 30,
         persistSession: false,
+        abortController: abort,
       },
     })) {
       if (message.type === 'result') {
@@ -298,6 +303,8 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
     }
   } catch (e) {
     process.stderr.write(`worker ${runId} error: ${e instanceof Error ? e.message : e}\n`);
+  } finally {
+    clearTimeout(wall);
   }
 
   arrive(slug, (d, event) => {

@@ -585,6 +585,11 @@ export async function runCoordinatorPass(
   let hadError = false;
   let errorText = '';
 
+  // Hard wall: an SDK call that never returns (seen during session-limit
+  // outages) must not hold a runner slot hostage. Abort → the normal error
+  // path (wake restore / backoff) takes over.
+  const abort = new AbortController();
+  const wall = setTimeout(() => abort.abort(new Error('coordinator pass wall-clock limit (25m) — aborted, will retry via restored wake')), 25 * 60_000);
   try {
     for await (const message of query({
       prompt,
@@ -598,6 +603,7 @@ export async function runCoordinatorPass(
         maxTurns: 60,
         persistSession: false,
         env: sdkEnv(),
+        abortController: abort,
       },
     })) {
       if (message.type === 'result') {
@@ -613,6 +619,8 @@ export async function runCoordinatorPass(
     hadError = true;
     errorText = e instanceof Error ? e.message : String(e);
     process.stderr.write(`coordinator pass error: ${errorText}\n`);
+  } finally {
+    clearTimeout(wall);
   }
 
   // Infrastructure failure (subscription session limit, rate limit, auth
