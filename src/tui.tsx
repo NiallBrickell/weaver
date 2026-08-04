@@ -116,23 +116,29 @@ function snapshot(): Snapshot {
     for (const a of gated) {
       needsYou++;
       const notes = commentary.get(a.id);
-      // The card is the plain-language ask; the worker briefing is the LAST
-      // thing shown, for the human who wants to audit the exact steps.
+      // The card is the plain-language ask, then THE ACTUAL COMMANDS (pulled
+      // from the briefing's fenced code blocks) — what gets executed is the
+      // thing being approved, so it is never buried. Full briefing last.
       const ask = a.exec?.ask ?? a.objective;
+      const commands = a.exec?.run
+        ? [a.exec.run]
+        : [...a.briefing.matchAll(/```(?:bash|sh|shell)?\n([\s\S]*?)```/g)].map((m) => m[1]!.trimEnd());
       items.push({
         key: `${slug}:${a.id}`, slug, kind: 'action', refId: a.id,
         title: `approve? ${ask.slice(0, 115)}`,
         body: [
           ask,
           ``,
-          `runs in: ${a.exec?.cwd ?? '?'} · outcome auto-verified by the harness`,
+          `runs in: ${a.exec?.cwd ?? '?'}`,
+          ...(commands.length
+            ? [``, `commands it will run:`, ...commands.join('\n').split('\n').map((l) => `  $ ${l}`)]
+            : [``, `(no explicit commands in the briefing — the worker chooses its own; enter for the full brief)`]),
           ``,
-          `— audit trail (enter to scroll: exact checks + full worker briefing) —`,
-          `verification command: ${a.exec?.verify ?? '?'}`,
-          ...(a.exec?.run ? [`exact command (engine-executed): ${a.exec.run}`] : []),
+          `— audit trail —`,
+          `verification (harness-run, confirms the outcome): ${a.exec?.verify ?? '?'}`,
           ...(notes ? [``, `coordinator notes:`, ...notes] : []),
           ``,
-          `worker briefing:`,
+          `full worker briefing:`,
           a.briefing,
         ].join('\n'),
       });
@@ -364,7 +370,7 @@ function App(): React.JSX.Element {
                 ) : (
                   <>
                     <Bar spent={st.spent} max={st.maxCost} />
-                    <Text dimColor> ${st.spent.toFixed(2)}/${st.maxCost} · passes {st.passes}/{st.maxPasses} · you {st.interventions}×{st.paused ? ' [paused]' : ''}</Text>
+                    <Text dimColor> ~${st.spent.toFixed(2)} est · passes {st.passes} · you {st.interventions}×{st.paused ? ' [paused]' : ''}</Text>
                   </>
                 )}
               </Text>
