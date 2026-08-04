@@ -246,9 +246,16 @@ function Bar({ spent, max }: { spent: number; max: number }): React.JSX.Element 
   );
 }
 
+/** Hard-clear (incl. scrollback) — Ink's incremental repaint desyncs whenever
+ * a frame ever wrapped or overflowed, so any layout change gets a clean slate. */
+function clearScreen(): void {
+  process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
+}
+
 function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element {
   const { exit } = useApp();
   const [snap, setSnap] = useState<Snapshot>(() => snapshot());
+  const lastSnapJson = React.useRef('');
   const [runnerState, setRunnerState] = useState<'embedded' | 'external' | 'none'>(
     embeddedRunner ? 'embedded' : liveRunnerPid() !== null ? 'external' : 'none',
   );
@@ -260,14 +267,23 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
 
   useEffect(() => {
     const t = setInterval(() => {
-      setSnap(snapshot());
+      const s = snapshot();
+      const j = JSON.stringify(s);
+      if (j !== lastSnapJson.current) {
+        lastSnapJson.current = j;
+        clearScreen();
+        setSnap(s);
+      }
       if (!embeddedRunner) setRunnerState(liveRunnerPid() !== null ? 'external' : 'none');
     }, 2000);
     return () => clearInterval(t);
   }, [embeddedRunner]);
 
   const refresh = (msg: string) => {
-    setSnap(snapshot());
+    clearScreen();
+    const s = snapshot();
+    lastSnapJson.current = JSON.stringify(s);
+    setSnap(s);
     setToast(msg);
   };
 
@@ -299,10 +315,11 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
       }
       return;
     }
-    if (key.upArrow || input === 'k') { setCursor((c) => Math.max(0, c - 1)); setScroll(0); }
-    if (key.downArrow || input === 'j') { setCursor((c) => Math.min(rows.length - 1, c + 1)); setScroll(0); }
-    if (key.pageDown || input === ']') setScroll((s) => s + 12);
-    if (key.pageUp || input === '[') setScroll((s) => Math.max(0, s - 12));
+    if (key.upArrow || input === 'k') { clearScreen(); setCursor((c) => Math.max(0, c - 1)); setScroll(0); }
+    if (key.downArrow || input === 'j') { clearScreen(); setCursor((c) => Math.min(rows.length - 1, c + 1)); setScroll(0); }
+    if (key.pageDown || input === ']') { clearScreen(); setScroll((s) => s + 12); }
+    if (key.pageUp || input === '[') { clearScreen(); setScroll((s) => Math.max(0, s - 12)); }
+    if (key.return) clearScreen();
     if (!sel) return;
     try {
       if (sel.type === 'item') {
@@ -352,7 +369,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   // control of the scrollback and ghost frames stack up. Every body line
   // below is single-row (truncate-end), so line math is exact.
   const termRows = process.stdout.rows ?? 40;
-  const chrome = 8; // header box (3) + section titles/margins (~4) + footer (1)
+  const chrome = 7; // header (1) + section titles/margins (~5) + footer (1)
   const selDetailLines = 5; // selected stream: details (4) + key hint
   const streamCount = snap.streams.length;
   const selPane = (() => {
@@ -368,22 +385,23 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Box borderStyle="round" borderDimColor paddingX={1} justifyContent="space-between">
-        <Text>
-          <Text bold color="white">W E A V E R</Text>
-          <Text>   </Text>
+      {/* Borderless single-line header: border boxes + space-between wrap on
+          narrow windows, and one wrapped line permanently desyncs Ink. */}
+      <Box>
+        <Text wrap="truncate-end">
+          <Text bold color="white"> W E A V E R </Text>
+          <Text dimColor>· </Text>
           {snap.items.length ? <Text bold color="red">{snap.items.length} need you</Text> : <Text dimColor>0 need you</Text>}
           <Text dimColor> · </Text><Text color="cyan">{counts[1]} working</Text>
           <Text dimColor> · </Text><Text color="blue">{counts[2]} waiting</Text>
           <Text dimColor> · </Text><Text dimColor>{counts[3]} idle</Text>
           {counts[5] ? <><Text dimColor> · </Text><Text color="green">{counts[5]} done</Text></> : null}
           {counts[4] ? <Text bold color="red"> · {counts[4]} UNREADABLE</Text> : null}
-        </Text>
-        <Text dimColor>
-          {runnerState === 'embedded' ? <Text color="green">runner ✓ </Text>
-            : runnerState === 'external' ? <Text color="green">runner ✓ (external) </Text>
-            : <Text bold color="red">NO RUNNER — nothing will advance! </Text>}
-          {drift ? `virtual ${vNow.toISOString().slice(0, 16)}  ` : ''}{now.toTimeString().slice(0, 8)}
+          <Text dimColor> · </Text>
+          {runnerState === 'embedded' ? <Text color="green">runner ✓</Text>
+            : runnerState === 'external' ? <Text color="green">runner ✓ ext</Text>
+            : <Text bold color="red">NO RUNNER — nothing will advance!</Text>}
+          <Text dimColor> · {drift ? `virtual ${vNow.toISOString().slice(0, 16)} ` : ''}{now.toTimeString().slice(0, 8)}</Text>
         </Text>
       </Box>
 
@@ -504,9 +522,12 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
           />
         </Box>
       ) : (
-        <Box marginTop={1} justifyContent="space-between">
-          <Text dimColor>↑↓ select · enter expand · [/] scroll · a approve · x reject · d resolve · s steer · p pause · i inspect · q quit</Text>
-          {toast ? <Text color="green">{toast}</Text> : <Text dimColor>{weaverHome()}</Text>}
+        <Box marginTop={1}>
+          {/* ONE line, always truncated — a wrapped footer desyncs Ink's repaint. */}
+          <Text dimColor wrap="truncate-end">
+            ↑↓ · enter · [/] scroll · a approve · x reject · d resolve · s steer · p pause · i knowledge · q quit
+            {toast ? <Text color="green">   {toast}</Text> : null}
+          </Text>
         </Box>
       )}
     </Box>
