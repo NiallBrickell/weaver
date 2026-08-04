@@ -104,7 +104,7 @@ Weaver-specific — each one is a way to quietly fail the acceptance proof:
 - [`src/clock.ts`](./src/clock.ts), [`src/status.ts`](./src/status.ts), [`src/cli.ts`](./src/cli.ts) — virtual clock (a scheduler feature, not a continuity shortcut), the five-questions view, the CLI.
 - [`demo/hiring-demo.sh`](./demo/hiring-demo.sh) — the acceptance-proof walkthrough. This script is the definition of done for harness changes.
 
-Auth: the SDK resolves the machine's Claude Code login when `ANTHROPIC_API_KEY` is unset — local dev needs no key; CI does. Models: `WEAVER_COORDINATOR_MODEL` (default `opus`) and `WEAVER_WORKER_MODEL` (default `sonnet`).
+Auth: the SDK resolves the machine's Claude Code login when `ANTHROPIC_API_KEY` is unset — local dev needs no key; CI does. Models: `WEAVER_COORDINATOR_MODEL` (default `claude-fable-5` — the coordinator is the evaluative seat and runs rarely, at the moments that matter) and `WEAVER_WORKER_MODEL` (default `sonnet` for volume work). Gated actions route through the operator's pilot daemon (`WEAVER_PILOT_URL`, default localhost:9721) — routine-safe commands auto-approve as by:pilot, anything else fails closed to the human.
 
 Document surprises as you find them: the moment something is non-obvious or cost you time (an SDK behavior, a "why is it like this"), write it into `docs/*.md` and add a rule here if it's durable. The bar isn't "big new pattern"; it's "the next person would hit the same wall."
 
