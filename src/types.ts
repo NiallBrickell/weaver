@@ -81,7 +81,13 @@ export interface Assignment {
      * deterministically — no model in the execution loop. Same principle as
      * executeApprovedSends: once a human has decided, code executes. */
     run?: string;
-    approval?: { by: 'human'; at: Iso };
+    /** 'human' = explicit keypress; 'pilot' = auto-approved by the operator's
+     * pilot daemon (their standing approval policy engine) — same authority
+     * source, since the human owns pilot's rules. */
+    approval?: { by: 'human' | 'pilot'; at: Iso; note?: string };
+    /** One-shot pilot verdict (approve or not) so a denial isn't re-asked
+     * every tick; a denied action simply stays gated for the human. */
+    pilotVerdict?: { decision: string; reason: string; at: Iso };
     verified?: { ok: boolean; output: string; at: Iso };
   };
   acceptanceCriteria: string[];

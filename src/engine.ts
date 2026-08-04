@@ -104,6 +104,80 @@ function resolveUnknownSends(slug: string): number {
 }
 
 /**
+ * Route gated actions through the operator's PILOT daemon — their existing,
+ * human-owned approval policy engine (settings replay → deterministic rules →
+ * small-model evaluator). Every command the action declares (exec.run, or the
+ * briefing's fenced blocks, plus the verify readback) is evaluated; only if
+ * ALL are approved does the action auto-approve, recorded as by:'pilot'.
+ * Anything else — a deny, an unreachable daemon, a briefing with no explicit
+ * commands to evaluate — FAILS CLOSED to the human queue. Pilot can only
+ * narrow the human's involvement, never widen what may run.
+ */
+async function pilotApproveGatedActions(slug: string): Promise<number> {
+  const base = process.env.WEAVER_PILOT_URL ?? 'http://127.0.0.1:9721';
+  const doc = load(slug);
+  let approved = 0;
+  const gated = doc.assignments.filter(
+    (a) => a.kind === 'action' && a.state === 'gated' && a.exec && !a.exec.approval && !a.exec.pilotVerdict,
+  );
+  for (const asg of gated) {
+    const briefingCmds = [...asg.briefing.matchAll(/```(?:bash|sh|shell)?\n([\s\S]*?)```/g)].map((m) => m[1]!.trim());
+    const commands = [...(asg.exec!.run ? [asg.exec!.run] : briefingCmds), asg.exec!.verify].filter(Boolean);
+    // No explicit commands beyond the verify = nothing concrete to evaluate.
+    if (commands.length < 2 && !asg.exec!.run) continue;
+    let verdict: { decision: string; reason: string } | null = null;
+    try {
+      for (const command of commands) {
+        const res = await fetch(`${base}/internal/evaluate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            runtime: 'claude',
+            tool_name: 'Bash',
+            tool_input: JSON.stringify({ command }),
+            cwd: asg.exec!.cwd,
+            session_id: `weaver-${slug}`,
+          }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!res.ok) throw new Error(`pilot HTTP ${res.status}`);
+        const body = (await res.json()) as { decision?: string; reason?: string; source?: string };
+        if (body.decision !== 'approve') {
+          verdict = { decision: body.decision ?? 'unknown', reason: `${body.reason ?? ''} (${command.slice(0, 60)})` };
+          break;
+        }
+        verdict = { decision: 'approve', reason: body.source ?? '' };
+      }
+    } catch {
+      // Daemon unreachable/slow: leave gated for the human, and leave
+      // pilotVerdict unset so a recovered daemon gets another chance.
+      continue;
+    }
+    if (!verdict) continue;
+    arrive(slug, (d, event) => {
+      const a2 = d.assignments.find((x) => x.id === asg.id)!;
+      if (!a2.exec || a2.state !== 'gated') return;
+      a2.exec.pilotVerdict = { ...verdict!, at: new Date().toISOString() };
+      if (verdict!.decision === 'approve') {
+        a2.state = 'queued';
+        a2.exec.approval = { by: 'pilot', at: new Date().toISOString(), note: `${commands.length} command(s) approved by pilot` };
+        for (const att of d.attention) {
+          if (att.refId === asg.id && att.status === 'open') {
+            att.status = 'resolved';
+            att.resolvedAt = new Date().toISOString();
+          }
+        }
+        event('action.auto_approved', `${asg.id} auto-approved via pilot (${commands.length} command(s))`, [asg.id]);
+      } else {
+        event('action.pilot_escalated', `${asg.id} stays gated for the human — pilot said ${verdict!.decision}: ${verdict!.reason.slice(0, 120)}`, [asg.id]);
+      }
+    });
+    if (verdict.decision === 'approve') approved++;
+  }
+  return approved;
+}
+
+/**
  * Deterministic readback for an action assignment: run its declared verify
  * command with NO model involved. Exit 0 confirms the real-world effect; the
  * result is recorded on the assignment so adoption can require it. This is
@@ -399,6 +473,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     let progressed = false;
 
     if (recoverCrashedAttempts(slug) > 0) progressed = true;
+    if ((await pilotApproveGatedActions(slug)) > 0) progressed = true;
     report.unknownsResolved += resolveUnknownSends(slug);
     const sent = executeApprovedSends(slug);
     report.sendsExecuted += sent;

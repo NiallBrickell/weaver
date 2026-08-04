@@ -70,6 +70,10 @@ function makeApprovedSend(opts: { driftPin?: boolean } = {}): string {
 beforeEach(() => {
   freshHome();
   delete process.env.WEAVER_SEND_UNKNOWN;
+  // Hermetic: never let tests reach a REAL pilot daemon on this machine —
+  // an unreachable port means the gate fails closed (stays gated), which is
+  // the baseline the non-pilot tests assume. Pilot tests stub their own URL.
+  process.env.WEAVER_PILOT_URL = 'http://127.0.0.1:1';
 });
 
 afterEach(() => {
@@ -468,4 +472,95 @@ test('an attempt whose driver process is dead is recovered immediately, no horiz
   const asg = load('deadpid-ws').assignments.find((a) => a.id === 'asg_orphaned')!;
   assert.equal(asg.state, 'queued');
   assert.equal(asg.attempts[0]!.terminalReason, 'crashed');
+});
+
+// ---------------------------------------------------------------------------
+// Pilot-gated auto-approval: the operator's daemon can clear routine actions.
+
+import * as http from 'node:http';
+
+async function withPilotStub(
+  decide: (cmd: string) => string,
+  fn: (requests: string[]) => Promise<void>,
+): Promise<void> {
+  const requests: string[] = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const cmd = JSON.parse(JSON.parse(body).tool_input).command as string;
+      requests.push(cmd);
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ decision: decide(cmd), reason: 'stub', source: 'test' }));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const addr = server.address() as { port: number };
+  process.env.WEAVER_PILOT_URL = `http://127.0.0.1:${addr.port}`;
+  try {
+    await fn(requests);
+  } finally {
+    delete process.env.WEAVER_PILOT_URL;
+    server.close();
+  }
+}
+
+const GATED_WITH_CMDS = {
+  briefing: 'Do the thing.\n```bash\ngit log --oneline -5\n```\n',
+  exec: { cwd: '', verify: 'test -f out.md' },
+};
+
+test('pilot approves every command → the action auto-approves as by:pilot', async () => {
+  await withPilotStub(() => 'approve', async (requests) => {
+    makeActionWorkstream('pilot-ok-ws', {
+      ...GATED_WITH_CMDS,
+      exec: { ...GATED_WITH_CMDS.exec, cwd: process.env.WEAVER_HOME! },
+      dependsOn: ['asg_hold'],
+    });
+    arrive('pilot-ok-ws', (d) => {
+      d.assignments.push({
+        id: 'asg_hold', objective: 'hold', briefing: 'n/a', kind: 'research',
+        acceptanceCriteria: ['n/a'], dependsOn: [], state: 'awaiting_review',
+        attempts: [], adoption: { state: 'proposed' }, createdAtVirtual: virtualNow().toISOString(),
+      });
+    });
+    await tick('pilot-ok-ws', { maxPasses: 0 });
+    const asg = load('pilot-ok-ws').assignments.find((a) => a.id === 'asg_act')!;
+    assert.equal(asg.state, 'queued');
+    assert.equal(asg.exec!.approval!.by, 'pilot');
+    assert.equal(requests.length, 2); // briefing command + verify
+  });
+});
+
+test('pilot denies one command → stays gated for the human, verdict cached (no re-ask)', async () => {
+  await withPilotStub((cmd) => (cmd.includes('git log') ? 'approve' : 'deny'), async (requests) => {
+    makeActionWorkstream('pilot-deny-ws', {
+      ...GATED_WITH_CMDS,
+      exec: { ...GATED_WITH_CMDS.exec, cwd: process.env.WEAVER_HOME! },
+    });
+    await tick('pilot-deny-ws', { maxPasses: 0 });
+    let asg = load('pilot-deny-ws').assignments[0]!;
+    assert.equal(asg.state, 'gated');
+    assert.equal(asg.exec!.approval, undefined);
+    assert.ok(asg.exec!.pilotVerdict);
+    const asked = requests.length;
+    await tick('pilot-deny-ws', { maxPasses: 0 });
+    assert.equal(requests.length, asked); // cached — not re-asked every tick
+  });
+});
+
+test('pilot unreachable → fails closed: gated, no verdict recorded, retried later', async () => {
+  process.env.WEAVER_PILOT_URL = 'http://127.0.0.1:1';
+  try {
+    makeActionWorkstream('pilot-down-ws', {
+      ...GATED_WITH_CMDS,
+      exec: { ...GATED_WITH_CMDS.exec, cwd: process.env.WEAVER_HOME! },
+    });
+    await tick('pilot-down-ws', { maxPasses: 0 });
+    const asg = load('pilot-down-ws').assignments[0]!;
+    assert.equal(asg.state, 'gated');
+    assert.equal(asg.exec!.pilotVerdict, undefined);
+  } finally {
+    delete process.env.WEAVER_PILOT_URL;
+  }
 });

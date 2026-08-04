@@ -31,7 +31,11 @@ import type { Assignment, PassRecord, WorkstreamDoc } from './types.js';
 const LEASE_MS = 15 * 60_000;
 
 export function coordinatorModel(): string {
-  return process.env.WEAVER_COORDINATOR_MODEL ?? 'opus';
+  // The coordinator is the EVALUATIVE seat — has the work actually been done,
+  // is the course still right, what supersedes what. It runs rarely (one
+  // bounded pass per coalesced wake) and at the moments that matter, so it
+  // gets the most capable model; volume work (workers) stays on sonnet.
+  return process.env.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5';
 }
 
 const SYSTEM_PROMPT = `You are the coordinator of a durable Workstream. You are DISPOSABLE: this pass is one bounded reconciliation over durable typed state, like a controller loop — you were not "here" before, and you will not be "here" after. The projection you received is your complete organizational position; there is no other memory.
