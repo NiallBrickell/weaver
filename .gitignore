@@ -3,3 +3,5 @@ world/
 node_modules/
 dist/
 .yarn/
+secrets.env
+*.env
