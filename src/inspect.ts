@@ -205,7 +205,11 @@ function policyCard(p: PolicyRecord): string {
 <p class="statement">${esc(p.statement)}</p>
 <p class="meta">effect: ${esc(p.effect.description)}</p>
 <p class="meta">scope tags: ${p.scope.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(' ') || '(none)'}</p>
-<p class="meta">learned from <code>${esc(p.provenance.workstreamSlug)}</code> pass <code>${esc(p.provenance.passId)}</code>${p.provenance.steeringId ? ` steering <code>${esc(p.provenance.steeringId)}</code>` : ''} — ${esc(p.provenance.interventionSummary)}</p>
+<p class="meta">${
+    'workstreamSlug' in p.provenance
+      ? `learned from <code>${esc(p.provenance.workstreamSlug)}</code> pass <code>${esc(p.provenance.passId)}</code>${p.provenance.steeringId ? ` steering <code>${esc(p.provenance.steeringId)}</code>` : ''}`
+      : `seeded by <code>${esc(p.provenance.source)}</code> from <code>${esc(p.provenance.ref)}</code>`
+  } — ${esc(p.provenance.interventionSummary)}</p>
 ${evidence}${lineage}
 </article>`;
 }
@@ -466,7 +470,7 @@ ${body}
 export function policiesForWorkstream(policies: PolicyRecord[], doc: WorkstreamDoc): PolicyRecord[] {
   return policies.filter(
     (p) =>
-      p.provenance.workstreamSlug === doc.workstream.slug ||
+      ('workstreamSlug' in p.provenance && p.provenance.workstreamSlug === doc.workstream.slug) ||
       p.scope.tags.some((t) => doc.workstream.tags.includes(t)),
   );
 }
