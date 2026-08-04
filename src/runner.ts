@@ -58,35 +58,78 @@ export interface RunnerOptions {
   logError?: (line: string) => void;
 }
 
+function heartbeatPath(): string {
+  return path.join(lockDir(), 'heartbeat');
+}
+
+/**
+ * TRUE loop liveness — a live pid whose loop died (unhandled rejection, hung
+ * awaits eating every slot) must not render as "runner ✓". The loop touches
+ * a heartbeat every iteration; stale heartbeat + live pid = stalled runner.
+ */
+export function runnerLoopHealthy(): boolean {
+  if (liveRunnerPid() === null) return false;
+  try {
+    return Date.now() - fs.statSync(heartbeatPath()).mtimeMs < 120_000;
+  } catch {
+    return false;
+  }
+}
+
 /** The poll loop. Never returns; run it detached (`void runLoop(...)`) to embed. */
 export async function runLoop(opts: RunnerOptions): Promise<never> {
   const log = opts.log ?? ((l: string) => process.stdout.write(l + '\n'));
   const logError = opts.logError ?? ((l: string) => process.stderr.write(l + '\n'));
   const inFlight = new Set<string>();
+  // Slot starvation guard: a tick that exceeds this is presumed hung (an SDK
+  // call that never returned); its SLOT is reclaimed so the rest of the fleet
+  // keeps moving. The stream's own tick lock still serializes it, and dead-pid
+  // /stale-attempt recovery repairs whatever the hung call abandoned.
+  const SLOT_TIMEOUT_MS = 45 * 60_000;
   for (;;) {
-    const due = listWorkstreams().filter((slug) => {
-      if (inFlight.has(slug)) return false;
+    try {
       try {
-        return load(slug).workstream.status === 'active';
-      } catch {
-        return false;
-      }
-    });
-    for (const slug of due) {
-      if (inFlight.size >= opts.concurrency) break;
-      inFlight.add(slug);
-      void tick(slug, {})
-        .then((report) => {
-          if (report.workersRun.length || report.passes.length || report.sendsExecuted || report.unknownsResolved) {
-            log(
-              `[${new Date().toTimeString().slice(0, 8)}] ${slug}: workers=[${report.workersRun.join(',')}] passes=${report.passes.length} sends=${report.sendsExecuted}`,
-            );
+        fs.writeFileSync(heartbeatPath(), String(Date.now()));
+      } catch { /* lock dir may be mid-recreate */ }
+      const due = listWorkstreams().filter((slug) => {
+        if (inFlight.has(slug)) return false;
+        try {
+          return load(slug).workstream.status === 'active';
+        } catch {
+          return false;
+        }
+      });
+      for (const slug of due) {
+        if (inFlight.size >= opts.concurrency) break;
+        inFlight.add(slug);
+        let settled = false;
+        const slotTimer = setTimeout(() => {
+          if (!settled) {
+            logError(`[run] ${slug}: tick exceeded ${SLOT_TIMEOUT_MS / 60_000}m — presumed hung; freeing its slot`);
+            inFlight.delete(slug);
           }
-        })
-        .catch((e) => {
-          logError(`[run] ${slug}: ${e instanceof Error ? e.message : e}`);
-        })
-        .finally(() => inFlight.delete(slug));
+        }, SLOT_TIMEOUT_MS);
+        void tick(slug, {})
+          .then((report) => {
+            if (report.workersRun.length || report.passes.length || report.sendsExecuted || report.unknownsResolved) {
+              log(
+                `[${new Date().toTimeString().slice(0, 8)}] ${slug}: workers=[${report.workersRun.join(',')}] passes=${report.passes.length} sends=${report.sendsExecuted}`,
+              );
+            }
+          })
+          .catch((e) => {
+            logError(`[run] ${slug}: ${e instanceof Error ? e.message : e}`);
+          })
+          .finally(() => {
+            settled = true;
+            clearTimeout(slotTimer);
+            inFlight.delete(slug);
+          });
+      }
+    } catch (e) {
+      // The LOOP must survive anything an iteration throws (fd exhaustion on
+      // listWorkstreams once killed it silently while the pid lived on).
+      logError(`[run] loop iteration failed: ${e instanceof Error ? e.message : e}`);
     }
     await new Promise((r) => setTimeout(r, opts.intervalMs));
   }
