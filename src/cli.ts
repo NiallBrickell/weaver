@@ -57,7 +57,8 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver secret set <NAME> [--ws slug]       store a secret (value read from stdin, never argv); global unless --ws
   weaver secret list [--ws slug]             list secret NAMES (values are never printed)
   weaver secret rm <NAME> [--ws slug]        remove a secret
-  weaver watch [--plain]                     interactive dashboard: ↑↓ select, a approve, x reject, d resolve, s steer, p pause, q quit
+  weaver watch [--plain]                     dashboard + embedded runner in ONE command (starts the runner unless one is live)
+                                             keys: ↑↓ select, a approve, x reject, d resolve, s steer, p pause, q quit
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
@@ -399,43 +400,14 @@ async function main(): Promise<void> {
     }
 
     case 'run': {
-      // The resident runner: durability still lives in the store — this loop
-      // holds no state and can be killed/restarted at any moment. A tick with
-      // nothing due is free (no model call), so polling is cheap. Workstreams
-      // tick CONCURRENTLY (default 3) so one long worker never queues the
-      // whole fleet; the per-workstream tick lock keeps same-stream ticks
-      // exclusive across processes.
+      const { acquireRunnerLock, liveRunnerPid, runLoop } = await import('./runner.js');
       const interval = Number(opt(rest, 'interval') ?? '30') * 1000;
       const concurrency = Math.max(1, Number(opt(rest, 'concurrency') ?? '10'));
+      const release = acquireRunnerLock();
+      if (!release) fail(`a runner is already live (pid ${liveRunnerPid()}) — one runner per state dir`);
       process.stdout.write(`weaver run — ticking active workstreams every ${interval / 1000}s, ${concurrency} in parallel (Ctrl-C to stop)\n`);
-      const inFlight = new Set<string>();
-      for (;;) {
-        const due = listWorkstreams().filter((slug) => {
-          if (inFlight.has(slug)) return false;
-          try {
-            return load(slug).workstream.status === 'active';
-          } catch {
-            return false;
-          }
-        });
-        for (const slug of due) {
-          if (inFlight.size >= concurrency) break;
-          inFlight.add(slug);
-          void tick(slug, {})
-            .then((report) => {
-              if (report.workersRun.length || report.passes.length || report.sendsExecuted || report.unknownsResolved) {
-                process.stdout.write(
-                  `[${new Date().toTimeString().slice(0, 8)}] ${slug}: workers=[${report.workersRun.join(',')}] passes=${report.passes.length} sends=${report.sendsExecuted}\n`,
-                );
-              }
-            })
-            .catch((e) => {
-              process.stderr.write(`[run] ${slug}: ${e instanceof Error ? e.message : e}\n`);
-            })
-            .finally(() => inFlight.delete(slug));
-        }
-        await new Promise((r) => setTimeout(r, interval));
-      }
+      await runLoop({ intervalMs: interval, concurrency });
+      break;
     }
 
     case 'resolve': {

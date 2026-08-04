@@ -26,6 +26,7 @@ import {
   addSteering,
   setPaused,
 } from './humanActs.js';
+import { acquireRunnerLock, liveRunnerPid, runLoop } from './runner.js';
 import { listWorkstreams, workstreamDir, weaverHome } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 
@@ -229,9 +230,12 @@ function Bar({ spent, max }: { spent: number; max: number }): React.JSX.Element 
   );
 }
 
-function App(): React.JSX.Element {
+function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element {
   const { exit } = useApp();
   const [snap, setSnap] = useState<Snapshot>(() => snapshot());
+  const [runnerState, setRunnerState] = useState<'embedded' | 'external' | 'none'>(
+    embeddedRunner ? 'embedded' : liveRunnerPid() !== null ? 'external' : 'none',
+  );
   const [cursor, setCursor] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [scroll, setScroll] = useState(0);
@@ -239,9 +243,12 @@ function App(): React.JSX.Element {
   const [toast, setToast] = useState('');
 
   useEffect(() => {
-    const t = setInterval(() => setSnap(snapshot()), 2000);
+    const t = setInterval(() => {
+      setSnap(snapshot());
+      if (!embeddedRunner) setRunnerState(liveRunnerPid() !== null ? 'external' : 'none');
+    }, 2000);
     return () => clearInterval(t);
-  }, []);
+  }, [embeddedRunner]);
 
   const refresh = (msg: string) => {
     setSnap(snapshot());
@@ -324,7 +331,12 @@ function App(): React.JSX.Element {
           <Text dimColor> · </Text><Text dimColor>{counts[3]} idle</Text>
           {counts[4] ? <Text bold color="red"> · {counts[4]} UNREADABLE</Text> : null}
         </Text>
-        <Text dimColor>{drift ? `virtual ${vNow.toISOString().slice(0, 16)}  ` : ''}{now.toTimeString().slice(0, 8)}</Text>
+        <Text dimColor>
+          {runnerState === 'embedded' ? <Text color="green">runner ✓ </Text>
+            : runnerState === 'external' ? <Text color="green">runner ✓ (external) </Text>
+            : <Text bold color="red">NO RUNNER — nothing will advance! </Text>}
+          {drift ? `virtual ${vNow.toISOString().slice(0, 16)}  ` : ''}{now.toTimeString().slice(0, 8)}
+        </Text>
       </Box>
 
       {snap.items.length > 0 && (
@@ -438,8 +450,20 @@ function App(): React.JSX.Element {
 }
 
 export async function runTui(): Promise<void> {
+  // ONE command: the dashboard embeds the runner unless one is already live
+  // elsewhere (headless `weaver run`, another watch). The singleton lock makes
+  // extra dashboards harmless viewers.
+  const release = acquireRunnerLock();
+  if (release) {
+    void runLoop({
+      intervalMs: 30_000,
+      concurrency: 10,
+      log: () => {},
+      logError: () => {},
+    });
+  }
   process.stdout.write('\x1b[?1049h'); // alt screen
-  const instance = render(<App />, { exitOnCtrlC: true });
+  const instance = render(<App embeddedRunner={release !== null} />, { exitOnCtrlC: true });
   await instance.waitUntilExit();
   process.stdout.write('\x1b[?1049l');
 }

@@ -406,7 +406,7 @@ export async function runCoordinatorPass(
 
       tool(
         'raise_attention',
-        'Put something on the human\'s needs-you queue that cannot safely be delegated.',
+        'Put something on the human\'s needs-you queue. RESERVED for decisions and blockers only — something the workstream cannot proceed past without the human\'s judgment. Never use it for FYIs, non-blocking notes, or status ("worked fine, but..."): those belong in your finish_pass summary, where the human reads them on their own schedule. Every needless attention item trains the human to ignore the queue.',
         {
           kind: z.enum(['review', 'blocker']),
           summary: z.string(),
