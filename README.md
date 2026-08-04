@@ -32,6 +32,17 @@ When a human corrects the course, the correction is distilled into a **policy**:
 - **Disposable**: every coordinator pass and worker run is a fresh SDK `query()` that exits. Nothing survives a wait except stored data; wakes (time, completions, replies, human steering) are rows, not sleeping processes.
 - **Human contract**: a **needs-you queue** of judgment calls — approve/reject an action with the exact commands visible, resolve a verdict, steer with a sentence. Everything mechanical stays out of it, and every intervention is counted, because driving that count down per outcome *is* the product.
 
+## What you give it
+
+A workstream is any bounded outcome you would otherwise have to supervise — something with a nameable "done" and judgment calls worth recording. Four shapes cover most of it:
+
+- **Build something** — a feature or migration whose deliverable is a diff: research the code, record the design as a decision, build through gated actions in a worktree, open a PR confirmed by readback.
+- **Keep something healthy** — standing routines (error triage, evals health, usage reports) that schedule their own next wake and return with their decision log and learned policies intact.
+- **Find something out** — audits and investigations whose deliverable is an adopted, hash-pinned report; its standing decisions become the seed context for the build workstream that follows.
+- **Run a real-world process** — hiring, growth experiments, outreach: drafts are work products, sends are gated with authority revalidated at egress, and replies wake the workstream without ever granting authority.
+
+Every shape follows the same arc: side-effect-free research → adoption → gated action (a pilot auto-approves the routine-safe; real blast radius fails closed to you) → deterministic readback → wait, with everything exited and nothing resident. The full walkthrough with example objectives is in [docs-public/giving-it-work.mdx](./docs-public/giving-it-work.mdx).
+
 ## Running it
 
 ```bash
