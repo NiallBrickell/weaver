@@ -395,7 +395,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                       {isExpanded && all.length > pane && (
                         <Text color="cyan">— lines {from + 1}–{Math.min(from + pane, all.length)} of {all.length} · [ / ] (or PgUp/PgDn) to scroll —</Text>
                       )}
-                      <Text color="yellow">
+                      <Text color="cyan">
                         {it.kind === 'attention' ? '[d] done/resolve  [s] steer  [enter] full text' : '[a] approve  [x] reject  [s] steer  [enter] details'}
                       </Text>
                     </Box>
@@ -440,7 +440,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                     <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
                   ))}
                   {isSel && (
-                    <Text color="yellow">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [i] knowledge  [enter] expand</Text>
+                    <Text color="cyan">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [i] knowledge  [enter] expand</Text>
                   )}
                 </>
               )}
@@ -452,7 +452,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
 
       {steering ? (
         <Box marginTop={1}>
-          <Text color="yellow">steer {steering.slug} ▸ </Text>
+          <Text color="cyan">steer {steering.slug} ▸ </Text>
           <TextInput
             value={steering.text}
             onChange={(t: string) => setSteering({ ...steering, text: t })}
