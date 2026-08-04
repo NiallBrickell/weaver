@@ -21,6 +21,41 @@ export function workerModel(): string {
 }
 
 /**
+ * Live per-command supervision for action workers: every tool call is judged
+ * by the operator's PILOT daemon at execution time — exactly how their own
+ * interactive sessions are supervised — instead of a human pre-approving a
+ * plan. Pilot unreachable or non-approve ⇒ deny (fail closed); the worker
+ * reports the denial honestly and readback/coordinator handle the fallout.
+ */
+function pilotSupervisor(cwd: string, slug: string) {
+  const base = process.env.WEAVER_PILOT_URL ?? 'http://127.0.0.1:9721';
+  return async (toolName: string, input: Record<string, unknown>): Promise<
+    { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }
+  > => {
+    try {
+      const res = await fetch(`${base}/internal/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runtime: 'claude',
+          tool_name: toolName,
+          tool_input: JSON.stringify(input),
+          cwd,
+          session_id: `weaver-${slug}`,
+        }),
+        signal: AbortSignal.timeout(45_000),
+      });
+      if (!res.ok) return { behavior: 'deny', message: `pilot HTTP ${res.status} — failing closed` };
+      const body = (await res.json()) as { decision?: string; reason?: string };
+      if (body.decision === 'approve') return { behavior: 'allow', updatedInput: input };
+      return { behavior: 'deny', message: `pilot ${body.decision ?? 'unknown'}: ${body.reason ?? 'no reason'} — do not retry this exact call; adapt or report the blocker via submit_result` };
+    } catch (e) {
+      return { behavior: 'deny', message: `pilot unreachable (${e instanceof Error ? e.message : e}) — failing closed` };
+    }
+  };
+}
+
+/**
  * MCP servers the OPERATOR already registered for the directories an action
  * touches (global + every ~/.claude.json project entry that is an ancestor of
  * the action's dirs, closest last so it wins). Action workers act as the
@@ -243,12 +278,15 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
             ? { cwd: readDirs[0], additionalDirectories: readDirs }
             : {}),
         mcpServers: { ...operatorMcp, weaver: server } as never,
-        allowedTools: [
-          ...baseTools,
-          'mcp__weaver__*',
-          ...Object.keys(operatorMcp).map((n) => `mcp__${n}__*`),
-        ],
-        permissionMode: isAction ? 'bypassPermissions' : 'dontAsk',
+        // Action workers: ONLY the submit surface is auto-allowed — every
+        // real tool call (Bash, edits, operator MCPs) routes through the live
+        // pilot supervisor, judged at execution time exactly like the
+        // operator's own sessions. Read-only workers stay prompt-free.
+        allowedTools: isAction
+          ? ['mcp__weaver__*']
+          : [...baseTools, 'mcp__weaver__*'],
+        permissionMode: isAction ? 'default' : 'dontAsk',
+        ...(isAction ? { canUseTool: pilotSupervisor(asg.exec!.cwd, slug) as never } : {}),
         maxTurns: isAction || readDirs.length ? 80 : 30,
         persistSession: false,
       },

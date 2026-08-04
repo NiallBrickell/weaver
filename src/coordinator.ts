@@ -583,6 +583,7 @@ export async function runCoordinatorPass(
   let costUsd = 0;
   let sessionId: string | undefined;
   let hadError = false;
+  let errorText = '';
 
   try {
     for await (const message of query({
@@ -602,13 +603,24 @@ export async function runCoordinatorPass(
       if (message.type === 'result') {
         sessionId = message.session_id;
         costUsd = 'total_cost_usd' in message ? message.total_cost_usd : 0;
-        if (message.is_error) hadError = true;
+        if (message.is_error) {
+          hadError = true;
+          errorText = 'result' in message && typeof message.result === 'string' ? message.result : 'model result error';
+        }
       }
     }
   } catch (e) {
     hadError = true;
-    process.stderr.write(`coordinator pass error: ${e instanceof Error ? e.message : e}\n`);
+    errorText = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`coordinator pass error: ${errorText}\n`);
   }
+
+  // Infrastructure failure (subscription session limit, rate limit, auth
+  // outage) is NOT a workstream problem: durable state makes waiting free, so
+  // back off and retry instead of burning failure strikes or paging the human.
+  const isInfraFailure =
+    hadError &&
+    /session limit|rate.?limit|usage limit|overloaded|429|529|401|unauthoriz|authentication|log ?in|credit|quota|exceeded your/i.test(errorText);
 
   // Finalize provenance regardless of how the model behaved. This is an
   // arrival-style write: the pass is over, whatever revision we're at.
@@ -634,10 +646,23 @@ export async function runCoordinatorPass(
     }
     // A failed pass consumed its wakes; without restoration a stream with
     // nothing else pending sleeps FOREVER looking innocently idle. Re-fire
-    // (bounded): three failed passes in a row is a real problem for a human.
-    if (outcome !== 'completed') {
+    // (bounded): three failed passes in a row is a real problem for a human —
+    // EXCEPT infrastructure outages (session/rate limit), which back off with
+    // a delayed wake and never count as strikes: waiting is free.
+    if (isInfraFailure) {
+      const rec2 = d.passes.find((p) => p.id === passId);
+      if (rec2) rec2.summary = `backoff: ${errorText.slice(0, 140)}`;
+      d.wakes.push({
+        id: newId('wake'),
+        reason: `retry after infrastructure failure (${errorText.slice(0, 80)}) — backing off, no strikes`,
+        condition: { type: 'time', dueAtVirtual: new Date(virtualNow().getTime() + 15 * 60_000).toISOString() },
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      });
+      event('pass.backoff', `${passId} hit an infrastructure limit — retrying in ~15m`, [passId]);
+    } else if (outcome !== 'completed') {
       const recent = d.passes.slice(-3);
-      const allFailing = recent.length === 3 && recent.every((p) => p.outcome !== 'completed');
+      const allFailing = recent.length === 3 && recent.every((p) => p.outcome !== 'completed' && !p.summary?.startsWith('backoff:'));
       if (allFailing) {
         d.attention.push({
           id: newId('att'),
