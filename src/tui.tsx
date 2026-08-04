@@ -374,10 +374,16 @@ function App(): React.JSX.Element {
                   </>
                 )}
               </Text>
-              {(isSel || expanded.has(st.slug)) &&
-                st.details.map((l, j) => (
-                  <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
-                ))}
+              {(isSel || expanded.has(st.slug)) && (
+                <>
+                  {st.details.map((l, j) => (
+                    <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
+                  ))}
+                  {isSel && (
+                    <Text color="yellow">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [enter] expand</Text>
+                  )}
+                </>
+              )}
             </Box>
           );
         })}
