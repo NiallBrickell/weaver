@@ -41,6 +41,27 @@ export interface PolicyEvidence {
   at: Iso;
 }
 
+/**
+ * Where a policy came from. Live learning cites the workstream, pass, and
+ * steering that corrected the coordinator; `weaver backfill` cites the
+ * pre-Weaver source (a rules file + heading, or a transcript session + quote).
+ * Both variants land in 'shadow' and earn 'active' through the same evidence
+ * loop — backfill seeds candidates, never trust.
+ */
+export type PolicyProvenance =
+  | {
+      workstreamSlug: string;
+      passId: Id;
+      steeringId?: Id;
+      interventionSummary: string;
+    }
+  | {
+      source: 'backfill:rules' | 'backfill:sessions';
+      /** "path § heading" for rules files; "session <id>" for transcripts. */
+      ref: string;
+      interventionSummary: string;
+    };
+
 export interface PolicyRecord {
   id: Id;
   /** Plain-language statement of the rule. */
@@ -51,12 +72,7 @@ export interface PolicyRecord {
   /** Structural invariant — never true; kept explicit so readers see the contract. */
   widensAuthority: false;
   status: 'shadow' | 'active' | 'superseded';
-  provenance: {
-    workstreamSlug: string;
-    passId: Id;
-    steeringId?: Id;
-    interventionSummary: string;
-  };
+  provenance: PolicyProvenance;
   evidence: PolicyEvidence[];
   supersededBy?: Id;
   createdAt: Iso;
@@ -94,6 +110,9 @@ function writePolicies(store: PolicyStore): void {
  */
 function withPolicyLock<T>(fn: () => T): T {
   const dir = `${storePath()}.lock`;
+  // A missing home dir would make every mkdir below ENOENT — indistinguishable
+  // from contention, so the spin would run out the clock on a fresh install.
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
   const deadline = Date.now() + 10_000;
   for (;;) {
     try {
@@ -128,6 +147,25 @@ function mutatePolicies(fn: (store: PolicyStore) => void): PolicyStore {
   });
 }
 
+/** One-line origin label for listings/projections, whichever provenance variant. */
+export function policyOrigin(p: PolicyRecord): string {
+  return 'workstreamSlug' in p.provenance ? p.provenance.workstreamSlug : p.provenance.ref;
+}
+
+/**
+ * Dedup key for policy statements: markdown emphasis, case, whitespace, and
+ * trailing punctuation don't make two rules different. Backfill keys on this
+ * so re-running never duplicates a policy.
+ */
+export function normalizeStatement(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[*_`]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[\s.!;:,]+$/, '')
+    .trim();
+}
+
 /** Policies whose scope shares at least one tag with the workstream (shadow + active). */
 export function matchPolicies(tags: string[]): PolicyRecord[] {
   return loadPolicies().policies.filter(
@@ -160,6 +198,35 @@ export function proposePolicy(args: {
       ...(args.steeringId ? { steeringId: args.steeringId } : {}),
       interventionSummary: args.interventionSummary,
     },
+    evidence: [],
+    createdAt: new Date().toISOString(),
+  };
+  mutatePolicies((s) => s.policies.push(record));
+  return record;
+}
+
+/**
+ * Propose a policy seeded from pre-Weaver practice (`weaver backfill`).
+ * Identical lifecycle to proposePolicy — shadow status, closed effect
+ * vocabulary, widensAuthority: false — only the provenance variant differs.
+ */
+export function proposeBackfillPolicy(args: {
+  statement: string;
+  tags: string[];
+  effectKind: PolicyEffectKind;
+  effectDescription: string;
+  source: 'backfill:rules' | 'backfill:sessions';
+  ref: string;
+  interventionSummary: string;
+}): PolicyRecord {
+  const record: PolicyRecord = {
+    id: newId('pol'),
+    statement: args.statement,
+    scope: { tags: args.tags },
+    effect: { kind: args.effectKind, description: args.effectDescription },
+    widensAuthority: false,
+    status: 'shadow',
+    provenance: { source: args.source, ref: args.ref, interventionSummary: args.interventionSummary },
     evidence: [],
     createdAt: new Date().toISOString(),
   };
@@ -217,7 +284,7 @@ export function renderPoliciesForProjection(policies: PolicyRecord[]): string {
     const ev = p.evidence.length
       ? ` evidence=${p.evidence.length} (${p.evidence.filter((e) => e.interventionFree).length} intervention-free)`
       : ' unproven';
-    return `- ${p.id} [${p.status}/${p.effect.kind}] "${p.statement}" — ${p.effect.description} (learned from ${p.provenance.workstreamSlug};${ev})`;
+    return `- ${p.id} [${p.status}/${p.effect.kind}] "${p.statement}" — ${p.effect.description} (learned from ${policyOrigin(p)};${ev})`;
   });
   return [
     ``,

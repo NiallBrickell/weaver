@@ -54,6 +54,8 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver constraint <slug> remove <match>    remove the constraint containing <match>
   weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
   weaver policies                            list learned policies (shadow/active/superseded)
+  weaver backfill --tags <t1,t2> [--rules <path>]... [--claude-projects <dir>] [--limit N] [--dry-run]
+                                             seed shadow policies from existing practice: rules files (CLAUDE.md/AGENTS.md, deterministic) and/or recent Claude Code transcripts (one model pass, default 5 sessions)
   weaver secret set <NAME> [--ws slug]       store a secret (value read from stdin, never argv); global unless --ws
   weaver secret list [--ws slug]             list secret NAMES (values are never printed)
   weaver secret rm <NAME> [--ws slug]        remove a secret
@@ -355,13 +357,38 @@ async function main(): Promise<void> {
     }
 
     case 'policies': {
-      const { loadPolicies } = await import('./policies.js');
+      const { loadPolicies, policyOrigin } = await import('./policies.js');
       for (const p of loadPolicies().policies) {
         process.stdout.write(
           `${p.id} [${p.status}/${p.effect.kind}] tags=[${p.scope.tags.join(',')}] "${p.statement}"\n` +
-          `    from ${p.provenance.workstreamSlug} (${p.provenance.interventionSummary.slice(0, 100)})\n` +
+          `    from ${policyOrigin(p)} (${p.provenance.interventionSummary.slice(0, 100)})\n` +
           `    evidence: ${p.evidence.length} (${p.evidence.filter((e) => e.interventionFree).length} intervention-free)${p.supersededBy ? ` superseded by ${p.supersededBy}` : ''}\n`,
         );
+      }
+      break;
+    }
+
+    case 'backfill': {
+      // Seed the policy store from pre-Weaver practice. Everything lands in
+      // SHADOW — backfill imports candidates, never trust — and re-running
+      // is a no-op (dedup on normalized statement).
+      const tagsCsv = opt(rest, 'tags') ?? fail('--tags required — backfilled policies need an explicit scope (comma-separated)');
+      const tags = tagsCsv.split(',').map((t) => t.trim()).filter(Boolean);
+      if (!tags.length) fail('--tags must name at least one tag');
+      const rulePaths = optAll(rest, 'rules');
+      const projectsDir = opt(rest, 'claude-projects');
+      if (!rulePaths.length && !projectsDir) {
+        fail('nothing to backfill — pass --rules <path> and/or --claude-projects <dir>');
+      }
+      const dryRun = rest.includes('--dry-run');
+      const limit = Number(opt(rest, 'limit') ?? 5);
+      const { backfillRules, backfillSessions, renderBackfillReport } = await import('./backfill.js');
+      if (rulePaths.length) {
+        process.stdout.write(`## rules files (deterministic)\n${renderBackfillReport(backfillRules(rulePaths, tags, dryRun), dryRun)}\n`);
+      }
+      if (projectsDir) {
+        const report = await backfillSessions(projectsDir, tags, { dryRun, limit });
+        process.stdout.write(`## Claude Code sessions (model-distilled, last ${limit})\n${renderBackfillReport(report, dryRun)}\n`);
       }
       break;
     }
