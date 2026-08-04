@@ -47,8 +47,17 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver steer <slug> <message>              durable human steering (wakes the workstream)
   weaver approve <slug> <interactionId>      approve a pending send
   weaver reject-send <slug> <interactionId>  reject a pending send
+  weaver approve-action <slug> <asgId>       approve a gated real-world action (runs on next tick, confirmed by readback)
+  weaver reject-action <slug> <asgId> [why]  reject a gated action
+  weaver assign-action <slug> --objective <o> --briefing <b> --cwd <dir> --verify <cmd> [--run <cmd>] [--depends-on id]...   author a real-world action yourself (pre-approved; --run = engine executes the exact command deterministically, no model)
+  weaver constraint <slug> add <text>        add a hard constraint (human-owned direction)
+  weaver constraint <slug> remove <match>    remove the constraint containing <match>
   weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
   weaver policies                            list learned policies (shadow/active/superseded)
+  weaver secret set <NAME> [--ws slug]       store a secret (value read from stdin, never argv); global unless --ws
+  weaver secret list [--ws slug]             list secret NAMES (values are never printed)
+  weaver secret rm <NAME> [--ws slug]        remove a secret
+  weaver watch                               live terminal dashboard over all workstreams (q to quit)
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
@@ -156,6 +165,131 @@ async function main(): Promise<void> {
         event('send.approved', `${intId} approved by human`, [intId]);
       });
       process.stdout.write(`approved — the harness will execute it on the next tick\n`);
+      break;
+    }
+
+    case 'assign-action': {
+      // A human-AUTHORED real-world action. The coordinator model declines to
+      // authorize certain acts (e.g. merging) on the grounds that they are
+      // human decisions — this command is the structural answer: the human IS
+      // the author, so the act arrives already approved. Execution and
+      // readback still belong to the harness like any other action.
+      const slug = rest[0] ?? fail('slug required');
+      const objective = opt(rest, 'objective') ?? fail('--objective required');
+      const briefing = opt(rest, 'briefing') ?? fail('--briefing required');
+      const cwd = opt(rest, 'cwd') ?? fail('--cwd required');
+      const verify = opt(rest, 'verify') ?? fail('--verify required');
+      const run = opt(rest, 'run');
+      const deps = optAll(rest, 'depends-on');
+      {
+        // Commands are stored in typed state forever — a pasted secret VALUE
+        // would outlive every redaction layer. Reference secrets as $NAME.
+        const { assertNoSecretValues, loadSecrets } = await import('./secrets.js');
+        const secrets = loadSecrets(slug);
+        for (const text of [verify, run ?? '', briefing, objective]) {
+          assertNoSecretValues(text, secrets);
+        }
+      }
+      const asgId = newId('asg');
+      arrive(slug, (d, event) => {
+        d.assignments.push({
+          id: asgId,
+          objective,
+          briefing,
+          kind: 'action',
+          exec: { cwd, verify, ...(run ? { run } : {}), approval: { by: 'human', at: new Date().toISOString() } },
+          acceptanceCriteria: ['Perform exactly the act in the briefing; report exact references; the harness verifies by readback'],
+          dependsOn: deps,
+          state: 'queued',
+          attempts: [],
+          adoption: { state: 'none' },
+          createdAtVirtual: virtualNow().toISOString(),
+        });
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+        event('action.human_authored', `${asgId} authored AND approved by human: "${objective}"`, [asgId]);
+      });
+      process.stdout.write(`${asgId} created (human-authored, pre-approved) — it will run on the next tick and be confirmed by readback\n`);
+      break;
+    }
+
+    case 'constraint': {
+      // Constraints are human-owned direction: only this first-class human
+      // mutation may change them — never a coordinator, never a hand-edit.
+      const slug = rest[0] ?? fail('slug required');
+      const verb = rest[1] ?? fail('add or remove required');
+      const text = rest.slice(2).join(' ') || fail('constraint text required');
+      arrive(slug, (d, event) => {
+        if (verb === 'add') {
+          d.workstream.constraints.push(text);
+          event('constraint.added', `human added constraint: "${text}"`);
+        } else if (verb === 'remove') {
+          const i = d.workstream.constraints.findIndex((c) => c.toLowerCase().includes(text.toLowerCase()));
+          if (i < 0) fail(`no constraint matching "${text}"`);
+          const [gone] = d.workstream.constraints.splice(i, 1);
+          event('constraint.removed', `human removed constraint: "${gone}"`);
+        } else {
+          fail(`unknown verb ${verb} (add|remove)`);
+        }
+        d.wakes.push({
+          id: newId('wake'),
+          reason: `human ${verb === 'add' ? 'added' : 'removed'} a constraint: ${text}`,
+          condition: { type: 'immediate' },
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+      });
+      process.stdout.write(`constraint ${verb === 'add' ? 'added' : 'removed'} — the coordinator will reconcile on the next tick\n`);
+      break;
+    }
+
+    case 'approve-action': {
+      const slug = rest[0] ?? fail('slug required');
+      const asgId = rest[1] ?? fail('assignment id required');
+      arrive(slug, (d, event) => {
+        const asg = d.assignments.find((a) => a.id === asgId) ?? fail(`no assignment ${asgId}`);
+        if (asg.kind !== 'action' || !asg.exec) fail(`${asgId} is not an action assignment`);
+        if (asg.state !== 'gated') fail(`${asgId} is ${asg.state}, not gated`);
+        asg.state = 'queued';
+        asg.exec!.approval = { by: 'human', at: new Date().toISOString() };
+        for (const a of d.attention) {
+          if (a.refId === asgId && a.status === 'open') {
+            a.status = 'resolved';
+            a.resolvedAt = new Date().toISOString();
+          }
+        }
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+        event('action.approved', `${asgId} approved by human — queued to run`, [asgId]);
+      });
+      process.stdout.write(`approved — the action will run on the next tick and be confirmed by readback\n`);
+      break;
+    }
+
+    case 'reject-action': {
+      const slug = rest[0] ?? fail('slug required');
+      const asgId = rest[1] ?? fail('assignment id required');
+      const reason = rest.slice(2).join(' ') || 'rejected by human';
+      arrive(slug, (d, event) => {
+        const asg = d.assignments.find((a) => a.id === asgId) ?? fail(`no assignment ${asgId}`);
+        if (asg.state !== 'gated') fail(`${asgId} is ${asg.state}, not gated`);
+        asg.state = 'cancelled';
+        for (const a of d.attention) {
+          if (a.refId === asgId && a.status === 'open') {
+            a.status = 'resolved';
+            a.resolvedAt = new Date().toISOString();
+          }
+        }
+        d.wakes.push({
+          id: newId('wake'),
+          reason: `human rejected action ${asgId}: ${reason}`,
+          condition: { type: 'immediate' },
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+        event('action.rejected', `${asgId} rejected by human: ${reason}`, [asgId]);
+      });
+      process.stdout.write(`rejected — the coordinator will reconcile on the next tick\n`);
       break;
     }
 
@@ -314,6 +448,46 @@ async function main(): Promise<void> {
           `    evidence: ${p.evidence.length} (${p.evidence.filter((e) => e.interventionFree).length} intervention-free)${p.supersededBy ? ` superseded by ${p.supersededBy}` : ''}\n`,
         );
       }
+      break;
+    }
+
+    case 'secret': {
+      const { removeSecret, secretNames, setSecret } = await import('./secrets.js');
+      const [sub, ...f] = rest;
+      const ws = opt(f, 'ws');
+      switch (sub) {
+        case 'set': {
+          const name = f[0] && !f[0].startsWith('--') ? f[0] : fail('secret NAME required');
+          const { readFileSync } = await import('node:fs');
+          if (process.stdin.isTTY) {
+            process.stderr.write(`paste the value for ${name} and press Ctrl-D:\n`);
+          }
+          const value = readFileSync(0, 'utf8').trim();
+          setSecret(name, value, ws);
+          process.stdout.write(`secret ${name} stored (${ws ? `workstream ${ws}` : 'global'})\n`);
+          break;
+        }
+        case 'list': {
+          const names = secretNames(ws);
+          process.stdout.write(names.length ? names.map((n) => `${n}\n`).join('') : '(none)\n');
+          break;
+        }
+        case 'rm': {
+          const name = f[0] && !f[0].startsWith('--') ? f[0] : fail('secret NAME required');
+          process.stdout.write(
+            removeSecret(name, ws) ? `secret ${name} removed\n` : `no secret ${name}\n`,
+          );
+          break;
+        }
+        default:
+          fail('secret subcommand must be set|list|rm');
+      }
+      break;
+    }
+
+    case 'watch': {
+      const { runWatch } = await import('./watch.js');
+      await runWatch();
       break;
     }
 
