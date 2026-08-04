@@ -5,8 +5,19 @@
  * optimizes — and wakes the workstream where the coordinator must react.
  */
 
+import { userInfo } from 'node:os';
 import { virtualNow } from './clock.js';
 import { arrive, newId } from './store.js';
+
+/**
+ * Who is performing this human act. Defaults to the OS user (the founder at
+ * their keyboard); agent sessions operating on the founder's behalf must set
+ * WEAVER_ACTOR (e.g. "claude-session") so attribution — and the intervention
+ * metric the learning loop optimizes — stays honest.
+ */
+export function actor(): string {
+  return process.env.WEAVER_ACTOR ?? userInfo().username;
+}
 
 function wake(d: { wakes: { push: (w: object) => void }[] } | any, reason: string): void {
   d.wakes.push({
@@ -30,10 +41,10 @@ function resolveRefAttention(d: any, refId: string): void {
 export function addSteering(slug: string, body: string): void {
   arrive(slug, (d, event) => {
     const id = newId('steer');
-    d.steering.push({ id, body, at: new Date().toISOString() });
+    d.steering.push({ id, body, by: actor(), at: new Date().toISOString() });
     wake(d, `human steering arrived: "${body.slice(0, 80)}"`);
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-    event('steering.arrived', body, [id]);
+    event('steering.arrived', `[by ${actor()}] ${body}`, [id]);
   });
 }
 
@@ -47,7 +58,7 @@ export function approveSend(slug: string, intId: string): void {
     int.approvedAt = new Date().toISOString();
     resolveRefAttention(d, intId);
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-    event('send.approved', `${intId} approved by human`, [intId]);
+    event('send.approved', `${intId} approved by ${actor()}`, [intId]);
   });
 }
 
@@ -59,7 +70,7 @@ export function rejectSend(slug: string, intId: string): void {
     resolveRefAttention(d, intId);
     wake(d, `human rejected send ${intId}`);
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-    event('send.rejected', `${intId} rejected by human`, [intId]);
+    event('send.rejected', `${intId} rejected by ${actor()}`, [intId]);
   });
 }
 
@@ -73,7 +84,7 @@ export function approveAction(slug: string, asgId: string): void {
     asg.exec.approval = { by: 'human', at: new Date().toISOString() };
     resolveRefAttention(d, asgId);
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-    event('action.approved', `${asgId} approved by human — queued to run`, [asgId]);
+    event('action.approved', `${asgId} approved by ${actor()} — queued to run`, [asgId]);
   });
 }
 
@@ -86,7 +97,7 @@ export function rejectAction(slug: string, asgId: string, reason = 'rejected by 
     resolveRefAttention(d, asgId);
     wake(d, `human rejected action ${asgId}: ${reason}`);
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-    event('action.rejected', `${asgId} rejected by human: ${reason}`, [asgId]);
+    event('action.rejected', `${asgId} rejected by ${actor()}: ${reason}`, [asgId]);
   });
 }
 
@@ -97,7 +108,7 @@ export function resolveAttention(slug: string, attId: string, note = ''): void {
     att.status = 'resolved';
     att.resolvedAt = new Date().toISOString();
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-    event('attention.resolved', `human resolved ${attId}${note ? `: ${note}` : ''}`, [attId]);
+    event('attention.resolved', `${actor()} resolved ${attId}${note ? `: ${note}` : ''}`, [attId]);
   });
 }
 
@@ -130,13 +141,13 @@ export function adoptSubmission(slug: string, asgId: string, reason = 'adopted b
     asg.state = 'completed';
     wake(d, `human adopted ${asgId}`);
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-    event('submission.adopted', `${asgId} adopted by HUMAN${del ? ` (pinned ${del.contentHash.slice(0, 8)})` : ''}: ${reason}`, [asgId]);
+    event('submission.adopted', `${asgId} adopted by ${actor()}${del ? ` (pinned ${del.contentHash.slice(0, 8)})` : ''}: ${reason}`, [asgId]);
   });
 }
 
 export function setPaused(slug: string, paused: boolean): void {
   arrive(slug, (d, event) => {
     d.workstream.status = paused ? 'paused' : 'active';
-    event(paused ? 'workstream.paused' : 'workstream.resumed', `human ${paused ? 'paused' : 'resumed'} the workstream`);
+    event(paused ? 'workstream.paused' : 'workstream.resumed', `${actor()} ${paused ? 'paused' : 'resumed'} the workstream`);
   });
 }

@@ -207,6 +207,10 @@ export interface Wake {
 export interface Steering {
   id: Id;
   body: string;
+  /** Who performed the act: the founder at the keyboard vs an agent session
+   * operating on their behalf (WEAVER_ACTOR). Both are authoritative human
+   * direction; attribution keeps the intervention metric honest. */
+  by?: string;
   at: Iso;
   consumedByPass?: Id;
 }

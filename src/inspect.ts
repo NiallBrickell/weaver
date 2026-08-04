@@ -233,8 +233,8 @@ const HUMAN_EVENT_KINDS: Record<string, string> = {
   'attention.resolved': 'resolution',
   'constraint.added': 'correction',
   'constraint.removed': 'correction',
-  'budget.updated': 'correction',
-  'tags.changed': 'correction',
+  'budget.updated': 'config',
+  'tags.changed': 'config',
 };
 
 function humanEvents(events: EventRecord[]): { kind: string; e: EventRecord }[] {
@@ -262,7 +262,7 @@ function interventionSection(doc: WorkstreamDoc): string {
         .join('')}</ol>`
     : empty('No human interventions in the event tail.');
   return `<section>
-<h2>Human interventions <span class="count">${total} total</span></h2>
+<h2>Interventions <span class="count">${total} total</span></h2>
 <p class="hint">Interventions per successful outcome is the number the learning loop drives down. The timeline below is drawn from the bounded event tail (last ${doc.events.length} events), so the lifetime count above may exceed what is listed.</p>
 ${body}
 </section>`;
@@ -397,6 +397,7 @@ svg text { pointer-events: none; }
 .timeline li.tl-approval, .timeline li.tl-adoption { border-left-color: var(--ok); }
 .timeline li.tl-rejection { border-left-color: var(--bad); }
 .timeline li.tl-correction, .timeline li.tl-authored, .timeline li.tl-resolution { border-left-color: var(--warn); }
+.timeline li.tl-config { border-left-color: var(--muted, #666); opacity: .75; }
 .tl-when { color: var(--dim); font-size: 12px; font-family: ui-monospace, monospace; margin-right: 8px; }
 .dels { list-style: none; padding: 0; margin: 6px 0; } .dels li { padding: 4px 0; }
 .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
@@ -509,7 +510,7 @@ export function renderOverviewHtml(docs: WorkstreamDoc[], policies: PolicyRecord
 <tr><th>Decisions</th><td>${standing} standing · ${superseded} superseded</td></tr>
 <tr><th>Deliverables</th><td>${adopted} adopted · ${candidates} candidate/rejected</td></tr>
 <tr><th>Actions</th><td>${doc.assignments.filter((a) => a.kind === 'action').length}</td></tr>
-<tr><th>Human interventions</th><td>${doc.spend.humanInterventions}</td></tr>
+<tr><th>Interventions</th><td>${doc.spend.humanInterventions}</td></tr>
 <tr><th>Spend</th><td>${doc.spend.coordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}</td></tr>
 <tr><th>Tags</th><td>${ws.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(' ') || '(none)'}</td></tr>
 </tbody></table>
