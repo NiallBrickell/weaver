@@ -84,8 +84,8 @@ async function main(): Promise<void> {
         budget: {
           // Backstops against runaway loops, not spend management — high by
           // default so the human never thinks about them in normal operation.
-          maxCoordinatorPasses: Number(opt(rest, 'max-passes') ?? 60),
-          maxCostUsd: Number(opt(rest, 'max-cost') ?? 150),
+          maxCoordinatorPasses: Number(opt(rest, 'max-passes') ?? 500),
+          maxCostUsd: Number(opt(rest, 'max-cost') ?? 1000),
         },
       });
       // The creation itself is the first wake: direction needs establishing.

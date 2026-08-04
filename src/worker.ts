@@ -239,14 +239,10 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
     if (!submitted) {
       a.state = 'failed';
       if (attempt) attempt.terminalReason = 'no_submission';
-      d.attention.push({
-        id: newId('att'),
-        kind: 'blocker',
-        summary: `Worker for ${assignmentId} ended without submitting a result`,
-        refId: assignmentId,
-        status: 'open',
-        createdAt: new Date().toISOString(),
-      });
+      // No attention here: a flaky worker is the COORDINATOR's problem — the
+      // wake below hands it the failure to retry or rework. Attention is for
+      // judgment only the human can supply; it escalates only if the
+      // coordinator itself decides the assignment is truly stuck.
       d.wakes.push({
         id: newId('wake'),
         reason: `assignment ${assignmentId} failed without a submission`,
