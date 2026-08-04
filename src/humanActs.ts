@@ -38,10 +38,25 @@ function resolveRefAttention(d: any, refId: string): void {
   }
 }
 
-export function addSteering(slug: string, body: string): void {
+export function addSteering(
+  slug: string,
+  body: string,
+  opts: { resolvesAttentionId?: string } = {},
+): void {
   arrive(slug, (d, event) => {
     const id = newId('steer');
     d.steering.push({ id, body, by: actor(), at: new Date().toISOString() });
+    // Steering FROM an attention card is the answer TO it — one act, so the
+    // card leaves the queue the moment the human replies, never lingering
+    // until a later pass gets around to it.
+    if (opts.resolvesAttentionId) {
+      const att = d.attention.find((a) => a.id === opts.resolvesAttentionId && a.status === 'open');
+      if (att) {
+        att.status = 'resolved';
+        att.resolvedAt = new Date().toISOString();
+        event('attention.resolved', `${actor()} answered ${att.id} via steering ${id}`, [att.id, id]);
+      }
+    }
     wake(d, `human steering arrived: "${body.slice(0, 80)}"`);
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
     event('steering.arrived', `[by ${actor()}] ${body}`, [id]);

@@ -564,3 +564,24 @@ test('pilot unreachable → fails closed: gated, no verdict recorded, retried la
     delete process.env.WEAVER_PILOT_URL;
   }
 });
+
+test('steering that answers an attention card resolves it in the same act', async () => {
+  const { addSteering } = await import('./humanActs.js');
+  createWorkstream({
+    slug: 'answer-ws', title: 'Answer test', objective: 'steer-resolves-attention',
+    tags: [], successCriteria: [], constraints: [],
+    autonomy: { sendsRequireApproval: true },
+    budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+  });
+  arrive('answer-ws', (d) => {
+    d.attention.push({
+      id: 'att_q', kind: 'blocker', summary: 'Which field shows the timezone?',
+      status: 'open', createdAt: new Date().toISOString(),
+    });
+  });
+  addSteering('answer-ws', 'It is the Preferred Callback Time field.', { resolvesAttentionId: 'att_q' });
+  const doc = load('answer-ws');
+  assert.equal(doc.attention.find((a) => a.id === 'att_q')!.status, 'resolved');
+  assert.equal(doc.steering.length, 1);
+  assert.ok(doc.wakes.some((w) => w.status === 'pending')); // coordinator still gets the answer
+});
