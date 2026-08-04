@@ -1,0 +1,44 @@
+---
+title: "Quickstart"
+description: "Create a workstream, steer it, and let the runner and dashboard take it from there"
+---
+
+## Install
+
+```bash
+git clone https://github.com/NiallBrickell/weaver && cd weaver
+yarn install
+```
+
+Weaver authenticates through your machine's Claude Code login — no API key. Any `ANTHROPIC_API_KEY` in the environment is deliberately stripped from spawned sessions so billing can never silently switch to API credits.
+
+## Create a workstream
+
+```bash
+yarn weaver create --slug fix-onboarding \
+  --title "Fix the onboarding drop-off" \
+  --objective "Find why signups stall at step 3, fix it, open a PR with evidence." \
+  --constraint "Research first; repo mutations only via gated actions in a fresh worktree" \
+  --constraint "Open pull requests only — merging is the founder's act"
+```
+
+Constraints are hard rules the coordinator must respect; they're yours alone to change (`weaver constraint <slug> add|remove`).
+
+## Steer it
+
+```bash
+yarn weaver steer fix-onboarding "Repo is at ~/work/myapp. The funnel dashboard is in Metabase. Done = a merged-ready PR plus before/after numbers."
+```
+
+Steering is durable human input: it wakes the workstream, the coordinator must acknowledge and act on it, and — if it *corrects* a course rather than supplying facts — it becomes a candidate policy future workstreams inherit.
+
+## Run everything
+
+```bash
+yarn weaver run     # resident runner: ticks all active workstreams, 10 in parallel
+yarn weaver watch   # interactive dashboard in a second terminal
+```
+
+The runner holds no state — kill it, restart it, nothing is lost. Workstreams advance through **ticks**: readbacks → approved sends → approved actions → workers → coordinator passes, until quiescent.
+
+From here, everything you need to do arrives in the dashboard's [needs-you queue](/dashboard) as one-keypress decisions.

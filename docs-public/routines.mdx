@@ -1,0 +1,29 @@
+---
+title: "Routines"
+description: "Standing loops that wake with their decision log, constraints, and learned policies intact"
+---
+
+A routine is just a workstream tagged `routine` whose coordinator schedules its own next wake after each cycle — an error-triage sweep every 12 hours, an evals-health check daily, a usage report weekly.
+
+```bash
+yarn weaver create --slug sentry-sweep --tag routine \
+  --title "Sentry sweep" \
+  --objective "Each cycle: triage recent issues, root-cause the real ones, open PRs for clear fixes. Schedule the next wake ~12h out. Report only deltas."
+```
+
+## Why this beats a cron'd prompt
+
+A scheduled prompt wakes up amnesiac: same questions, same mistakes, run #30 identical to run #1. A Weaver routine wakes up with:
+
+- **Its decision log** — triage dispositions, superseded approaches, standing judgments about what counts as noise.
+- **Its constraints** — the hard rules you set once ("open PRs, never merge", "targeted tests only").
+- **Learned policies** — every correction you made in *any* matching workstream, already applied, still auditable.
+- **Verified history** — what it claims it did last cycle was confirmed by readback, so this cycle builds on facts.
+
+Run #30 should know your taste well enough to surface only the genuine judgment calls. The `you N×` intervention count per cycle is the check that it actually does.
+
+## Mechanics
+
+- Wakes are stored data, not sleeping processes — the resident runner discovers what's due. Kill the runner for a week; the routine picks up exactly where it stopped.
+- The dashboard shows routines in their own `↻ ROUTINES` section with the next-run time.
+- `weaver pause <slug>` stops a routine (state kept); `weaver resume <slug>` restarts it. `weaver tag <slug> add routine` converts an existing workstream.

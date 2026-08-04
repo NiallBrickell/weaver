@@ -1,0 +1,27 @@
+---
+title: "The harness"
+description: "Where each continuity invariant lives — durable typed state, disposable model runs"
+---
+
+The durable layer is a single typed document per workstream plus content-addressed artifacts. The disposable layer is the Claude Agent SDK: every coordinator pass and worker run is a fresh session that exits. These invariants are the kernel — code that blurs them is wrong even when it works:
+
+| Invariant | Enforcement |
+|---|---|
+| The conversation is never the container | Sessions never persist or resume; the projection is assembled from typed state only — a fresh pass gets no transcript access at all |
+| Writes are revision-checked | Every mutation verifies the revision it read; a conflicting arrival (steering, completion, reply) fails the write and forces reconciliation from newer state |
+| Single-flight coordination | A stored lease means one coordinator pass at a time; a pid lockfile makes ticks cross-process exclusive, so a resident runner plus a manual tick can never double-dispatch a real-world act |
+| Adoption ≠ completion | A worker finishing yields a proposal; only coordinator (or human) adoption makes it authoritative, pinning an immutable content hash — and for actions, adoption structurally requires a passing readback |
+| Side-effect-free workers by default | A research worker's entire write surface is one submission tool; drafting and sending are separate facts with separate lifecycles |
+| Authority revalidated at egress | Sends execute in the engine, never inside a model run — approval, pinned-hash match, and artifact integrity are re-checked immediately before egress |
+| Unknown result → readback, never re-send | A crash after egress leaves `unknown`; the next tick asks the provider what actually happened. Exactly-once effects via at-least-once delivery plus idempotent design |
+| Replies are untrusted input | An inbound reply can wake the workstream and supply evidence; it cannot grant authority, complete work, or supersede direction by itself |
+| Summaries cannot mutate truth | A pass's summary is stored as provenance; nothing reads it back into state — the projection is rebuilt from typed collections every pass |
+| Wakes are stored data | No process sleeps; the runner discovers what became due. Kill everything, restart, nothing is lost |
+
+## The projection
+
+Every coordinator pass receives the same nine-part view assembled from state: objective and constraints → authority and remaining budget → current operating state → standing decisions (with lineage and any matching learned policies) → assignments → open loops (needs-human, unconsumed steering, live interactions) → what arrived since the last pass → a bounded narrative tail (context, never authority) → versions. If a coordinator seems to "forget" something, the bug is in the schema or projection — never fixed by resuming a session.
+
+## Tests
+
+Durability and authority rails are covered by a deterministic suite with no model calls — model quality can never make a durability test pass or fail. The live acceptance proof exercises the model-driven layer: fresh coordinators across waits, adoption pinning, readback-never-resend, revision conflicts.

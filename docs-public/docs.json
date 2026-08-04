@@ -1,0 +1,57 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Weaver",
+  "colors": {
+    "primary": "#6d28d9",
+    "light": "#a78bfa",
+    "dark": "#5b21b6"
+  },
+  "favicon": "/favicon.png",
+  "anchors": [
+    {
+      "name": "GitHub",
+      "href": "https://github.com/NiallBrickell/weaver",
+      "icon": "github"
+    }
+  ],
+  "navbar": {
+    "links": [
+      {
+        "label": "acme",
+        "href": "https://example.com"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/NiallBrickell"
+    }
+  },
+  "feedback": {
+    "thumbsRating": true,
+    "suggestEdit": true,
+    "raiseIssue": true
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Docs",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["introduction", "whats-new"]
+          },
+          {
+            "group": "Using Weaver",
+            "pages": ["quickstart", "dashboard", "routines", "secrets-and-access"]
+          },
+          {
+            "group": "Under the hood",
+            "pages": ["harness", "actions", "learning"]
+          }
+        ]
+      }
+    ]
+  }
+}
