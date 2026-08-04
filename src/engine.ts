@@ -11,12 +11,13 @@
  */
 
 import { execSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join as pathJoin } from 'node:path';
 import { runCoordinatorPass } from './coordinator.js';
 import { loadSecrets, redactSecrets } from './secrets.js';
 import { runWorker } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
-import { arrive, load, newId, readArtifact, verifyArtifact, writeArtifact } from './store.js';
+import { arrive, load, newId, readArtifact, verifyArtifact, workstreamDir, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { WorkstreamDoc } from './types.js';
 
@@ -310,6 +311,34 @@ export interface TickReport {
   unknownsResolved: number;
   workersRun: string[];
   passes: { passId: string; outcome: string; costUsd: number; summary?: string }[];
+  /** Set when the tick did nothing because another process holds the lock. */
+  skipped?: string;
+}
+
+/**
+ * Cross-PROCESS tick exclusion (the doc's revision check guards logical
+ * conflicts, not two OS processes dispatching the same real-world act in the
+ * same instant — e.g. `weaver run` resident plus a manual `weaver tick`).
+ * mkdir is atomic on every platform; a lock whose recorded pid is dead is
+ * stale and reclaimed.
+ */
+function acquireTickLock(slug: string): (() => void) | null {
+  const dir = pathJoin(workstreamDir(slug), '.tick.lock');
+  const pidFile = pathJoin(dir, 'pid');
+  try {
+    mkdirSync(dir);
+    writeFileSync(pidFile, String(process.pid));
+    return () => rmSync(dir, { recursive: true, force: true });
+  } catch {
+    try {
+      const pid = Number(readFileSync(pidFile, 'utf8'));
+      process.kill(pid, 0); // throws if the holder is dead
+      return null; // a live process holds the lock
+    } catch {
+      rmSync(dir, { recursive: true, force: true });
+      return acquireTickLock(slug);
+    }
+  }
 }
 
 export async function tick(
@@ -324,6 +353,16 @@ export async function tick(
     workersRun: [],
     passes: [],
   };
+  const releaseTick = acquireTickLock(slug);
+  if (!releaseTick) return { ...report, skipped: 'another process is ticking this workstream' };
+  try {
+    return await tickLocked(slug, maxPasses, report);
+  } finally {
+    releaseTick();
+  }
+}
+
+async function tickLocked(slug: string, maxPasses: number, report: TickReport): Promise<TickReport> {
 
   for (let cycle = 0; cycle < 12; cycle++) {
     report.cycles = cycle + 1;

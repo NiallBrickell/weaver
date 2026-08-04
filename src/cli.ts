@@ -157,6 +157,7 @@ async function main(): Promise<void> {
       const objective = opt(rest, 'objective') ?? fail('--objective required');
       const briefing = opt(rest, 'briefing') ?? fail('--briefing required');
       const cwd = opt(rest, 'cwd') ?? fail('--cwd required');
+      if (!(await import('node:path')).isAbsolute(cwd)) fail(`--cwd must be absolute, got '${cwd}'`);
       const verify = opt(rest, 'verify') ?? fail('--verify required');
       const run = opt(rest, 'run');
       const deps = optAll(rest, 'depends-on');
@@ -326,31 +327,8 @@ async function main(): Promise<void> {
       const slug = rest[0] ?? fail('slug required');
       const asgId = rest[1] ?? fail('assignment id required');
       const reason = opt(rest, 'reason') ?? 'adopted by human';
-      arrive(slug, (d, event) => {
-        const asg = d.assignments.find((x) => x.id === asgId) ?? fail(`no assignment ${asgId}`);
-        if (asg.state !== 'awaiting_review' || !asg.submission) fail(`${asgId} has no submission awaiting review`);
-        const del = asg.submission.deliverableId
-          ? d.deliverables.find((x) => x.id === asg.submission!.deliverableId)
-          : undefined;
-        if (del) {
-          del.adopted = {
-            contentHash: del.contentHash,
-            passId: 'human',
-            atVirtual: virtualNow().toISOString(),
-          };
-        }
-        asg.adoption = { state: 'accepted', passId: 'human', reason };
-        asg.state = 'completed';
-        d.wakes.push({
-          id: newId('wake'),
-          reason: `human adopted ${asgId}`,
-          condition: { type: 'immediate' },
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-        });
-        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-        event('submission.adopted', `${asgId} adopted by HUMAN${del ? ` (pinned ${del.contentHash.slice(0, 8)})` : ''}: ${reason}`, [asgId]);
-      });
+      const { adoptSubmission } = await import('./humanActs.js');
+      adoptSubmission(slug, asgId, reason);
       process.stdout.write(`adopted ${asgId}\n`);
       break;
     }

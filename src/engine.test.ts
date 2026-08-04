@@ -290,6 +290,62 @@ test('an exec.run action without approval is not executed', async () => {
   assert.equal(fs.existsSync(path.join(process.env.WEAVER_HOME!, 'leaked.txt')), false);
 });
 
+test('human adoption cannot outrank readback: an action without a passing verify is refused', async () => {
+  const { adoptSubmission } = await import('./humanActs.js');
+  makeActionWorkstream('adopt-guard-ws', {
+    state: 'awaiting_review',
+    submission: { summary: 'I did the thing, trust me' },
+  });
+  await assert.rejects(async () => adoptSubmission('adopt-guard-ws', 'asg_act'), /readback has not run/);
+
+  makeActionWorkstream('adopt-guard-fail-ws', {
+    state: 'awaiting_review',
+    submission: { summary: 'claimed success' },
+    exec: {
+      cwd: process.env.WEAVER_HOME!,
+      verify: 'false',
+      verified: { ok: false, output: 'effect absent', at: new Date().toISOString() },
+    },
+  });
+  await assert.rejects(async () => adoptSubmission('adopt-guard-fail-ws', 'asg_act'), /readback FAILED/);
+
+  makeActionWorkstream('adopt-guard-ok-ws', {
+    state: 'awaiting_review',
+    submission: { summary: 'done' },
+    exec: {
+      cwd: process.env.WEAVER_HOME!,
+      verify: 'true',
+      verified: { ok: true, output: 'effect present', at: new Date().toISOString() },
+    },
+  });
+  adoptSubmission('adopt-guard-ok-ws', 'asg_act');
+  assert.equal(load('adopt-guard-ok-ws').assignments[0]!.adoption.state, 'accepted');
+});
+
+test('a second process cannot tick a workstream mid-tick: live lock skips, dead lock is reclaimed', async () => {
+  createWorkstream({
+    slug: 'lock-ws',
+    title: 'Lock test',
+    objective: 'tick exclusion',
+    tags: [],
+    successCriteria: [],
+    constraints: [],
+    autonomy: { sendsRequireApproval: true },
+    budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+  });
+  const lockDir = path.join(process.env.WEAVER_HOME!, 'lock-ws', '.tick.lock');
+
+  fs.mkdirSync(lockDir, { recursive: true });
+  fs.writeFileSync(path.join(lockDir, 'pid'), String(process.pid)); // this process = alive
+  const skipped = await tick('lock-ws', { maxPasses: 0 });
+  assert.ok(skipped.skipped);
+
+  fs.writeFileSync(path.join(lockDir, 'pid'), '999999999'); // dead holder → stale
+  const ran = await tick('lock-ws', { maxPasses: 0 });
+  assert.equal(ran.skipped, undefined);
+  assert.equal(fs.existsSync(lockDir), false); // released after the tick
+});
+
 test('a fresh running attempt is NOT treated as crashed', async () => {
   createWorkstream({
     slug: 'fresh-ws',

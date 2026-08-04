@@ -16,6 +16,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { EventRecord, WorkstreamCore, WorkstreamDoc } from './types.js';
 import { virtualNow } from './clock.js';
+// Circular at module level (secrets.ts uses this file's path helpers), but
+// both sides only call functions at runtime, so ESM resolves it fine.
+import { assertNoSecretValues, loadSecrets, redactSecrets } from './secrets.js';
 
 const EVENT_TAIL_LIMIT = 200;
 
@@ -75,8 +78,14 @@ export function load(slug: string): WorkstreamDoc {
 
 function writeAtomic(slug: string, doc: WorkstreamDoc): void {
   const p = docPath(slug);
+  const json = JSON.stringify(doc, null, 2) + '\n';
+  // THE structural enforcement point for secrets-in-state: every doc write in
+  // the codebase funnels here, so no ingress path (steer, reply, observe,
+  // constraint, coordinator tool, TUI) can persist a secret VALUE — the write
+  // is refused with the $NAME advice regardless of which caller forgot.
+  assertNoSecretValues(json, loadSecrets(slug));
   const tmp = `${p}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + '\n');
+  fs.writeFileSync(tmp, json);
   fs.renameSync(tmp, p);
 }
 
@@ -169,12 +178,17 @@ export function createWorkstream(core: Omit<WorkstreamCore, 'id' | 'createdAt' |
   return doc;
 }
 
-/** Write deliverable content to the artifacts dir; returns {path, hash}. */
+/**
+ * Write deliverable content to the artifacts dir; returns {path, hash}.
+ * Content is redacted against known secrets BEFORE hashing, so an artifact
+ * can never carry a value and its pin always matches what is on disk.
+ */
 export function writeArtifact(
   slug: string,
   fileName: string,
-  content: string,
+  rawContent: string,
 ): { relPath: string; hash: string } {
+  const content = redactSecrets(rawContent, loadSecrets(slug));
   const hash = sha256(content);
   const safe = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   const relPath = `${hash.slice(0, 8)}-${safe}`;
