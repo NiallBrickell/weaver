@@ -189,6 +189,7 @@ export async function runCoordinatorPass(
           exec_cwd: z.string().optional().describe('REQUIRED for kind "action": absolute working directory the worker\'s Bash runs in'),
           exec_verify: z.string().optional().describe('REQUIRED for kind "action": shell command run by the harness (never the worker) whose exit 0 confirms the real-world effect happened, e.g. `gh pr list --head <branch> --json url --jq ".[0].url" | grep .`'),
           approval_ask: z.string().optional().describe('REQUIRED for kind "action": 1-3 plain sentences addressed to the busy HUMAN who must approve this — what approving allows, why the workstream wants it, and the blast radius (what can and cannot change as a result). Product language, no file paths or jargon unless essential. This is the approval card they see; the briefing is not shown to them.'),
+          exec_run: z.string().optional().describe('OPTIONAL for kind "action": the EXACT shell command the engine executes verbatim — no worker, no model in the execution loop. Reserve for precise, deterministically-verifiable one-liners whose authority the workstream\'s constraints explicitly grant (e.g. merging a DevBot-APPROVED, CI-green PR: `gh pr merge N --squash`). The operator\'s pilot evaluates this literal command before it may run; if pilot escalates, the human decides. Never use it to smuggle multi-step work past worker supervision.'),
         },
         async (a) =>
           change((d, event) => {
@@ -205,8 +206,8 @@ export async function runCoordinatorPass(
             if (a.exec_cwd && !isAbsolute(a.exec_cwd)) {
               throw new Error(`exec_cwd must be an absolute path, got '${a.exec_cwd}' — cwd is the action's scoping boundary and cannot depend on where the engine happens to run`);
             }
-            if (a.kind !== 'action' && (a.exec_cwd || a.exec_verify)) {
-              throw new Error('exec_cwd/exec_verify are only valid on kind "action"');
+            if (a.kind !== 'action' && (a.exec_cwd || a.exec_verify || a.exec_run)) {
+              throw new Error('exec_cwd/exec_verify/exec_run are only valid on kind "action"');
             }
             const asg: Assignment = {
               id,
@@ -215,7 +216,7 @@ export async function runCoordinatorPass(
               kind: a.kind,
               ...(a.read_dirs?.length ? { readDirs: a.read_dirs } : {}),
               ...(a.kind === 'action'
-                ? { exec: { cwd: a.exec_cwd!, verify: a.exec_verify!, ask: a.approval_ask!.trim() } }
+                ? { exec: { cwd: a.exec_cwd!, verify: a.exec_verify!, ask: a.approval_ask!.trim(), ...(a.exec_run ? { run: a.exec_run } : {}) } }
                 : {}),
               acceptanceCriteria: a.acceptance_criteria,
               dependsOn: a.depends_on ?? [],
