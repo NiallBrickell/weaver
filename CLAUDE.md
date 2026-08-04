@@ -108,6 +108,10 @@ Auth: the SDK resolves the machine's Claude Code login when `ANTHROPIC_API_KEY` 
 
 Document surprises as you find them: the moment something is non-obvious or cost you time (an SDK behavior, a "why is it like this"), write it into `docs/*.md` and add a rule here if it's durable. The bar isn't "big new pattern"; it's "the next person would hit the same wall."
 
+## Documentation
+
+Two audiences, two places (org-wide convention): `docs-public/` is the public Mintlify site — any user-visible capability ships a `docs-public/` page + `docs.json` nav entry in the same PR. `docs/*.md` is internal (invariant maps, surprises, working notes) and never substitutes for a public page.
+
 ## Commands
 
 ```bash

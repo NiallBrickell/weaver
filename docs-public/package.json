@@ -1,0 +1,15 @@
+{
+  "name": "weaver-docs",
+  "version": "1.0.0",
+  "description": "Weaver documentation site built with Mintlify",
+  "scripts": {
+    "dev": "mintlify dev",
+    "start": "mintlify dev",
+    "build": "mintlify build"
+  },
+  "devDependencies": {
+    "@mintlify/cli": "^4.0.0"
+  },
+  "author": "Erdo AI",
+  "license": "MIT"
+}

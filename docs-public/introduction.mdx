@@ -1,0 +1,26 @@
+---
+title: "Introduction"
+description: "A durable execution layer that gives real-world agent work what code always had: history, review, and verified outcomes"
+---
+
+Agent harnesses already run models for hours. Memory features already carry facts between sessions. Weaver is about the part nobody has: when an agent system works on something for weeks — a hiring pipeline, a growth experiment, a standing error-triage routine — where is the record of *why the current course exists*, *what was actually done to the world*, and *what made the system better than it was last month?*
+
+For code, that layer has existed for decades: git history holds accepted work, pull requests hold review, CI holds verified outcomes, and the repo outlives every editor session. For everything else agents do — outreach, operations, research, recurring business routines — there is nothing. Every "agent product" collapses into one immortal chat that degrades until someone starts over.
+
+Weaver is that missing layer, built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk):
+
+> **A Workstream is the durable organizational execution — direction, work, deliverables, interactions, results. Coordinator runs and workers are disposable: they enter, advance bounded work, publish results, and leave.**
+
+## The split
+
+**Durable**: one typed document per workstream — decisions with supersession lineage, assignments with attempt history and adoption state, deliverables pinned by content hash, interactions as separate draft/send/receipt/reply facts, wakes as stored data, human steering, the needs-you queue. Every write is revision-checked.
+
+**Disposable**: every coordinator pass and worker run is a fresh model session that exits. Nothing survives a wait except stored data. A fresh coordinator — days later, possibly a different model — receives the same organizational position from a typed projection, never from a transcript.
+
+**Human contract**: five questions answered without reading any transcript — *now / since I left / needs me / next / why* — and a queue of judgment calls where every item is one keypress.
+
+## Where to go next
+
+- [What's actually new](/whats-new) — decision lineage, verified outcomes, auditable improvement
+- [Quickstart](/quickstart) — running your first workstream
+- [The harness](/harness) — where each invariant lives

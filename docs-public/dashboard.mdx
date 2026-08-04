@@ -1,0 +1,26 @@
+---
+title: "The dashboard"
+description: "The needs-you queue: every judgment call is one keypress; everything mechanical stays out of it"
+---
+
+`yarn weaver watch` opens the interactive terminal dashboard. Its design center is a single idea: **the only turns a human should spend on a workstream are judgment calls**, so those are the first thing on screen and every one is answerable with a single keypress.
+
+## ⚡ NEEDS YOU
+
+The queue at the top holds exactly three kinds of item:
+
+- **Gated actions** — a workstream wants to touch the real world. The card is written in plain language (what approving allows, why, blast radius), with the actual commands extracted and shown before anything else. `a` approves, `x` rejects.
+- **Sends** — an outbound message awaits approval. `a` / `x`.
+- **Attention** — a verdict, a blocker only you can unblock, or a question. `d` resolves it; `enter` expands the full text (scroll with `[` and `]`).
+
+One decision renders as exactly one row — coordinator commentary about an approvable item folds into the item. Pressing `s` on anything opens a steering prompt: type a sentence, and it becomes durable direction the workstream acts on next tick.
+
+Worker failures never appear here. A worker that flakes goes back to the coordinator to retry; it reaches you only if the coordinator itself concludes the assignment is genuinely stuck.
+
+## The fleet
+
+Below the queue: every workstream with a colored status dot — red `NEEDS YOU`, green `WORKING`, cyan `QUEUED` (in line for the runner), blue `WAITING` (scheduled later), dim `IDLE` — plus a spend-estimate bar, pass count, and `you N×`: how many times you've intervened. [Routines](/routines) render in their own `↻ ROUTINES` section with next-run times.
+
+That `you N×` number is the product's scoreboard. The system is optimizing interventions-per-outcome downward — the dashboard should get *quieter per outcome* over time, and when it doesn't, that's a real signal.
+
+Everything rendered is a projection of typed state. No transcript parsing, no idle-timer liveness heuristics; a workstream whose state can't be read renders as a loud failure, never an empty screen.

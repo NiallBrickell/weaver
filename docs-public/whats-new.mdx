@@ -1,0 +1,33 @@
+---
+title: "What's actually new"
+description: "Not the agent loop — the decision log, readback-verified outcomes, and improvement you can audit"
+---
+
+Long-running agents, scheduling, sub-agents, memory: those exist in every serious harness now. Weaver's contribution is three things that don't.
+
+## 1. A decision log with lineage
+
+Git history for work that doesn't live in git. Every course change is a typed **decision**: what became authoritative, why, superseding what. A fresh coordinator cannot silently reverse a standing decision — supersession is explicit and keeps both sides, so "why are we doing it this way?" has a real answer months later.
+
+This turns out to matter even for work that *does* live in git: the commit shows what changed; the decision log shows why the tenth approach won over the nine that were corrected away. Most teams already try to codify this by hand — internal engineering docs, "how we work with agents" playbooks, post-mortems. The decision log is that practice made structural: it happens as a side effect of the work instead of as documentation debt.
+
+## 2. Verified outcomes
+
+The system cannot grade its own homework:
+
+- A worker finishing is a **submission**, not completion. Adoption is a separate act that pins an immutable content hash.
+- Real-world **actions** are gated on human approval and count as done only when a deterministic **readback** — a shell command the engine runs, no model involved — confirms the effect in the outside world.
+- A crashed action is never blindly re-run. The world is re-inspected; re-reading is always safe, re-doing is not.
+
+Self-reported success is structurally worthless here — which is exactly what makes the history trustworthy enough to build on.
+
+## 3. Improvement you can audit
+
+"Improves over time" is usually a memory feature plus marketing. Weaver makes it a measurable claim:
+
+- A human correction is distilled into a **policy**: plain language, typed scope, full provenance back to the correction that created it.
+- New policies run in **shadow**. Promotion to **active** is earned — a later matching workstream applied the policy and needed no correction on the same point. Wrong policies are superseded with lineage.
+- The optimized number is **human interventions per successful outcome**, tracked on every workstream and visible on the dashboard.
+- A closed effect vocabulary means a policy can add verification or narrow authority, but can never spend, send, merge, or widen access — however confident it becomes. Learning recommends; it never permits.
+
+See [The learning loop](/learning) for the full mechanism and why it's deliberately shaped as an RL substrate.
