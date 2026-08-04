@@ -26,6 +26,8 @@ import {
   addSteering,
   setPaused,
 } from './humanActs.js';
+import { execFile } from 'node:child_process';
+import { runInspect } from './inspect.js';
 import { acquireRunnerLock, liveRunnerPid, runLoop } from './runner.js';
 import { listWorkstreams, workstreamDir, weaverHome } from './store.js';
 import type { WorkstreamDoc } from './types.js';
@@ -284,6 +286,20 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   useInput((input, key) => {
     if (steering) return; // TextInput owns the keyboard
     if (input === 'q') { exit(); return; }
+    if (input === 'i') {
+      // The dashboard is the only surface: i opens the knowledge inspector
+      // (decision lineage, policies, interventions) in the browser — scoped
+      // to the selected workstream, or the fleet overview otherwise.
+      try {
+        const slug = sel?.type === 'stream' ? sel.stream.slug : sel?.type === 'item' ? sel.item.slug : undefined;
+        const out = runInspect(slug);
+        if (process.platform === 'darwin') execFile('open', [out]);
+        setToast(`inspector → ${out}`);
+      } catch (e) {
+        setToast(`✗ ${e instanceof Error ? e.message : e}`);
+      }
+      return;
+    }
     if (key.upArrow || input === 'k') { setCursor((c) => Math.max(0, c - 1)); setScroll(0); }
     if (key.downArrow || input === 'j') { setCursor((c) => Math.min(rows.length - 1, c + 1)); setScroll(0); }
     if (key.pageDown || input === ']') setScroll((s) => s + 12);
@@ -425,7 +441,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                     <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
                   ))}
                   {isSel && (
-                    <Text color="yellow">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [enter] expand</Text>
+                    <Text color="yellow">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [i] inspect knowledge  [enter] expand</Text>
                   )}
                 </>
               )}
@@ -456,7 +472,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         </Box>
       ) : (
         <Box marginTop={1} justifyContent="space-between">
-          <Text dimColor>↑↓ select · enter expand · [/] scroll · a approve · x reject · d resolve · s steer · p pause · q quit</Text>
+          <Text dimColor>↑↓ select · enter expand · [/] scroll · a approve · x reject · d resolve · s steer · p pause · i inspect · q quit</Text>
           {toast ? <Text color="green">{toast}</Text> : <Text dimColor>{weaverHome()}</Text>}
         </Box>
       )}
