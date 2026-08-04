@@ -399,22 +399,38 @@ async function main(): Promise<void> {
     case 'run': {
       // The resident runner: durability still lives in the store — this loop
       // holds no state and can be killed/restarted at any moment. A tick with
-      // nothing due is free (no model call), so polling is cheap.
+      // nothing due is free (no model call), so polling is cheap. Workstreams
+      // tick CONCURRENTLY (default 3) so one long worker never queues the
+      // whole fleet; the per-workstream tick lock keeps same-stream ticks
+      // exclusive across processes.
       const interval = Number(opt(rest, 'interval') ?? '30') * 1000;
-      process.stdout.write(`weaver run — ticking active workstreams every ${interval / 1000}s (Ctrl-C to stop)\n`);
+      const concurrency = Math.max(1, Number(opt(rest, 'concurrency') ?? '3'));
+      process.stdout.write(`weaver run — ticking active workstreams every ${interval / 1000}s, ${concurrency} in parallel (Ctrl-C to stop)\n`);
+      const inFlight = new Set<string>();
       for (;;) {
-        for (const slug of listWorkstreams()) {
+        const due = listWorkstreams().filter((slug) => {
+          if (inFlight.has(slug)) return false;
           try {
-            if (load(slug).workstream.status !== 'active') continue;
-            const report = await tick(slug, {});
-            if (report.workersRun.length || report.passes.length || report.sendsExecuted || report.unknownsResolved) {
-              process.stdout.write(
-                `[${new Date().toTimeString().slice(0, 8)}] ${slug}: workers=[${report.workersRun.join(',')}] passes=${report.passes.length} sends=${report.sendsExecuted}\n`,
-              );
-            }
-          } catch (e) {
-            process.stderr.write(`[run] ${slug}: ${e instanceof Error ? e.message : e}\n`);
+            return load(slug).workstream.status === 'active';
+          } catch {
+            return false;
           }
+        });
+        for (const slug of due) {
+          if (inFlight.size >= concurrency) break;
+          inFlight.add(slug);
+          void tick(slug, {})
+            .then((report) => {
+              if (report.workersRun.length || report.passes.length || report.sendsExecuted || report.unknownsResolved) {
+                process.stdout.write(
+                  `[${new Date().toTimeString().slice(0, 8)}] ${slug}: workers=[${report.workersRun.join(',')}] passes=${report.passes.length} sends=${report.sendsExecuted}\n`,
+                );
+              }
+            })
+            .catch((e) => {
+              process.stderr.write(`[run] ${slug}: ${e instanceof Error ? e.message : e}\n`);
+            })
+            .finally(() => inFlight.delete(slug));
         }
         await new Promise((r) => setTimeout(r, interval));
       }

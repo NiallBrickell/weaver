@@ -46,6 +46,8 @@ interface NeedsYouItem {
 interface StreamRow {
   slug: string;
   bucket: 0 | 1 | 2 | 3 | 4;
+  /** Bucket 2 split: due right now (in line for the runner) vs scheduled later. */
+  queuedNow: boolean;
   paused: boolean;
   spent: number;
   maxCost: number;
@@ -80,15 +82,30 @@ function snapshot(): Snapshot {
       ) as WorkstreamDoc;
     } catch (e) {
       streams.push({
-        slug, bucket: 4, paused: false, spent: 0, maxCost: 0, passes: 0, maxPasses: 0,
+        slug, bucket: 4, queuedNow: false, paused: false, spent: 0, maxCost: 0, passes: 0, maxPasses: 0,
         interventions: 0, details: [], error: e instanceof Error ? e.message : String(e),
       });
       continue;
     }
     const ws = doc.workstream;
 
+    // ONE decision = ONE row. Approvable things (gated actions, pending
+    // sends) render as themselves; attention items that merely point AT one
+    // of them are commentary and fold into it, and multiple attention items
+    // about the same ref collapse to the first.
     let needsYou = 0;
+    const gated = doc.assignments.filter((x) => x.state === 'gated');
+    const pendingSends = doc.interactions.filter((x) => x.status === 'awaiting_approval');
+    const approvableIds = new Set<string>([...gated.map((a) => a.id), ...pendingSends.map((i) => i.id)]);
+    const commentary = new Map<string, string[]>();
+    const seenRefs = new Set<string>();
     for (const a of doc.attention.filter((x) => x.status === 'open')) {
+      if (a.refId && approvableIds.has(a.refId)) {
+        commentary.set(a.refId, [...(commentary.get(a.refId) ?? []), a.summary]);
+        continue;
+      }
+      if (a.refId && seenRefs.has(a.refId)) continue;
+      if (a.refId) seenRefs.add(a.refId);
       needsYou++;
       items.push({
         key: `${slug}:${a.id}`, slug, kind: 'attention', refId: a.id,
@@ -96,20 +113,22 @@ function snapshot(): Snapshot {
         body: a.summary,
       });
     }
-    for (const a of doc.assignments.filter((x) => x.state === 'gated')) {
+    for (const a of gated) {
       needsYou++;
+      const notes = commentary.get(a.id);
       items.push({
         key: `${slug}:${a.id}`, slug, kind: 'action', refId: a.id,
-        title: `gated action: ${a.objective.slice(0, 110)}`,
-        body: `${a.briefing}\n\nverify: ${a.exec?.verify ?? '?'}${a.exec?.run ? `\nrun: ${a.exec.run}` : ''}`,
+        title: `approve action? ${a.objective.slice(0, 110)}`,
+        body: `${a.briefing}\n\nverify: ${a.exec?.verify ?? '?'}${a.exec?.run ? `\nrun: ${a.exec.run}` : ''}${notes ? `\n\ncoordinator says:\n${notes.join('\n---\n')}` : ''}`,
       });
     }
-    for (const i of doc.interactions.filter((x) => x.status === 'awaiting_approval')) {
+    for (const i of pendingSends) {
       needsYou++;
+      const notes = commentary.get(i.id);
       items.push({
         key: `${slug}:${i.id}`, slug, kind: 'send', refId: i.id,
-        title: `send awaiting approval: ${i.kind} to ${i.to} — "${i.subject}"`,
-        body: `draft deliverable ${i.deliverableId} (weaver show ${slug} ${i.deliverableId})`,
+        title: `approve send? ${i.kind} to ${i.to} — "${i.subject}"`,
+        body: `draft deliverable ${i.deliverableId} (weaver show ${slug} ${i.deliverableId})${notes ? `\n\ncoordinator says:\n${notes.join('\n---\n')}` : ''}`,
       });
     }
 
@@ -132,7 +151,7 @@ function snapshot(): Snapshot {
     const nowV = virtualNow().toISOString();
     const pending = doc.wakes.filter((w) => w.status === 'pending');
     const dueNow = pending.filter((w) => w.condition.type === 'immediate' || w.condition.dueAtVirtual <= nowV).length;
-    if (dueNow && !working) details.push(`○ ${dueNow} wake(s) due — runner will pick up`);
+    if (dueNow && !working) details.push(`○ ${dueNow} wake(s) due — in line for the runner`);
     const last = doc.events[doc.events.length - 1];
     if (last) details.push(`  last [${last.at.slice(11, 19)}] ${last.type}: ${last.summary.slice(0, 90)}`);
 
@@ -144,7 +163,7 @@ function snapshot(): Snapshot {
       : 3;
 
     streams.push({
-      slug, bucket, paused: ws.status === 'paused',
+      slug, bucket, queuedNow: dueNow > 0, paused: ws.status === 'paused',
       spent: doc.spend.totalCostUsd, maxCost: ws.budget.maxCostUsd,
       passes: doc.spend.coordinatorPasses, maxPasses: ws.budget.maxCoordinatorPasses,
       interventions: doc.spend.humanInterventions ?? 0,
@@ -305,7 +324,7 @@ function App(): React.JSX.Element {
         <Text bold dimColor>WORKSTREAMS</Text>
         {snap.streams.map((st) => {
           const isSel = rows[cursor]?.type === 'stream' && (rows[cursor] as { stream: StreamRow }).stream.slug === st.slug;
-          const d = DOT[st.bucket]!;
+          const d = st.bucket === 2 && st.queuedNow ? { color: 'cyan', word: 'QUEUED' } : DOT[st.bucket]!;
           return (
             <Box key={st.slug} flexDirection="column">
               <Text inverse={isSel} wrap="truncate-end">

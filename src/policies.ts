@@ -87,12 +87,45 @@ function writePolicies(store: PolicyStore): void {
   fs.renameSync(tmp, storePath());
 }
 
+/**
+ * The policy store is GLOBAL (shared across workstreams), so with concurrent
+ * ticks two processes can race the read-modify-write. A short mkdir spin-lock
+ * serializes them; a holder that died is reclaimed after 10s.
+ */
+function withPolicyLock<T>(fn: () => T): T {
+  const dir = `${storePath()}.lock`;
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      fs.mkdirSync(dir);
+      break;
+    } catch {
+      try {
+        if (fs.statSync(dir).mtimeMs < Date.now() - 10_000) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          continue;
+        }
+      } catch { /* raced with the holder's release — retry */ }
+      if (Date.now() > deadline) throw new Error('policy store lock timeout');
+      const until = Date.now() + 25;
+      while (Date.now() < until) { /* spin — writes are sub-ms */ }
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function mutatePolicies(fn: (store: PolicyStore) => void): PolicyStore {
-  const store = loadPolicies();
-  fn(store);
-  store.revision += 1;
-  writePolicies(store);
-  return store;
+  return withPolicyLock(() => {
+    const store = loadPolicies();
+    fn(store);
+    store.revision += 1;
+    writePolicies(store);
+    return store;
+  });
 }
 
 /** Policies whose scope shares at least one tag with the workstream (shadow + active). */
