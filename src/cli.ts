@@ -57,7 +57,7 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver secret set <NAME> [--ws slug]       store a secret (value read from stdin, never argv); global unless --ws
   weaver secret list [--ws slug]             list secret NAMES (values are never printed)
   weaver secret rm <NAME> [--ws slug]        remove a secret
-  weaver watch                               live terminal dashboard over all workstreams (q to quit)
+  weaver watch [--plain]                     interactive dashboard: ↑↓ select, a approve, x reject, d resolve, s steer, p pause, q quit
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
@@ -132,19 +132,8 @@ async function main(): Promise<void> {
     case 'steer': {
       const slug = rest[0] ?? fail('slug required');
       const body = rest.slice(1).join(' ') || fail('message required');
-      arrive(slug, (d, event) => {
-        const id = newId('steer');
-        d.steering.push({ id, body, at: new Date().toISOString() });
-        d.wakes.push({
-          id: newId('wake'),
-          reason: `human steering arrived: "${body.slice(0, 80)}"`,
-          condition: { type: 'immediate' },
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-        });
-        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-        event('steering.arrived', body, [id]);
-      });
+      const { addSteering } = await import('./humanActs.js');
+      addSteering(slug, body);
       process.stdout.write(`steering recorded — run: weaver tick ${slug}\n`);
       break;
     }
@@ -152,21 +141,8 @@ async function main(): Promise<void> {
     case 'approve': {
       const slug = rest[0] ?? fail('slug required');
       const intId = rest[1] ?? fail('interaction id required');
-      arrive(slug, (d, event) => {
-        const int = d.interactions.find((i) => i.id === intId) ?? fail(`no interaction ${intId}`);
-        if (int.status !== 'awaiting_approval') fail(`${intId} is ${int.status}, not awaiting_approval`);
-        int.status = 'approved';
-        int.approvedBy = 'human';
-        int.approvedAt = new Date().toISOString();
-        for (const a of d.attention) {
-          if (a.refId === intId && a.status === 'open') {
-            a.status = 'resolved';
-            a.resolvedAt = new Date().toISOString();
-          }
-        }
-        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-        event('send.approved', `${intId} approved by human`, [intId]);
-      });
+      const { approveSend } = await import('./humanActs.js');
+      approveSend(slug, intId);
       process.stdout.write(`approved — the harness will execute it on the next tick\n`);
       break;
     }
@@ -249,21 +225,10 @@ async function main(): Promise<void> {
     case 'approve-action': {
       const slug = rest[0] ?? fail('slug required');
       const asgId = rest[1] ?? fail('assignment id required');
-      arrive(slug, (d, event) => {
-        const asg = d.assignments.find((a) => a.id === asgId) ?? fail(`no assignment ${asgId}`);
-        if (asg.kind !== 'action' || !asg.exec) fail(`${asgId} is not an action assignment`);
-        if (asg.state !== 'gated') fail(`${asgId} is ${asg.state}, not gated`);
-        asg.state = 'queued';
-        asg.exec!.approval = { by: 'human', at: new Date().toISOString() };
-        for (const a of d.attention) {
-          if (a.refId === asgId && a.status === 'open') {
-            a.status = 'resolved';
-            a.resolvedAt = new Date().toISOString();
-          }
-        }
-        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-        event('action.approved', `${asgId} approved by human — queued to run`, [asgId]);
-      });
+      {
+        const { approveAction } = await import('./humanActs.js');
+        approveAction(slug, asgId);
+      }
       process.stdout.write(`approved — the action will run on the next tick and be confirmed by readback\n`);
       break;
     }
@@ -272,26 +237,8 @@ async function main(): Promise<void> {
       const slug = rest[0] ?? fail('slug required');
       const asgId = rest[1] ?? fail('assignment id required');
       const reason = rest.slice(2).join(' ') || 'rejected by human';
-      arrive(slug, (d, event) => {
-        const asg = d.assignments.find((a) => a.id === asgId) ?? fail(`no assignment ${asgId}`);
-        if (asg.state !== 'gated') fail(`${asgId} is ${asg.state}, not gated`);
-        asg.state = 'cancelled';
-        for (const a of d.attention) {
-          if (a.refId === asgId && a.status === 'open') {
-            a.status = 'resolved';
-            a.resolvedAt = new Date().toISOString();
-          }
-        }
-        d.wakes.push({
-          id: newId('wake'),
-          reason: `human rejected action ${asgId}: ${reason}`,
-          condition: { type: 'immediate' },
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-        });
-        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-        event('action.rejected', `${asgId} rejected by human: ${reason}`, [asgId]);
-      });
+      const { rejectAction } = await import('./humanActs.js');
+      rejectAction(slug, asgId, reason);
       process.stdout.write(`rejected — the coordinator will reconcile on the next tick\n`);
       break;
     }
@@ -299,25 +246,8 @@ async function main(): Promise<void> {
     case 'reject-send': {
       const slug = rest[0] ?? fail('slug required');
       const intId = rest[1] ?? fail('interaction id required');
-      arrive(slug, (d, event) => {
-        const int = d.interactions.find((i) => i.id === intId) ?? fail(`no interaction ${intId}`);
-        int.status = 'rejected';
-        for (const a of d.attention) {
-          if (a.refId === intId && a.status === 'open') {
-            a.status = 'resolved';
-            a.resolvedAt = new Date().toISOString();
-          }
-        }
-        d.wakes.push({
-          id: newId('wake'),
-          reason: `human rejected send ${intId}`,
-          condition: { type: 'immediate' },
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-        });
-        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-        event('send.rejected', `${intId} rejected by human`, [intId]);
-      });
+      const { rejectSend } = await import('./humanActs.js');
+      rejectSend(slug, intId);
       process.stdout.write(`rejected — the coordinator will reconcile on the next tick\n`);
       break;
     }
@@ -518,14 +448,8 @@ async function main(): Promise<void> {
       const slug = rest[0] ?? fail('slug required');
       const attId = rest[1] ?? fail('attention id required');
       const note = rest.slice(2).join(' ');
-      arrive(slug, (d, event) => {
-        const att = d.attention.find((a) => a.id === attId && a.status === 'open');
-        if (!att) throw new Error(`no open attention ${attId}`);
-        att.status = 'resolved';
-        att.resolvedAt = new Date().toISOString();
-        d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-        event('attention.resolved', `human resolved ${attId}${note ? `: ${note}` : ''}`, [attId]);
-      });
+      const { resolveAttention } = await import('./humanActs.js');
+      resolveAttention(slug, attId, note);
       process.stdout.write(`${attId} resolved\n`);
       break;
     }
@@ -533,18 +457,20 @@ async function main(): Promise<void> {
     case 'pause':
     case 'resume': {
       const slug = rest[0] ?? fail('slug required');
-      const to = cmd === 'pause' ? 'paused' : 'active';
-      arrive(slug, (d, event) => {
-        d.workstream.status = to;
-        event(`workstream.${cmd}d`, `human ${cmd}d the workstream`);
-      });
-      process.stdout.write(`${slug} is now ${to}\n`);
+      const { setPaused } = await import('./humanActs.js');
+      setPaused(slug, cmd === 'pause');
+      process.stdout.write(`${slug} is now ${cmd === 'pause' ? 'paused' : 'active'}\n`);
       break;
     }
 
     case 'watch': {
-      const { runWatch } = await import('./watch.js');
-      await runWatch();
+      if (rest.includes('--plain')) {
+        const { runWatch } = await import('./watch.js');
+        await runWatch();
+      } else {
+        const { runTui } = await import('./tui.js');
+        await runTui();
+      }
       break;
     }
 
