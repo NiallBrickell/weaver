@@ -610,6 +610,30 @@ export async function runCoordinatorPass(
     } else if (outcome === 'error') {
       event('pass.error', `${passId} ended with an error — state writes up to the error stand`, [passId]);
     }
+    // A failed pass consumed its wakes; without restoration a stream with
+    // nothing else pending sleeps FOREVER looking innocently idle. Re-fire
+    // (bounded): three failed passes in a row is a real problem for a human.
+    if (outcome !== 'completed') {
+      const recent = d.passes.slice(-3);
+      const allFailing = recent.length === 3 && recent.every((p) => p.outcome !== 'completed');
+      if (allFailing) {
+        d.attention.push({
+          id: newId('att'),
+          kind: 'blocker',
+          summary: `Three coordinator passes in a row failed (${recent.map((p) => p.outcome).join(', ')}) — the workstream cannot make progress without you`,
+          status: 'open',
+          createdAt: new Date().toISOString(),
+        });
+      } else {
+        d.wakes.push({
+          id: newId('wake'),
+          reason: `pass ${passId} ended '${outcome}' — its wakes were consumed; re-reconcile`,
+          condition: { type: 'immediate' },
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
   });
 
   return { passId, outcome, costUsd, ...(summary ? { summary } : {}) };

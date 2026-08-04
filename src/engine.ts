@@ -451,6 +451,36 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     }
     }
 
+    // Pass-crash recovery: an EXPIRED lease whose pass record never reached a
+    // terminal outcome means the coordinator process died mid-pass. The wakes
+    // it consumed are gone, so a stream with nothing else pending would sleep
+    // forever looking innocently idle. Restore the loop: clear the lease, mark
+    // the pass crashed, and re-fire its reasons as a fresh immediate wake.
+    {
+      const d0 = load(slug);
+      if (d0.lease && new Date(d0.lease.expiresAt).getTime() <= Date.now()) {
+        const deadPassId = d0.lease.passId;
+        arrive(slug, (d, event) => {
+          const rec = d.passes.find((p) => p.id === deadPassId);
+          if (rec && rec.outcome === 'running') {
+            rec.outcome = 'error';
+            rec.endedAt = rec.endedAt ?? new Date().toISOString();
+            rec.summary = 'coordinator process died mid-pass (lease expired); wakes restored';
+            d.wakes.push({
+              id: newId('wake'),
+              reason: `pass ${deadPassId} crashed mid-run — re-reconcile (original reasons: ${rec.wakeReasons.join('; ').slice(0, 200)})`,
+              condition: { type: 'immediate' },
+              status: 'pending',
+              createdAt: new Date().toISOString(),
+            });
+            event('pass.crash_recovered', `${deadPassId} lease expired with no outcome — wakes restored`, [deadPassId]);
+          }
+          if (d.lease?.passId === deadPassId) d.lease = null;
+        });
+        progressed = true;
+      }
+    }
+
     const preDoc = load(slug);
     const due = dueWakes(preDoc);
     // A live lease means no pass can start: leave the wakes PENDING for the
