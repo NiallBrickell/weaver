@@ -547,6 +547,19 @@ export async function runTui(): Promise<void> {
       logError: () => {},
     });
   }
+  // The embedded runner, its workers, and the SDK all write diagnostics to
+  // stderr — every stray line printed into the alt screen shifts Ink's frame
+  // and leaves ghost headers. While the dashboard owns the terminal, stderr
+  // goes to a log file instead (state/runner.log — tail it for diagnostics).
+  const logPath = path.join(weaverHome(), 'runner.log');
+  const origStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    try {
+      fs.appendFileSync(logPath, typeof chunk === 'string' ? chunk : Buffer.from(chunk));
+    } catch { /* diagnostics must never crash the dashboard */ }
+    return true;
+  }) as typeof process.stderr.write;
+
   process.stdout.write('\x1b[?1049h'); // alt screen
   const instance = render(<App embeddedRunner={release !== null} />, { exitOnCtrlC: true });
   // Terminal reflow leaves ghost frames above Ink's managed region — hard-clear
@@ -558,5 +571,6 @@ export async function runTui(): Promise<void> {
   process.stdout.on('resize', onResize);
   await instance.waitUntilExit();
   process.stdout.off('resize', onResize);
+  process.stderr.write = origStderrWrite;
   process.stdout.write('\x1b[?1049l');
 }
