@@ -62,7 +62,7 @@ export interface BackfillReport {
 const GRANT_VERBS = /\b(merge|send|spend|deploy|publish|bypass|force-push|delete|approve)(s|ed|ing)?\b/i;
 const RESTRICTING = /\b(never|not|don'?t|do not|cannot|must not|avoid|refuse[sd]?|forbidden|only|require[sd]?|approval|ask|explicit)\b/i;
 
-function grantsAuthority(text: string): boolean {
+export function grantsAuthority(text: string): boolean {
   return GRANT_VERBS.test(text) && !RESTRICTING.test(text);
 }
 
