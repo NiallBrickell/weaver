@@ -46,7 +46,7 @@ interface NeedsYouItem {
 
 interface StreamRow {
   slug: string;
-  bucket: 0 | 1 | 2 | 3 | 4;
+  bucket: 0 | 1 | 2 | 3 | 4 | 5;
   /** Bucket 2 split: due right now (in line for the runner) vs scheduled later. */
   queuedNow: boolean;
   /** Tagged 'routine': a standing recurring loop, demarcated in its own section. */
@@ -188,12 +188,22 @@ function snapshot(): Snapshot {
       : ws.status === 'active' && pending.length ? 2
       : 3;
 
+    // Steering must be VISIBLY acknowledged the moment it lands: an
+    // unconsumed steer means "heard — the next coordinator pass acts on it".
+    const pendingSteers = doc.steering.filter((s) => !s.consumedByPass).length;
+    if (pendingSteers) {
+      details.unshift(`✉ steering received — coordinator acts on it next pass (${pendingSteers} pending)`);
+    }
+
     const nextRun = pending
       .filter((w) => w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
       .map((w) => (w.condition as { dueAtVirtual: string }).dueAtVirtual)
       .sort()[0];
     streams.push({
-      slug, bucket, queuedNow: dueNow > 0, routine: ws.tags.includes('routine'),
+      slug,
+      bucket: ws.status === 'done' ? 5 : bucket,
+      queuedNow: dueNow > 0 || pendingSteers > 0,
+      routine: ws.tags.includes('routine'),
       nextRun, paused: ws.status === 'paused',
       spent: doc.spend.totalCostUsd, maxCost: ws.budget.maxCostUsd,
       passes: doc.spend.coordinatorPasses, maxPasses: ws.budget.maxCoordinatorPasses,
@@ -209,12 +219,16 @@ function snapshot(): Snapshot {
 // ---------------------------------------------------------------------------
 // UI
 
-const DOT: Record<number, { color: string; word: string }> = {
-  0: { color: 'red', word: 'NEEDS YOU' },
-  1: { color: 'green', word: 'WORKING' },
-  2: { color: 'blue', word: 'WAITING' },
-  3: { color: 'gray', word: 'IDLE' },
-  4: { color: 'red', word: 'UNREADABLE' },
+// Color semantics: red = needs a human, yellow = in motion (nothing is
+// "done" about it), cyan = in line, blue = scheduled later, green = DONE
+// (reserved — green must never suggest completion where there is none).
+const DOT: Record<number, { color: string; word: string; glyph: string }> = {
+  0: { color: 'red', word: 'NEEDS YOU', glyph: '●' },
+  1: { color: 'yellow', word: 'WORKING', glyph: '▶' },
+  2: { color: 'blue', word: 'WAITING', glyph: '○' },
+  3: { color: 'gray', word: 'IDLE', glyph: '■' },
+  4: { color: 'red', word: 'UNREADABLE', glyph: '✗' },
+  5: { color: 'green', word: 'DONE', glyph: '✓' },
 };
 
 function Bar({ spent, max }: { spent: number; max: number }): React.JSX.Element {
@@ -313,7 +327,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
     }
   });
 
-  const counts = [0, 0, 0, 0, 0];
+  const counts = [0, 0, 0, 0, 0, 0];
   for (const s of snap.streams) counts[s.bucket]! += 1;
   const now = new Date();
   const vNow = virtualNow();
@@ -326,9 +340,10 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
           <Text bold color="white">W E A V E R</Text>
           <Text>   </Text>
           {snap.items.length ? <Text bold color="red">{snap.items.length} need you</Text> : <Text dimColor>0 need you</Text>}
-          <Text dimColor> · </Text><Text color="green">{counts[1]} working</Text>
+          <Text dimColor> · </Text><Text color="yellow">{counts[1]} working</Text>
           <Text dimColor> · </Text><Text color="blue">{counts[2]} waiting</Text>
           <Text dimColor> · </Text><Text dimColor>{counts[3]} idle</Text>
+          {counts[5] ? <><Text dimColor> · </Text><Text color="green">{counts[5]} done</Text></> : null}
           {counts[4] ? <Text bold color="red"> · {counts[4]} UNREADABLE</Text> : null}
         </Text>
         <Text dimColor>
@@ -385,11 +400,11 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         <Text bold dimColor>{sec.label}</Text>
         {sec.list.map((st) => {
           const isSel = rows[cursor]?.type === 'stream' && (rows[cursor] as { stream: StreamRow }).stream.slug === st.slug;
-          const d = st.bucket === 2 && st.queuedNow ? { color: 'cyan', word: 'QUEUED' } : DOT[st.bucket]!;
+          const d = st.bucket === 2 && st.queuedNow ? { color: 'cyan', word: 'QUEUED', glyph: '●' } : DOT[st.bucket]!;
           return (
             <Box key={st.slug} flexDirection="column">
               <Text inverse={isSel} wrap="truncate-end">
-                <Text color={d.color}> ● </Text>
+                <Text color={d.color}> {d.glyph} </Text>
                 <Text bold>{st.slug.padEnd(30)}</Text>
                 <Text color={d.color}>{d.word.padEnd(11)}</Text>
                 {st.error ? (
