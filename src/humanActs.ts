@@ -5,6 +5,7 @@
  * optimizes — and wakes the workstream where the coordinator must react.
  */
 
+import { virtualNow } from './clock.js';
 import { arrive, newId } from './store.js';
 
 function wake(d: { wakes: { push: (w: object) => void }[] } | any, reason: string): void {
@@ -97,6 +98,39 @@ export function resolveAttention(slug: string, attId: string, note = ''): void {
     att.resolvedAt = new Date().toISOString();
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
     event('attention.resolved', `human resolved ${attId}${note ? `: ${note}` : ''}`, [attId]);
+  });
+}
+
+/**
+ * Human adoption override. For ACTION assignments the override still cannot
+ * outrank physics: only the engine's deterministic readback can call a
+ * real-world effect real, so an action without a passing `exec.verified` is
+ * refused here exactly as it is in the coordinator's adopt_submission tool.
+ */
+export function adoptSubmission(slug: string, asgId: string, reason = 'adopted by human'): void {
+  arrive(slug, (d, event) => {
+    const asg = d.assignments.find((x) => x.id === asgId);
+    if (!asg) throw new Error(`no assignment ${asgId}`);
+    if (asg.state !== 'awaiting_review' || !asg.submission) throw new Error(`${asgId} has no submission awaiting review`);
+    if (asg.kind === 'action') {
+      if (!asg.exec?.verified) throw new Error(`${asgId} is an ACTION whose readback has not run — its effect is unconfirmed and cannot be adopted (by anyone)`);
+      if (!asg.exec.verified.ok) throw new Error(`${asgId} is an ACTION whose readback FAILED: ${asg.exec.verified.output.trim().slice(0, 120)} — fix the world or reject; adoption cannot overrule readback`);
+    }
+    const del = asg.submission.deliverableId
+      ? d.deliverables.find((x) => x.id === asg.submission!.deliverableId)
+      : undefined;
+    if (del) {
+      del.adopted = {
+        contentHash: del.contentHash,
+        passId: 'human',
+        atVirtual: virtualNow().toISOString(),
+      };
+    }
+    asg.adoption = { state: 'accepted', passId: 'human', reason };
+    asg.state = 'completed';
+    wake(d, `human adopted ${asgId}`);
+    d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+    event('submission.adopted', `${asgId} adopted by HUMAN${del ? ` (pinned ${del.contentHash.slice(0, 8)})` : ''}: ${reason}`, [asgId]);
   });
 }
 

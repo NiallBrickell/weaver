@@ -195,7 +195,19 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
         tools: baseTools,
         env: sdkEnv(secrets),
         ...(isAction
-          ? { cwd: asg.exec!.cwd, additionalDirectories: readDirs }
+          ? {
+              cwd: asg.exec!.cwd,
+              additionalDirectories: readDirs,
+              // Confine the action's Bash to its approved cwd: without this,
+              // a misbriefed or injected worker could write anywhere the OS
+              // user can — including forging its own workstream state. If the
+              // sandbox blocks something the act genuinely needs, the failure
+              // is LOUD (the act fails, readback fails, attention is raised);
+              // WEAVER_NO_SANDBOX=1 is the explicit, human-owned override.
+              ...(process.env.WEAVER_NO_SANDBOX
+                ? {}
+                : { sandbox: { enabled: true, autoAllowBashIfSandboxed: true, failIfUnavailable: false } }),
+            }
           : readDirs.length
             ? { cwd: readDirs[0], additionalDirectories: readDirs }
             : {}),

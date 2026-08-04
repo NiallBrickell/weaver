@@ -11,6 +11,7 @@
  * coordinator is told to finish so a fresh pass can reconcile.
  */
 
+import { isAbsolute } from 'node:path';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { inVirtual, parseDuration, virtualNow } from './clock.js';
@@ -192,6 +193,9 @@ export async function runCoordinatorPass(
             }
             if (a.kind === 'action' && (!a.exec_cwd || !a.exec_verify)) {
               throw new Error('kind "action" requires exec_cwd and exec_verify');
+            }
+            if (a.exec_cwd && !isAbsolute(a.exec_cwd)) {
+              throw new Error(`exec_cwd must be an absolute path, got '${a.exec_cwd}' — cwd is the action's scoping boundary and cannot depend on where the engine happens to run`);
             }
             if (a.kind !== 'action' && (a.exec_cwd || a.exec_verify)) {
               throw new Error('exec_cwd/exec_verify are only valid on kind "action"');
