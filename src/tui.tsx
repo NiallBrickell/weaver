@@ -48,6 +48,10 @@ interface StreamRow {
   bucket: 0 | 1 | 2 | 3 | 4;
   /** Bucket 2 split: due right now (in line for the runner) vs scheduled later. */
   queuedNow: boolean;
+  /** Tagged 'routine': a standing recurring loop, demarcated in its own section. */
+  routine: boolean;
+  /** Earliest future scheduled wake — a routine's "next run". */
+  nextRun?: string;
   paused: boolean;
   spent: number;
   maxCost: number;
@@ -82,7 +86,7 @@ function snapshot(): Snapshot {
       ) as WorkstreamDoc;
     } catch (e) {
       streams.push({
-        slug, bucket: 4, queuedNow: false, paused: false, spent: 0, maxCost: 0, passes: 0, maxPasses: 0,
+        slug, bucket: 4, queuedNow: false, routine: false, paused: false, spent: 0, maxCost: 0, passes: 0, maxPasses: 0,
         interventions: 0, details: [], error: e instanceof Error ? e.message : String(e),
       });
       continue;
@@ -183,8 +187,13 @@ function snapshot(): Snapshot {
       : ws.status === 'active' && pending.length ? 2
       : 3;
 
+    const nextRun = pending
+      .filter((w) => w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
+      .map((w) => (w.condition as { dueAtVirtual: string }).dueAtVirtual)
+      .sort()[0];
     streams.push({
-      slug, bucket, queuedNow: dueNow > 0, paused: ws.status === 'paused',
+      slug, bucket, queuedNow: dueNow > 0, routine: ws.tags.includes('routine'),
+      nextRun, paused: ws.status === 'paused',
       spent: doc.spend.totalCostUsd, maxCost: ws.budget.maxCostUsd,
       passes: doc.spend.coordinatorPasses, maxPasses: ws.budget.maxCoordinatorPasses,
       interventions: doc.spend.humanInterventions ?? 0,
@@ -243,7 +252,9 @@ function App(): React.JSX.Element {
   const rows = useMemo(
     () => [
       ...snap.items.map((i) => ({ type: 'item' as const, item: i })),
-      ...snap.streams.map((s) => ({ type: 'stream' as const, stream: s })),
+      // Cursor order mirrors visual order: workstreams section, then routines.
+      ...snap.streams.filter((s) => !s.routine).map((s) => ({ type: 'stream' as const, stream: s })),
+      ...snap.streams.filter((s) => s.routine).map((s) => ({ type: 'stream' as const, stream: s })),
     ],
     [snap],
   );
@@ -354,9 +365,13 @@ function App(): React.JSX.Element {
         </Box>
       )}
 
-      <Box flexDirection="column" marginTop={1}>
-        <Text bold dimColor>WORKSTREAMS</Text>
-        {snap.streams.map((st) => {
+      {[
+        { label: 'WORKSTREAMS', list: snap.streams.filter((s) => !s.routine) },
+        { label: '↻ ROUTINES', list: snap.streams.filter((s) => s.routine) },
+      ].filter((sec) => sec.list.length).map((sec) => (
+      <Box key={sec.label} flexDirection="column" marginTop={1}>
+        <Text bold dimColor>{sec.label}</Text>
+        {sec.list.map((st) => {
           const isSel = rows[cursor]?.type === 'stream' && (rows[cursor] as { stream: StreamRow }).stream.slug === st.slug;
           const d = st.bucket === 2 && st.queuedNow ? { color: 'cyan', word: 'QUEUED' } : DOT[st.bucket]!;
           return (
@@ -371,6 +386,9 @@ function App(): React.JSX.Element {
                   <>
                     <Bar spent={st.spent} max={st.maxCost} />
                     <Text dimColor> ~${st.spent.toFixed(2)} est · passes {st.passes} · you {st.interventions}×{st.paused ? ' [paused]' : ''}</Text>
+                    {st.routine && st.bucket === 2 && st.nextRun ? (
+                      <Text color="blue"> · next run {st.nextRun.slice(5, 16).replace('T', ' ')}</Text>
+                    ) : null}
                   </>
                 )}
               </Text>
@@ -388,6 +406,7 @@ function App(): React.JSX.Element {
           );
         })}
       </Box>
+      ))}
 
       {steering ? (
         <Box marginTop={1}>

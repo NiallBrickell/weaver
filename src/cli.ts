@@ -450,6 +450,19 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'tag': {
+      const slug = rest[0] ?? fail('slug required');
+      const verb = rest[1] ?? fail('add or remove required');
+      const tag = rest[2] ?? fail('tag required');
+      arrive(slug, (d, event) => {
+        if (verb === 'add' && !d.workstream.tags.includes(tag)) d.workstream.tags.push(tag);
+        if (verb === 'remove') d.workstream.tags = d.workstream.tags.filter((t) => t !== tag);
+        event('tags.changed', `human ${verb}ed tag '${tag}'`);
+      });
+      process.stdout.write(`tags now: ${load(slug).workstream.tags.join(', ')}\n`);
+      break;
+    }
+
     case 'pause':
     case 'resume': {
       const slug = rest[0] ?? fail('slug required');
