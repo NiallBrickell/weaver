@@ -358,6 +358,15 @@ export function supersedePolicy(oldId: Id, replacement: Omit<Parameters<typeof p
 
 export function renderPoliciesForProjection(policies: PolicyRecord[]): string {
   if (!policies.length) return '';
+  // A large backfilled store must not drown the projection: active (earned)
+  // policies always render; shadow candidates are capped, newest first, with
+  // the omission stated — the full store stays inspectable via the CLI.
+  const SHADOW_CAP = 25;
+  const active = policies.filter((p) => p.status === 'active');
+  const shadow = policies.filter((p) => p.status !== 'active');
+  const shownShadow = shadow.slice(-SHADOW_CAP);
+  const omitted = shadow.length - shownShadow.length;
+  policies = [...active, ...shownShadow];
   const lines = policies.map((p) => {
     const ev = p.evidence.length
       ? ` evidence=${p.evidence.length} (${p.evidence.filter((e) => e.interventionFree).length} intervention-free)`
@@ -368,6 +377,7 @@ export function renderPoliciesForProjection(policies: PolicyRecord[]): string {
     ``,
     `Learned policies matching this workstream's tags:`,
     ...lines,
+    ...(omitted > 0 ? [`(+${omitted} more shadow candidates not shown — the store is larger than this projection window)`] : []),
     `A policy can only add verification, narrow authority, or advise — never widen what you may do. When you apply one, cite its id in applied_policy_ids on the decision that applies it, so its effect stays attributable. If one proves wrong for this workstream, say so in a decision rather than silently ignoring it; if it helped, record_policy_outcome with what happened.`,
   ].join('\n');
 }
