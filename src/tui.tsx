@@ -125,12 +125,14 @@ function snapshot(): Snapshot {
         body: [
           ask,
           ``,
-          `where it runs: ${a.exec?.cwd ?? '?'}`,
-          `how the harness confirms it: ${a.exec?.verify ?? '?'}`,
+          `runs in: ${a.exec?.cwd ?? '?'} · outcome auto-verified by the harness`,
+          ``,
+          `— audit trail (enter to scroll: exact checks + full worker briefing) —`,
+          `verification command: ${a.exec?.verify ?? '?'}`,
           ...(a.exec?.run ? [`exact command (engine-executed): ${a.exec.run}`] : []),
           ...(notes ? [``, `coordinator notes:`, ...notes] : []),
           ``,
-          `— full worker briefing (what the agent will be told) —`,
+          `worker briefing:`,
           a.briefing,
         ].join('\n'),
       });
