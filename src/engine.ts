@@ -121,32 +121,41 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
     (a) => a.kind === 'action' && a.state === 'gated' && a.exec && !a.exec.approval && !a.exec.pilotVerdict,
   );
   for (const asg of gated) {
-    const briefingCmds = [...asg.briefing.matchAll(/```(?:bash|sh|shell)?\n([\s\S]*?)```/g)].map((m) => m[1]!.trim());
-    const commands = [...(asg.exec!.run ? [asg.exec!.run] : briefingCmds), asg.exec!.verify].filter(Boolean);
-    // No explicit commands beyond the verify = nothing concrete to evaluate.
-    if (commands.length < 2 && !asg.exec!.run) continue;
     let verdict: { decision: string; reason: string } | null = null;
     try {
-      for (const command of commands) {
-        const res = await fetch(`${base}/internal/evaluate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            runtime: 'claude',
-            tool_name: 'Bash',
-            tool_input: JSON.stringify({ command }),
-            cwd: asg.exec!.cwd,
-            session_id: `weaver-${slug}`,
-          }),
-          signal: AbortSignal.timeout(30_000),
-        });
-        if (!res.ok) throw new Error(`pilot HTTP ${res.status}`);
-        const body = (await res.json()) as { decision?: string; reason?: string; source?: string };
-        if (body.decision !== 'approve') {
-          verdict = { decision: body.decision ?? 'unknown', reason: `${body.reason ?? ''} (${command.slice(0, 60)})` };
-          break;
+      if (asg.exec!.run) {
+        // Engine-executed command: evaluated up front — the engine runs it
+        // verbatim with no supervisor in the loop, so the whole judgment
+        // happens here.
+        const commands = [asg.exec!.run, asg.exec!.verify].filter(Boolean);
+        for (const command of commands) {
+          const res = await fetch(`${base}/internal/evaluate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              runtime: 'claude',
+              tool_name: 'Bash',
+              tool_input: JSON.stringify({ command }),
+              cwd: asg.exec!.cwd,
+              session_id: `weaver-${slug}`,
+            }),
+            signal: AbortSignal.timeout(30_000),
+          });
+          if (!res.ok) throw new Error(`pilot HTTP ${res.status}`);
+          const body = (await res.json()) as { decision?: string; reason?: string; source?: string };
+          if (body.decision !== 'approve') {
+            verdict = { decision: body.decision ?? 'unknown', reason: `${body.reason ?? ''} (${command.slice(0, 60)})` };
+            break;
+          }
+          verdict = { decision: 'approve', reason: body.source ?? '' };
         }
-        verdict = { decision: 'approve', reason: body.source ?? '' };
+      } else {
+        // Worker action: the worker's EVERY tool call is judged live by pilot
+        // at execution time (canUseTool supervisor) — so the gate only needs
+        // pilot to be alive. Pre-approving a plan would be weaker than this.
+        const res = await fetch(`${base}/status`, { signal: AbortSignal.timeout(5_000) });
+        if (!res.ok) throw new Error(`pilot HTTP ${res.status}`);
+        verdict = { decision: 'approve', reason: 'live per-command pilot supervision' };
       }
     } catch {
       // Daemon unreachable/slow: leave gated for the human, and leave
@@ -160,14 +169,14 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
       a2.exec.pilotVerdict = { ...verdict!, at: new Date().toISOString() };
       if (verdict!.decision === 'approve') {
         a2.state = 'queued';
-        a2.exec.approval = { by: 'pilot', at: new Date().toISOString(), note: `${commands.length} command(s) approved by pilot` };
+        a2.exec.approval = { by: 'pilot', at: new Date().toISOString(), note: verdict!.reason };
         for (const att of d.attention) {
           if (att.refId === asg.id && att.status === 'open') {
             att.status = 'resolved';
             att.resolvedAt = new Date().toISOString();
           }
         }
-        event('action.auto_approved', `${asg.id} auto-approved via pilot (${commands.length} command(s))`, [asg.id]);
+        event('action.auto_approved', `${asg.id} auto-approved via pilot — ${verdict!.reason}`, [asg.id]);
       } else {
         event('action.pilot_escalated', `${asg.id} stays gated for the human — pilot said ${verdict!.decision}: ${verdict!.reason.slice(0, 120)}`, [asg.id]);
       }

@@ -485,6 +485,11 @@ async function withPilotStub(
 ): Promise<void> {
   const requests: string[] = [];
   const server = http.createServer((req, res) => {
+    if (req.url === '/status') {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
@@ -510,7 +515,7 @@ const GATED_WITH_CMDS = {
   exec: { cwd: '', verify: 'test -f out.md' },
 };
 
-test('pilot approves every command → the action auto-approves as by:pilot', async () => {
+test('pilot alive → a WORKER action auto-approves (live per-command supervision takes over)', async () => {
   await withPilotStub(() => 'approve', async (requests) => {
     makeActionWorkstream('pilot-ok-ws', {
       ...GATED_WITH_CMDS,
@@ -528,18 +533,21 @@ test('pilot approves every command → the action auto-approves as by:pilot', as
     const asg = load('pilot-ok-ws').assignments.find((a) => a.id === 'asg_act')!;
     assert.equal(asg.state, 'queued');
     assert.equal(asg.exec!.approval!.by, 'pilot');
-    assert.equal(requests.length, 2); // briefing command + verify
+    assert.equal(requests.length, 0); // no plan pre-eval — supervision happens per tool call
   });
 });
 
-test('pilot denies one command → stays gated for the human, verdict cached (no re-ask)', async () => {
-  await withPilotStub((cmd) => (cmd.includes('git log') ? 'approve' : 'deny'), async (requests) => {
+test('an ENGINE-RUN command pilot denies stays gated for the human, verdict cached (no re-ask)', async () => {
+  await withPilotStub((cmd) => (cmd.includes('rm -rf') ? 'deny' : 'approve'), async (requests) => {
     makeActionWorkstream('pilot-deny-ws', {
-      ...GATED_WITH_CMDS,
-      exec: { ...GATED_WITH_CMDS.exec, cwd: process.env.WEAVER_HOME! },
+      exec: {
+        cwd: process.env.WEAVER_HOME!,
+        run: 'rm -rf /something/important',
+        verify: 'true',
+      },
     });
     await tick('pilot-deny-ws', { maxPasses: 0 });
-    let asg = load('pilot-deny-ws').assignments[0]!;
+    const asg = load('pilot-deny-ws').assignments[0]!;
     assert.equal(asg.state, 'gated');
     assert.equal(asg.exec!.approval, undefined);
     assert.ok(asg.exec!.pilotVerdict);
