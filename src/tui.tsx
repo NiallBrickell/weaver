@@ -287,14 +287,13 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
     if (steering) return; // TextInput owns the keyboard
     if (input === 'q') { exit(); return; }
     if (input === 'i') {
-      // The dashboard is the only surface: i opens the knowledge inspector
-      // (decision lineage, policies, interventions) in the browser — scoped
-      // to the selected workstream, or the fleet overview otherwise.
+      // i opens the knowledge HOMEPAGE: the fleet overview with the global
+      // policy store, regenerating and linking every workstream's own page —
+      // one entry point, click through from there.
       try {
-        const slug = sel?.type === 'stream' ? sel.stream.slug : sel?.type === 'item' ? sel.item.slug : undefined;
-        const out = runInspect(slug);
+        const out = runInspect();
         if (process.platform === 'darwin') execFile('open', [out]);
-        setToast(`inspector → ${out}`);
+        setToast(`knowledge → ${out}`);
       } catch (e) {
         setToast(`✗ ${e instanceof Error ? e.message : e}`);
       }
@@ -441,7 +440,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                     <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
                   ))}
                   {isSel && (
-                    <Text color="yellow">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [i] inspect knowledge  [enter] expand</Text>
+                    <Text color="yellow">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [i] knowledge  [enter] expand</Text>
                   )}
                 </>
               )}
