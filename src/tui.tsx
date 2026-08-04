@@ -262,7 +262,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const [cursor, setCursor] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [scroll, setScroll] = useState(0);
-  const [steering, setSteering] = useState<{ slug: string; text: string } | null>(null);
+  const [steering, setSteering] = useState<{ slug: string; text: string; answersAttentionId?: string } | null>(null);
   const [toast, setToast] = useState('');
 
   useEffect(() => {
@@ -334,7 +334,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
           resolveAttention(it.slug, it.refId);
           refresh(`resolved ${it.refId}`);
         } else if (input === 's') {
-          setSteering({ slug: it.slug, text: '' });
+          setSteering({ slug: it.slug, text: '', ...(it.kind === 'attention' ? { answersAttentionId: it.refId } : {}) });
         } else if (key.return) {
           setExpanded((e) => {
             const n = new Set(e);
@@ -512,8 +512,10 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
               setSteering(null);
               if (t.trim()) {
                 try {
-                  addSteering(steering.slug, t.trim());
-                  refresh(`steered ${steering.slug}`);
+                  addSteering(steering.slug, t.trim(), {
+                    ...(steering.answersAttentionId ? { resolvesAttentionId: steering.answersAttentionId } : {}),
+                  });
+                  refresh(steering.answersAttentionId ? `answered ${steering.slug} — card cleared` : `steered ${steering.slug}`);
                 } catch (e) {
                   setToast(`✗ ${e instanceof Error ? e.message : e}`);
                 }

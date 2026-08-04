@@ -433,6 +433,24 @@ export async function runCoordinatorPass(
       ),
 
       tool(
+        'withdraw_attention',
+        'Close an OPEN attention item whose need has been met — e.g. the human\'s steering this pass answered the question it asked, or events made it moot. Withdrawing is bookkeeping, not judgment-taking: never withdraw an item whose underlying decision the human still has to make.',
+        {
+          attention_id: z.string(),
+          reason: z.string().describe('what satisfied it, e.g. "answered by steer_x this pass"'),
+        },
+        async (a) =>
+          change((d, event) => {
+            const att = d.attention.find((x) => x.id === a.attention_id && x.status === 'open');
+            if (!att) throw new Error(`no open attention ${a.attention_id}`);
+            att.status = 'resolved';
+            att.resolvedAt = new Date().toISOString();
+            event('attention.withdrawn', `coordinator withdrew ${att.id}: ${a.reason}`, [att.id]);
+            return `withdrew ${att.id}`;
+          }),
+      ),
+
+      tool(
         'propose_policy',
         'When human steering CORRECTED your proposed course this pass, distill the correction into a scoped policy candidate so the next matching workstream starts smarter. Policies can only add verification, narrow authority, or advise — never widen what a workstream may do. The policy starts in shadow status.',
         {
