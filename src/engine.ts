@@ -386,6 +386,25 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       progressed = true;
     }
 
+    // Budget gates WORKERS, not just coordinator passes — a long research run
+    // must not be able to sail past maxCostUsd. Over budget: launch nothing,
+    // tell the human once, and let them top up or wind down.
+    const docBudget = load(slug);
+    if (docBudget.spend.totalCostUsd >= docBudget.workstream.budget.maxCostUsd) {
+      const hasOpen = docBudget.attention.some((a) => a.kind === 'budget' && a.status === 'open');
+      if (!hasOpen) {
+        arrive(slug, (d, event) => {
+          d.attention.push({
+            id: newId('att'),
+            kind: 'budget',
+            summary: `Budget exhausted ($${d.spend.totalCostUsd.toFixed(2)} of $${d.workstream.budget.maxCostUsd}) — nothing more will run. Top up with: weaver budget ${slug} --max-cost <usd>, or pause the workstream.`,
+            status: 'open',
+            createdAt: new Date().toISOString(),
+          });
+          event('budget.exhausted', `spend $${d.spend.totalCostUsd.toFixed(2)} ≥ cap $${d.workstream.budget.maxCostUsd}; workers gated`);
+        });
+      }
+    } else {
     const runnable = runnableAssignments(load(slug));
     for (const id of runnable) {
       process.stderr.write(`[tick] running worker for ${id}…\n`);
@@ -399,6 +418,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
         process.stderr.write(`[tick] action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
       }
       progressed = true;
+    }
     }
 
     const preDoc = load(slug);
