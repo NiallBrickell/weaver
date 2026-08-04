@@ -263,28 +263,48 @@ function recoverCrashedAttempts(slug: string): number {
         t2.terminalReason = 'crashed';
       }
       if (a2.state === 'running') a2.state = isAction ? 'failed' : 'queued';
-      if (isAction) {
-        d.attention.push({
-          id: newId('att'),
-          kind: 'blocker',
-          summary: `Action ${asg.id} crashed mid-run — world state unknown; readback has run, review its result before any redo`,
-          refId: asg.id,
-          status: 'open',
-          createdAt: new Date().toISOString(),
-        });
-      }
       event(
         'worker.crash_recovered',
-        `${asg.id} attempt ${attempt.runId} presumed crashed (stale ${Math.round(staleMs / 1000)}s); ${isAction ? 'action NOT re-queued — readback decides' : 're-queued'}`,
+        `${asg.id} attempt ${attempt.runId} presumed crashed (stale ${Math.round(staleMs / 1000)}s); ${isAction ? 'action held for readback' : 're-queued'}`,
         [asg.id],
       );
     });
     if (isAction) {
+      // Readback decides, and its verdicts are machine-decidable:
+      //   effect LANDED  → submit for coordinator review (nothing to redo);
+      //   effect ABSENT  → the human-approved, idempotent-by-design act simply
+      //                    didn't happen — re-queue it (approval attaches to
+      //                    the ACT, not the attempt), bounded by MAX_ATTEMPTS.
+      // Only repeated failure escalates to a human.
+      const MAX_ACTION_ATTEMPTS = 3;
+      let landed = false;
       try {
-        verifyAction(slug, asg.id);
+        landed = verifyAction(slug, asg.id);
       } catch (e) {
         process.stderr.write(`readback for crashed action ${asg.id} failed to run: ${e instanceof Error ? e.message : e}\n`);
       }
+      arrive(slug, (d, event) => {
+        const a2 = d.assignments.find((x) => x.id === asg.id)!;
+        if (landed) {
+          a2.state = 'awaiting_review';
+          a2.submission = a2.submission ?? {
+            summary: 'Worker crashed mid-run but readback CONFIRMED the effect landed; submitted by crash recovery for review.',
+          };
+          event('action.crash_effect_landed', `${asg.id} readback confirmed despite crash — awaiting review`, [asg.id]);
+        } else if (a2.exec?.approval && a2.attempts.length < MAX_ACTION_ATTEMPTS) {
+          a2.state = 'queued';
+          event('action.requeued_after_crash', `${asg.id} readback shows no effect — re-running the approved idempotent act (attempt ${a2.attempts.length + 1}/${MAX_ACTION_ATTEMPTS})`, [asg.id]);
+        } else {
+          d.attention.push({
+            id: newId('att'),
+            kind: 'blocker',
+            summary: `Action ${asg.id} crashed ${a2.attempts.length}× and readback still shows no effect — needs your judgment before any further redo`,
+            refId: asg.id,
+            status: 'open',
+            createdAt: new Date().toISOString(),
+          });
+        }
+      });
     }
     recovered++;
   }

@@ -231,7 +231,7 @@ test('readback records CONFIRMED on exit 0 and FAILED (with output) otherwise', 
   assert.ok(types.includes('action.verify_failed'));
 });
 
-test('a crashed action is NOT re-queued: it fails, readback runs, attention is raised', async () => {
+test('crashed action, effect LANDED: never re-run — submitted for review on readback evidence', async () => {
   makeActionWorkstream('action-crash-ws', {
     state: 'running',
     exec: {
@@ -253,9 +253,57 @@ test('a crashed action is NOT re-queued: it fails, readback runs, attention is r
 
   const doc = load('action-crash-ws');
   const asg = doc.assignments[0]!;
-  assert.equal(asg.state, 'failed');
   assert.equal(asg.attempts[0]!.terminalReason, 'crashed');
   assert.equal(asg.exec!.verified!.ok, true); // readback discovered the effect landed
+  assert.equal(asg.state, 'awaiting_review'); // machine-decidable: nothing to redo, review it
+  assert.ok(!doc.attention.some((a) => a.refId === 'asg_act' && a.status === 'open'));
+});
+
+test('crashed action, effect ABSENT: the approved idempotent act is re-queued, bounded; exhaustion escalates', async () => {
+  makeActionWorkstream('action-requeue-ws', {
+    state: 'running',
+    exec: {
+      cwd: process.env.WEAVER_HOME!,
+      verify: 'false',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+    attempts: [{ runId: 'run_dead', startedAt: new Date(Date.now() - 60_000).toISOString() }],
+  });
+  process.env.WEAVER_ATTEMPT_STALE_MS = '1000';
+  try {
+    await tick('action-requeue-ws', { maxPasses: 0 });
+  } finally {
+    delete process.env.WEAVER_ATTEMPT_STALE_MS;
+  }
+  let doc = load('action-requeue-ws');
+  // Approval attaches to the ACT: no human attention, straight back in line.
+  // (The same tick may already have launched a fresh attempt — queued or
+  // running are both "re-queued" from the human's point of view.)
+  assert.ok(['queued', 'running', 'failed'].includes(doc.assignments[0]!.state));
+  assert.ok(!doc.attention.some((a) => a.kind === 'blocker' && a.status === 'open' && a.summary.includes('judgment')));
+
+  // Exhaustion: with MAX attempts already burned, escalate instead of looping.
+  makeActionWorkstream('action-exhausted-ws', {
+    state: 'running',
+    exec: {
+      cwd: process.env.WEAVER_HOME!,
+      verify: 'false',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+    attempts: [
+      { runId: 'run_a', startedAt: new Date(Date.now() - 300_000).toISOString(), endedAt: new Date().toISOString(), terminalReason: 'crashed' },
+      { runId: 'run_b', startedAt: new Date(Date.now() - 200_000).toISOString(), endedAt: new Date().toISOString(), terminalReason: 'crashed' },
+      { runId: 'run_dead', startedAt: new Date(Date.now() - 60_000).toISOString() },
+    ],
+  });
+  process.env.WEAVER_ATTEMPT_STALE_MS = '1000';
+  try {
+    await tick('action-exhausted-ws', { maxPasses: 0 });
+  } finally {
+    delete process.env.WEAVER_ATTEMPT_STALE_MS;
+  }
+  doc = load('action-exhausted-ws');
+  assert.equal(doc.assignments[0]!.state, 'failed');
   assert.ok(doc.attention.some((a) => a.refId === 'asg_act' && a.status === 'open'));
 });
 
