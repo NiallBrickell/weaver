@@ -406,7 +406,7 @@ async function main(): Promise<void> {
       // whole fleet; the per-workstream tick lock keeps same-stream ticks
       // exclusive across processes.
       const interval = Number(opt(rest, 'interval') ?? '30') * 1000;
-      const concurrency = Math.max(1, Number(opt(rest, 'concurrency') ?? '3'));
+      const concurrency = Math.max(1, Number(opt(rest, 'concurrency') ?? '10'));
       process.stdout.write(`weaver run — ticking active workstreams every ${interval / 1000}s, ${concurrency} in parallel (Ctrl-C to stop)\n`);
       const inFlight = new Set<string>();
       for (;;) {
