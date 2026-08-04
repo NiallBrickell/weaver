@@ -80,6 +80,20 @@ export function removeSecret(name: string, slug?: string): boolean {
 }
 
 /**
+ * Environment for SDK subprocesses. Weaver rides the LOCAL Claude Code
+ * subscription login — never API credits. A stray exported API key in the
+ * launching shell would silently switch the SDK to API billing, so it is
+ * stripped unconditionally. (SDK `env` REPLACES the subprocess environment,
+ * hence the process.env spread.)
+ */
+export function sdkEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env, ...extra };
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+  return env;
+}
+
+/**
  * Refuse text that embeds a known secret VALUE — used when humans author
  * commands/constraints that will be stored in typed state. The fix is always
  * to reference the secret as `$NAME`; the engine injects the value at exec.
