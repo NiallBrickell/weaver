@@ -1,0 +1,367 @@
+/**
+ * `weaver watch` — the interactive dashboard (Ink).
+ *
+ * The design center is the NEEDS-YOU queue: the only turns a human should
+ * spend on a workstream are judgment calls, so those are the first thing on
+ * screen and every one is answerable with a single keypress. Everything else
+ * (running workers, wakes, budgets) is glanceable context below.
+ *
+ * All state shown is a projection of typed workstream state — no transcript
+ * parsing, no liveness guessing. Human keypresses call the same first-class
+ * mutations as the CLI (src/humanActs.ts): approving here IS the approval.
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Box, Text, render, useApp, useInput } from 'ink';
+import TextInput from 'ink-text-input';
+import { virtualNow } from './clock.js';
+import {
+  approveAction,
+  approveSend,
+  rejectAction,
+  rejectSend,
+  resolveAttention,
+  addSteering,
+  setPaused,
+} from './humanActs.js';
+import { listWorkstreams, workstreamDir, weaverHome } from './store.js';
+import type { WorkstreamDoc } from './types.js';
+
+const STALE_ATTEMPT_MS = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
+
+// ---------------------------------------------------------------------------
+// Data
+
+interface NeedsYouItem {
+  key: string;
+  slug: string;
+  kind: 'action' | 'send' | 'attention';
+  refId: string;
+  title: string;
+  body: string;
+}
+
+interface StreamRow {
+  slug: string;
+  bucket: 0 | 1 | 2 | 3 | 4;
+  paused: boolean;
+  spent: number;
+  maxCost: number;
+  passes: number;
+  maxPasses: number;
+  interventions: number;
+  details: string[];
+  error?: string;
+}
+
+interface Snapshot {
+  items: NeedsYouItem[];
+  streams: StreamRow[];
+}
+
+function elapsed(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(ms / 60_000);
+  if (m < 1) return `${Math.max(0, Math.floor(ms / 1000))}s`;
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h${m % 60 ? `${m % 60}m` : ''}`;
+}
+
+function snapshot(): Snapshot {
+  const items: NeedsYouItem[] = [];
+  const streams: StreamRow[] = [];
+  for (const slug of listWorkstreams()) {
+    let doc: WorkstreamDoc;
+    try {
+      doc = JSON.parse(
+        fs.readFileSync(path.join(workstreamDir(slug), 'workstream.json'), 'utf8'),
+      ) as WorkstreamDoc;
+    } catch (e) {
+      streams.push({
+        slug, bucket: 4, paused: false, spent: 0, maxCost: 0, passes: 0, maxPasses: 0,
+        interventions: 0, details: [], error: e instanceof Error ? e.message : String(e),
+      });
+      continue;
+    }
+    const ws = doc.workstream;
+
+    let needsYou = 0;
+    for (const a of doc.attention.filter((x) => x.status === 'open')) {
+      needsYou++;
+      items.push({
+        key: `${slug}:${a.id}`, slug, kind: 'attention', refId: a.id,
+        title: a.summary.split('\n')[0]!.slice(0, 120),
+        body: a.summary,
+      });
+    }
+    for (const a of doc.assignments.filter((x) => x.state === 'gated')) {
+      needsYou++;
+      items.push({
+        key: `${slug}:${a.id}`, slug, kind: 'action', refId: a.id,
+        title: `gated action: ${a.objective.slice(0, 110)}`,
+        body: `${a.briefing}\n\nverify: ${a.exec?.verify ?? '?'}${a.exec?.run ? `\nrun: ${a.exec.run}` : ''}`,
+      });
+    }
+    for (const i of doc.interactions.filter((x) => x.status === 'awaiting_approval')) {
+      needsYou++;
+      items.push({
+        key: `${slug}:${i.id}`, slug, kind: 'send', refId: i.id,
+        title: `send awaiting approval: ${i.kind} to ${i.to} — "${i.subject}"`,
+        body: `draft deliverable ${i.deliverableId} (weaver show ${slug} ${i.deliverableId})`,
+      });
+    }
+
+    const details: string[] = [];
+    let working = 0;
+    for (const a of doc.assignments.filter((x) => x.state === 'running')) {
+      const t = a.attempts[a.attempts.length - 1];
+      const fresh = !!t && !t.endedAt && Date.now() - new Date(t.startedAt).getTime() < STALE_ATTEMPT_MS;
+      working++;
+      details.push(
+        fresh
+          ? `▶ ${a.id} (${a.kind}) "${a.objective.slice(0, 80)}" ${t ? elapsed(t.startedAt) : ''}`
+          : `◆ ${a.id} stale attempt — next tick recovers by readback`,
+      );
+    }
+    const leaseHeld = doc.lease && new Date(doc.lease.expiresAt).getTime() > Date.now();
+    if (leaseHeld) { working++; details.push(`▶ coordinator pass in flight`); }
+    const queued = doc.assignments.filter((x) => x.state === 'queued' || x.state === 'awaiting_review').length;
+    if (queued) details.push(`… ${queued} assignment(s) queued/awaiting review`);
+    const nowV = virtualNow().toISOString();
+    const pending = doc.wakes.filter((w) => w.status === 'pending');
+    const dueNow = pending.filter((w) => w.condition.type === 'immediate' || w.condition.dueAtVirtual <= nowV).length;
+    if (dueNow && !working) details.push(`○ ${dueNow} wake(s) due — runner will pick up`);
+    const last = doc.events[doc.events.length - 1];
+    if (last) details.push(`  last [${last.at.slice(11, 19)}] ${last.type}: ${last.summary.slice(0, 90)}`);
+
+    const bucket: StreamRow['bucket'] =
+      ws.status === 'paused' && !needsYou ? 3
+      : needsYou ? 0
+      : working || queued ? 1
+      : ws.status === 'active' && pending.length ? 2
+      : 3;
+
+    streams.push({
+      slug, bucket, paused: ws.status === 'paused',
+      spent: doc.spend.totalCostUsd, maxCost: ws.budget.maxCostUsd,
+      passes: doc.spend.coordinatorPasses, maxPasses: ws.budget.maxCoordinatorPasses,
+      interventions: doc.spend.humanInterventions ?? 0,
+      details,
+    });
+  }
+  streams.sort((a, b) => a.bucket - b.bucket || a.slug.localeCompare(b.slug));
+  items.sort((a, b) => a.slug.localeCompare(b.slug));
+  return { items, streams };
+}
+
+// ---------------------------------------------------------------------------
+// UI
+
+const DOT: Record<number, { color: string; word: string }> = {
+  0: { color: 'red', word: 'NEEDS YOU' },
+  1: { color: 'green', word: 'WORKING' },
+  2: { color: 'blue', word: 'WAITING' },
+  3: { color: 'gray', word: 'IDLE' },
+  4: { color: 'red', word: 'UNREADABLE' },
+};
+
+function Bar({ spent, max }: { spent: number; max: number }): React.JSX.Element {
+  const cells = 8;
+  const frac = max > 0 ? Math.min(1, spent / max) : 0;
+  const filled = Math.round(frac * cells);
+  const color = frac > 0.9 ? 'red' : frac > 0.7 ? 'yellow' : 'cyan';
+  return (
+    <Text>
+      <Text color={color}>{'▰'.repeat(filled)}</Text>
+      <Text dimColor>{'▱'.repeat(cells - filled)}</Text>
+    </Text>
+  );
+}
+
+function App(): React.JSX.Element {
+  const { exit } = useApp();
+  const [snap, setSnap] = useState<Snapshot>(() => snapshot());
+  const [cursor, setCursor] = useState(0);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [steering, setSteering] = useState<{ slug: string; text: string } | null>(null);
+  const [toast, setToast] = useState('');
+
+  useEffect(() => {
+    const t = setInterval(() => setSnap(snapshot()), 2000);
+    return () => clearInterval(t);
+  }, []);
+
+  const refresh = (msg: string) => {
+    setSnap(snapshot());
+    setToast(msg);
+  };
+
+  // The selectable list: needs-you items first, then streams.
+  const rows = useMemo(
+    () => [
+      ...snap.items.map((i) => ({ type: 'item' as const, item: i })),
+      ...snap.streams.map((s) => ({ type: 'stream' as const, stream: s })),
+    ],
+    [snap],
+  );
+  const sel = rows[Math.min(cursor, Math.max(0, rows.length - 1))];
+
+  useInput((input, key) => {
+    if (steering) return; // TextInput owns the keyboard
+    if (input === 'q') { exit(); return; }
+    if (key.upArrow || input === 'k') setCursor((c) => Math.max(0, c - 1));
+    if (key.downArrow || input === 'j') setCursor((c) => Math.min(rows.length - 1, c + 1));
+    if (!sel) return;
+    try {
+      if (sel.type === 'item') {
+        const it = sel.item;
+        if (input === 'a') {
+          if (it.kind === 'action') { approveAction(it.slug, it.refId); refresh(`approved ${it.refId} — runner will execute + verify`); }
+          else if (it.kind === 'send') { approveSend(it.slug, it.refId); refresh(`approved ${it.refId} — runner will send`); }
+        } else if (input === 'x') {
+          if (it.kind === 'action') { rejectAction(it.slug, it.refId); refresh(`rejected ${it.refId}`); }
+          else if (it.kind === 'send') { rejectSend(it.slug, it.refId); refresh(`rejected ${it.refId}`); }
+        } else if (input === 'd' && it.kind === 'attention') {
+          resolveAttention(it.slug, it.refId);
+          refresh(`resolved ${it.refId}`);
+        } else if (input === 's') {
+          setSteering({ slug: it.slug, text: '' });
+        } else if (key.return) {
+          setExpanded((e) => {
+            const n = new Set(e);
+            n.has(it.key) ? n.delete(it.key) : n.add(it.key);
+            return n;
+          });
+        }
+      } else {
+        const st = sel.stream;
+        if (input === 's') setSteering({ slug: st.slug, text: '' });
+        else if (input === 'p') { setPaused(st.slug, !st.paused); refresh(`${st.slug} ${st.paused ? 'resumed' : 'paused'}`); }
+        else if (key.return) {
+          setExpanded((e) => {
+            const n = new Set(e);
+            n.has(st.slug) ? n.delete(st.slug) : n.add(st.slug);
+            return n;
+          });
+        }
+      }
+    } catch (e) {
+      setToast(`✗ ${e instanceof Error ? e.message : e}`);
+    }
+  });
+
+  const counts = [0, 0, 0, 0, 0];
+  for (const s of snap.streams) counts[s.bucket]! += 1;
+  const now = new Date();
+  const vNow = virtualNow();
+  const drift = Math.abs(vNow.getTime() - now.getTime()) > 60_000;
+
+  return (
+    <Box flexDirection="column" paddingX={1}>
+      <Box borderStyle="round" borderDimColor paddingX={1} justifyContent="space-between">
+        <Text>
+          <Text bold color="white">W E A V E R</Text>
+          <Text>   </Text>
+          {snap.items.length ? <Text bold color="red">{snap.items.length} need you</Text> : <Text dimColor>0 need you</Text>}
+          <Text dimColor> · </Text><Text color="green">{counts[1]} working</Text>
+          <Text dimColor> · </Text><Text color="blue">{counts[2]} waiting</Text>
+          <Text dimColor> · </Text><Text dimColor>{counts[3]} idle</Text>
+          {counts[4] ? <Text bold color="red"> · {counts[4]} UNREADABLE</Text> : null}
+        </Text>
+        <Text dimColor>{drift ? `virtual ${vNow.toISOString().slice(0, 16)}  ` : ''}{now.toTimeString().slice(0, 8)}</Text>
+      </Box>
+
+      {snap.items.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold color="red">⚡ NEEDS YOU</Text>
+          {snap.items.map((it) => {
+            const isSel = rows[cursor]?.type === 'item' && (rows[cursor] as { item: NeedsYouItem }).item.key === it.key;
+            return (
+              <Box key={it.key} flexDirection="column">
+                <Text inverse={isSel} wrap="truncate-end">
+                  <Text color="red"> ● </Text>
+                  <Text bold>{it.slug}</Text>
+                  <Text>  {it.title}</Text>
+                </Text>
+                {(isSel || expanded.has(it.key)) && (
+                  <Box flexDirection="column" marginLeft={4} marginBottom={0}>
+                    {it.body.split('\n').slice(0, expanded.has(it.key) ? 40 : 4).map((l, j) => (
+                      <Text key={j} dimColor wrap="wrap">{l}</Text>
+                    ))}
+                    <Text color="yellow">
+                      {it.kind === 'attention' ? '[d] done/resolve  [s] steer  [enter] full text' : '[a] approve  [x] reject  [s] steer  [enter] details'}
+                    </Text>
+                  </Box>
+                )}
+              </Box>
+            );
+          })}
+        </Box>
+      )}
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text bold dimColor>WORKSTREAMS</Text>
+        {snap.streams.map((st) => {
+          const isSel = rows[cursor]?.type === 'stream' && (rows[cursor] as { stream: StreamRow }).stream.slug === st.slug;
+          const d = DOT[st.bucket]!;
+          return (
+            <Box key={st.slug} flexDirection="column">
+              <Text inverse={isSel} wrap="truncate-end">
+                <Text color={d.color}> ● </Text>
+                <Text bold>{st.slug.padEnd(30)}</Text>
+                <Text color={d.color}>{d.word.padEnd(11)}</Text>
+                {st.error ? (
+                  <Text color="red">{st.error}</Text>
+                ) : (
+                  <>
+                    <Bar spent={st.spent} max={st.maxCost} />
+                    <Text dimColor> ${st.spent.toFixed(2)}/${st.maxCost} · passes {st.passes}/{st.maxPasses} · you {st.interventions}×{st.paused ? ' [paused]' : ''}</Text>
+                  </>
+                )}
+              </Text>
+              {(isSel || expanded.has(st.slug)) &&
+                st.details.map((l, j) => (
+                  <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
+                ))}
+            </Box>
+          );
+        })}
+      </Box>
+
+      {steering ? (
+        <Box marginTop={1}>
+          <Text color="yellow">steer {steering.slug} ▸ </Text>
+          <TextInput
+            value={steering.text}
+            onChange={(t: string) => setSteering({ ...steering, text: t })}
+            onSubmit={(t: string) => {
+              setSteering(null);
+              if (t.trim()) {
+                try {
+                  addSteering(steering.slug, t.trim());
+                  refresh(`steered ${steering.slug}`);
+                } catch (e) {
+                  setToast(`✗ ${e instanceof Error ? e.message : e}`);
+                }
+              }
+            }}
+          />
+        </Box>
+      ) : (
+        <Box marginTop={1} justifyContent="space-between">
+          <Text dimColor>↑↓ select · enter expand · a approve · x reject · d resolve · s steer · p pause · q quit</Text>
+          {toast ? <Text color="green">{toast}</Text> : <Text dimColor>{weaverHome()}</Text>}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+export async function runTui(): Promise<void> {
+  process.stdout.write('\x1b[?1049h'); // alt screen
+  const instance = render(<App />, { exitOnCtrlC: true });
+  await instance.waitUntilExit();
+  process.stdout.write('\x1b[?1049l');
+}
