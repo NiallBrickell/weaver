@@ -87,6 +87,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
     a.attempts.push({
       runId,
       model: workerModel(),
+      runnerPid: process.pid,
       startedAt: new Date().toISOString(),
     });
     event('worker.started', `${assignmentId} attempt ${runId}`, [assignmentId]);
