@@ -271,8 +271,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
       const j = JSON.stringify(s);
       if (j !== lastSnapJson.current) {
         lastSnapJson.current = j;
-        clearScreen();
-        setSnap(s);
+        setSnap(s); // Ink diffs in place — no clear, no flicker
       }
       if (!embeddedRunner) setRunnerState(liveRunnerPid() !== null ? 'external' : 'none');
     }, 2000);
@@ -315,11 +314,10 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
       }
       return;
     }
-    if (key.upArrow || input === 'k') { clearScreen(); setCursor((c) => Math.max(0, c - 1)); setScroll(0); }
-    if (key.downArrow || input === 'j') { clearScreen(); setCursor((c) => Math.min(rows.length - 1, c + 1)); setScroll(0); }
-    if (key.pageDown || input === ']') { clearScreen(); setScroll((s) => s + 12); }
-    if (key.pageUp || input === '[') { clearScreen(); setScroll((s) => Math.max(0, s - 12)); }
-    if (key.return) clearScreen();
+    if (key.upArrow || input === 'k') { setCursor((c) => Math.max(0, c - 1)); setScroll(0); }
+    if (key.downArrow || input === 'j') { setCursor((c) => Math.min(rows.length - 1, c + 1)); setScroll(0); }
+    if (key.pageDown || input === ']') setScroll((s) => s + 12);
+    if (key.pageUp || input === '[') setScroll((s) => Math.max(0, s - 12));
     if (!sel) return;
     try {
       if (sel.type === 'item') {
