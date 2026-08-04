@@ -163,7 +163,7 @@ function executeHumanActions(slug: string): number {
     arrive(slug, (d, event) => {
       const a2 = d.assignments.find((x) => x.id === asg.id)!;
       a2.state = 'running';
-      a2.attempts.push({ runId, model: 'engine', startedAt: new Date().toISOString() });
+      a2.attempts.push({ runId, model: 'engine', runnerPid: process.pid, startedAt: new Date().toISOString() });
       event('action.engine_started', `${asg.id} engine executing human-authored command`, [asg.id]);
     });
     mkdirSync(asg.exec!.cwd, { recursive: true });
@@ -253,7 +253,17 @@ function recoverCrashedAttempts(slug: string): number {
   for (const asg of doc.assignments.filter((a) => a.state === 'running')) {
     const attempt = asg.attempts[asg.attempts.length - 1];
     if (!attempt || attempt.endedAt) continue;
-    if (Date.now() - new Date(attempt.startedAt).getTime() < staleMs) continue;
+    // A dead driver process means the attempt is orphaned RIGHT NOW — no need
+    // to wait out the horizon (the silent-fleet failure mode after restarts).
+    let driverDead = false;
+    if (attempt.runnerPid && attempt.runnerPid !== process.pid) {
+      try {
+        process.kill(attempt.runnerPid, 0);
+      } catch {
+        driverDead = true;
+      }
+    }
+    if (!driverDead && Date.now() - new Date(attempt.startedAt).getTime() < staleMs) continue;
     const isAction = asg.kind === 'action';
     arrive(slug, (d, event) => {
       const a2 = d.assignments.find((x) => x.id === asg.id)!;

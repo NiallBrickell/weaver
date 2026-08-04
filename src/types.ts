@@ -46,6 +46,9 @@ export interface Attempt {
   runId: Id;
   /** Agent SDK session id — provenance only, never read back for state. */
   sessionId?: string;
+  /** OS pid of the harness process driving this attempt: a dead pid means the
+   * attempt is orphaned NOW — recovery need not wait out the stale horizon. */
+  runnerPid?: number;
   model?: string;
   startedAt: Iso;
   endedAt?: Iso;

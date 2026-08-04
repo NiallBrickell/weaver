@@ -424,3 +424,48 @@ test('a fresh running attempt is NOT treated as crashed', async () => {
   await tick('fresh-ws', { maxPasses: 0 }); // default 10-minute staleness
   assert.equal(load('fresh-ws').assignments[0]!.state, 'running');
 });
+
+test('an attempt whose driver process is dead is recovered immediately, no horizon wait', async () => {
+  createWorkstream({
+    slug: 'deadpid-ws',
+    title: 'Dead driver',
+    objective: 'immediate orphan recovery',
+    tags: [],
+    successCriteria: [],
+    constraints: [],
+    autonomy: { sendsRequireApproval: true },
+    budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+  });
+  arrive('deadpid-ws', (d) => {
+    d.assignments.push(
+      {
+        id: 'asg_dep_open',
+        objective: 'unfinished dependency keeps the orphan non-runnable',
+        briefing: 'n/a',
+        kind: 'research',
+        acceptanceCriteria: ['n/a'],
+        dependsOn: [],
+        state: 'awaiting_review',
+        attempts: [],
+        adoption: { state: 'proposed' },
+        createdAtVirtual: virtualNow().toISOString(),
+      },
+      {
+        id: 'asg_orphaned',
+        objective: 'driver died seconds ago',
+        briefing: 'n/a',
+        kind: 'research',
+        acceptanceCriteria: ['n/a'],
+        dependsOn: ['asg_dep_open'],
+        state: 'running',
+        attempts: [{ runId: 'run_dead', runnerPid: 999999999, startedAt: new Date().toISOString() }],
+        adoption: { state: 'none' },
+        createdAtVirtual: virtualNow().toISOString(),
+      },
+    );
+  });
+  await tick('deadpid-ws', { maxPasses: 0 }); // default 45m horizon — pid check must not wait for it
+  const asg = load('deadpid-ws').assignments.find((a) => a.id === 'asg_orphaned')!;
+  assert.equal(asg.state, 'queued');
+  assert.equal(asg.attempts[0]!.terminalReason, 'crashed');
+});
