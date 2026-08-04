@@ -11,7 +11,7 @@ import { mkdirSync } from 'node:fs';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { virtualNow } from './clock.js';
-import { loadSecrets, redactSecrets } from './secrets.js';
+import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, newId, readArtifact, writeArtifact } from './store.js';
 
 export function workerModel(): string {
@@ -193,14 +193,9 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
         model: workerModel(),
         systemPrompt: isAction ? ACTION_SYSTEM : WORKER_SYSTEM,
         tools: baseTools,
+        env: sdkEnv(secrets),
         ...(isAction
-          ? {
-              cwd: asg.exec!.cwd,
-              additionalDirectories: readDirs,
-              // SDK env REPLACES the subprocess environment — spread process.env
-              // so auth/PATH survive, then overlay the workstream's secrets.
-              env: { ...process.env, ...secrets },
-            }
+          ? { cwd: asg.exec!.cwd, additionalDirectories: readDirs }
           : readDirs.length
             ? { cwd: readDirs[0], additionalDirectories: readDirs }
             : {}),

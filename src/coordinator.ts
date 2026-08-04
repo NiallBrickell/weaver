@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { inVirtual, parseDuration, virtualNow } from './clock.js';
 import { buildProjection } from './projection.js';
 import { matchPolicies, proposePolicy, recordPolicyOutcome } from './policies.js';
+import { sdkEnv } from './secrets.js';
 import {
   RevisionConflictError,
   load,
@@ -565,6 +566,7 @@ export async function runCoordinatorPass(
         permissionMode: 'dontAsk',
         maxTurns: 60,
         persistSession: false,
+        env: sdkEnv(),
       },
     })) {
       if (message.type === 'result') {
