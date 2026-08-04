@@ -54,6 +54,8 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver constraint <slug> remove <match>    remove the constraint containing <match>
   weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
   weaver policies                            list learned policies (shadow/active/superseded)
+  weaver policies export [--author name] [--out file]   sanitized team seed: statements/scope/effect only
+  weaver policies import <file>              import a teammate's seed — all shadow, dedup, authority refused
   weaver backfill --tags <t1,t2> [--rules <path>]... [--claude-projects <dir>] [--limit N] [--dry-run]
                                              seed shadow policies from existing practice: rules files (CLAUDE.md/AGENTS.md, deterministic) and/or recent Claude Code transcripts (one model pass, default 5 sessions)
   weaver secret set <NAME> [--ws slug]       store a secret (value read from stdin, never argv); global unless --ws
@@ -357,7 +359,30 @@ async function main(): Promise<void> {
     }
 
     case 'policies': {
-      const { loadPolicies, policyOrigin } = await import('./policies.js');
+      const { exportSeed, importSeed, loadPolicies, policyOrigin } = await import('./policies.js');
+      if (rest[0] === 'export') {
+        // Team seed: share your guardrails, never your trust or transcripts.
+        const { userInfo } = await import('node:os');
+        const author = opt(rest, 'author') ?? userInfo().username;
+        const out = opt(rest, 'out') ?? `${process.cwd()}/state/seed-${author}.json`;
+        const seed = exportSeed(author);
+        (await import('node:fs')).writeFileSync(out, JSON.stringify(seed, null, 2) + '\n');
+        process.stdout.write(`exported ${seed.policies.length} shareable policies → ${out}\n(sanitized: statements + scope + effect only — no ids, evidence, or transcript quotes)\n`);
+        break;
+      }
+      if (rest[0] === 'import') {
+        const file = rest[1] ?? fail('seed file required');
+        const { grantsAuthority } = await import('./backfill.js');
+        const seed = JSON.parse((await import('node:fs')).readFileSync(file, 'utf8'));
+        if (seed.weaverSeed !== 1) fail('not a weaver seed file');
+        const res = importSeed(seed, { refuseAuthority: grantsAuthority });
+        process.stdout.write(
+          `imported ${res.imported} policies from ${seed.author} — ALL land in shadow and earn active status through YOUR outcomes\n` +
+          `${res.skippedDuplicate} duplicates skipped` +
+          (res.refused.length ? `\n${res.refused.length} REFUSED (read like granting authority — authority is never imported):\n${res.refused.map((r) => `  - ${r}`).join('\n')}` : '') + '\n',
+        );
+        break;
+      }
       for (const p of loadPolicies().policies) {
         process.stdout.write(
           `${p.id} [${p.status}/${p.effect.kind}] tags=[${p.scope.tags.join(',')}] "${p.statement}"\n` +

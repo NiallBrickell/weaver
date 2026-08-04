@@ -56,8 +56,9 @@ export type PolicyProvenance =
       interventionSummary: string;
     }
   | {
-      source: 'backfill:rules' | 'backfill:sessions';
-      /** "path § heading" for rules files; "session <id>" for transcripts. */
+      source: 'backfill:rules' | 'backfill:sessions' | 'seed';
+      /** "path § heading" for rules files; "session <id>" for transcripts;
+       * "<author>" for an imported team seed. */
       ref: string;
       interventionSummary: string;
     };
@@ -152,6 +153,83 @@ export function policyOrigin(p: PolicyRecord): string {
   return 'workstreamSlug' in p.provenance ? p.provenance.workstreamSlug : p.provenance.ref;
 }
 
+// ---------------------------------------------------------------------------
+// Team seeds: share learned practice, never trust or private context.
+
+export interface SeedFile {
+  weaverSeed: 1;
+  author: string;
+  exportedAt: Iso;
+  policies: { statement: string; tags: string[]; effect: { kind: PolicyEffectKind; description: string }; origin: string }[];
+}
+
+/**
+ * Export shareable practice. SANITIZED BY CONSTRUCTION: no ids, no evidence,
+ * no intervention summaries (session-derived ones can quote private
+ * transcripts), no absolute paths — just the statement, scope, effect, and a
+ * short origin label. Superseded policies stay home: a rule the author
+ * outgrew must not be seeded into a teammate.
+ */
+export function exportSeed(author: string): SeedFile {
+  const sanitizeOrigin = (p: PolicyRecord): string => {
+    const raw = policyOrigin(p);
+    return raw.replace(/\/[^\s§]*\//g, (m) => m.split('/').filter(Boolean).pop() + '/').slice(0, 80);
+  };
+  return {
+    weaverSeed: 1,
+    author,
+    exportedAt: new Date().toISOString(),
+    policies: loadPolicies()
+      .policies.filter((p) => p.status !== 'superseded')
+      .map((p) => ({
+        statement: p.statement,
+        tags: p.scope.tags,
+        effect: p.effect,
+        origin: sanitizeOrigin(p),
+      })),
+  };
+}
+
+/**
+ * Import a teammate's seed. Every policy lands in SHADOW — the seed carries
+ * the author's guardrails, never their trust; each rule earns active status
+ * through the importer's own intervention-free evidence, and the importer's
+ * corrections supersede seeded rules with visible lineage. Dedup by
+ * normalized statement makes re-import a no-op.
+ */
+export function importSeed(seed: SeedFile, opts: { refuseAuthority: (text: string) => boolean }): {
+  imported: number;
+  skippedDuplicate: number;
+  refused: string[];
+} {
+  const existing = new Set(loadPolicies().policies.map((p) => normalizeStatement(p.statement)));
+  let imported = 0;
+  let skippedDuplicate = 0;
+  const refused: string[] = [];
+  for (const p of seed.policies) {
+    if (opts.refuseAuthority(p.statement)) {
+      refused.push(p.statement.slice(0, 80));
+      continue;
+    }
+    if (existing.has(normalizeStatement(p.statement))) {
+      skippedDuplicate++;
+      continue;
+    }
+    existing.add(normalizeStatement(p.statement));
+    proposeBackfillPolicy({
+      statement: p.statement,
+      tags: p.tags,
+      effectKind: p.effect.kind,
+      effectDescription: p.effect.description,
+      source: 'seed',
+      ref: seed.author,
+      interventionSummary: `seeded from ${seed.author}'s practice (${p.origin})`,
+    });
+    imported++;
+  }
+  return { imported, skippedDuplicate, refused };
+}
+
 /**
  * Dedup key for policy statements: markdown emphasis, case, whitespace, and
  * trailing punctuation don't make two rules different. Backfill keys on this
@@ -215,7 +293,7 @@ export function proposeBackfillPolicy(args: {
   tags: string[];
   effectKind: PolicyEffectKind;
   effectDescription: string;
-  source: 'backfill:rules' | 'backfill:sessions';
+  source: 'backfill:rules' | 'backfill:sessions' | 'seed';
   ref: string;
   interventionSummary: string;
 }): PolicyRecord {
