@@ -120,13 +120,27 @@ function snapshot(): Snapshot {
         body: a.summary,
       });
     }
+    const pendingPilot: string[] = [];
     for (const a of gated) {
+      // Intermediate state: a fresh gated action the pilot hasn't ruled on
+      // yet is NOT the human's decision — surfacing it early makes cards
+      // flash into the queue and vanish when pilot approves a tick later
+      // (spooking the human into approving what pilot was about to handle).
+      // It reaches NEEDS YOU only when pilot escalated it, or when no verdict
+      // arrived within the grace window (pilot down ⇒ fail closed, visibly).
+      const ageMs = Date.now() - new Date(a.createdAtVirtual).getTime();
+      const noVerdict = !a.exec?.pilotVerdict;
+      if (noVerdict && ageMs < 120_000) {
+        pendingPilot.push(`⧗ awaiting pilot: "${a.objective.slice(0, 70)}"`);
+        continue;
+      }
       needsYou++;
       const notes = commentary.get(a.id);
       // The card is the plain-language ask, then THE ACTUAL COMMANDS (pulled
       // from the briefing's fenced code blocks) — what gets executed is the
       // thing being approved, so it is never buried. Full briefing last.
-      const ask = a.exec?.ask ?? a.objective;
+      const escalated = a.exec?.pilotVerdict && a.exec.pilotVerdict.decision !== 'approve';
+      const ask = (escalated ? `pilot escalated (${a.exec!.pilotVerdict!.reason.slice(0, 60)}): ` : '') + (a.exec?.ask ?? a.objective);
       const commands = a.exec?.run
         ? [a.exec.run]
         : [...a.briefing.matchAll(/```(?:bash|sh|shell)?\n([\s\S]*?)```/g)].map((m) => m[1]!.trimEnd());
@@ -196,6 +210,8 @@ function snapshot(): Snapshot {
     if (pendingSteers) {
       details.unshift(`✉ steering received — coordinator acts on it next pass (${pendingSteers} pending)`);
     }
+    // Pilot-pending actions live in the stream details (visible, not yours).
+    details.unshift(...pendingPilot);
 
     const nextRun = pending
       .filter((w) => w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
