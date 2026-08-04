@@ -61,6 +61,8 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
+  weaver run [--interval N]                  resident runner: tick every active workstream every N seconds (default 30)
+  weaver pause <slug> | resume <slug>        stop/restart a workstream being ticked (state is kept)
 `;
 
 async function main(): Promise<void> {
@@ -482,6 +484,42 @@ async function main(): Promise<void> {
         default:
           fail('secret subcommand must be set|list|rm');
       }
+      break;
+    }
+
+    case 'run': {
+      // The resident runner: durability still lives in the store — this loop
+      // holds no state and can be killed/restarted at any moment. A tick with
+      // nothing due is free (no model call), so polling is cheap.
+      const interval = Number(opt(rest, 'interval') ?? '30') * 1000;
+      process.stdout.write(`weaver run — ticking active workstreams every ${interval / 1000}s (Ctrl-C to stop)\n`);
+      for (;;) {
+        for (const slug of listWorkstreams()) {
+          try {
+            if (load(slug).workstream.status !== 'active') continue;
+            const report = await tick(slug, {});
+            if (report.workersRun.length || report.passes.length || report.sendsExecuted || report.unknownsResolved) {
+              process.stdout.write(
+                `[${new Date().toTimeString().slice(0, 8)}] ${slug}: workers=[${report.workersRun.join(',')}] passes=${report.passes.length} sends=${report.sendsExecuted}\n`,
+              );
+            }
+          } catch (e) {
+            process.stderr.write(`[run] ${slug}: ${e instanceof Error ? e.message : e}\n`);
+          }
+        }
+        await new Promise((r) => setTimeout(r, interval));
+      }
+    }
+
+    case 'pause':
+    case 'resume': {
+      const slug = rest[0] ?? fail('slug required');
+      const to = cmd === 'pause' ? 'paused' : 'active';
+      arrive(slug, (d, event) => {
+        d.workstream.status = to;
+        event(`workstream.${cmd}d`, `human ${cmd}d the workstream`);
+      });
+      process.stdout.write(`${slug} is now ${to}\n`);
       break;
     }
 
