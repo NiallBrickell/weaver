@@ -244,7 +244,9 @@ function executeHumanActions(slug: string): number {
  * and a coordinator (or human) decides from that evidence.
  */
 function recoverCrashedAttempts(slug: string): number {
-  const staleMs = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 10 * 60_000);
+  // Long research/synthesis workers legitimately run 20+ minutes; recovering
+  // a live worker as "crashed" forks the work, so the horizon errs long.
+  const staleMs = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
   const doc = load(slug);
   let recovered = 0;
   for (const asg of doc.assignments.filter((a) => a.state === 'running')) {
