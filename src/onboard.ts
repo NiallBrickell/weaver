@@ -25,6 +25,24 @@ export const HOUSE_CONSTRAINTS = [
   'All dates in artifacts and commits use the real current date',
 ];
 
+/**
+ * The machine's repo map, injected into derivation so a one-liner that only
+ * implies its repo ("the leads UI", "the upload composer") still expands to
+ * an objective that NAMES it. Coordinators can always fall back to scouting
+ * ~/work/acme with a read-only worker, but a named repo skips that pass.
+ * Maintained by hand; keep entries to what a task message might mean.
+ */
+export const REPO_MAP = `Known repos under /Users/niall/work/projects (grant read access to the parent dir to search across them):
+- acme — the main product: Encore Go backend (backend/), Next.js frontend (frontend/), e2e tests, evals. Default guess for product features, uploads, threads, approvals, integrations, accounts.
+- maurice — leads/growth engine: lead capture, enrichment, brand-style skills, growth experiments, landing pages.
+- devbot — the PR-review bot (deployed on Railway, api devbot.example.com).
+- engineering — the engineering.example.com public site (blog, docs pages).
+- acme-data-platform — EDP: data syncs and pipelines.
+- acme-development — dev tooling and scripts (worktree setup, heavy-lock).
+- pilot — the local command-approval daemon.
+- weaver — this harness itself.
+- acme-cli, acme-ts-sdk, acme-python-sdk, acme-integrations, codeexec — CLI, SDKs, integrations, code-execution service.`;
+
 export interface Derived {
   slug: string;
   title: string;
@@ -91,6 +109,9 @@ async function deriveWithModel(message: string, taken: Set<string>, done?: strin
     ``,
     `- slug: 2-4 word kebab-case name`,
     `- objective: the founder's ask, expanded into a self-contained brief a fresh agent can act on. PRESERVE every concrete detail verbatim (names, URLs, error text, repos); resolve relative dates against today (${new Date().toISOString().slice(0, 10)}); name likely evidence sources when the message implies them. Never invent requirements the message doesn't contain.`,
+    `- when the message implies code work, name the repo(s) it most likely lives in from the map below (with the full path), and say scouting across the parent dir is the fallback if that guess is wrong — a wrong guess must redirect, not derail.`,
+    ``,
+    REPO_MAP,
     `- successCriteria: 1-3 checkable statements of done.${
       done
         ? ' The founder EXPLICITLY stated what done means — it is the first criterion, meaning-preserved: ' + JSON.stringify(done)
