@@ -5,6 +5,16 @@ description: "The shapes of work a workstream can hold, and the arc every workst
 
 A workstream is any bounded outcome you would otherwise have to supervise: something with a nameable "done", a reason to exist for longer than one sitting, and judgment calls along the way that are worth recording. If you can say what done looks like and what must stay under your control, Weaver can carry it.
 
+## The one-sentence way
+
+Most workstreams should start as a sentence, not a form:
+
+```bash
+weaver do "The EDP nightly syncs keep silently stalling — figure out why and make failures loud."
+```
+
+Everything a `create` invocation would ask for is derived from the message — slug, title, an expanded brief that preserves every concrete detail you gave, checkable done-criteria — and your standing house constraints are applied automatically. Phrasing that implies recurrence ("every week, clean up…") makes it a routine with a self-scheduling cadence. The sections below exist for when you want to hand-set any of that.
+
 ## Four shapes
 
 ### Build something

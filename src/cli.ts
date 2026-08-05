@@ -39,6 +39,7 @@ function fail(msg: string): never {
 
 const USAGE = `weaver — durable workstream harness (MVP)
 
+  weaver do "<message>"                      start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied
   weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--max-passes N] [--max-cost USD]
   weaver list
   weaver status <slug>
@@ -77,6 +78,25 @@ const USAGE = `weaver — durable workstream harness (MVP)
 async function main(): Promise<void> {
   const [cmd, ...rest] = args();
   switch (cmd) {
+    case 'do': {
+      const message = rest.join(' ').trim();
+      if (!message) fail('usage: weaver do "<what you want done>"');
+      const { onboard } = await import('./onboard.js');
+      const d = await onboard(message);
+      process.stdout.write(
+        [
+          `▶ ${d.slug}${d.routine ? '  (routine)' : ''} — ${d.title}`,
+          ``,
+          d.objective,
+          ...(d.successCriteria.length ? [``, `done when:`, ...d.successCriteria.map((c) => `  - ${c}`)] : []),
+          ``,
+          `It's running. Watch: weaver watch · redirect anytime: weaver steer ${d.slug} "<msg>"`,
+          ``,
+        ].join('\n'),
+      );
+      break;
+    }
+
     case 'create': {
       const slug = opt(rest, 'slug') ?? fail('--slug required');
       const title = opt(rest, 'title') ?? fail('--title required');
