@@ -72,7 +72,7 @@ yarn weaver watch              # interactive dashboard: the needs-you queue + fl
 
 - **Routines**: tag a workstream `routine` and have it schedule its own next wake — a standing loop (Sentry sweep, evals health, usage reports) that, unlike cron'd prompts, wakes with its decision log, constraints, and learned policies intact. Run #30 is smarter than run #1.
 - **Secrets**: `echo VALUE | yarn weaver secret set NAME [--ws slug]`. Models only ever see *names*; the engine injects values into approved action shells and scrubs them from everything captured back. The store refuses any write that embeds a known secret value.
-- **Operator access**: approved action workers inherit the MCP servers you've registered for the directories they touch, plus your real CLIs — they act as you, on your machine, inside the approval gate. Research workers stay isolated and side-effect-free.
+- **Operator access**: workers inherit the MCP servers you've registered for the directories they touch. Approved action workers get the full surface plus your real CLIs — they act as you, on your machine, with every call pilot-supervised. Research workers get the same servers behind a deterministic read-only gate: retrieval calls work, mutating calls are denied — querying your logs and error trackers is research, changing them is an action.
 - Auth rides the local Claude Code subscription login; API keys are stripped from every spawned process. Cost figures are SDK-reported estimates, used only as a runaway backstop.
 
 ## Docs
