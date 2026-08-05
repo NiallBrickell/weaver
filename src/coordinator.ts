@@ -448,6 +448,7 @@ export async function runCoordinatorPass(
             if (!att) throw new Error(`no open attention ${a.attention_id}`);
             att.status = 'resolved';
             att.resolvedAt = new Date().toISOString();
+            att.resolvedBy = 'coordinator'; // system actor — never a human intervention
             event('attention.withdrawn', `coordinator withdrew ${att.id}: ${a.reason}`, [att.id]);
             return `withdrew ${att.id}`;
           }),
@@ -527,6 +528,7 @@ export async function runCoordinatorPass(
             if (att.status !== 'open') throw new Error(`${att.id} is already resolved`);
             att.status = 'resolved';
             att.resolvedAt = new Date().toISOString();
+            att.resolvedBy = 'coordinator'; // system actor — never a human intervention
             event('attention.resolved', `${att.id}: ${a.reason}`, [att.id]);
             return `resolved ${att.id}`;
           }),

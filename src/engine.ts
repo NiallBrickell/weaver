@@ -174,6 +174,7 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
           if (att.refId === asg.id && att.status === 'open') {
             att.status = 'resolved';
             att.resolvedAt = new Date().toISOString();
+            att.resolvedBy = 'pilot'; // system actor — never a human intervention
           }
         }
         event('action.auto_approved', `${asg.id} auto-approved via pilot — ${verdict!.reason}`, [asg.id]);
