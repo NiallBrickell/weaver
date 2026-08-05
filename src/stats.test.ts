@@ -13,11 +13,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import type { PolicyRecord } from './policies.js';
+import { approveAction } from './humanActs.js';
 import {
   computeStats,
   cumulativeRatio,
   datedInterventions,
   fleetDays,
+  interruptionLoad,
   policyStatusByDay,
   promotionAt,
   provenanceSplit,
@@ -73,11 +75,11 @@ test('datedInterventions: one human act is one act, pilot approvals are not acts
     // A steering that answered two twin attention cards: ONE act.
     d.steering.push({ id: 'steer_1', body: 'do it', at: '2026-08-04T10:00:00.000Z' });
     d.attention.push(
-      { id: 'att_1', kind: 'review', summary: 'twin', status: 'resolved', createdAt: '2026-08-04T09:00:00.000Z', resolvedAt: '2026-08-04T10:00:00.500Z' },
-      { id: 'att_2', kind: 'review', summary: 'twin', status: 'resolved', createdAt: '2026-08-04T09:00:00.000Z', resolvedAt: '2026-08-04T10:00:00.500Z' },
+      { id: 'att_1', kind: 'review', summary: 'twin', status: 'resolved', createdAt: '2026-08-04T09:00:00.000Z', resolvedAt: '2026-08-04T10:00:00.500Z', resolvedBy: 'niall' },
+      { id: 'att_2', kind: 'review', summary: 'twin', status: 'resolved', createdAt: '2026-08-04T09:00:00.000Z', resolvedAt: '2026-08-04T10:00:00.500Z', resolvedBy: 'niall' },
     );
     // An independent resolution the next day: a second act.
-    d.attention.push({ id: 'att_3', kind: 'blocker', summary: 'other', status: 'resolved', createdAt: '2026-08-04T09:00:00.000Z', resolvedAt: '2026-08-05T09:00:00.000Z' });
+    d.attention.push({ id: 'att_3', kind: 'blocker', summary: 'other', status: 'resolved', createdAt: '2026-08-04T09:00:00.000Z', resolvedAt: '2026-08-05T09:00:00.000Z', resolvedBy: 'niall' });
     // A human gate approval (act) and a pilot auto-approval (NOT an act).
     d.assignments.push(
       { ...baseAssignment('asg_h', '2026-08-04T08:00:00.000Z'), exec: { cwd: '/', verify: 'true', approval: { by: 'human', at: '2026-08-05T10:00:00.000Z' } } },
@@ -87,8 +89,73 @@ test('datedInterventions: one human act is one act, pilot approvals are not acts
   const acts = datedInterventions(load('stats-ws'));
   assert.deepEqual(
     acts.map((a) => a.kind),
-    ['steering', 'attention_resolution', 'gate_approval'],
+    ['steering', 'resolution', 'approval'],
   );
+  // Steering/approvals predating attribution stay honest instead of guessing.
+  assert.deepEqual(
+    acts.map((a) => a.actor),
+    ['unattributed', 'niall', 'unattributed'],
+  );
+});
+
+test('system and legacy resolutions never count as human interventions', () => {
+  makeWorkstream();
+  arrive('stats-ws', (d) => {
+    d.attention.push(
+      { id: 'att_p', kind: 'approval', summary: 'a', status: 'resolved', createdAt: '2026-08-04T08:00:00.000Z', resolvedAt: '2026-08-04T09:00:00.000Z', resolvedBy: 'pilot' },
+      { id: 'att_c', kind: 'review', summary: 'b', status: 'resolved', createdAt: '2026-08-04T08:00:00.000Z', resolvedAt: '2026-08-04T10:00:00.000Z', resolvedBy: 'coordinator' },
+      // Legacy: resolved before attribution existed — indistinguishable from a
+      // system act, so it lands in the undated remainder, never a guessed act.
+      { id: 'att_l', kind: 'blocker', summary: 'c', status: 'resolved', createdAt: '2026-08-04T08:00:00.000Z', resolvedAt: '2026-08-04T11:00:00.000Z' },
+    );
+    d.spend.humanInterventions = 1; // the legacy resolution WAS a human act once
+  });
+  const doc = load('stats-ws');
+  assert.equal(datedInterventions(doc).length, 0);
+  assert.equal(undatedInterventions([doc]), 1);
+});
+
+test('one keypress is one act: approval folds the card it auto-resolves, actor stamped durably', () => {
+  makeWorkstream();
+  arrive('stats-ws', (d) => {
+    const gated = baseAssignment('asg_g', '2026-08-04T08:00:00.000Z');
+    gated.state = 'gated' as never;
+    (gated as { exec?: object }).exec = { cwd: '/', verify: 'true', ask: 'approve?' };
+    d.assignments.push(gated);
+    d.attention.push({ id: 'att_g', kind: 'approval', summary: 'approve asg_g', refId: 'asg_g', status: 'open', createdAt: '2026-08-04T08:00:00.000Z' });
+  });
+  process.env.WEAVER_ACTOR = 'claude-session';
+  try {
+    approveAction('stats-ws', 'asg_g');
+  } finally {
+    delete process.env.WEAVER_ACTOR;
+  }
+  const doc = load('stats-ws');
+  assert.equal(doc.attention[0]!.resolvedBy, 'claude-session');
+  const acts = datedInterventions(doc);
+  assert.equal(acts.length, 1); // approval + its auto-resolved card = ONE act
+  assert.equal(acts[0]!.kind, 'approval');
+  assert.equal(acts[0]!.actor, 'claude-session');
+  assert.equal(doc.spend.humanInterventions, 1);
+  assert.equal(undatedInterventions([doc]), 0); // dated acts match the counter exactly
+});
+
+test('interruptionLoad: top-3 actors chart, tail folds to other, totals stay unfolded', () => {
+  makeWorkstream();
+  arrive('stats-ws', (d) => {
+    const day = (n: number, actor: string) => ({ id: `steer_${actor}${n}`, body: 'x', by: actor, at: `2026-08-04T0${n}:00:00.000Z` });
+    d.steering.push(
+      day(1, 'niall'), day(2, 'niall'), day(3, 'niall'),
+      day(4, 'claude-session'), day(5, 'claude-session'),
+      day(6, 'maurice'), day(7, 'maurice'),
+      day(8, 'intern'),
+    );
+  });
+  const load_ = interruptionLoad([load('stats-ws')], ['2026-08-04']);
+  assert.deepEqual(load_.segments, ['niall', 'claude-session', 'maurice', 'other']);
+  assert.deepEqual(load_.rows[0]!.counts, { niall: 3, 'claude-session': 2, maurice: 2, other: 1 });
+  assert.equal(load_.totals.length, 4); // intern unfolded in the table
+  assert.equal(load_.totals[0]!.byKind.steering, 3);
 });
 
 test('fleetDays: gap-filled, adoption dated by pin, rejection dated by its pass, costs summed', () => {
@@ -193,6 +260,7 @@ test('runStats writes stats.html with secrets redacted', () => {
   makeWorkstream('secret-ws', 'Title mentioning hunter2-value');
   arrive('secret-ws', (d) => {
     d.steering.push({ id: 'steer_1', body: 'go', at: '2026-08-04T10:00:00.000Z' });
+    d.spend.humanInterventions = 1; // the headline ratio anchors to the counter
     d.deliverables.push({
       id: 'del_1', title: 'done', kind: 'markdown', path: 'a.md', contentHash: 'h1', createdAtVirtual: '2026-08-04T11:00:00.000Z',
       adopted: { contentHash: 'h1', passId: 'pass_1', atVirtual: '2026-08-04T11:00:00.000Z' },

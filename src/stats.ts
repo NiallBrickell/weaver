@@ -42,39 +42,63 @@ export function dayKey(iso: string): string {
   return iso.slice(0, 10);
 }
 
+export type ActKind = 'steering' | 'approval' | 'rejection' | 'resolution' | 'adoption';
+
 export interface DatedAct {
   at: string;
-  kind: 'steering' | 'gate_approval' | 'send_approval' | 'attention_resolution';
+  kind: ActKind;
   slug: string;
+  /** WEAVER_ACTOR at act time; records predating attribution stay honest. */
+  actor: string;
 }
 
+export const UNATTRIBUTED = 'unattributed';
+
+/** Resolutions stamped by these are system acts, never human interventions. */
+const SYSTEM_ACTORS = new Set(['pilot', 'coordinator']);
+
 /**
- * Human interventions that left a durable timestamp. An attention card
- * resolved by a steering message is ONE act (humanActs.addSteering resolves
- * the card and increments the counter once), so resolutions within 5s of a
- * steering are folded into it; word-for-word twin cards resolved together
- * share a resolvedAt and fold to one act.
+ * Human interventions that left a durable timestamp, one entry per human ACT.
+ * Approvals, rejections, steers, and adoption overrides are primary acts; an
+ * attention card resolved within 5s of any primary act was resolved BY that
+ * act (humanActs auto-resolves the attached card in the same keypress and
+ * increments the counter once), so those resolutions fold into it rather than
+ * double-counting. Word-for-word twin cards resolved together share a
+ * resolvedAt and fold to one act. Pilot auto-approvals are authority
+ * delegation, never interventions, and are excluded entirely.
  */
 export function datedInterventions(doc: WorkstreamDoc): DatedAct[] {
   const slug = doc.workstream.slug;
   const acts: DatedAct[] = [];
-  for (const s of doc.steering) acts.push({ at: s.at, kind: 'steering', slug });
+  for (const s of doc.steering) acts.push({ at: s.at, kind: 'steering', slug, actor: s.by ?? UNATTRIBUTED });
   for (const a of doc.assignments) {
     const ap = a.exec?.approval;
-    if (ap?.by === 'human') acts.push({ at: ap.at, kind: 'gate_approval', slug });
+    if (ap?.by === 'human') acts.push({ at: ap.at, kind: 'approval', slug, actor: ap.actor ?? UNATTRIBUTED });
+    if (a.exec?.rejection) {
+      acts.push({ at: a.exec.rejection.at, kind: 'rejection', slug, actor: a.exec.rejection.actor });
+    }
+    if (a.adoption.at && a.adoption.actor) {
+      acts.push({ at: a.adoption.at, kind: 'adoption', slug, actor: a.adoption.actor });
+    }
   }
   for (const i of doc.interactions) {
-    if (i.approvedAt) acts.push({ at: i.approvedAt, kind: 'send_approval', slug });
+    if (i.approvedAt) acts.push({ at: i.approvedAt, kind: 'approval', slug, actor: i.approvedByActor ?? UNATTRIBUTED });
+    if (i.rejectedAt) acts.push({ at: i.rejectedAt, kind: 'rejection', slug, actor: i.rejectedBy ?? UNATTRIBUTED });
   }
-  const steerTimes = doc.steering.map((s) => Date.parse(s.at));
+  const primaryTimes = acts.map((a) => Date.parse(a.at));
   const seenResolved = new Set<string>();
   for (const att of doc.attention) {
     if (att.status !== 'resolved' || !att.resolvedAt) continue;
+    // Resolutions count only when durably attributed to a NON-system actor.
+    // Pilot/coordinator resolutions are system acts; legacy records with no
+    // resolvedBy are indistinguishable from them, so they fall into the
+    // undated remainder (anchored to the counter) instead of being guessed.
+    if (!att.resolvedBy || SYSTEM_ACTORS.has(att.resolvedBy)) continue;
     if (seenResolved.has(att.resolvedAt)) continue; // twins resolved in one act
     const t = Date.parse(att.resolvedAt);
-    if (steerTimes.some((st) => Math.abs(st - t) < 5000)) continue; // the steering was the act
+    if (primaryTimes.some((pt) => Math.abs(pt - t) < 5000)) continue; // the primary act was the act
     seenResolved.add(att.resolvedAt);
-    acts.push({ at: att.resolvedAt, kind: 'attention_resolution', slug });
+    acts.push({ at: att.resolvedAt, kind: 'resolution', slug, actor: att.resolvedBy });
   }
   return acts.sort((a, b) => a.at.localeCompare(b.at));
 }
@@ -224,6 +248,54 @@ export function provenanceSplit(policies: PolicyRecord[]): ProvenanceSplit {
   return out;
 }
 
+export interface ActorSummary {
+  actor: string;
+  total: number;
+  byKind: Record<ActKind, number>;
+}
+
+export interface InterruptionLoad {
+  /** Chart segments: top actors by lifetime total, plus 'other' when folded. */
+  segments: string[];
+  rows: { day: string; counts: Record<string, number> }[];
+  /** Every actor, unfolded, for the totals table. */
+  totals: ActorSummary[];
+}
+
+/**
+ * Who is actually absorbing the interruptions — the founder at the keyboard,
+ * an agent session steering on their behalf, someone else on the team. The
+ * pilot never appears here by construction: auto-approval is delegated
+ * authority, not an interruption. Only dated acts can be attributed, so the
+ * undated remainder (budget/config edits) is out of scope by design.
+ */
+export function interruptionLoad(docs: WorkstreamDoc[], days: string[]): InterruptionLoad {
+  const acts = docs.flatMap((d) => datedInterventions(d));
+  const byActor = new Map<string, ActorSummary>();
+  for (const act of acts) {
+    let s = byActor.get(act.actor);
+    if (!s) {
+      byActor.set(act.actor, (s = { actor: act.actor, total: 0, byKind: { steering: 0, approval: 0, rejection: 0, resolution: 0, adoption: 0 } }));
+    }
+    s.total += 1;
+    s.byKind[act.kind] += 1;
+  }
+  const totals = [...byActor.values()].sort((a, b) => b.total - a.total);
+  const top = totals.slice(0, 3).map((s) => s.actor);
+  const folded = totals.length > 3;
+  const segments = folded ? [...top, 'other'] : top;
+  const segOf = (actor: string): string => (top.includes(actor) ? actor : 'other');
+  const rows = days.map((day) => {
+    const counts: Record<string, number> = {};
+    for (const seg of segments) counts[seg] = 0;
+    for (const act of acts) {
+      if (dayKey(act.at) === day) counts[segOf(act.actor)] = (counts[segOf(act.actor)] ?? 0) + 1;
+    }
+    return { day, counts };
+  });
+  return { segments, rows, totals };
+}
+
 export interface WorkstreamRow {
   slug: string;
   title: string;
@@ -272,6 +344,7 @@ export interface StatsPayload {
   ratio: RatioPoint[];
   policyDays: PolicyDay[];
   provenance: ProvenanceSplit;
+  actors: InterruptionLoad;
   rows: WorkstreamRow[];
   totals: {
     workstreams: number;
@@ -297,6 +370,7 @@ export function computeStats(docs: WorkstreamDoc[], policies: PolicyRecord[], no
   const last = ratio[ratio.length - 1];
   const weekAgo = ratio.length > 7 ? ratio[ratio.length - 8] : undefined;
   const adoptions = days.reduce((n, d) => n + d.adoptions, 0);
+  const counterInterventions = docs.reduce((n, d) => n + (d.spend.humanInterventions ?? 0), 0);
   const rows = workstreamRows(docs);
   return {
     generatedAt: now.toISOString(),
@@ -307,18 +381,25 @@ export function computeStats(docs: WorkstreamDoc[], policies: PolicyRecord[], no
       days.map((d) => d.day),
     ),
     provenance: provenanceSplit(policies),
+    actors: interruptionLoad(
+      docs,
+      days.map((d) => d.day),
+    ),
     rows,
     totals: {
       workstreams: docs.length,
       active: docs.filter((d) => d.workstream.status === 'active').length,
       passes: docs.reduce((n, d) => n + d.spend.coordinatorPasses, 0),
       costUsd: docs.reduce((n, d) => n + d.spend.totalCostUsd, 0),
-      interventions: docs.reduce((n, d) => n + (d.spend.humanInterventions ?? 0), 0),
+      interventions: counterInterventions,
       undated: undatedInterventions(docs),
       adoptions,
       autoApproved: days.reduce((n, d) => n + d.autoApproved, 0),
       humanApproved: days.reduce((n, d) => n + d.humanApproved, 0),
-      perOutcome: last?.ratio ?? null,
+      // The headline anchors to the LIFETIME counter, so the undated remainder
+      // can never quietly leave the numerator; the curve (dated acts only) is
+      // the trend, and its endpoints feed the delta below.
+      perOutcome: adoptions > 0 ? counterInterventions / adoptions : null,
       perOutcomeWeekAgo: weekAgo?.ratio ?? null,
       policiesActive: policies.filter((p) => p.status === 'active').length,
       policiesShadow: policies.filter((p) => p.status === 'shadow').length,
@@ -824,6 +905,24 @@ const SCRIPT = String.raw`
        { label: 'shadow', num: true, get: function (d) { return d.shadow; } },
        { label: 'superseded', num: true, get: function (d) { return d.superseded; } }], policyDays);
 
+    var loadCfg = DATA.actors;
+    var segVars = ['--s1', '--s2', '--s3'];
+    stackedCols(document.getElementById('chart-actors'), {
+      label: 'Interruption load by actor per day',
+      rows: slice(loadCfg.rows),
+      segs: loadCfg.segments.map(function (name, i) {
+        return {
+          label: name,
+          cssVar: name === 'other' ? '--de' : segVars[i],
+          get: function (d) { return d.counts[name] || 0; },
+        };
+      }),
+    });
+    tableView(document.getElementById('table-actors'),
+      [{ label: 'day', get: function (d) { return d.day; } }].concat(loadCfg.segments.map(function (name) {
+        return { label: name, num: true, get: function (d) { return d.counts[name] || 0; } };
+      })), slice(loadCfg.rows));
+
     hBars(document.getElementById('chart-provenance'), {
       label: 'Policy provenance: seeded vs learned live',
       rows: ['seeded', 'learned'].map(function (k) {
@@ -876,11 +975,14 @@ function chartSection(id: string, title: string, hint: string): string {
 export function renderStatsHtml(stats: StatsPayload): string {
   const t = stats.totals;
   const per = t.perOutcome;
+  // The delta compares like with like: both endpoints come from the dated-act
+  // curve (the hero VALUE is counter-anchored and would mix units).
+  const curveNow = stats.ratio[stats.ratio.length - 1]?.ratio ?? null;
   let delta = '';
-  if (per != null && t.perOutcomeWeekAgo != null) {
-    const diff = per - t.perOutcomeWeekAgo;
+  if (curveNow != null && t.perOutcomeWeekAgo != null) {
+    const diff = curveNow - t.perOutcomeWeekAgo;
     const cls = diff < 0 ? 'down-good' : diff > 0 ? 'up-bad' : '';
-    delta = `<div class="delta ${cls}">${diff <= 0 ? '' : '+'}${diff.toFixed(2)} vs 7 days ago</div>`;
+    delta = `<div class="delta ${cls}">${diff <= 0 ? '' : '+'}${diff.toFixed(2)} over 7 days (dated acts)</div>`;
   } else {
     delta = `<div class="delta">↓ is convergence — trend appears after a week of history</div>`;
   }
@@ -912,6 +1014,20 @@ export function renderStatsHtml(stats: StatsPayload): string {
     )
     .join('\n');
 
+  const actorTotalsHtml = stats.actors.totals
+    .map(
+      (a) => `<tr>
+<td><strong>${esc(a.actor)}</strong></td>
+<td class="num">${a.byKind.steering}</td>
+<td class="num">${a.byKind.approval}</td>
+<td class="num">${a.byKind.rejection}</td>
+<td class="num">${a.byKind.resolution}</td>
+<td class="num">${a.byKind.adoption}</td>
+<td class="num">${a.total}</td>
+</tr>`,
+    )
+    .join('\n');
+
   const json = JSON.stringify(stats).replaceAll('<', '\\u003c');
   const body = stats.days.length
     ? `
@@ -925,12 +1041,21 @@ export function renderStatsHtml(stats: StatsPayload): string {
 <div class="kpis">${kpis}</div>
 <section><div class="chart-grid two">
 ${chartSection('activity', 'Outcomes vs interventions', 'Adopted outcomes and human interventions per day, fleet-wide. Convergence = the blue line holding while the orange one falls.')}
-${chartSection('ratio', 'The convergence curve', 'Cumulative human interventions per adopted outcome — the number the learning loop drives down, guarded by quality (rejections stay visible below).')}
+${chartSection('ratio', 'The convergence curve', 'Cumulative human interventions per adopted outcome, over dated acts only — the trend line. The headline tile anchors to the lifetime counter instead, so the undated remainder can never quietly leave the numerator.')}
 </div></section>
 <section><div class="chart-grid two">
 ${chartSection('approvals', 'Who approves the real world', 'Gated actions approved per day: pilot auto-approvals (within the operator’s standing rules) vs explicit human keypresses. Authority is never learned — this ratio moves only when the operator widens pilot’s rules.')}
 ${chartSection('policies', 'Policy population', 'Every policy starts shadow (unproven) and earns active through an intervention-free matching workstream; a wrong one is superseded with lineage, never edited away.')}
 </div></section>
+<section>
+<h2>Who absorbs the interruptions</h2>
+<p class="hint">Interventions by named actor (WEAVER_ACTOR): the founder at the keyboard, agent sessions steering on their behalf, teammates. Agents-on-agents is the intended shape — a session absorbing routine interruptions is cheap; founder keypresses are the scarce resource the curve should drive down first. The pilot never appears here: auto-approval is delegated authority, not an interruption. Acts predating attribution show as “unattributed”.</p>
+<div id="chart-actors"></div><div id="table-actors"></div>
+<div class="scroll-x"><table>
+<thead><tr><th>Actor</th><th class="num">Steers</th><th class="num">Approvals</th><th class="num">Rejections</th><th class="num">Resolutions</th><th class="num">Adoptions</th><th class="num">Total</th></tr></thead>
+<tbody>${actorTotalsHtml}</tbody>
+</table></div>
+</section>
 <section>
 <h2>Whose rules survive</h2>
 <p class="hint">Seeded policies came from the operator’s pre-Weaver rules and transcripts; learned ones from live corrections. Both earn active status the same way — evidence, not endorsement. Convergence toward what ACTUALLY works shows up here as seeded rules being outgrown (superseded) while earned ones accumulate.</p>
@@ -961,7 +1086,7 @@ ${chartSection('policies', 'Policy population', 'Every policy starts shadow (unp
 <p class="subtitle">${stats.totals.workstreams} workstream(s) · generated ${esc(stats.generatedAt)} · the optimization target is human interventions per successful outcome, guarded by quality and the authority firewall</p>
 ${body}
 <footer>
-Generated by <code>weaver stats</code> from durable typed state — steering timestamps, gate approvals, adoption pins, pass records, and policy evidence; never from the bounded event tail, which would fabricate convergence as old events fall off. An intervention is a steer, a gate approval, a send approval, or an attention resolution; ${
+Generated by <code>weaver stats</code> from durable typed state — steering timestamps, gate approvals, adoption pins, pass records, and policy evidence; never from the bounded event tail, which would fabricate convergence as old events fall off. An intervention is a steer, an approval or rejection of a gated action or send, an attention resolution, or a human adoption override — one keypress counts once, whatever it also auto-resolves; ${
     stats.totals.undated
       ? `${stats.totals.undated} intervention(s) (budget/config edits) carry no durable timestamp and appear in totals only.`
       : `budget/config edits would appear in totals only.`

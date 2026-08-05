@@ -84,7 +84,13 @@ export interface Assignment {
     /** 'human' = explicit keypress; 'pilot' = auto-approved by the operator's
      * pilot daemon (their standing approval policy engine) — same authority
      * source, since the human owns pilot's rules. */
-    approval?: { by: 'human' | 'pilot'; at: Iso; note?: string };
+    /** `actor` names WHO (WEAVER_ACTOR: the founder's username, an agent
+     * session steering on their behalf, …) — 'by' says which authority path.
+     * Durable so per-actor intervention load survives the event tail. */
+    approval?: { by: 'human' | 'pilot'; at: Iso; note?: string; actor?: string };
+    /** Human rejection of a gated action — the mirror of approval, kept
+     * durable (state 'cancelled' alone dates and attributes nothing). */
+    rejection?: { actor: string; at: Iso; reason: string };
     /** One-shot pilot verdict (approve or not) so a denial isn't re-asked
      * every tick; a denied action simply stays gated for the human. */
     pilotVerdict?: { decision: string; reason: string; at: Iso };
@@ -111,6 +117,9 @@ export interface Assignment {
     state: 'none' | 'proposed' | 'accepted' | 'rejected' | 'superseded';
     passId?: Id;
     reason?: string;
+    /** Set on human adoption overrides only: when, and by which actor. */
+    at?: Iso;
+    actor?: string;
   };
   createdInPass?: Id;
   createdAtVirtual: Iso;
@@ -173,6 +182,10 @@ export interface Interaction {
     | 'rejected';
   approvedBy?: 'human';
   approvedAt?: Iso;
+  /** Named actor behind the approval/rejection (WEAVER_ACTOR) — durable. */
+  approvedByActor?: string;
+  rejectedBy?: string;
+  rejectedAt?: Iso;
   /** Provider-side reference discovered on send or readback. */
   externalRef?: string;
   sentAtVirtual?: Iso;
@@ -233,6 +246,8 @@ export interface AttentionItem {
   status: 'open' | 'resolved';
   createdAt: Iso;
   resolvedAt?: Iso;
+  /** WHO resolved it (WEAVER_ACTOR) — durable, unlike the event summary. */
+  resolvedBy?: string;
 }
 
 // ---------------------------------------------------------------------------
