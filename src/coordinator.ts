@@ -703,6 +703,28 @@ export async function runCoordinatorPass(
         });
       }
     }
+    // Quiescence backstop: an ACTIVE stream whose pass ends with nothing
+    // scheduled, nothing live, and nothing raised would sleep FOREVER while
+    // rendering as innocently idle. The coordinator should have concluded the
+    // stream or scheduled its next check; when it did neither, a delayed wake
+    // forces that decision instead of letting silence become abandonment.
+    if (
+      d.workstream.status === 'active' &&
+      !d.wakes.some((w) => w.status === 'pending') &&
+      !d.assignments.some((a) => !['completed', 'failed', 'cancelled'].includes(a.state)) &&
+      !d.attention.some((a) => a.status === 'open') &&
+      !d.interactions.some((i) => i.status === 'awaiting_approval')
+    ) {
+      d.wakes.push({
+        id: newId('wake'),
+        reason:
+          'quiescence backstop — the last pass left an active stream with nothing scheduled, live, or raised. Decide: conclude the workstream, or schedule its next real check (then this backstop disappears).',
+        condition: { type: 'time', dueAtVirtual: new Date(virtualNow().getTime() + 12 * 60 * 60_000).toISOString() },
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      });
+      event('wake.backstop', 'active stream went quiescent with nothing scheduled — 12h backstop wake added', [passId]);
+    }
   });
 
   return { passId, outcome, costUsd, ...(summary ? { summary } : {}) };
