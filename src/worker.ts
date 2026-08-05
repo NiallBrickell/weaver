@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { virtualNow } from './clock.js';
+import { armWall } from './wall.js';
 import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, newId, readArtifact, writeArtifact } from './store.js';
 
@@ -237,8 +238,9 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
   let sessionId: string | undefined;
   // Hard wall under the 45m stale/slot horizons: a hung SDK call must fail
   // (→ no_submission → coordinator retries) rather than starve the runner.
+  // Sleep-aware: laptop-lid suspension doesn't count toward the wall.
   const abort = new AbortController();
-  const wall = setTimeout(() => abort.abort(new Error('worker wall-clock limit (40m) — aborted')), 40 * 60_000);
+  const wall = armWall(abort, 40 * 60_000, 'worker');
   try {
     const readDirs = asg.readDirs ?? [];
     const isAction = asg.kind === 'action';
@@ -304,7 +306,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
   } catch (e) {
     process.stderr.write(`worker ${runId} error: ${e instanceof Error ? e.message : e}\n`);
   } finally {
-    clearTimeout(wall);
+    wall.disarm();
   }
 
   arrive(slug, (d, event) => {
