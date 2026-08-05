@@ -55,6 +55,8 @@ interface StreamRow {
   routine: boolean;
   /** Earliest future scheduled wake — a routine's "next run". */
   nextRun?: string;
+  /** That wake's reason — WHAT the stream is waiting for, shown inline. */
+  nextReason?: string;
   paused: boolean;
   spent: number;
   maxCost: number;
@@ -76,6 +78,22 @@ function elapsed(iso: string): string {
   if (m < 1) return `${Math.max(0, Math.floor(ms / 1000))}s`;
   if (m < 60) return `${m}m`;
   return `${Math.floor(m / 60)}h${m % 60 ? `${m % 60}m` : ''}`;
+}
+
+function until(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  const m = Math.ceil(ms / 60_000);
+  if (m < 1) return 'now';
+  if (m < 60) return `${m}m`;
+  if (m < 48 * 60) return `${Math.round(m / 60)}h`;
+  return `${Math.round(m / (24 * 60))}d`;
+}
+
+/** A wake reason is coordinator prose; the row gets its first clause only. */
+function waitLabel(reason: string): string {
+  const flat = reason.replace(/\s+/g, ' ').trim();
+  const clause = flat.split(/[.;(]/)[0]!.trim();
+  return (clause.length > 6 ? clause : flat).slice(0, 64);
 }
 
 function snapshot(): Snapshot {
@@ -219,16 +237,22 @@ function snapshot(): Snapshot {
     // Pilot-pending actions live in the stream details (visible, not yours).
     details.unshift(...pendingPilot);
 
-    const nextRun = pending
+    const nextWake = pending
       .filter((w) => w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
-      .map((w) => (w.condition as { dueAtVirtual: string }).dueAtVirtual)
-      .sort()[0];
+      .sort((a, b) =>
+        (a.condition as { dueAtVirtual: string }).dueAtVirtual.localeCompare(
+          (b.condition as { dueAtVirtual: string }).dueAtVirtual,
+        ),
+      )[0];
+    const nextRun = nextWake ? (nextWake.condition as { dueAtVirtual: string }).dueAtVirtual : undefined;
     streams.push({
       slug,
       bucket: ws.status === 'done' ? 5 : bucket,
       queuedNow: dueNow > 0 || pendingSteers > 0,
       routine: ws.tags.includes('routine'),
-      nextRun, paused: ws.status === 'paused',
+      nextRun,
+      nextReason: nextWake?.reason,
+      paused: ws.status === 'paused',
       spent: doc.spend.totalCostUsd, maxCost: ws.budget.maxCostUsd,
       passes: doc.spend.coordinatorPasses, maxPasses: ws.budget.maxCoordinatorPasses,
       interventions: doc.spend.humanInterventions ?? 0,
@@ -523,8 +547,8 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                   <>
                     <Bar spent={st.spent} max={st.maxCost} />
                     <Text dimColor> ~${st.spent.toFixed(2)} est · passes {st.passes} · you {st.interventions}×{st.paused ? ' [paused]' : ''}</Text>
-                    {st.routine && st.bucket === 2 && st.nextRun ? (
-                      <Text color="blue"> · next run {st.nextRun.slice(5, 16).replace('T', ' ')}</Text>
+                    {st.bucket === 2 && !st.queuedNow && st.nextRun ? (
+                      <Text color="blue"> · in {until(st.nextRun)}{st.nextReason ? `: ${waitLabel(st.nextReason)}` : ''}</Text>
                     ) : null}
                   </>
                 )}
