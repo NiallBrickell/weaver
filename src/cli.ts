@@ -67,6 +67,7 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver watch [--plain]                     dashboard + embedded runner in ONE command (starts the runner unless one is live)
                                              keys: ↑↓ select, a approve, x reject, d resolve, s steer, p pause, q quit
   weaver inspect [slug]                      knowledge inspector → self-contained HTML: decision lineage, policies, interventions, adoptions, action audit
+  weaver stats                               convergence dashboard → self-contained HTML: interventions per adopted outcome over time, autonomy ratio, policy promotions, per-workstream stats
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
@@ -547,6 +548,19 @@ async function main(): Promise<void> {
       // — rendered from typed state into one self-contained HTML file.
       const { runInspect } = await import('./inspect.js');
       const out = runInspect(rest[0]);
+      process.stdout.write(`${out}\n`);
+      if (process.platform === 'darwin') {
+        const { spawn } = await import('node:child_process');
+        spawn('open', [out], { detached: true, stdio: 'ignore' }).unref();
+      }
+      break;
+    }
+
+    case 'stats': {
+      // Fleet convergence metrics from durable typed state (never the bounded
+      // event tail): interventions per adopted outcome, autonomy, policies.
+      const { runStats } = await import('./stats.js');
+      const out = runStats();
       process.stdout.write(`${out}\n`);
       if (process.platform === 'darwin') {
         const { spawn } = await import('node:child_process');
