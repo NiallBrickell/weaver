@@ -16,6 +16,7 @@ import { virtualNow } from './clock.js';
 import { armWall } from './wall.js';
 import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, newId, readArtifact, writeArtifact } from './store.js';
+import { tailMessage } from './tail.js';
 
 export function workerModel(): string {
   return process.env.WEAVER_WORKER_MODEL ?? 'sonnet';
@@ -298,6 +299,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
         abortController: abort,
       },
     })) {
+      tailMessage(slug, 'worker', assignmentId, message);
       if (message.type === 'result') {
         sessionId = message.session_id;
         costUsd = 'total_cost_usd' in message ? message.total_cost_usd : 0;

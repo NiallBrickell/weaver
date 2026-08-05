@@ -18,6 +18,7 @@ import { inVirtual, parseDuration, virtualNow } from './clock.js';
 import { buildProjection } from './projection.js';
 import { matchPolicies, proposePolicy, recordPolicyOutcome } from './policies.js';
 import { sdkEnv } from './secrets.js';
+import { tailMessage } from './tail.js';
 import { armWall } from './wall.js';
 import {
   RevisionConflictError,
@@ -609,6 +610,7 @@ export async function runCoordinatorPass(
         abortController: abort,
       },
     })) {
+      tailMessage(slug, 'coordinator', passId, message);
       if (message.type === 'result') {
         sessionId = message.session_id;
         costUsd = 'total_cost_usd' in message ? message.total_cost_usd : 0;
