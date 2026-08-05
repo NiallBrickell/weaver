@@ -274,6 +274,11 @@ function clearScreen(): void {
   process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
 }
 
+/** Cursor position above the first row: the fleet header, nothing selected.
+ * Keys that address "the current thing" then address the whole fleet — [i]
+ * opens the fleet knowledge page instead of one workstream's. */
+const NO_SELECTION = -1;
+
 function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element {
   const { exit } = useApp();
   const [snap, setSnap] = useState<Snapshot>(() => snapshot());
@@ -320,25 +325,29 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
     ],
     [snap],
   );
-  const sel = rows[Math.min(cursor, Math.max(0, rows.length - 1))];
+  const sel = cursor === NO_SELECTION ? undefined : rows[Math.min(cursor, Math.max(0, rows.length - 1))];
+  // What [i] addresses: the selected row's workstream, or the whole fleet.
+  const selSlug = sel ? (sel.type === 'item' ? sel.item.slug : sel.stream.slug) : undefined;
 
   useInput((input, key) => {
     if (steering) return; // TextInput owns the keyboard
     if (input === 'q') { exit(); return; }
     if (input === 'i') {
-      // i opens the knowledge HOMEPAGE: the fleet overview with the global
-      // policy store, regenerating and linking every workstream's own page —
-      // one entry point, click through from there.
+      // i opens knowledge for whatever is selected: one workstream's own page,
+      // or — with nothing selected, at the top — the fleet homepage with the
+      // global policy store. Either way the whole site is regenerated, so the
+      // links between the two directions resolve.
       try {
-        const out = runInspect();
+        const out = runInspect(selSlug);
         if (process.platform === 'darwin') execFile('open', [out]);
-        setToast(`knowledge → ${out}`);
+        // Where it went is only worth a toast when we couldn't open it for you.
+        setToast(process.platform === 'darwin' ? `knowledge → ${selSlug ?? 'fleet'}` : `knowledge → ${out}`);
       } catch (e) {
         setToast(`✗ ${e instanceof Error ? e.message : e}`);
       }
       return;
     }
-    if (key.upArrow || input === 'k') { setCursor((c) => Math.max(0, c - 1)); setScroll(0); }
+    if (key.upArrow || input === 'k') { setCursor((c) => Math.max(NO_SELECTION, c - 1)); setScroll(0); }
     if (key.downArrow || input === 'j') { setCursor((c) => Math.min(rows.length - 1, c + 1)); setScroll(0); }
     if (key.pageDown || input === ']') setScroll((s) => s + 12);
     if (key.pageUp || input === '[') setScroll((s) => Math.max(0, s - 12));
@@ -395,8 +404,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const selDetailLines = 5; // selected stream: details (4) + key hint
   const streamCount = snap.streams.length;
   const selPane = (() => {
-    const isExpandedSel =
-      rows[cursor]?.type === 'item' && expanded.has((rows[cursor] as { item: NeedsYouItem }).item.key);
+    const isExpandedSel = sel?.type === 'item' && expanded.has(sel.item.key);
     const fixed = chrome + snap.items.length + streamCount + selDetailLines;
     const room = Math.max(4, termRows - fixed - 2);
     return isExpandedSel ? Math.min(18, room) : Math.min(4, room);
@@ -411,7 +419,10 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
           narrow windows, and one wrapped line permanently desyncs Ink. */}
       <Box>
         <Text wrap="truncate-end">
-          <Text bold color="white"> W E A V E R </Text>
+          {/* The brand is the fleet row: inverse when the cursor sits above
+              every workstream, so "nothing selected" is a visible position
+              in the same visual language as a selected row. */}
+          <Text bold color="white" inverse={cursor === NO_SELECTION}> W E A V E R </Text>
           <Text dimColor>· </Text>
           {snap.items.length ? <Text bold color="red">{snap.items.length} need you</Text> : <Text dimColor>0 need you</Text>}
           <Text dimColor> · </Text><Text color="cyan">{counts[1]} working</Text>
@@ -428,11 +439,18 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         </Text>
       </Box>
 
+      {/* The fleet row's own hint, mirroring a selected stream's. Costs a line
+          only in the state that has one spare: nothing selected means no
+          selection-detail pane below. */}
+      {cursor === NO_SELECTION && (
+        <Text color="cyan" wrap="truncate-end"> [i] fleet knowledge — every workstream + the global policy store</Text>
+      )}
+
       {snap.items.length > 0 && (
         <Box flexDirection="column" marginTop={1}>
           <Text bold color="red">⚡ NEEDS YOU</Text>
           {snap.items.map((it) => {
-            const isSel = rows[cursor]?.type === 'item' && (rows[cursor] as { item: NeedsYouItem }).item.key === it.key;
+            const isSel = sel?.type === 'item' && sel.item.key === it.key;
             return (
               <Box key={it.key} flexDirection="column">
                 <Text inverse={isSel} wrap="truncate-end">
@@ -472,9 +490,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         // Window the stream list to the height budget, keeping the selection
         // visible; hidden rows are announced, never silently dropped.
         const ordered = [...snap.streams.filter((s) => !s.routine), ...snap.streams.filter((s) => s.routine)];
-        const selIdx = rows[cursor]?.type === 'stream'
-          ? ordered.findIndex((s) => s.slug === (rows[cursor] as { stream: StreamRow }).stream.slug)
-          : 0;
+        const selIdx = sel?.type === 'stream' ? ordered.findIndex((s) => s.slug === sel.stream.slug) : 0;
         const start = Math.max(0, Math.min(selIdx - streamsVisible + 1, ordered.length - streamsVisible));
         const windowSet = new Set(ordered.slice(start, start + streamsVisible).map((s) => s.slug));
         const hidden = ordered.length - windowSet.size;
@@ -487,7 +503,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
       <Box key={sec.label} flexDirection="column" marginTop={1}>
         <Text bold dimColor>{sec.label}</Text>
         {sec.list.map((st) => {
-          const isSel = rows[cursor]?.type === 'stream' && (rows[cursor] as { stream: StreamRow }).stream.slug === st.slug;
+          const isSel = sel?.type === 'stream' && sel.stream.slug === st.slug;
           const d = st.bucket === 2 && st.queuedNow ? { color: 'blueBright', word: 'QUEUED', glyph: '●' } : DOT[st.bucket]!;
           return (
             <Box key={st.slug} flexDirection="column">
@@ -512,7 +528,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                   {st.details.slice(0, 4).map((l, j) => (
                     <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
                   ))}
-                  <Text color="cyan" wrap="truncate-end">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [i] knowledge</Text>
+                  <Text color="cyan" wrap="truncate-end">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [i] this stream's knowledge</Text>
                 </>
               )}
             </Box>
@@ -550,7 +566,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         <Box marginTop={1}>
           {/* ONE line, always truncated — a wrapped footer desyncs Ink's repaint. */}
           <Text dimColor wrap="truncate-end">
-            ↑↓ · enter · [/] scroll · a approve · x reject · d resolve · s steer · p pause · i knowledge · q quit
+            ↑↓ · enter · [/] scroll · a approve · x reject · d resolve · s steer · p pause · i {selSlug ? 'knowledge' : 'fleet knowledge'} · q quit
             {toast ? <Text color="green">   {toast}</Text> : null}
           </Text>
         </Box>
