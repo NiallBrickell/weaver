@@ -58,12 +58,48 @@ function pilotSupervisor(cwd: string, slug: string) {
 }
 
 /**
+ * The read-only gate for non-action workers' MCP access. MCP servers are not
+ * inherently read-only (Sentry can update issues, Axiom can delete monitors),
+ * but retrieval IS research — so instead of withholding the servers entirely,
+ * the harness allows methods whose name states a read intent and denies
+ * everything else. Deliberately deterministic and fail-closed: an unmatched
+ * verb is denied, and no model (worker or pilot) is consulted — the
+ * side-effect-free guarantee for research workers stays structural.
+ */
+const MCP_READ_VERBS = ['describe', 'search', 'status', 'export', 'fetch', 'query', 'check', 'count', 'watch', 'list', 'find', 'show', 'read', 'get'];
+
+export function isReadOnlyMcpTool(toolName: string): boolean {
+  const parts = toolName.split('__');
+  if (parts[0] !== 'mcp' || parts.length < 3) return false;
+  const method = parts.slice(2).join('__');
+  const lower = method.toLowerCase();
+  // The verb must be the whole method or be followed by a case/underscore
+  // boundary: `getIssue`/`get_issue`/`get` pass, `gettysburg` does not.
+  return MCP_READ_VERBS.some(
+    (v) => lower === v || (lower.startsWith(v) && /[^a-z]/.test(method.charAt(v.length))),
+  );
+}
+
+function readOnlyMcpSupervisor() {
+  return async (toolName: string, input: Record<string, unknown>): Promise<
+    { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }
+  > => {
+    if (isReadOnlyMcpTool(toolName)) return { behavior: 'allow', updatedInput: input };
+    return {
+      behavior: 'deny',
+      message: `${toolName} is not a read operation and you are a read-only worker. Do not look for another way to perform this act. If the assignment genuinely needs it, state that in your submission so the coordinator can dispatch a supervised action.`,
+    };
+  };
+}
+
+/**
  * MCP servers the OPERATOR already registered for the directories an action
  * touches (global + every ~/.claude.json project entry that is an ancestor of
- * the action's dirs, closest last so it wins). Action workers act as the
- * operator on this machine, so they get the operator's MCPs — same servers,
- * same stored auth — instead of asking the human to re-plumb access that
- * already exists. Read-only workers stay isolated.
+ * the action's dirs, closest last so it wins). Workers act as the operator on
+ * this machine, so they get the operator's MCPs — same servers, same stored
+ * auth — instead of asking the human to re-plumb access that already exists.
+ * Action workers get the full surface under live pilot supervision; read-only
+ * workers get the same servers behind the deterministic read-only gate below.
  */
 export function operatorMcpServers(dirs: string[]): Record<string, unknown> {
   try {
@@ -91,7 +127,7 @@ Rules:
 3. For anything longer than ~150 lines, build the artifact incrementally: call append_section repeatedly (each call adds one section, in order), then call submit_result ONCE with an empty or short closing content — the appended sections are prepended automatically. Never submit a placeholder: an empty or stub artifact is worse than no submission, and the coordinator will reject it.
 4. Call submit_result exactly once. Do not end without submitting.`;
 
-const WORKER_SYSTEM = `You are an isolated worker executing ONE bounded assignment inside a larger workstream you cannot see. You have no memory of anything outside this brief and no ability to affect the world: your single output channel is the submit_result tool. If the assignment declares read-only directories, you may Read/Grep/Glob within them to ground your work in the real source — cite real file paths and line numbers, never invented ones.
+const WORKER_SYSTEM = `You are an isolated worker executing ONE bounded assignment inside a larger workstream you cannot see. You have no memory of anything outside this brief and no ability to affect the world: your single output channel is the submit_result tool. If the assignment declares read-only directories, you may Read/Grep/Glob within them to ground your work in the real source — cite real file paths and line numbers, never invented ones. You may also have the operator's MCP tools (error trackers, log stores, …) available in READ-ONLY mode: retrieval calls (get/list/search/query/…) work, anything that would mutate external state is denied by the harness — if the assignment needs such a mutation, say so in your submission rather than working around the denial.
 ${SHARED_RULES}`;
 
 const ACTION_SYSTEM = `You are an isolated worker executing ONE human-approved real-world ACTION inside a larger workstream you cannot see. You have Bash in your working directory and real CLIs. Perform EXACTLY the act the briefing describes — nothing beyond it, nothing on targets the briefing does not name, and every "do not" the briefing states is absolute. If a step fails, report the failure honestly via submit_result; never improvise a different action to "make it work". If the briefing lists credential environment variables, use them via the shell (\`$NAME\`) — never echo, print, or persist their values anywhere. Your submission is a report of what you did with exact references (identifiers, URLs, command output) — the harness will independently verify the effect, so precision matters and embellishment will be caught.
@@ -259,7 +295,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
       : readDirs.length
         ? ['Read', 'Grep', 'Glob']
         : [];
-    const operatorMcp = isAction ? operatorMcpServers([asg.exec!.cwd, ...readDirs]) : {};
+    const operatorMcp = operatorMcpServers(isAction ? [asg.exec!.cwd, ...readDirs] : readDirs);
     for await (const message of query({
       prompt,
       options: {
@@ -288,13 +324,15 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
         // Action workers: ONLY the submit surface is auto-allowed — every
         // real tool call (Bash, edits, operator MCPs) routes through the live
         // pilot supervisor, judged at execution time exactly like the
-        // operator's own sessions. Read-only workers stay prompt-free.
+        // operator's own sessions. Read-only workers auto-allow their file
+        // tools + submit surface; operator MCP calls fall through to the
+        // deterministic read-only gate.
         allowedTools: isAction
           ? ['mcp__weaver__*']
           : [...baseTools, 'mcp__weaver__*'],
-        permissionMode: isAction ? 'default' : 'dontAsk',
-        ...(isAction ? { canUseTool: pilotSupervisor(asg.exec!.cwd, slug) as never } : {}),
-        maxTurns: isAction || readDirs.length ? 80 : 30,
+        permissionMode: 'default',
+        canUseTool: (isAction ? pilotSupervisor(asg.exec!.cwd, slug) : readOnlyMcpSupervisor()) as never,
+        maxTurns: isAction || readDirs.length || Object.keys(operatorMcp).length ? 80 : 30,
         persistSession: false,
         abortController: abort,
       },
