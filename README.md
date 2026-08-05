@@ -6,6 +6,14 @@ Agent harnesses already run models for hours. Memory features already carry fact
 
 For code, that layer has existed for decades: git history holds accepted work, PRs hold review, CI holds verified outcomes, and the repo outlives every editor session. For everything else agents do — outreach, operations, research, recurring business routines — there is nothing. Every "agent product" collapses into one immortal chat that degrades until someone starts over.
 
+> ### ⚡ Quick start — one sentence is the whole interface
+>
+> ```bash
+> weaver do "a user hit an upload bug yesterday — no progress bar, composer stuck on 'waiting for upload'. Dig in, check PostHog and Axiom, fix it."
+> ```
+>
+> That's it. The slug, title, brief, and success criteria are derived from your message (recurring phrasing like "every week…" makes it a routine automatically); the house constraints — isolated worktrees, review loop, self-merge bar, credential discipline — are applied without being asked for. Workers set up their own environments; nothing about worktrees, branches, or env files is yours to think about. Watch it on the dashboard (`weaver watch`), redirect it anytime (`weaver steer <slug> "…"`), and it only interrupts you for genuine judgment calls. `weaver create` remains for when you want to hand-set every field.
+
 Weaver is that missing layer, built standalone on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk):
 
 > **A Workstream is the durable organizational execution — direction, work, deliverables, interactions, results. Coordinator runs and workers are disposable: they enter, advance bounded work, publish results, and leave.**
