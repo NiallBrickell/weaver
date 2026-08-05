@@ -13,6 +13,15 @@ For code, that layer has existed for decades: git history holds accepted work, P
 > ```
 >
 > That's it. The slug, title, brief, and success criteria are derived from your message (recurring phrasing like "every week…" makes it a routine automatically); the house constraints — isolated worktrees, review loop, self-merge bar, credential discipline — are applied without being asked for. Workers set up their own environments; nothing about worktrees, branches, or env files is yours to think about. Watch it on the dashboard (`weaver watch`), redirect it anytime (`weaver steer <slug> "…"`), and it only interrupts you for genuine judgment calls. `weaver create` remains for when you want to hand-set every field.
+>
+> When the default done-bar (fixed, merged through review, evidence in the PR) isn't what you mean, say what is — as an optional second sentence:
+>
+> ```bash
+> weaver do "The onboarding banner renders behind the nav on mobile" \
+>           "fixed, merged, AND verified read-only in the live product with a browser afterwards"
+> ```
+>
+> Verification never touches production unless you ask for it like this — and even then, read-only.
 
 Weaver is that missing layer, built standalone on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk):
 

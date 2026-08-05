@@ -21,6 +21,7 @@ export const HOUSE_CONSTRAINTS = [
   'PR lifecycle on erdo org repos: open the PR, never ask the human to review it — DevBot reviews via COMMENTS (it never submits GitHub approvals). Poll via gh on scheduled wakes; address every concrete issue. When DevBot\'s latest completed review reports zero concrete issues AND CI is green, merge yourself via exec_run (gh pr merge N --squash --repo erdoai/<repo>), readback-confirmed',
   'Database access goes through the encore CLI — never paste connection strings into prompts, state, or artifacts; reference credentials as $NAME (the engine injects values)',
   'When blocked on credentials, external accounts, or anything only the founder can supply, raise attention with a one-click ask instead of improvising',
+  'Verification runs against tests, previews, and readbacks by default — never poke production. Only when the objective explicitly calls for post-merge verification in the live product may you check there, and then strictly read-only (browser tooling included)',
   'All dates in artifacts and commits use the real current date',
 ];
 
@@ -49,7 +50,7 @@ export function sanitizeSlug(raw: string, taken: Set<string>): string {
 }
 
 /** Deterministic derivation — used whenever the model pass fails. */
-export function deriveFallback(message: string, taken: Set<string>): Derived {
+export function deriveFallback(message: string, taken: Set<string>, done?: string): Derived {
   const words = message
     .split(/\s+/)
     .map((w) => w.replace(/[^a-zA-Z0-9]/g, ''))
@@ -60,7 +61,7 @@ export function deriveFallback(message: string, taken: Set<string>): Derived {
     slug: sanitizeSlug(words || 'task', taken),
     title: message.slice(0, 70),
     objective: message,
-    successCriteria: [],
+    successCriteria: done ? [done] : [],
     routine: false,
   };
 }
@@ -84,13 +85,17 @@ export function parseDerivation(text: string, taken: Set<string>): Derived | nul
   }
 }
 
-async function deriveWithModel(message: string, taken: Set<string>): Promise<Derived | null> {
+async function deriveWithModel(message: string, taken: Set<string>, done?: string): Promise<Derived | null> {
   const prompt = [
     `Turn this raw task message from the founder into a workstream definition. Reply with ONLY a JSON object: {"slug", "title", "objective", "successCriteria": [..], "routine": bool}.`,
     ``,
     `- slug: 2-4 word kebab-case name`,
     `- objective: the founder's ask, expanded into a self-contained brief a fresh agent can act on. PRESERVE every concrete detail verbatim (names, URLs, error text, repos); resolve relative dates against today (${new Date().toISOString().slice(0, 10)}); name likely evidence sources when the message implies them. Never invent requirements the message doesn't contain.`,
-    `- successCriteria: 1-3 checkable statements of done`,
+    `- successCriteria: 1-3 checkable statements of done.${
+      done
+        ? ' The founder EXPLICITLY stated what done means — it is the first criterion, meaning-preserved: ' + JSON.stringify(done)
+        : ' Default bar for code work: root-caused/implemented, PR merged through the review loop, verification evidence in the PR. Do NOT include verifying in production unless the founder asked for it.'
+    }`,
     `- routine: true ONLY if the message describes recurring work (weekly, nightly, "keep doing X") — then state the cadence inside the objective and note that each completed cycle schedules the next via a time wake.`,
     ``,
     `Message: ${JSON.stringify(message)}`,
@@ -117,10 +122,11 @@ async function deriveWithModel(message: string, taken: Set<string>): Promise<Der
   }
 }
 
-/** Create a workstream from one raw message. Returns what was decided. */
-export async function onboard(message: string): Promise<Derived> {
+/** Create a workstream from one raw message (plus an optional explicit
+ * statement of what done means). Returns what was decided. */
+export async function onboard(message: string, done?: string): Promise<Derived> {
   const taken = new Set(listWorkstreams());
-  const d = (await deriveWithModel(message, taken)) ?? deriveFallback(message, taken);
+  const d = (await deriveWithModel(message, taken, done)) ?? deriveFallback(message, taken, done);
   createWorkstream({
     slug: d.slug,
     title: d.title,

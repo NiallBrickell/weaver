@@ -15,6 +15,8 @@ weaver do "The EDP nightly syncs keep silently stalling — figure out why and m
 
 Everything a `create` invocation would ask for is derived from the message — slug, title, an expanded brief that preserves every concrete detail you gave, checkable done-criteria — and your standing house constraints are applied automatically. Phrasing that implies recurrence ("every week, clean up…") makes it a routine with a self-scheduling cadence. The sections below exist for when you want to hand-set any of that.
 
+An optional second argument overrides the done-bar when the default (fixed, merged through review, evidence in the PR) isn't what you mean — `weaver do "<message>" "verified live in the product afterwards, read-only"`. Production is never touched during verification unless that second sentence explicitly asks, and then only read-only.
+
 ## Four shapes
 
 ### Build something
