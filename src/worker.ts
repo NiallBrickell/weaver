@@ -80,10 +80,39 @@ export function isReadOnlyMcpTool(toolName: string): boolean {
   );
 }
 
+/**
+ * Read-only shell commands for non-action workers: the operator's recorded
+ * thinking lives in git history and PR discussions ("I went back and forth on
+ * this in the PR"), and Read/Grep cannot open either. So read-only workers get
+ * Bash gated to an exact allowlist of history-reading git/gh forms — plain
+ * single commands only: any shell metacharacter (chaining, redirection,
+ * substitution) or output-writing flag fails the gate. Fail-closed like the
+ * MCP gate: unmatched means denied, no model consulted.
+ */
+const READ_SHELL_FORMS = [
+  /^git(\s+(-C\s+\S+|--no-pager))*\s+(log|show|diff|blame|shortlog|describe|status|grep|ls-files|rev-parse)\b/,
+  /^gh\s+(pr\s+(list|view|diff|checks|status)|issue\s+(list|view|status)|release\s+(list|view)|run\s+(list|view)|search\s+(prs|issues|commits|code))\b/,
+];
+const SHELL_META = /[;&|<>`$\\]/;
+
+export function isReadOnlyShellCommand(command: string): boolean {
+  const c = command.trim();
+  if (SHELL_META.test(c) || c.includes('\n') || c.includes('--output')) return false;
+  return READ_SHELL_FORMS.some((r) => r.test(c));
+}
+
 function readOnlyMcpSupervisor() {
   return async (toolName: string, input: Record<string, unknown>): Promise<
     { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }
   > => {
+    if (toolName === 'Bash') {
+      const command = typeof input.command === 'string' ? input.command : '';
+      if (isReadOnlyShellCommand(command)) return { behavior: 'allow', updatedInput: input };
+      return {
+        behavior: 'deny',
+        message: `read-only workers may only run plain history-reading commands (git log/show/diff/blame/status/grep, gh pr|issue list/view, gh search) with no pipes, chaining, or redirection. Rephrase as one such command, or state the need in your submission.`,
+      };
+    }
     if (isReadOnlyMcpTool(toolName)) return { behavior: 'allow', updatedInput: input };
     return {
       behavior: 'deny',
@@ -127,7 +156,7 @@ Rules:
 3. For anything longer than ~150 lines, build the artifact incrementally: call append_section repeatedly (each call adds one section, in order), then call submit_result ONCE with an empty or short closing content — the appended sections are prepended automatically. Never submit a placeholder: an empty or stub artifact is worse than no submission, and the coordinator will reject it.
 4. Call submit_result exactly once. Do not end without submitting.`;
 
-const WORKER_SYSTEM = `You are an isolated worker executing ONE bounded assignment inside a larger workstream you cannot see. You have no memory of anything outside this brief and no ability to affect the world: your single output channel is the submit_result tool. If the assignment declares read-only directories, you may Read/Grep/Glob within them to ground your work in the real source — cite real file paths and line numbers, never invented ones. You may also have the operator's MCP tools (error trackers, log stores, …) available in READ-ONLY mode: retrieval calls (get/list/search/query/…) work, anything that would mutate external state is denied by the harness — if the assignment needs such a mutation, say so in your submission rather than working around the denial.
+const WORKER_SYSTEM = `You are an isolated worker executing ONE bounded assignment inside a larger workstream you cannot see. You have no memory of anything outside this brief and no ability to affect the world: your single output channel is the submit_result tool. If the assignment declares read-only directories, you may Read/Grep/Glob within them to ground your work in the real source — cite real file paths and line numbers, never invented ones. You may also have the operator's MCP tools (error trackers, log stores, …) available in READ-ONLY mode: retrieval calls (get/list/search/query/…) work, anything that would mutate external state is denied by the harness — if the assignment needs such a mutation, say so in your submission rather than working around the denial. When investigating a system, MINE THE RECORDED THINKING before forming your own theory: Bash is available for plain history-reading commands only (git log/show/diff/blame/grep, gh pr|issue list/view, gh search) — the operator's commit messages, PR bodies and review discussions, and in-repo docs often contain the exact rationale, prior attempts, and constraints your assignment is about to rediscover. Cite what you find by commit/PR number.
 ${SHARED_RULES}`;
 
 const ACTION_SYSTEM = `You are an isolated worker executing ONE human-approved real-world ACTION inside a larger workstream you cannot see. You have Bash in your working directory and real CLIs. Perform EXACTLY the act the briefing describes — nothing beyond it, nothing on targets the briefing does not name, and every "do not" the briefing states is absolute. If a step fails, report the failure honestly via submit_result; never improvise a different action to "make it work". If the briefing lists credential environment variables, use them via the shell (\`$NAME\`) — never echo, print, or persist their values anywhere. Your submission is a report of what you did with exact references (identifiers, URLs, command output) — the harness will independently verify the effect, so precision matters and embellishment will be caught.
@@ -293,7 +322,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
     const baseTools = isAction
       ? ['Bash', 'Read', 'Grep', 'Glob', 'Write', 'Edit']
       : readDirs.length
-        ? ['Read', 'Grep', 'Glob']
+        ? ['Read', 'Grep', 'Glob', 'Bash'] // Bash gated to read-only history commands below
         : [];
     const operatorMcp = operatorMcpServers(isAction ? [asg.exec!.cwd, ...readDirs] : readDirs);
     for await (const message of query({
@@ -327,9 +356,11 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
         // operator's own sessions. Read-only workers auto-allow their file
         // tools + submit surface; operator MCP calls fall through to the
         // deterministic read-only gate.
+        // Bash is NOT auto-allowed for read-only workers — it must fall
+        // through to the supervisor's command allowlist.
         allowedTools: isAction
           ? ['mcp__weaver__*']
-          : [...baseTools, 'mcp__weaver__*'],
+          : [...baseTools.filter((t) => t !== 'Bash'), 'mcp__weaver__*'],
         permissionMode: 'default',
         canUseTool: (isAction ? pilotSupervisor(asg.exec!.cwd, slug) : readOnlyMcpSupervisor()) as never,
         maxTurns: isAction || readDirs.length || Object.keys(operatorMcp).length ? 80 : 30,

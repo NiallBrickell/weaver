@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { isReadOnlyMcpTool } from './worker.js';
+import { isReadOnlyMcpTool, isReadOnlyShellCommand } from './worker.js';
 
 describe('read-only MCP gate', () => {
   it('allows retrieval methods across naming styles', () => {
@@ -39,5 +39,47 @@ describe('read-only MCP gate', () => {
     assert.equal(isReadOnlyMcpTool('Bash'), false);
     assert.equal(isReadOnlyMcpTool('Write'), false);
     assert.equal(isReadOnlyMcpTool('mcp__broken'), false);
+  });
+});
+
+describe('read-only shell gate', () => {
+  it('allows plain history-reading commands', () => {
+    for (const cmd of [
+      'git log --oneline -20',
+      'git log -S chain_0 -- backend/middleware/',
+      'git -C /Users/niall/work/projects/acme show 439519e1b',
+      'git --no-pager diff HEAD~3 -- docs/',
+      'git blame backend/middleware/middleware.go -L 100,140',
+      'git grep -n handleError',
+      'gh pr view 1683 --comments',
+      'gh pr list --state merged --search axiom',
+      'gh issue view 42',
+      'gh search prs error chain --repo NiallBrickell/acme',
+      'gh run view 123456',
+    ]) {
+      assert.equal(isReadOnlyShellCommand(cmd), true, cmd);
+    }
+  });
+
+  it('denies mutation, chaining, redirection, and output flags', () => {
+    for (const cmd of [
+      'git push origin main',
+      'git commit -m x',
+      'git checkout -b evil',
+      'gh pr merge 5 --squash',
+      'gh pr create --title x',
+      'gh api -X POST /repos/x/y/issues',
+      'git log; rm -rf /',
+      'git log && git push',
+      'git log | tee /tmp/x',
+      'git log > /tmp/x',
+      'git log $(whoami)',
+      'git log `whoami`',
+      'git format-patch --output=/tmp/x HEAD~1',
+      'rm -rf /',
+      'curl https://example.com',
+    ]) {
+      assert.equal(isReadOnlyShellCommand(cmd), false, cmd);
+    }
   });
 });
