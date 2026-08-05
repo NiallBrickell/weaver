@@ -30,3 +30,9 @@ That `you N×` number is the product's scoreboard. The system is optimizing inte
 What it opens follows the cursor. With a workstream selected, `i` is that workstream's page. Press `↑` past the top row and nothing is selected — the `W E A V E R` header highlights instead, and `i` opens the fleet page: every workstream plus the global policy store. Both directions link to each other, so you can enter at either end.
 
 Everything rendered is a projection of typed state. No transcript parsing, no idle-timer liveness heuristics; a workstream whose state can't be read renders as a loud failure, never an empty screen.
+
+## Watching a run work: `weaver tail`
+
+The dashboard shows decisions and status — what a workstream *is*, judged from typed state. Sometimes you want the opposite altitude: the raw activity of a run while it happens. `weaver tail <slug>` prints the recent feed and then follows it live — every tool call a worker makes (the command, the file), snippets of what it's saying, and the run's result line. `--all` adds coordinator passes to the feed.
+
+The feed is observability, never truth: it's an append-only file next to the workstream's state, redacted against known secrets before anything touches disk, and nothing in the harness reads it back. Adoption, attention, and the five questions still live entirely in typed state — and session ids remain recorded per attempt as provenance, so `claude --resume <sessionId>` replay is unaffected. If the dashboard is where you spend judgment, `tail` is where you watch the work get done.

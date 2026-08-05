@@ -43,6 +43,8 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver list
   weaver status <slug>
   weaver log <slug>                          full event tail
+  weaver tail <slug> [--all]                 live activity feed: worker tool calls, output snippets, results as they happen
+                                             (--all adds coordinator passes; sessionId provenance / \`claude --resume <id>\` is unaffected)
   weaver show <slug> <deliverableId>         print a deliverable's content
   weaver steer <slug> <message>              durable human steering (wakes the workstream)
   weaver approve <slug> <interactionId>      approve a pending send
@@ -125,6 +127,14 @@ async function main(): Promise<void> {
       for (const e of load(slug).events) {
         process.stdout.write(`[${e.atVirtual}] ${e.type}: ${e.summary}\n`);
       }
+      break;
+    }
+
+    case 'tail': {
+      const slug = rest[0] ?? fail('slug required');
+      load(slug); // unknown slug fails loudly instead of waiting on a file forever
+      const { runTail } = await import('./tail.js');
+      await runTail(slug, { all: rest.includes('--all') });
       break;
     }
 
