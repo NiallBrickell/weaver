@@ -104,6 +104,22 @@ function waitLabel(reason: string): string {
   return (clause.length > 12 ? clause : flat).slice(0, 64);
 }
 
+/**
+ * Cached pilot liveness, probed off the render path. The pilot-pending grace
+ * window is 120s when pilot may be down (fail closed, visibly) — but while
+ * pilot is demonstrably alive, a gated action is pilot's to rule on, not the
+ * human's, however long the runner's tick takes to get there: cards leaking
+ * into NEEDS YOU during busy-fleet tick latency spooked the human into
+ * approving what pilot was seconds from handling.
+ */
+let pilotOkAt = 0;
+function probePilot(): void {
+  const base = process.env.WEAVER_PILOT_URL ?? 'http://127.0.0.1:9721';
+  fetch(`${base}/status`, { signal: AbortSignal.timeout(3_000) })
+    .then((r) => { if (r.ok) pilotOkAt = Date.now(); })
+    .catch(() => {});
+}
+
 function snapshot(): Snapshot {
   const items: NeedsYouItem[] = [];
   const streams: StreamRow[] = [];
@@ -162,7 +178,10 @@ function snapshot(): Snapshot {
       // arrived within the grace window (pilot down ⇒ fail closed, visibly).
       const ageMs = Date.now() - new Date(a.createdAtVirtual).getTime();
       const noVerdict = !a.exec?.pilotVerdict;
-      if (noVerdict && ageMs < 120_000) {
+      // Healthy pilot ⇒ long grace (it WILL rule; only a stuck runner should
+      // surface this). Pilot silent >90s ⇒ short grace, fail closed visibly.
+      const grace = Date.now() - pilotOkAt < 90_000 ? 600_000 : 120_000;
+      if (noVerdict && ageMs < grace) {
         pendingPilot.push(`⧗ awaiting pilot: "${a.objective.slice(0, 70)}"`);
         continue;
       }
@@ -325,6 +344,8 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const [toast, setToast] = useState('');
 
   useEffect(() => {
+    probePilot();
+    const p = setInterval(probePilot, 30_000);
     const t = setInterval(() => {
       const s = snapshot();
       const j = JSON.stringify(s);
@@ -336,7 +357,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
       // render STALLED, never ✓ — pid-aliveness lied to us once already.
       setRunnerState(runnerLoopHealthy() ? (embeddedRunner ? 'embedded' : 'external') : liveRunnerPid() !== null ? 'stalled' : 'none');
     }, 2000);
-    return () => clearInterval(t);
+    return () => { clearInterval(t); clearInterval(p); };
   }, [embeddedRunner]);
 
   const refresh = (msg: string) => {
