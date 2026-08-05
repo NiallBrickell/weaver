@@ -89,11 +89,19 @@ function until(iso: string): string {
   return `${Math.round(m / (24 * 60))}d`;
 }
 
-/** A wake reason is coordinator prose; the row gets its first clause only. */
+/**
+ * A wake reason is coordinator prose; the row gets its first SUBSTANTIVE
+ * clause. Scheduling jargon ("Backstop:", "Safety net for…") is how the
+ * coordinator talks to itself — stripped, so the row says what is being
+ * waited FOR, not what kind of wait it is.
+ */
 function waitLabel(reason: string): string {
-  const flat = reason.replace(/\s+/g, ' ').trim();
+  const flat = reason
+    .replace(/\s+/g, ' ')
+    .replace(/^(backstop|safety net|fallback|retry|reconcile)\b[^:—-]*[:—-]\s*/i, '')
+    .trim();
   const clause = flat.split(/[.;(]/)[0]!.trim();
-  return (clause.length > 6 ? clause : flat).slice(0, 64);
+  return (clause.length > 12 ? clause : flat).slice(0, 64);
 }
 
 function snapshot(): Snapshot {
