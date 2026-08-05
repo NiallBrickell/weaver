@@ -23,4 +23,10 @@ Below the queue: every workstream with a colored status dot — red `NEEDS YOU`,
 
 That `you N×` number is the product's scoreboard. The system is optimizing interventions-per-outcome downward — the dashboard should get *quieter per outcome* over time, and when it doesn't, that's a real signal.
 
+## Knowledge, scoped to the selection
+
+`i` opens the knowledge inspector — decision lineage, adoptions with their pinned hashes, the actions audit, and the policies in play — rendered as HTML from typed state.
+
+What it opens follows the cursor. With a workstream selected, `i` is that workstream's page. Press `↑` past the top row and nothing is selected — the `W E A V E R` header highlights instead, and `i` opens the fleet page: every workstream plus the global policy store. Both directions link to each other, so you can enter at either end.
+
 Everything rendered is a projection of typed state. No transcript parsing, no idle-timer liveness heuristics; a workstream whose state can't be read renders as a loud failure, never an empty screen.

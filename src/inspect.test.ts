@@ -237,6 +237,41 @@ test('rendered HTML is redacted: a known secret value never reaches the file', (
   assert.ok(raw.includes('tok-verysecret9'));
 });
 
+test('entering at one workstream still generates the fleet page its back link points to', () => {
+  // The dashboard's [i] on a selected stream lands here directly, so this page
+  // is an entry point, not only a click-through from the overview.
+  makeWorkstream('ws-one');
+  makeWorkstream('ws-two');
+
+  const out = runInspect('ws-one');
+  assert.equal(out, path.join(workstreamDir('ws-one'), 'inspect.html'));
+  const html = fs.readFileSync(out, 'utf8');
+  assert.match(html, /href="\.\.\/inspect\.html"/);
+
+  // …and the target of that link exists, listing both workstreams.
+  const overview = path.join(weaverHome(), 'inspect.html');
+  assert.ok(fs.existsSync(overview));
+  const overviewHtml = fs.readFileSync(overview, 'utf8');
+  assert.match(overviewHtml, /href="ws-one\/inspect\.html"/);
+  assert.match(overviewHtml, /href="ws-two\/inspect\.html"/);
+});
+
+test('one unreadable workstream does not blank the others; it is named, not dropped', () => {
+  makeWorkstream('ws-good');
+  makeWorkstream('ws-broken');
+  fs.writeFileSync(path.join(workstreamDir('ws-broken'), 'workstream.json'), '{ not json');
+
+  const out = runInspect();
+  const html = fs.readFileSync(out, 'utf8');
+  assert.match(html, /href="ws-good\/inspect\.html"/);
+  assert.match(html, /Unreadable, no page generated/);
+  assert.match(html, /ws-broken/);
+  assert.ok(fs.existsSync(path.join(workstreamDir('ws-good'), 'inspect.html')));
+
+  // Asking for the broken one by name is still a loud failure, not an empty page.
+  assert.throws(() => runInspect('ws-broken'));
+});
+
 test('escaping: state text cannot inject markup into the page', () => {
   makeWorkstream();
   arrive('inspect-ws', (d) => {
