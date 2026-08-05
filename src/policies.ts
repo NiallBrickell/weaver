@@ -148,6 +148,22 @@ function mutatePolicies(fn: (store: PolicyStore) => void): PolicyStore {
   });
 }
 
+/** Add a scope tag to a set of policies (idempotent). Used to reclassify —
+ * e.g. marking session-backfilled rules that are really 'tool-dev' feedback
+ * about Weaver itself, which seed export then excludes. */
+export function tagPolicies(ids: Id[], tag: string): number {
+  let n = 0;
+  mutatePolicies((store) => {
+    for (const p of store.policies) {
+      if (ids.includes(p.id) && !p.scope.tags.includes(tag)) {
+        p.scope.tags.push(tag);
+        n++;
+      }
+    }
+  });
+  return n;
+}
+
 /** One-line origin label for listings/projections, whichever provenance variant. */
 export function policyOrigin(p: PolicyRecord): string {
   return 'workstreamSlug' in p.provenance ? p.provenance.workstreamSlug : p.provenance.ref;
@@ -181,6 +197,11 @@ export function exportSeed(author: string): SeedFile {
     exportedAt: new Date().toISOString(),
     policies: loadPolicies()
       .policies.filter((p) => p.status !== 'superseded')
+      // 'tool-dev' scoped rules are feedback about building Weaver itself
+      // (TUI complaints, harness architecture notes) — lessons for whoever
+      // maintains Weaver, not "how this operator works". Exporting them made
+      // v1 seeds read like a leaked bug tracker.
+      .filter((p) => !p.scope.tags.includes('tool-dev'))
       .map((p) => ({
         statement: p.statement,
         tags: p.scope.tags,
