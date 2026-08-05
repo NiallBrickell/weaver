@@ -1,0 +1,32 @@
+---
+title: "The convergence dashboard"
+description: "Is the human getting out of the loop? One page, computed from durable state, that answers it over time"
+---
+
+`yarn weaver stats` renders a single self-contained HTML page of fleet-wide metrics — no server, no dependencies, safe to keep open in a tab and regenerate whenever you want a fresh read.
+
+The page exists to answer one question over time: **is the number of human interventions per successful outcome falling?** That ratio is the system's explicit optimization target, guarded by two things that must *not* fall with it — output quality (rejections stay visible) and the authority firewall (autonomy over judgment never becomes autonomy over authority).
+
+## What's on it
+
+- **The convergence curve** — cumulative human interventions per adopted outcome, the headline number. Down and to the right means the learning loop is working: your corrections are becoming policies, so the same steering is never needed twice.
+- **Outcomes vs interventions per day** — the same story un-compressed: adopted work holding steady while human touches fall.
+- **Who approves the real world** — gated actions per day, split into pilot auto-approvals (within your standing rules) and explicit human keypresses. This ratio is *not* learned: it moves only when you widen the pilot's rules, because authority is structurally excluded from learning.
+- **Policy population** — every policy starts `shadow` (unproven) and earns `active` through an intervention-free matching workstream; wrong ones are superseded with lineage. Watching active accumulate while shadow drains is watching the system earn trust the slow way.
+- **Whose rules survive** — policies split by provenance: seeded from your pre-Weaver rules and transcripts vs learned live from corrections. Both earn active status the same way — evidence, not endorsement. Early on, the system converges toward *your* decision model; long-run, this panel shows it converging toward what **actually works**, as seeded rules that don't earn evidence sit in shadow and outgrown ones are superseded.
+- **Who absorbs the interruptions** — interventions split by named actor (`WEAVER_ACTOR`): the founder at the keyboard, agent sessions steering on their behalf, teammates. Agents-on-agents is the intended shape — a Claude session absorbing routine interruptions is cheap, while founder keypresses are the scarce resource the curve should drive down first. The pilot never appears here: auto-approval is delegated authority, not an interruption.
+- **Per workstream** — passes, adoptions, rejections, interventions, auto-approval ratio, and cost, per stream. The fleet trend is the signal; this table is where to look when it moves.
+
+Every chart has a table view underneath, and the range presets (7d / 30d / 90d / all) scope everything at once.
+
+## Where the numbers come from
+
+Everything is computed from durable typed records — steering timestamps, gate approvals, adoption pins, pass records, policy evidence. Nothing is parsed from transcripts, and nothing comes from the bounded event tail (a trend computed from a rolling log would fabricate convergence as old events fall off the end).
+
+Two honesty rules are built in:
+
+- **Adoption ≠ completion.** An outcome counts only when a coordinator adopted a deliverable and pinned its revision — a worker merely finishing counts for nothing here, exactly as everywhere else in Weaver.
+- **Undated interventions are reported, not hidden.** A few intervention kinds (budget and config edits) increment the lifetime counter without leaving a durable timestamp; the dashboard shows them as an explicit remainder instead of silently dropping them from the timeline.
+- **One keypress counts once, and only human keypresses count.** An approval that auto-resolves its attention card is one act, not two. Resolutions stamped by system actors (`pilot`, `coordinator`) are never interventions, and legacy records that predate actor attribution fall into the undated remainder rather than being guessed at.
+
+Like every output surface, the rendered page passes through secret redaction before it touches disk.
