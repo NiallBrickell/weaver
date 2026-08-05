@@ -504,7 +504,13 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         <Text bold dimColor>{sec.label}</Text>
         {sec.list.map((st) => {
           const isSel = sel?.type === 'stream' && sel.stream.slug === st.slug;
-          const d = st.bucket === 2 && st.queuedNow ? { color: 'blueBright', word: 'QUEUED', glyph: '●' } : DOT[st.bucket]!;
+          // An ACTIVE stream in the idle bucket has nothing scheduled at all —
+          // that is a stranded stream (the quiescence backstop should be
+          // reviving it), never a restful gray: paused is the only honest IDLE.
+          const d =
+            st.bucket === 2 && st.queuedNow ? { color: 'blueBright', word: 'QUEUED', glyph: '●' }
+            : st.bucket === 3 && !st.paused ? { color: 'yellow', word: 'DORMANT', glyph: '■' }
+            : DOT[st.bucket]!;
           return (
             <Box key={st.slug} flexDirection="column">
               <Text inverse={isSel} wrap="truncate-end">
