@@ -81,6 +81,12 @@ export async function runLoop(opts: RunnerOptions): Promise<never> {
   const log = opts.log ?? ((l: string) => process.stdout.write(l + '\n'));
   const logError = opts.logError ?? ((l: string) => process.stderr.write(l + '\n'));
   const inFlight = new Set<string>();
+  // Fairness: slots are granted least-recently-ticked first. A stable
+  // (alphabetical) scan with a concurrency break starves every stream ranked
+  // below the cap the moment enough earlier streams exist — sentry-sweep sat
+  // 19h behind a due wake while ten alphabetically-earlier streams re-took
+  // all ten slots every iteration.
+  const lastTickedAt = new Map<string, number>();
   // Slot starvation guard: a tick that exceeds this is presumed hung (an SDK
   // call that never returned); its SLOT is reclaimed so the rest of the fleet
   // keeps moving. The stream's own tick lock still serializes it, and dead-pid
@@ -91,17 +97,20 @@ export async function runLoop(opts: RunnerOptions): Promise<never> {
       try {
         fs.writeFileSync(heartbeatPath(), String(Date.now()));
       } catch { /* lock dir may be mid-recreate */ }
-      const due = listWorkstreams().filter((slug) => {
-        if (inFlight.has(slug)) return false;
-        try {
-          return load(slug).workstream.status === 'active';
-        } catch {
-          return false;
-        }
-      });
+      const due = listWorkstreams()
+        .filter((slug) => {
+          if (inFlight.has(slug)) return false;
+          try {
+            return load(slug).workstream.status === 'active';
+          } catch {
+            return false;
+          }
+        })
+        .sort((a, b) => (lastTickedAt.get(a) ?? 0) - (lastTickedAt.get(b) ?? 0));
       for (const slug of due) {
         if (inFlight.size >= opts.concurrency) break;
         inFlight.add(slug);
+        lastTickedAt.set(slug, Date.now());
         let settled = false;
         const slotTimer = setTimeout(() => {
           if (!settled) {
