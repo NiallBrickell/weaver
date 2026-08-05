@@ -18,6 +18,7 @@ import { inVirtual, parseDuration, virtualNow } from './clock.js';
 import { buildProjection } from './projection.js';
 import { matchPolicies, proposePolicy, recordPolicyOutcome } from './policies.js';
 import { sdkEnv } from './secrets.js';
+import { armWall } from './wall.js';
 import {
   RevisionConflictError,
   load,
@@ -587,10 +588,11 @@ export async function runCoordinatorPass(
   let errorText = '';
 
   // Hard wall: an SDK call that never returns (seen during session-limit
-  // outages) must not hold a runner slot hostage. Abort → the normal error
-  // path (wake restore / backoff) takes over.
+  // outages) must not hold a runner slot hostage. Abort → backoff, never a
+  // strike: a hang is environmental, not a workstream problem. Sleep-aware,
+  // so a closed laptop doesn't convert into phantom timeouts.
   const abort = new AbortController();
-  const wall = setTimeout(() => abort.abort(new Error('coordinator pass wall-clock limit (25m) — aborted, will retry via restored wake')), 25 * 60_000);
+  const wall = armWall(abort, 25 * 60_000, 'coordinator pass');
   try {
     for await (const message of query({
       prompt,
@@ -621,15 +623,18 @@ export async function runCoordinatorPass(
     errorText = e instanceof Error ? e.message : String(e);
     process.stderr.write(`coordinator pass error: ${errorText}\n`);
   } finally {
-    clearTimeout(wall);
+    wall.disarm();
   }
 
   // Infrastructure failure (subscription session limit, rate limit, auth
-  // outage) is NOT a workstream problem: durable state makes waiting free, so
-  // back off and retry instead of burning failure strikes or paging the human.
+  // outage, or our own wall abort — the SDK reports that as "process aborted
+  // by user") is NOT a workstream problem: durable state makes waiting free,
+  // so back off and retry instead of burning failure strikes or paging the
+  // human.
   const isInfraFailure =
     hadError &&
-    /session limit|rate.?limit|usage limit|overloaded|429|529|401|unauthoriz|authentication|log ?in|credit|quota|exceeded your/i.test(errorText);
+    (wall.fired() ||
+      /process aborted|session limit|rate.?limit|usage limit|overloaded|429|529|401|unauthoriz|authentication|log ?in|credit|quota|exceeded your/i.test(errorText));
 
   // Finalize provenance regardless of how the model behaved. This is an
   // arrival-style write: the pass is over, whatever revision we're at.
@@ -673,13 +678,21 @@ export async function runCoordinatorPass(
       const recent = d.passes.slice(-3);
       const allFailing = recent.length === 3 && recent.every((p) => p.outcome !== 'completed' && !p.summary?.startsWith('backoff:'));
       if (allFailing) {
-        d.attention.push({
-          id: newId('att'),
-          kind: 'blocker',
-          summary: `Three coordinator passes in a row failed (${recent.map((p) => p.outcome).join(', ')}) — the workstream cannot make progress without you`,
-          status: 'open',
-          createdAt: new Date().toISOString(),
-        });
+        // One card per outage, however many strike-triples accumulate before
+        // a human looks: pre-scheduled time wakes keep firing passes after
+        // the first triple, and each triple must NOT mint a fresh card.
+        const already = d.attention.some(
+          (a) => a.status === 'open' && a.summary.startsWith('Three coordinator passes in a row failed'),
+        );
+        if (!already) {
+          d.attention.push({
+            id: newId('att'),
+            kind: 'blocker',
+            summary: `Three coordinator passes in a row failed (${recent.map((p) => p.outcome).join(', ')}) — the workstream cannot make progress without you`,
+            status: 'open',
+            createdAt: new Date().toISOString(),
+          });
+        }
       } else {
         d.wakes.push({
           id: newId('wake'),

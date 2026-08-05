@@ -106,6 +106,7 @@ function snapshot(): Snapshot {
     const approvableIds = new Set<string>([...gated.map((a) => a.id), ...pendingSends.map((i) => i.id)]);
     const commentary = new Map<string, string[]>();
     const seenRefs = new Set<string>();
+    const seenSummaries = new Set<string>();
     for (const a of doc.attention.filter((x) => x.status === 'open')) {
       if (a.refId && approvableIds.has(a.refId)) {
         commentary.set(a.refId, [...(commentary.get(a.refId) ?? []), a.summary]);
@@ -113,6 +114,11 @@ function snapshot(): Snapshot {
       }
       if (a.refId && seenRefs.has(a.refId)) continue;
       if (a.refId) seenRefs.add(a.refId);
+      // Identical word-for-word cards (e.g. repeated strike triples during
+      // one outage) are one decision, not N — show the first only. Resolving
+      // it clears the twins too (the resolve path matches by summary).
+      if (seenSummaries.has(a.summary)) continue;
+      seenSummaries.add(a.summary);
       needsYou++;
       items.push({
         key: `${slug}:${a.id}`, slug, kind: 'attention', refId: a.id,

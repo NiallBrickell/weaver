@@ -52,9 +52,13 @@ export function addSteering(
     if (opts.resolvesAttentionId) {
       const att = d.attention.find((a) => a.id === opts.resolvesAttentionId && a.status === 'open');
       if (att) {
-        att.status = 'resolved';
-        att.resolvedAt = new Date().toISOString();
-        event('attention.resolved', `${actor()} answered ${att.id} via steering ${id}`, [att.id, id]);
+        // The answer settles word-for-word twins too (see resolveAttention).
+        const twins = d.attention.filter((a) => a.status === 'open' && a.summary === att.summary);
+        for (const t of twins) {
+          t.status = 'resolved';
+          t.resolvedAt = new Date().toISOString();
+        }
+        event('attention.resolved', `${actor()} answered ${twins.map((t) => t.id).join(', ')} via steering ${id}`, [...twins.map((t) => t.id), id]);
       }
     }
     wake(d, `human steering arrived: "${body.slice(0, 80)}"`);
@@ -120,10 +124,17 @@ export function resolveAttention(slug: string, attId: string, note = ''): void {
   arrive(slug, (d, event) => {
     const att = d.attention.find((a) => a.id === attId && a.status === 'open');
     if (!att) throw new Error(`no open attention ${attId}`);
-    att.status = 'resolved';
-    att.resolvedAt = new Date().toISOString();
+    // One human answer settles every word-for-word twin (repeated strike
+    // triples from one outage raise identical cards; the TUI shows only the
+    // first, so resolving it must not leave invisible open twins behind).
+    const twins = d.attention.filter((a) => a.status === 'open' && a.summary === att.summary);
+    for (const t of twins) {
+      t.status = 'resolved';
+      t.resolvedAt = new Date().toISOString();
+    }
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-    event('attention.resolved', `${actor()} resolved ${attId}${note ? `: ${note}` : ''}`, [attId]);
+    const ids = twins.map((t) => t.id);
+    event('attention.resolved', `${actor()} resolved ${ids.join(', ')}${note ? `: ${note}` : ''}`, ids);
   });
 }
 
