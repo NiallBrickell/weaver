@@ -18,6 +18,11 @@ test('deriveFallback: the message survives verbatim as the objective', () => {
   assert.match(d.slug, /^[a-z0-9-]+$/);
 });
 
+test('deriveFallback: an explicit done-statement becomes the success criterion', () => {
+  const d = deriveFallback('fix the banner', new Set(), 'verified live post-merge, read-only');
+  assert.deepEqual(d.successCriteria, ['verified live post-merge, read-only']);
+});
+
 test('parseDerivation: fenced JSON parses; garbage and missing fields do not', () => {
   const ok = parseDerivation(
     'Here you go:\n```json\n{"slug":"Fix Upload","title":"t","objective":"o","successCriteria":["a",3],"routine":true}\n```',

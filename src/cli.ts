@@ -39,7 +39,7 @@ function fail(msg: string): never {
 
 const USAGE = `weaver — durable workstream harness (MVP)
 
-  weaver do "<message>"                      start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied
+  weaver do "<message>" ["<done means>"]     start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied. Optional 2nd arg overrides the done-bar (e.g. "verified live on the web post-merge, read-only")
   weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--max-passes N] [--max-cost USD]
   weaver list
   weaver status <slug>
@@ -79,10 +79,13 @@ async function main(): Promise<void> {
   const [cmd, ...rest] = args();
   switch (cmd) {
     case 'do': {
-      const message = rest.join(' ').trim();
-      if (!message) fail('usage: weaver do "<what you want done>"');
+      // Exactly two args = message + explicit done-statement; anything else
+      // joins into one message (so an unquoted sentence still just works).
+      const message = (rest.length === 2 ? rest[0]! : rest.join(' ')).trim();
+      const done = rest.length === 2 ? rest[1]!.trim() : undefined;
+      if (!message) fail('usage: weaver do "<what you want done>" ["<what done means>"]');
       const { onboard } = await import('./onboard.js');
-      const d = await onboard(message);
+      const d = await onboard(message, done);
       process.stdout.write(
         [
           `▶ ${d.slug}${d.routine ? '  (routine)' : ''} — ${d.title}`,
