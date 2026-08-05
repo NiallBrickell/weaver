@@ -40,6 +40,7 @@ function fail(msg: string): never {
 const USAGE = `weaver — durable workstream harness (MVP)
 
   weaver do "<message>" ["<done means>"]     start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied. Optional 2nd arg overrides the done-bar (e.g. "verified live on the web post-merge, read-only")
+  weaver ask "<question>"                    interrogate the fleet's history: "did anything pick up X?", "what happened with Y?", "why wasn't Z done?" — answers cite decisions/events/deliverables from recorded state (read-only)
   weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--max-passes N] [--max-cost USD]
   weaver list
   weaver status <slug>
@@ -98,6 +99,14 @@ async function main(): Promise<void> {
           ``,
         ].join('\n'),
       );
+      break;
+    }
+
+    case 'ask': {
+      const question = rest.join(' ').trim();
+      if (!question) fail('usage: weaver ask "<question about what happened / what was picked up / why>"');
+      const { ask } = await import('./ask.js');
+      process.stdout.write((await ask(question)).trim() + '\n');
       break;
     }
 
