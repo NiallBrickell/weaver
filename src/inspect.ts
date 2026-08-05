@@ -401,6 +401,7 @@ svg text { pointer-events: none; }
 .tl-when { color: var(--dim); font-size: 12px; font-family: ui-monospace, monospace; margin-right: 8px; }
 .dels { list-style: none; padding: 0; margin: 6px 0; } .dels li { padding: 4px 0; }
 .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.back { margin: 0 0 12px; font-size: 13px; } .back a { text-decoration: none; }
 a { color: var(--coord); }
 footer { color: var(--dim); font-size: 12px; margin-top: 24px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -442,7 +443,7 @@ const SCRIPT = `
 })();
 `;
 
-function page(title: string, subtitle: string, body: string): string {
+function page(title: string, subtitle: string, body: string, back?: { href: string; label: string }): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -453,6 +454,7 @@ function page(title: string, subtitle: string, body: string): string {
 </head>
 <body>
 <main>
+${back ? `<p class="back"><a href="${esc(back.href)}">${esc(back.label)}</a></p>` : ''}
 <h1>${esc(title)}</h1>
 <p class="subtitle">${esc(subtitle)}</p>
 ${body}
@@ -493,10 +495,17 @@ export function renderWorkstreamHtml(doc: WorkstreamDoc, policies: PolicyRecord[
     `${ws.title} — knowledge inspector`,
     `${ws.slug} · ${ws.status} · revision ${doc.revision} · ${doc.spend.coordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)} · objective: ${ws.objective}`,
     body,
+    // A workstream page is reachable directly (dashboard [i] on a selected
+    // stream), so it always carries its own way back up to the fleet page.
+    { href: '../inspect.html', label: '← all workstreams' },
   );
 }
 
-export function renderOverviewHtml(docs: WorkstreamDoc[], policies: PolicyRecord[]): string {
+export function renderOverviewHtml(
+  docs: WorkstreamDoc[],
+  policies: PolicyRecord[],
+  unreadable: string[] = [],
+): string {
   const cards = docs.map((doc) => {
     const ws = doc.workstream;
     const standing = doc.decisions.filter((d) => d.status === 'standing').length;
@@ -516,7 +525,12 @@ export function renderOverviewHtml(docs: WorkstreamDoc[], policies: PolicyRecord
 </tbody></table>
 </article>`;
   });
-  const wsSection = `<section><h2>Workstreams <span class="count">${docs.length}</span></h2>${
+  // Skipped workstreams are named, never silently absent: a missing card must
+  // not read as "no such workstream".
+  const skipped = unreadable.length
+    ? `<p class="hint bad">Unreadable, no page generated: ${unreadable.map((s) => `<code>${esc(s)}</code>`).join(' ')}</p>`
+    : '';
+  const wsSection = `<section><h2>Workstreams <span class="count">${docs.length}</span></h2>${skipped}${
     docs.length ? `<div class="ws-grid">${cards.join('\n')}</div>` : empty('No workstreams under this WEAVER_HOME.')
   }</section>`;
   const body = [
@@ -541,26 +555,37 @@ function writeRedacted(filePath: string, html: string, secrets: Record<string, s
   fs.writeFileSync(filePath, redactSecrets(html, secrets));
 }
 
+/**
+ * Regenerates the whole site — the fleet overview plus every per-workstream
+ * page — and returns the entry point the caller asked for: a workstream's own
+ * page when `slug` is given, the fleet page otherwise. One generation path,
+ * because pages link both ways: entering at a workstream must not leave the
+ * "← all workstreams" link pointing at a stale or missing fleet page.
+ */
 export function runInspect(slug?: string): string {
-  if (slug) {
-    const doc = load(slug);
-    const out = path.join(workstreamDir(slug), 'inspect.html');
-    writeRedacted(out, renderWorkstreamHtml(doc, loadPolicies().policies), loadSecrets(slug));
-    return out;
-  }
-  // Overview: also (re)generate every per-workstream page so the links work.
-  const slugs = listWorkstreams();
+  // The requested workstream is the one failure that must be loud: asking for
+  // a page we cannot render is an error, not an empty site.
+  if (slug) load(slug);
   const policies = loadPolicies().policies;
   const docs: WorkstreamDoc[] = [];
   const allSecrets: Record<string, string> = { ...loadSecrets() };
-  for (const s of slugs) {
-    const doc = load(s);
+  const unreadable: string[] = [];
+  for (const s of listWorkstreams()) {
+    let doc: WorkstreamDoc;
+    try {
+      doc = load(s);
+    } catch {
+      // An unreadable doc is a state the dashboard already renders (UNREADABLE);
+      // it must not blank out the knowledge pages of every healthy workstream.
+      unreadable.push(s);
+      continue;
+    }
     docs.push(doc);
     const secrets = loadSecrets(s);
     Object.assign(allSecrets, secrets);
     writeRedacted(path.join(workstreamDir(s), 'inspect.html'), renderWorkstreamHtml(doc, policies), secrets);
   }
-  const out = path.join(weaverHome(), 'inspect.html');
-  writeRedacted(out, renderOverviewHtml(docs, policies), allSecrets);
-  return out;
+  const overview = path.join(weaverHome(), 'inspect.html');
+  writeRedacted(overview, renderOverviewHtml(docs, policies, unreadable), allSecrets);
+  return slug ? path.join(workstreamDir(slug), 'inspect.html') : overview;
 }
