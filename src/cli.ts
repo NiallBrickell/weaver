@@ -19,6 +19,49 @@ function args(): string[] {
   return process.argv.slice(2);
 }
 
+/**
+ * Raw multiline capture from stdin — the safe channel for real messages.
+ * Shell-quoted arguments mangle exactly the content operators paste (a
+ * double-quoted "$36.69" reached one brief as ".69" after $-expansion, and an
+ * embedded quote ends the argument entirely); stdin has no such grammar.
+ * Ends at EOF (Ctrl-D) or a line containing only ".".
+ */
+async function readMultiline(): Promise<string> {
+  const { createInterface } = await import('node:readline');
+  const lines: string[] = [];
+  const rl = createInterface({ input: process.stdin });
+  for await (const line of rl) {
+    if (line.trim() === '.') break;
+    lines.push(line);
+  }
+  rl.close();
+  return lines.join('\n').trim();
+}
+
+/**
+ * Liveness for model-backed commands: `weaver do`/`ask` spend 20-60s in a
+ * model pass, and a silent terminal reads as frozen. Spinner + elapsed
+ * seconds on a TTY, one plain line otherwise; always stderr so stdout stays
+ * clean for the result.
+ */
+function progress(label: string): () => void {
+  if (!process.stderr.isTTY) {
+    process.stderr.write(`${label}…\n`);
+    return () => {};
+  }
+  const frames = ['◐', '◓', '◑', '◒'];
+  const started = Date.now();
+  let i = 0;
+  const t = setInterval(() => {
+    process.stderr.write(`\r\x1b[2K${frames[i++ % frames.length]} ${label}… ${Math.round((Date.now() - started) / 1000)}s`);
+  }, 250);
+  t.unref?.();
+  return () => {
+    clearInterval(t);
+    process.stderr.write('\r\x1b[2K');
+  };
+}
+
 function opt(flags: string[], name: string): string | undefined {
   const i = flags.indexOf(`--${name}`);
   return i >= 0 ? flags[i + 1] : undefined;
@@ -39,7 +82,8 @@ function fail(msg: string): never {
 
 const USAGE = `weaver — durable workstream harness (MVP)
 
-  weaver do "<message>" ["<done means>"]     start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied. Optional 2nd arg overrides the done-bar (e.g. "verified live on the web post-merge, read-only")
+  weaver do ["<message>"] ["<done means>"]   start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied. Optional 2nd arg overrides the done-bar (e.g. "verified live on the web post-merge, read-only")
+                                             NO ARGS = interactive: type/paste a multiline message, finish with Ctrl-D or a "." line — the safe path for long messages ($, quotes, newlines survive verbatim)
   weaver ask "<question>"                    interrogate the fleet's history: "did anything pick up X?", "what happened with Y?", "why wasn't Z done?" — answers cite decisions/events/deliverables from recorded state (read-only)
   weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--max-passes N] [--max-cost USD]
   weaver list
@@ -83,11 +127,25 @@ async function main(): Promise<void> {
     case 'do': {
       // Exactly two args = message + explicit done-statement; anything else
       // joins into one message (so an unquoted sentence still just works).
-      const message = (rest.length === 2 ? rest[0]! : rest.join(' ')).trim();
+      let message = (rest.length === 2 ? rest[0]! : rest.join(' ')).trim();
       const done = rest.length === 2 ? rest[1]!.trim() : undefined;
-      if (!message) fail('usage: weaver do "<what you want done>" ["<what done means>"]');
+      if (!message) {
+        // No args: interactive/piped capture — the recommended path for
+        // anything longer than a sentence (multiline, $, quotes all safe).
+        if (process.stdin.isTTY) {
+          process.stderr.write('Describe what you want done — multiline and paste are fine; finish with Ctrl-D (or a line containing only "."):\n');
+        }
+        message = await readMultiline();
+      }
+      if (!message) fail('usage: weaver do "<what you want done>" ["<what done means>"] — or run `weaver do` with no args and type/paste the message');
       const { onboard } = await import('./onboard.js');
-      const d = await onboard(message, done);
+      const stopProgress = progress('deriving the workstream from your message (one model pass)');
+      let d;
+      try {
+        d = await onboard(message, done);
+      } finally {
+        stopProgress();
+      }
       process.stdout.write(
         [
           `▶ ${d.slug}${d.routine ? '  (routine)' : ''} — ${d.title}`,
@@ -106,7 +164,14 @@ async function main(): Promise<void> {
       const question = rest.join(' ').trim();
       if (!question) fail('usage: weaver ask "<question about what happened / what was picked up / why>"');
       const { ask } = await import('./ask.js');
-      process.stdout.write((await ask(question)).trim() + '\n');
+      const stopProgress = progress('searching the fleet’s recorded history');
+      let answer;
+      try {
+        answer = await ask(question);
+      } finally {
+        stopProgress();
+      }
+      process.stdout.write(answer.trim() + '\n');
       break;
     }
 
