@@ -202,7 +202,7 @@ export function finalizeWorkerRun(
 
     if (outcome.infrastructure) {
       const infrastructure = outcome.infrastructure;
-      const explanation = infrastructureWaitSummary(infrastructure);
+      const explanation = infrastructureWaitSummary(infrastructure, slug);
       a.state = 'queued';
       if (attempt) attempt.terminalReason = 'infrastructure_backoff';
       const wakeId = newId('wake');

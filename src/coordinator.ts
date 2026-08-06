@@ -55,10 +55,9 @@ export function coordinatorFallbackModel(): string {
 
 /** Which model THIS pass runs on. Capacity limits are per-model pools, so a
  * parked primary (Fable weekly limit) must not park the fleet: the evaluative
- * seat degrades one step (Opus) and keeps reconciling, while the runner's
- * per-model probe keeps testing the primary and restores it the moment its
- * pool recovers. If both pools are limited, the primary is returned and the
- * normal backoff machinery does its job. */
+ * seat degrades one step (Opus) and keeps reconciling while the primary's
+ * stored retry remains scheduled. If both pools are limited, the primary is
+ * returned and the normal backoff machinery does its job. */
 export function pickCoordinatorModel(doc: WorkstreamDoc, nowIso: string): string {
   const primary = coordinatorModel();
   const fallback = coordinatorFallbackModel();
@@ -751,7 +750,7 @@ export async function runCoordinatorPass(
       clearCoordinatorCapacityBackoff(d, passModel);
     }
     // Provider waits are execution attempts, not logical coordinator passes:
-    // a month-long credit outage must not consume the workstream's pass cap.
+    // a month-long provider-usage outage must not consume the workstream's pass cap.
     if (!infrastructure) d.spend.coordinatorPasses += 1;
     d.spend.totalCostUsd += costUsd;
     if (outcome === 'no_finish') {
@@ -766,7 +765,7 @@ export async function runCoordinatorPass(
     // a delayed wake and never count as strikes: waiting is free.
     if (infrastructure) {
       const rec2 = d.passes.find((p) => p.id === passId);
-      const explanation = infrastructureWaitSummary(infrastructure);
+      const explanation = infrastructureWaitSummary(infrastructure, slug);
       if (rec2) {
         rec2.summary = `backoff: ${infrastructure.kind} — ${explanation}`;
         summary = rec2.summary;
@@ -786,7 +785,8 @@ export async function runCoordinatorPass(
       // the fallback's isn't also limited, wake immediately — the next pass
       // will pick the fallback (pickCoordinatorModel reads the capacity entry
       // just recorded). The typed wake above stays: it is the primary pool's
-      // bookkeeping, and the runner's probe restores the primary via it.
+      // bookkeeping; its scheduled reset (or explicit retry) restores the
+      // primary as soon as a real pass proves that pool recovered.
       const fb = coordinatorFallbackModel();
       const fbWait = d.capacity?.byModel[fb]?.wait;
       const fbAvailable = fb !== infrastructure.model && (!fbWait || fbWait.retryAt <= virtualNow().toISOString());
@@ -798,7 +798,7 @@ export async function runCoordinatorPass(
           status: 'pending',
           createdAt: new Date().toISOString(),
         });
-        event('pass.degraded', `${infrastructure.model} pool is limited — coordinator continues on ${fb} until the probe restores it`, [passId]);
+        event('pass.degraded', `${infrastructure.model} pool is limited — coordinator continues on ${fb} until its stored retry proves recovery`, [passId]);
       }
     } else if (outcome !== 'completed') {
       const recent = d.passes.filter((p) => !p.infrastructure).slice(-3);

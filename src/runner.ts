@@ -18,7 +18,11 @@ import { tick } from './engine.js';
 import { sdkEnv } from './secrets.js';
 import { arrive, listWorkstreams, load, weaverHome } from './store.js';
 import { virtualNow } from './clock.js';
-import { clearCapacityBackoff, resolveCapacityAttention } from './capacity.js';
+import {
+  clearCapacityBackoff,
+  resolveCapacityAttention,
+  retryCapacityNow,
+} from './capacity.js';
 
 function lockDir(): string {
   return path.join(weaverHome(), '.runner.lock');
@@ -55,17 +59,14 @@ export function acquireRunnerLock(): (() => void) | null {
 }
 
 /**
- * Infra-backoff recovery. When passes fail on limits/credits/auth, streams
- * park behind 15-minute backoff wakes — but the outage usually ends the
- * moment the operator re-logs-in or buys credits, and nothing used to tell
- * the streams the world had changed (the operator watched a healed fleet sit
- * out its backoff). While any backoff wake is pending, the runner (a) watches
- * the credential file and probes IMMEDIATELY when it changes, and (b) probes
- * every few minutes regardless. A probe is one throwaway max-1-turn pass for
- * each model represented by a typed wait — the only true test because limits
- * can be model-specific. Success expedites only that model's waits.
+ * Infra-backoff recovery. When passes fail on limits or auth, streams park
+ * behind provider-timed backoff wakes — but an auth outage usually ends the
+ * moment the operator re-authenticates. While a backoff wake is pending, the
+ * runner watches credential-file metadata and performs one bounded probe when
+ * that metadata changes. It never polls model capacity: scheduled wakes do the
+ * ordinary retry, and `weaver capacity retry` is the explicit path after a
+ * provider-side billing change. Success expedites only that model's waits.
  */
-const PROBE_EVERY_MS = 3 * 60_000;
 export function infraBackoffSlugs(): string[] {
   const out: string[] = [];
   const now = virtualNow().toISOString();
@@ -88,7 +89,7 @@ function credentialsMtime(): number {
     const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
     return fs.statSync(path.join(configDir, '.credentials.json')).mtimeMs;
   } catch {
-    return 0; // e.g. macOS keychain storage — the periodic probe still covers recovery
+    return 0; // e.g. macOS keychain storage — use the explicit retry command
   }
 }
 
@@ -103,7 +104,7 @@ function infraBackoffModels(slugs: string[]): string[] {
   return [...models].sort();
 }
 
-async function authProbe(model: string): Promise<boolean> {
+async function capacityProbe(model: string): Promise<boolean> {
   try {
     for await (const m of query({
       prompt: 'Reply with the single word: ok',
@@ -135,42 +136,30 @@ export function expediteBackoffWakes(
       );
       if (!hasMatchingWait) continue;
       arrive(slug, (d, event) => {
-        const expedited = new Set<string>();
-        for (const w of d.wakes) {
-          if (
-            w.status === 'pending' &&
-            w.condition.type === 'time' &&
-            w.infrastructure &&
-            (!recoveredModel || w.infrastructure.model === recoveredModel)
-          ) {
-            w.condition = { type: 'time', dueAtVirtual: now };
-            w.infrastructure.retryAt = now;
-            expedited.add(w.id);
-            event('wake.expedited', `${w.id} pulled forward — auth/credit probe succeeded, the outage behind this backoff is over`, [w.id]);
-          }
-        }
-        for (const asg of d.assignments) {
-          const wait = asg.attempts.at(-1)?.infrastructure;
-          if (wait && (!recoveredModel || wait.model === recoveredModel) && wait.retryAt > now) {
-            wait.retryAt = now;
-          }
+        const wakeIds = d.wakes
+          .filter((wake) =>
+            wake.status === 'pending' &&
+            wake.condition.type === 'time' &&
+            wake.infrastructure &&
+            (!recoveredModel || wake.infrastructure.model === recoveredModel))
+          .map((wake) => wake.id);
+        const recoveredModels = retryCapacityNow(d, now, recoveredModel);
+        for (const wakeId of wakeIds) {
+          event('wake.expedited', `${wakeId} pulled forward — credential-change probe confirmed provider recovery`, [wakeId]);
         }
         for (const item of d.attention) {
-          if (item.status === 'open' && item.refId && expedited.has(item.refId)) {
+          if (item.status === 'open' && item.refId && wakeIds.includes(item.refId)) {
             item.status = 'resolved';
             item.resolvedAt = new Date().toISOString();
             item.resolvedBy = 'capacity-probe';
           }
         }
-        const recoveredModels = Object.keys(d.capacity?.byModel ?? {}).filter(
-          (model) => !recoveredModel || model === recoveredModel,
-        );
         for (const model of recoveredModels) {
           clearCapacityBackoff(d, model);
           resolveCapacityAttention(d, model, 'capacity-probe');
         }
       });
-      log(`[run] ${slug}: infra-backoff wake expedited — credits/auth recovered${recoveredModel ? ` for ${recoveredModel}` : ''}`);
+      log(`[run] ${slug}: infra-backoff wake expedited — provider recovered${recoveredModel ? ` for ${recoveredModel}` : ''}`);
     } catch { /* stream's own tick will retry on schedule */ }
   }
 }
@@ -234,7 +223,6 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   // keeps moving. The stream's own tick lock still serializes it, and dead-pid
   // /stale-attempt recovery repairs whatever the hung call abandoned.
   const SLOT_TIMEOUT_MS = 45 * 60_000;
-  let lastProbeAt = 0;
   let probing = false;
   let lastCredMtime = credentialsMtime();
   while (!opts.signal?.aborted) {
@@ -242,19 +230,19 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       try {
         fs.writeFileSync(heartbeatPath(), String(Date.now()));
       } catch { /* lock dir may be mid-recreate */ }
-      // Outage recovery: probe (never concurrently) while streams are parked
-      // behind infra-backoff wakes; a credential-file change probes at once.
+      // Auth recovery: one probe (never concurrently) when credential-file
+      // metadata changes. Usage/rate recovery waits for the stored wake or an
+      // explicit `weaver capacity retry`; blind probes only consume capacity.
       const backedOff = probing ? [] : infraBackoffSlugs();
       if (backedOff.length) {
         const credMtime = credentialsMtime();
         const credChanged = credMtime !== lastCredMtime;
-        if (credChanged || Date.now() - lastProbeAt >= PROBE_EVERY_MS) {
+        if (credChanged) {
           lastCredMtime = credMtime;
-          lastProbeAt = Date.now();
           probing = true;
           const models = infraBackoffModels(backedOff);
-          log(`[run] ${backedOff.length} stream(s) in infra-backoff — probing auth/credits for ${models.join(', ')}${credChanged ? ' (credentials changed)' : ''}`);
-          void Promise.all(models.map(async (model) => ({ model, ok: await authProbe(model) })))
+          log(`[run] credentials changed — probing ${models.join(', ')} for ${backedOff.length} stream(s) in infra-backoff`);
+          void Promise.all(models.map(async (model) => ({ model, ok: await capacityProbe(model) })))
             .then((results) => {
               for (const result of results) {
                 if (result.ok) expediteBackoffWakes(backedOff, log, result.model);

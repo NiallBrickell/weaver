@@ -125,8 +125,8 @@ test('worker infrastructure failure preserves the assignment and schedules a typ
   try {
     runningWorker('worker-infra');
     const infrastructure: InfrastructureWait = {
-      kind: 'sdk_credit_exhausted',
-      recovery: 'claim_sdk_credit_or_enable_usage_credits',
+      kind: 'usage_limit',
+      recovery: 'wait_or_enable_usage_credits',
       source: 'worker',
       sourceId: 'run_worker',
       model: 'sonnet',
@@ -143,7 +143,7 @@ test('worker infrastructure failure preserves the assignment and schedules a typ
     const asg = doc.assignments[0]!;
     assert.equal(asg.state, 'queued');
     assert.equal(asg.attempts[0]!.terminalReason, 'infrastructure_backoff');
-    assert.equal(asg.attempts[0]!.infrastructure!.kind, 'sdk_credit_exhausted');
+    assert.equal(asg.attempts[0]!.infrastructure!.kind, 'usage_limit');
     assert.equal(doc.capacity!.byModel.sonnet!.consecutiveBackoffs, 1);
     assert.equal(doc.wakes.length, 1);
     assert.equal(doc.wakes[0]!.condition.type, 'time');

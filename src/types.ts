@@ -217,6 +217,9 @@ export interface Observation {
 // Waits & inputs
 
 export type CapacityCategory =
+  | 'usage_limit'
+  /** Persisted by Weaver versions that assumed a separate Agent SDK credit.
+   * New writes use `usage_limit`; readers retain this value for continuity. */
   | 'sdk_credit_exhausted'
   | 'session_limit'
   | 'rate_limit'
@@ -226,6 +229,8 @@ export type CapacityCategory =
 /** Closed on purpose: recovering capacity can never mean selecting, pooling,
  * or rotating accounts. Credentials stay in Claude Code, outside Weaver. */
 export type InfrastructureRecovery =
+  | 'wait_or_enable_usage_credits'
+  /** Legacy persisted value; presentation must not repeat the stale claim flow. */
   | 'claim_sdk_credit_or_enable_usage_credits'
   | 'reauthenticate'
   | 'automatic_retry';

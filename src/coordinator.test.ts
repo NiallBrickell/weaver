@@ -37,8 +37,8 @@ afterEach(() => {
 function wait(category: CapacityCategory, index: number): InfrastructureWait {
   return {
     kind: category,
-    recovery: category === 'sdk_credit_exhausted'
-      ? 'claim_sdk_credit_or_enable_usage_credits'
+    recovery: category === 'usage_limit' || category === 'sdk_credit_exhausted'
+      ? 'wait_or_enable_usage_credits'
       : category === 'auth'
         ? 'reauthenticate'
         : 'automatic_retry',
@@ -58,19 +58,20 @@ function backoff(category: CapacityCategory, count: number): void {
   }
 }
 
-test('credit capacity state raises one explicit recovery card after three backoffs', () => {
-  backoff('sdk_credit_exhausted', 3);
+test('plan usage state raises one explicit recovery card only after sustained backoff', () => {
+  backoff('usage_limit', 12);
   let doc = load('coordinator-capacity');
-  assert.equal(doc.capacity!.byModel['claude-fable-5']!.consecutiveBackoffs, 3);
+  assert.equal(doc.capacity!.byModel['claude-fable-5']!.consecutiveBackoffs, 12);
   assert.equal(doc.attention.filter((item) => item.kind === 'capacity').length, 1);
-  assert.match(doc.attention[0]!.summary, /\/usage-credits/);
-  assert.match(doc.attention[0]!.summary, /support\.claude\.com\/en\/articles\/15036540/);
+  assert.match(doc.attention[0]!.summary, /`\/usage`/);
+  assert.match(doc.attention[0]!.summary, /weaver capacity retry coordinator-capacity/);
+  assert.match(doc.attention[0]!.summary, /support\.claude\.com\/en\/articles\/11145838/);
   assert.match(doc.attention[0]!.summary, /support\.claude\.com\/en\/articles\/12429409/);
 
-  backoff('sdk_credit_exhausted', 1);
+  backoff('usage_limit', 1);
   doc = load('coordinator-capacity');
   assert.equal(doc.attention.filter((item) => item.kind === 'capacity').length, 1);
-  assert.match(doc.attention[0]!.summary, /blocked work 4 times/);
+  assert.match(doc.attention[0]!.summary, /blocked work 13 times/);
 });
 
 test('session limits wait quietly until the twelfth consecutive backoff', () => {
@@ -81,7 +82,7 @@ test('session limits wait quietly until the twelfth consecutive backoff', () => 
 });
 
 test('a recovered coordinator model clears typed state and resolves its card', () => {
-  backoff('auth', 3);
+  backoff('auth', 1);
   arrive('coordinator-capacity', (doc) => {
     clearCoordinatorCapacityBackoff(doc, 'claude-fable-5');
   });
