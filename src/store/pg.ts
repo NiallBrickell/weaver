@@ -5,9 +5,9 @@
  * Selected via WEAVER_STORE=postgres://… (src/store.ts getStore()).
  *
  * What this backend owns is EXACTLY what the contract in ./types.ts assigns a
- * backend: persistence and the revision CAS. Secrets refusal, artifact
- * redaction + hashing, and arrive's bounded retry stay in src/store.ts and run
- * before anything reaches here.
+ * backend: persistence, the revision CAS, and the serialized arrival region
+ * (FOR UPDATE row lock). Secrets refusal and artifact redaction + hashing stay
+ * in src/store.ts and run before anything reaches here.
  *
  * The CAS is genuinely atomic, not load-then-hope: `mutate` loads the doc
  * INSIDE a transaction, runs the synchronous mutator between that read and the
@@ -70,9 +70,11 @@ const SCHEMA = `
 
 export class PgStore implements StateStore {
   private readonly pool: pg.Pool;
+  private readonly connectionString: string;
   private ready: Promise<void> | undefined;
 
   constructor(connectionString: string) {
+    this.connectionString = connectionString;
     // allowExitOnIdle: idle pooled connections must not pin a finished CLI
     // process open — closeStore() is the deliberate shutdown, this is the net.
     this.pool = new pg.Pool({ connectionString, max: 10, allowExitOnIdle: true });
@@ -265,20 +267,27 @@ export class PgStore implements StateStore {
   async tryTickLock(slug: string): Promise<(() => Promise<void>) | null> {
     await this.ensureReady();
     const key = `weaver-tick:${slug}`;
-    const client = await this.pool.connect();
+    // A DEDICATED connection, never a pool client: the lock is held for the
+    // whole tick (minutes–hours), and the runner's default concurrency equals
+    // the pool's max — pool-held locks would drain every client, every mutate
+    // inside those ticks would queue on the pool forever, and no tick could
+    // finish to release one. Lock connections are bounded by runner
+    // concurrency; session death still auto-releases (why no pid file here).
+    const client = new pg.Client({ connectionString: this.connectionString });
+    await client.connect();
     let locked = false;
     try {
       const r = await client.query('SELECT pg_try_advisory_lock(hashtext($1)) AS ok', [key]);
       locked = r.rows[0]?.ok === true;
     } finally {
-      if (!locked) client.release();
+      if (!locked) await client.end().catch(() => {});
     }
     if (!locked) return null;
     return async () => {
       try {
         await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key]);
       } finally {
-        client.release();
+        await client.end().catch(() => {});
       }
     };
   }
