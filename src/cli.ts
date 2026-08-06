@@ -111,7 +111,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver secret rm <NAME> [--ws slug]        remove a secret
   weaver watch                               interactive dashboard + embedded runner; keys: ↑↓, a/x/d/s, p pause, P printout, q quit
   weaver watch --plain                       legacy read-only raw dashboard; q quits (use 'weaver printout [slug]' to catch up)
-  weaver printout [slug]                     frozen account since the last printout; omit slug for every workstream
+  weaver printout [slug] [--text]            open an HTML catch-up page; --text writes the plain report instead
   weaver inspect [slug]                      knowledge inspector → self-contained HTML: decision lineage, policies, interventions, adoptions, action audit
   weaver stats                               outcome scoreboard → self-contained HTML: interventions per adopted work product, approval split, policy evidence, per-workstream stats
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
@@ -636,9 +636,16 @@ async function main(): Promise<void> {
     }
 
     case 'printout': {
-      const { deliverPrintout, preparePrintout } = await import('./printout.js');
-      const report = preparePrintout(rest[0]);
-      await deliverPrintout(report);
+      const { parsePrintoutArgs } = await import('./printoutControls.js');
+      const parsed = parsePrintoutArgs(rest);
+      if (parsed.text) {
+        const { deliverPrintout, preparePrintout } = await import('./printout.js');
+        await deliverPrintout(preparePrintout(parsed.slug));
+      } else {
+        const { publishPrintoutHtml } = await import('./printoutHtml.js');
+        const published = await publishPrintoutHtml(parsed.slug);
+        process.stdout.write(`${published.path}\n`);
+      }
       break;
     }
 

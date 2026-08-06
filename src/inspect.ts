@@ -19,7 +19,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PolicyRecord } from './policies.js';
 import { loadPolicies } from './policies.js';
-import { loadSecrets, redactSecrets } from './secrets.js';
+import { writePrintoutIndex } from './printoutHtml.js';
+import { loadAllSecrets, redactSecrets } from './secrets.js';
 import { listWorkstreams, load, weaverHome, workstreamDir } from './store.js';
 import type { Assignment, Decision, Deliverable, EventRecord, WorkstreamDoc } from './types.js';
 
@@ -401,7 +402,8 @@ svg text { pointer-events: none; }
 .tl-when { color: var(--dim); font-size: 12px; font-family: ui-monospace, monospace; margin-right: 8px; }
 .dels { list-style: none; padding: 0; margin: 6px 0; } .dels li { padding: 4px 0; }
 .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
-.back { margin: 0 0 12px; font-size: 13px; } .back a { text-decoration: none; }
+.page-nav { display:flex; gap:16px; margin:0 0 14px; font-size:13px; }
+.page-nav a { text-decoration:none; }
 a { color: var(--coord); }
 footer { color: var(--dim); font-size: 12px; margin-top: 24px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -443,7 +445,13 @@ const SCRIPT = `
 })();
 `;
 
-function page(title: string, subtitle: string, body: string, back?: { href: string; label: string }): string {
+function page(
+  title: string,
+  subtitle: string,
+  body: string,
+  back?: { href: string; label: string },
+  printoutsHref = 'printouts/index.html',
+): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -454,7 +462,7 @@ function page(title: string, subtitle: string, body: string, back?: { href: stri
 </head>
 <body>
 <main>
-${back ? `<p class="back"><a href="${esc(back.href)}">${esc(back.label)}</a></p>` : ''}
+<nav class="page-nav">${back ? `<a href="${esc(back.href)}">${esc(back.label)}</a>` : ''}<a href="${esc(printoutsHref)}">Printouts</a></nav>
 <h1>${esc(title)}</h1>
 <p class="subtitle">${esc(subtitle)}</p>
 ${body}
@@ -510,10 +518,19 @@ ${open.length ? `<h3>Waiting on the human</h3><ul>${open.map((a) => `<li>${esc(a
 </section>`;
 }
 
+function printoutSection(href: string, scope: string): string {
+  return `<section>
+<h2>Printouts</h2>
+<p class="hint">Readable, archived catch-up windows showing what changed, what was adopted, and which external effects were actually verified.</p>
+<p><a href="${esc(href)}">Browse ${esc(scope)} printouts →</a></p>
+</section>`;
+}
+
 export function renderWorkstreamHtml(doc: WorkstreamDoc, policies: PolicyRecord[]): string {
   const ws = doc.workstream;
   const body = [
     taskSection(doc),
+    printoutSection(`../printouts/index.html#${encodeURIComponent(ws.slug)}`, 'this workstream’s'),
     decisionSection(doc),
     policySection(
       policiesForWorkstream(policies, doc),
@@ -531,6 +548,7 @@ export function renderWorkstreamHtml(doc: WorkstreamDoc, policies: PolicyRecord[
     // A workstream page is reachable directly (dashboard [i] on a selected
     // stream), so it always carries its own way back up to the fleet page.
     { href: '../inspect.html', label: '← all workstreams' },
+    `../printouts/index.html#${encodeURIComponent(ws.slug)}`,
   );
 }
 
@@ -567,6 +585,7 @@ export function renderOverviewHtml(
     docs.length ? `<div class="ws-grid">${cards.join('\n')}</div>` : empty('No workstreams under this WEAVER_HOME.')
   }</section>`;
   const body = [
+    printoutSection('printouts/index.html', 'fleet'),
     wsSection,
     policySection(
       policies,
@@ -601,7 +620,7 @@ export function runInspect(slug?: string): string {
   if (slug) load(slug);
   const policies = loadPolicies().policies;
   const docs: WorkstreamDoc[] = [];
-  const allSecrets: Record<string, string> = { ...loadSecrets() };
+  const allSecrets = loadAllSecrets();
   const unreadable: string[] = [];
   for (const s of listWorkstreams()) {
     let doc: WorkstreamDoc;
@@ -614,11 +633,10 @@ export function runInspect(slug?: string): string {
       continue;
     }
     docs.push(doc);
-    const secrets = loadSecrets(s);
-    Object.assign(allSecrets, secrets);
-    writeRedacted(path.join(workstreamDir(s), 'inspect.html'), renderWorkstreamHtml(doc, policies), secrets);
+    writeRedacted(path.join(workstreamDir(s), 'inspect.html'), renderWorkstreamHtml(doc, policies), allSecrets);
   }
   const overview = path.join(weaverHome(), 'inspect.html');
   writeRedacted(overview, renderOverviewHtml(docs, policies, unreadable), allSecrets);
+  writePrintoutIndex();
   return slug ? path.join(workstreamDir(slug), 'inspect.html') : overview;
 }

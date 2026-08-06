@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import { tick, verifyAction } from './engine.js';
 import {
   globalSecretsPath,
+  loadAllSecrets,
   loadSecrets,
   redactSecrets,
   removeSecret,
@@ -76,6 +77,18 @@ test('set/list/rm roundtrip; workstream overlay wins over global; file is 0600',
   assert.equal(removeSecret('DB_URL'), true);
   assert.deepEqual(secretNames(), ['GH_TOKEN']);
   assert.equal(removeSecret('DB_URL'), false);
+});
+
+test('fleet redaction retains different local values stored under the same name', () => {
+  makeWs('alpha');
+  makeWs('beta');
+  setSecret('TOKEN', 'alpha-value-123', 'alpha');
+  setSecret('TOKEN', 'beta-value-456', 'beta');
+  const all = loadAllSecrets();
+  assert.ok(Object.values(all).includes('alpha-value-123'));
+  assert.ok(Object.values(all).includes('beta-value-456'));
+  const redacted = redactSecrets('alpha-value-123 / beta-value-456', all);
+  assert.doesNotMatch(redacted, /alpha-value-123|beta-value-456/);
 });
 
 test('invalid names and empty values are refused', () => {
