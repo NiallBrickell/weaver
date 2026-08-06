@@ -448,9 +448,27 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
               // sandbox blocks something the act genuinely needs, the failure
               // is LOUD (the act fails, readback fails, attention is raised);
               // WEAVER_NO_SANDBOX=1 is the explicit, human-owned override.
+              // The sandbox's ONE invariant here is the write boundary (an
+              // action cannot mutate outside its approved cwd — that is what
+              // stops a misbriefed worker forging workstream state). Two
+              // carve-outs keep that invariant while keeping Bash usable:
+              // session-env is Claude Code's own per-session Bash bootstrap
+              // dir (its 2.1.223 update made the mkdir happen at Bash init —
+              // EPERM there killed EVERY command, even `echo`), and network
+              // egress is deliberately open because command-level judgment is
+              // pilot's job, made per call with the full command visible —
+              // a domain allowlist would re-gate what pilot already judged.
               ...(process.env.WEAVER_NO_SANDBOX
                 ? {}
-                : { sandbox: { enabled: true, autoAllowBashIfSandboxed: true, failIfUnavailable: false } }),
+                : {
+                    sandbox: {
+                      enabled: true,
+                      autoAllowBashIfSandboxed: true,
+                      failIfUnavailable: false,
+                      filesystem: { allowWrite: [join(homedir(), '.claude', 'session-env')] },
+                      network: { allowedDomains: ['*'] },
+                    },
+                  }),
             }
           : readDirs.length
             ? { cwd: readDirs[0], additionalDirectories: readDirs }
