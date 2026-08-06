@@ -13,23 +13,33 @@
  *    by exactly one, persist atomically. The `event` helper appends to the
  *    bounded narrative tail (cap 200). `expectedRevision: undefined` is an
  *    ARRIVAL: no revision check, but the backend must serialize the whole
- *    read-modify-write region (fs: per-workstream write lock; a network
- *    backend: its transaction), so simultaneous arrivals all land.
+ *    read-modify-write region (fs: per-workstream write lock; pg: a row lock
+ *    inside the writing transaction), so simultaneous arrivals all land.
  *  - Every committed head carries its exact transition: the backend persists
  *    a printout mutation receipt (revision, changed fields, emitted events)
- *    BEFORE the head write, so an interruption can leave an ignored future
- *    receipt but never a committed head whose transition is missing.
+ *    to this machine's printout journal BEFORE the head write, so an
+ *    interruption can leave an ignored future receipt but never a committed
+ *    head whose transition is missing.
  *  - `tryTickLock` is cross-PROCESS tick exclusion for one workstream: null
  *    when a live holder exists, otherwise a release function. A dead holder's
  *    lock is stale and reclaimed.
  *  - `writeArtifactRaw` persists exactly the bytes given (redaction and
  *    hashing already happened in the shared layer — the relPath embeds the
  *    content hash, so the backend must not transform content).
+ *  - `mutatePolicies` is the ONLY write path for the global policy store, and
+ *    the backend must make its read-modify-write safe against concurrent
+ *    writers (the store is global, so two remote runners can race it): run the
+ *    SYNCHRONOUS mutator on current state, bump `store.revision` by exactly
+ *    one, persist atomically, and on a concurrent write re-run the mutator
+ *    against fresh state (bounded retry, same semantics as the shared layer's
+ *    arrive()) rather than clobbering. There is no savePolicies — an
+ *    unguarded whole-store write is exactly the lost-update hazard this
+ *    method exists to close.
  */
 
 // Type-only import: erased at compile time, so the runtime chain
 // policies → store → store/fs → store/types stays acyclic.
-import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
+import type { PolicyStore } from '../policies.js';
 import type { EventRecord, WorkstreamCore, WorkstreamDoc } from '../types.js';
 
 export type EventHelper = (type: string, summary: string, refs?: string[]) => void;
@@ -59,10 +69,13 @@ export interface StateStore {
   writeArtifactRaw(slug: string, relPath: string, content: string): Promise<void>;
   readArtifact(slug: string, relPath: string): Promise<string>;
   loadPolicies(): Promise<PolicyStore>;
-  /** Persist the policy head with its mutation receipt (receipt first). */
-  savePolicies(store: PolicyStore, receipt: PolicyMutationReceipt): Promise<void>;
+  /** Concurrency-safe read-modify-write of the global policy store; the
+   * mutator may be re-run against fresh state after a conflicting write. */
+  mutatePolicies(fn: (store: PolicyStore) => void): Promise<PolicyStore>;
   /** Cross-process tick exclusion; null when another live process holds it. */
   tryTickLock(slug: string): Promise<(() => Promise<void>) | null>;
+  /** Release held resources (connection pools). Optional: the fs backend has none. */
+  close?(): Promise<void>;
 }
 
 export type { EventRecord, WorkstreamCore, WorkstreamDoc };

@@ -10,11 +10,9 @@
  * that needs a human, it never runs one.
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { infrastructureWaitSummary } from './capacity.js';
 import { virtualNow } from './clock.js';
-import { listWorkstreams, weaverHome, workstreamDir } from './store.js';
+import { listWorkstreams, load, weaverHome } from './store.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
 
 const R = '\x1b[0m';
@@ -95,12 +93,13 @@ function attemptFresh(a: Assignment): boolean {
   return !!t && !t.endedAt && Date.now() - new Date(t.startedAt).getTime() < STALE_ATTEMPT_MS;
 }
 
-function viewOf(slug: string): WsView {
+async function viewOf(slug: string): Promise<WsView> {
   let doc: WorkstreamDoc;
   try {
-    doc = JSON.parse(
-      fs.readFileSync(path.join(workstreamDir(slug), 'workstream.json'), 'utf8'),
-    ) as WorkstreamDoc;
+    // Through the store (not a direct file read) so the dashboard reflects
+    // whichever backend WEAVER_STORE selected. This is a polling context,
+    // not an Ink render path — async is fine here.
+    doc = await load(slug);
   } catch (e) {
     return {
       slug,
@@ -211,8 +210,7 @@ function viewOf(slug: string): WsView {
 
 async function frame(): Promise<string> {
   const slugs = await listWorkstreams();
-  const views = slugs
-    .map(viewOf)
+  const views = (await Promise.all(slugs.map(viewOf)))
     .sort((a, b) => a.bucket - b.bucket || a.slug.localeCompare(b.slug));
   const counts = [0, 0, 0, 0, 0];
   for (const v of views) counts[v.bucket]! += 1;

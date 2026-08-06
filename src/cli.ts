@@ -8,6 +8,7 @@ import { tick } from './engine.js';
 import { renderStatus } from './status.js';
 import {
   arrive,
+  closeStore,
   createWorkstream,
   listWorkstreams,
   load,
@@ -717,7 +718,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => {
-  process.stderr.write(`${e instanceof Error ? e.stack ?? e.message : e}\n`);
-  process.exit(1);
-});
+main()
+  // A Postgres-backed store holds a connection pool; close it so a finished
+  // command exits instead of hanging on open sockets. (Error paths exit(1)
+  // below, which tears the pool down with the process.)
+  .then(() => closeStore())
+  .catch((e) => {
+    process.stderr.write(`${e instanceof Error ? e.stack ?? e.message : e}\n`);
+    process.exit(1);
+  });
