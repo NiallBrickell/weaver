@@ -42,8 +42,13 @@ const CREDIT_TEXT =
 const AUTH_TEXT =
   /401|unauthoriz|authentication|not logged in|log ?in|oauth_org_not_allowed|token (?:revoked|expired)|process aborted/i;
 const SESSION_TEXT = /session limit|hit your session limit/i;
+// Limit wording varies by plan window ("hit your weekly limit · resets Aug 8",
+// "reached your usage limit") and Anthropic renames these freely — so match
+// the shape (hit/reached + any named limit + optional reset time), not one
+// remembered phrasing. A miss here burns three strikes and pages the human
+// with a fleet of false blockers, as the weekly limit did on 2026-08-06.
 const RATE_TEXT =
-  /rate.?limit|usage limit|quota|exceeded your|you(?:'|’)ve reached your .* limit|429/i;
+  /rate.?limit|usage limit|quota|exceeded your|you(?:'|’)ve (?:reached|hit) your [\w -]*limit|(?:weekly|monthly|daily|5-?hour) limit|limit ·? ?resets/i;
 const PROVIDER_TEXT = /overloaded|529|server error|service unavailable/i;
 
 /** Compatibility classifier for thrown errors and older SDK result text.
