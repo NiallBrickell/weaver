@@ -82,12 +82,11 @@ function reportMarkup(text: string): string {
   const out: string[] = [];
   let listOpen = false;
   let codeOpen = false;
-  let section: 'section' | 'details' | null = null;
+  let sectionOpen = false;
   const closeSection = () => {
     listOpen = closeList(out, listOpen);
-    if (section === 'section') out.push('</section>');
-    if (section === 'details') out.push('</div></details>');
-    section = null;
+    if (sectionOpen) out.push('</section>');
+    sectionOpen = false;
   };
 
   for (const line of text.split('\n')) {
@@ -110,18 +109,16 @@ function reportMarkup(text: string): string {
       closeSection();
       const title = line.slice(3);
       const technical = /^(Exact |Current typed |Surviving pre-journal)/.test(title);
-      if (technical) {
-        out.push(`<details class="technical"><summary>${esc(title)}</summary><div class="technical-body">`);
-        section = 'details';
-      } else {
-        out.push(`<section><h2>${esc(title)}</h2>`);
-        section = 'section';
-      }
+      out.push(`<section class="report-section${technical ? ' technical' : ''}">`);
+      if (technical) out.push('<p class="eyebrow">Technical record</p>');
+      out.push(`<h3>${esc(title)}</h3>`);
+      sectionOpen = true;
       continue;
     }
     if (line.startsWith('# ')) {
       listOpen = closeList(out, listOpen);
-      out.push(`<h1 class="report-title">${esc(line.slice(2))}</h1>`);
+      // The document wrapper owns the h1/h2 hierarchy. The plain report's
+      // leading title is deliberately omitted here rather than duplicated.
       continue;
     }
     if (line.startsWith('### ')) {
@@ -132,7 +129,7 @@ function reportMarkup(text: string): string {
         : heading.startsWith('READBACK FAILED') || heading.startsWith('REJECTED')
           ? 'bad'
           : heading.startsWith('PROPOSED') ? 'warn' : '';
-      out.push(`<h3 class="${cls}">${esc(heading)}</h3>`);
+      out.push(`<h4 class="${cls}">${esc(heading)}</h4>`);
       continue;
     }
     if (line === '---') {
@@ -147,7 +144,7 @@ function reportMarkup(text: string): string {
     const fact = /^- ([^:]{1,48}): (.*)$/.exec(line);
     if (fact) {
       listOpen = closeList(out, listOpen);
-      out.push(`<div class="fact"><span>${esc(fact[1]!)}</span><p>${esc(fact[2]!)}</p></div>`);
+      out.push(`<p class="fact"><strong>${esc(fact[1]!)}:</strong> ${esc(fact[2]!)}</p>`);
       continue;
     }
     if (line.startsWith('- ')) {
@@ -169,56 +166,57 @@ function reportMarkup(text: string): string {
 }
 
 const STYLE = `
-:root { color-scheme: dark; --bg:#0b0d12; --panel:#141821; --panel2:#1b202b; --line:#293141; --fg:#e6e9ef; --dim:#929cab; --blue:#7aa2f7; --green:#70d49b; --amber:#e7c568; --red:#ee7a7a; }
+:root { --paper:#f7f9f8; --ink:#1c2126; --muted:#5a6672; --accent:#1f7a5c; --accent-soft:rgba(31,122,92,.09); --rust:#b4552d; --rule:#dce2df; --mono-bg:#eef2f0; }
+@media (prefers-color-scheme:dark) { :root { --paper:#131917; --ink:#e6eae7; --muted:#93a09a; --accent:#4cb68c; --accent-soft:rgba(76,182,140,.12); --rust:#d0764f; --rule:#2a332f; --mono-bg:#202824; } }
 * { box-sizing:border-box; }
 html { scroll-behavior:smooth; }
-body { margin:0; background:linear-gradient(145deg,#0b0d12 0%,#111725 100%); color:var(--fg); font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-main { max-width:1180px; margin:0 auto; padding:36px 26px 90px; }
-a { color:var(--blue); }
-.topbar { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:28px; }
-.nav { display:flex; gap:14px; flex-wrap:wrap; }
-.nav a { text-decoration:none; font-size:13px; }
-.hero { padding:28px; border:1px solid var(--line); border-radius:18px; background:rgba(20,24,33,.94); box-shadow:0 20px 60px rgba(0,0,0,.25); }
-.eyebrow { color:var(--blue); text-transform:uppercase; letter-spacing:.11em; font-size:12px; font-weight:700; }
-.hero h1 { margin:5px 0 6px; font-size:30px; line-height:1.2; }
-.hero p { margin:4px 0; color:var(--dim); }
-.actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
-button,.button { appearance:none; border:1px solid var(--line); background:var(--panel2); color:var(--fg); border-radius:9px; padding:8px 12px; cursor:pointer; text-decoration:none; font:inherit; font-size:13px; }
-button:hover,.button:hover { border-color:var(--blue); }
-.scope-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; margin:18px 0; }
-.scope-card { display:block; padding:14px 16px; border:1px solid var(--line); border-radius:12px; background:var(--panel); text-decoration:none; }
-.scope-card strong { display:block; color:var(--fg); }
-.scope-card span { color:var(--dim); font-size:13px; }
-.pill { display:inline-block; margin-left:7px; padding:1px 7px; border:1px solid var(--line); border-radius:999px; color:var(--dim); font-size:11px; text-transform:uppercase; }
-.report { margin:20px 0; }
-.report > summary { cursor:pointer; list-style:none; padding:17px 20px; border:1px solid var(--line); border-radius:13px; background:var(--panel); font-size:17px; font-weight:650; }
-.report[open] > summary { border-radius:13px 13px 0 0; border-bottom-color:transparent; }
-.report-body { padding:4px 20px 22px; border:1px solid var(--line); border-top:0; border-radius:0 0 13px 13px; background:var(--panel); }
-.report-title { font-size:21px; margin:18px 0 4px; }
-section,.technical { margin:16px 0; padding:17px 19px; border:1px solid var(--line); border-radius:12px; background:var(--panel2); }
-section h2 { margin:0 0 12px; font-size:17px; }
-h3 { margin:19px 0 7px; font-size:14px; }
-h3.good,.good { color:var(--green); } h3.bad,.bad { color:var(--red); } h3.warn,.warn { color:var(--amber); }
-.meta { color:var(--dim); margin:3px 0; font-size:13px; }
-.fact { display:grid; grid-template-columns:minmax(140px,210px) 1fr; gap:15px; border-top:1px solid var(--line); padding:9px 0; }
-.fact:first-of-type { border-top:0; }
-.fact > span { color:var(--dim); font-weight:600; }
-.fact p { margin:0; overflow-wrap:anywhere; }
-ul { margin:8px 0; padding-left:22px; }
-li { margin:5px 0; overflow-wrap:anywhere; }
-.delta { margin:5px 0 5px 14px; color:#c5cbd5; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
-pre { white-space:pre-wrap; overflow-wrap:anywhere; padding:13px; border:1px solid var(--line); border-radius:9px; background:#0d1017; color:#cbd3df; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
-.technical { padding:0; }
-.technical > summary { cursor:pointer; padding:14px 17px; color:var(--dim); font-weight:650; }
-.technical-body { padding:0 17px 16px; }
-hr { border:0; border-top:1px solid var(--line); margin:26px 0; }
-.archive-list { display:grid; gap:10px; }
-.archive-row { display:flex; justify-content:space-between; gap:12px; padding:13px 15px; border:1px solid var(--line); border-radius:10px; background:var(--panel2); text-decoration:none; }
-.archive-row span { color:var(--dim); }
-.empty { color:var(--dim); font-style:italic; }
-.copy-status { color:var(--dim); align-self:center; font-size:13px; }
-footer { color:var(--dim); font-size:12px; margin-top:30px; }
-@media (max-width:680px) { main{padding:22px 14px 60px}.topbar{align-items:flex-start;flex-direction:column}.hero{padding:21px}.hero h1{font-size:24px}.fact{grid-template-columns:1fr;gap:2px}.report-body{padding-left:12px;padding-right:12px} }
+body { margin:0; background:var(--paper); color:var(--ink); font-family:Charter,"Bitstream Charter","Iowan Old Style",Georgia,serif; font-size:1.02rem; line-height:1.62; }
+.wrap { max-width:46rem; margin:0 auto; padding:2.5rem 1.25rem 5rem; }
+a { color:var(--accent); }
+a:focus-visible,button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.masthead { display:flex; justify-content:space-between; align-items:baseline; gap:.4rem 1rem; border-bottom:3px double var(--rule); padding-bottom:1.4rem; margin-bottom:2.2rem; font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif; }
+.masthead strong { font-size:1.7rem; font-weight:600; letter-spacing:-.01em; }
+.stamp { color:var(--muted); font-size:.8rem; letter-spacing:.06em; text-transform:uppercase; }
+.page-nav { display:flex; flex-wrap:wrap; gap:1rem; margin:0 0 2rem; font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif; font-size:.82rem; }
+.page-nav a { text-decoration:none; }
+.edition-date,.eyebrow { font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif; font-weight:600; text-transform:uppercase; }
+.edition-date { color:var(--accent); font-size:.82rem; letter-spacing:.1em; margin:0 0 .5rem; }
+.edition-title { font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif; font-size:1.55rem; font-weight:600; letter-spacing:-.01em; line-height:1.3; margin:0 0 1rem; text-wrap:balance; }
+.lede { color:var(--muted); max-width:60ch; margin:0 0 1.5rem; }
+.actions { display:flex; align-items:center; flex-wrap:wrap; gap:.7rem; margin:0 0 2.2rem; }
+button { appearance:none; border:1px solid var(--rule); background:transparent; color:var(--ink); border-radius:3px; padding:.42rem .72rem; cursor:pointer; font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif; font-size:.78rem; }
+button:hover { border-color:var(--accent); color:var(--accent); }
+.copy-status { color:var(--muted); font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif; font-size:.78rem; }
+.contents { border-top:1px solid var(--rule); border-bottom:1px solid var(--rule); padding:1rem 0; margin:0 0 3rem; }
+.contents ol { margin:.45rem 0 0; padding-left:1.3rem; }
+.contents li { margin:.25rem 0; }
+.contents a { color:var(--ink); text-decoration-color:var(--rule); text-underline-offset:.15em; }
+.eyebrow { color:var(--muted); font-size:.7rem; letter-spacing:.14em; margin:0 0 .35rem; }
+.workstream,.policy-report { border-top:1px solid var(--rule); margin:0 0 4rem; padding-top:1.5rem; scroll-margin-top:1.5rem; }
+.workstream > h2,.policy-report > h2,.archive-group > h2 { font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif; font-size:1.28rem; font-weight:600; line-height:1.35; letter-spacing:-.005em; margin:0 0 1.5rem; text-wrap:balance; }
+.report-section { margin:0 0 2.7rem; }
+.report-section h3 { font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif; font-size:1.12rem; font-weight:600; line-height:1.4; margin:0 0 1rem; text-wrap:balance; }
+.report-section.technical { border-top:1px solid var(--rule); padding-top:1.2rem; }
+h4 { font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif; font-size:.93rem; margin:1.6rem 0 .45rem; }
+h4.good,.good { color:var(--accent); } h4.bad,.bad { color:var(--rust); } h4.warn,.warn { color:#8a6a12; }
+.meta { color:var(--muted); font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif; font-size:.82rem; margin:.1rem 0; }
+.fact { margin:.42rem 0; overflow-wrap:anywhere; }
+.fact strong { font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif; font-size:.92rem; }
+ul { margin:.65rem 0; padding-left:1.25rem; }
+li { margin:.38rem 0; overflow-wrap:anywhere; }
+.delta { border-left:2px solid var(--rule); color:var(--muted); margin:.38rem 0; padding-left:.8rem; font:12px/1.55 ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+pre { white-space:pre-wrap; overflow-wrap:anywhere; padding:.8rem 1rem; background:var(--mono-bg); color:var(--ink); font:12px/1.55 ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace; }
+hr { border:0; border-top:1px solid var(--rule); margin:2.5rem 0; }
+.archive-group { border-top:1px solid var(--rule); margin-top:2.5rem; padding-top:1.3rem; }
+.archive-list { list-style:none; margin:0; padding:0; }
+.archive-list li { border-bottom:1px solid var(--rule); padding:.55rem 0; }
+.archive-row { display:flex; justify-content:space-between; align-items:baseline; gap:1rem; color:var(--ink); text-decoration:none; }
+.archive-row:hover strong { color:var(--accent); }
+.archive-row span { color:var(--muted); font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace; font-size:.78rem; }
+.empty,.hint { color:var(--muted); }
+footer.site { border-top:1px solid var(--rule); color:var(--muted); font-size:.84rem; margin-top:3.5rem; padding-top:1.2rem; }
+code { background:var(--mono-bg); border-radius:3px; padding:.08em .35em; font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace; font-size:.85em; }
+@media (max-width:34rem) { .wrap{padding-top:1.6rem}.masthead{align-items:flex-start;flex-direction:column}.archive-row{align-items:flex-start;flex-direction:column;gap:.1rem} }
 `;
 
 function page(title: string, body: string, reportText?: string): string {
@@ -250,11 +248,15 @@ function page(title: string, body: string, reportText?: string): string {
 </script>`;
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)}</title><style>${STYLE}</style></head><body><main>${body}<footer>Generated by Weaver from typed state and immutable operator-history sidecars. Coordinator prose is informational; adoption pins and deterministic readbacks remain the authority.</footer></main>${copy}</body></html>\n`;
+<title>${esc(title)}</title><style>${STYLE}</style></head><body><main class="wrap"><header class="masthead"><strong>Weaver</strong><span class="stamp">Printout</span></header>${body}<footer class="site">Generated from typed state and immutable operator-history sidecars. Coordinator prose is informational; adoption pins and deterministic readbacks remain the authority.</footer></main>${copy}</body></html>\n`;
 }
 
-function workstreamCard(report: WorkstreamPrintout): string {
-  return `<a class="scope-card" href="#${esc(report.slug)}"><strong>${esc(report.title)} <span class="pill">${esc(report.status)}</span></strong><span>${esc(report.slug)} · revision ${report.throughRevision} · ${report.eventCount} recorded event${report.eventCount === 1 ? '' : 's'}</span></a>`;
+function workstreamAnchor(report: WorkstreamPrintout): string {
+  return `workstream-${safeScope(report.slug)}`;
+}
+
+function workstreamSection(report: WorkstreamPrintout, standalone: boolean): string {
+  return `<section class="workstream" id="${esc(workstreamAnchor(report))}"><p class="eyebrow">${esc(report.status)} · ${esc(report.slug)} · revision ${report.throughRevision} · ${report.eventCount} recorded event${report.eventCount === 1 ? '' : 's'}</p><h2>${esc(standalone ? 'What changed' : report.title)}</h2>${reportMarkup(report.text)}</section>`;
 }
 
 export function renderPrintoutHtml(report: PrintoutReport): string {
@@ -262,12 +264,12 @@ export function renderPrintoutHtml(report: PrintoutReport): string {
   const title = selected ? `${selected.title} — printout` : 'Weaver fleet printout';
   const knowledgeHref = selected ? `../../../${encodeURIComponent(selected.slug)}/inspect.html` : '../../../inspect.html';
   const body = `
-<div class="topbar"><nav class="nav"><a href="../../index.html">← All printouts</a><a href="${esc(knowledgeHref)}">Knowledge inspector</a></nav><span class="meta">through ${esc(formatWhen(report.through))}</span></div>
-<header class="hero"><span class="eyebrow">Weaver printout</span><h1>${esc(selected?.title ?? 'Fleet catch-up')}</h1><p>${selected ? esc(selected.slug) : `${report.workstreams.length} workstream${report.workstreams.length === 1 ? '' : 's'} plus global learning activity`} · frozen through ${esc(report.through)}</p><p>Everything recorded since the previous delivered printout. Open a workstream below; detailed mutation history stays collapsed until needed.</p><div class="actions"><button id="copy-report" type="button">Copy plain-text report</button><span class="copy-status" id="copy-status" aria-live="polite"></span></div></header>
-${report.workstreams.length > 1 ? `<nav class="scope-grid" aria-label="Workstreams in this printout">${report.workstreams.map(workstreamCard).join('')}</nav>` : ''}
-${report.workstreams.map((workstream) => `<details class="report" id="${esc(workstream.slug)}"${report.workstreams.length === 1 ? ' open' : ''}><summary>${esc(workstream.title)} <span class="pill">${esc(workstream.status)}</span></summary><div class="report-body">${reportMarkup(workstream.text)}</div></details>`).join('\n')}
-${report.policies ? `<details class="report"><summary>Global learning activity</summary><div class="report-body">${reportMarkup(report.policies.text)}</div></details>` : ''}
-${report.errors.length ? `<section><h2 class="bad">Unreadable sources</h2><ul>${report.errors.map((error) => `<li><strong>${esc(error.slug)}</strong>: ${esc(error.message)}</li>`).join('')}</ul></section>` : ''}`;
+<nav class="page-nav"><a href="../../index.html">← All printouts</a><a href="${esc(knowledgeHref)}">Knowledge inspector</a></nav>
+<article class="edition"><p class="edition-date">${selected ? 'Workstream' : 'Fleet'} printout · through ${esc(formatWhen(report.through))}</p><h1 class="edition-title">${esc(selected?.title ?? 'What Weaver did since the last printout')}</h1><p class="lede">${selected ? `The complete record for ${esc(selected.slug)}` : `${report.workstreams.length} workstream${report.workstreams.length === 1 ? '' : 's'} plus global learning activity`}, frozen through ${esc(report.through)}. Everything follows in one continuous engineering document; no section is hidden.</p><div class="actions"><button id="copy-report" type="button">Copy plain-text report</button><span class="copy-status" id="copy-status" aria-live="polite"></span></div>
+${report.workstreams.length > 1 ? `<nav class="contents" aria-label="Contents"><p class="eyebrow">In this printout</p><ol>${report.workstreams.map((workstream) => `<li><a href="#${esc(workstreamAnchor(workstream))}">${esc(workstream.title)}</a> — ${esc(workstream.status)}</li>`).join('')}${report.policies ? '<li><a href="#global-learning">Global learning activity</a></li>' : ''}</ol></nav>` : ''}
+${report.workstreams.map((workstream) => workstreamSection(workstream, report.workstreams.length === 1)).join('\n')}
+${report.policies ? `<section class="policy-report" id="global-learning"><p class="eyebrow">Fleet policy store</p><h2>Global learning activity</h2>${reportMarkup(report.policies.text)}</section>` : ''}
+${report.errors.length ? `<section class="report-section"><h3 class="bad">Unreadable sources</h3><ul>${report.errors.map((error) => `<li><strong>${esc(error.slug)}</strong>: ${esc(error.message)}</li>`).join('')}</ul></section>` : ''}</article>`;
   return page(title, body, report.text);
 }
 
@@ -339,10 +341,10 @@ export async function renderPrintoutIndexHtml(records: PrintoutArchiveRecord[], 
   const title = (scope: string) => titles.get(scope) ?? scope;
   const ordered = [...groups.entries()].sort(([a], [b]) => a === 'fleet' ? -1 : b === 'fleet' ? 1 : title(a).localeCompare(title(b)));
   const body = `
-<div class="topbar"><nav class="nav"><a href="../inspect.html">← Knowledge inspector</a></nav></div>
-<header class="hero"><span class="eyebrow">Weaver history</span><h1>Printouts</h1><p>Saved browser snapshots of generated catch-up windows. These pages make the record readable; they do not create authority or change workstream state.</p></header>
-${ordered.length ? ordered.map(([scope, items]) => `<section id="${esc(scope)}"><h2>${esc(title(scope))} <span class="pill">${esc(scope)}</span></h2><div class="archive-list">${items.map((item) => `<a class="archive-row" href="${esc(item.relativePath)}"><strong>${esc(formatWhen(item.through))}</strong><span>${item.workstreamCount} workstream${item.workstreamCount === 1 ? '' : 's'}</span></a>`).join('')}</div></section>`).join('\n') : '<section><h2>Printouts</h2><p class="empty">No printout has been opened yet. Press uppercase P in the dashboard or run weaver printout.</p></section>'}
-${unreadable.length ? `<section><h2 class="bad">Unreadable archives</h2><p class="hint">Skipped without hiding healthy printouts: ${unreadable.map((item) => `<code>${esc(item)}</code>`).join(' ')}</p></section>` : ''}`;
+<nav class="page-nav"><a href="../inspect.html">← Knowledge inspector</a></nav>
+<article class="edition"><p class="edition-date">Weaver history</p><h1 class="edition-title">Printouts</h1><p class="lede">Saved catch-up documents, newest first. They make Weaver's typed record readable without creating authority or changing workstream state.</p>
+${ordered.length ? ordered.map(([scope, items]) => `<section class="archive-group" id="${esc(scope)}"><p class="eyebrow">${esc(scope)}</p><h2>${esc(title(scope))}</h2><ol class="archive-list">${items.map((item) => `<li><a class="archive-row" href="${esc(item.relativePath)}"><strong>${esc(formatWhen(item.through))}</strong><span>${item.workstreamCount} workstream${item.workstreamCount === 1 ? '' : 's'}</span></a></li>`).join('')}</ol></section>`).join('\n') : '<section class="archive-group"><h2>Printouts</h2><p class="empty">No printout has been opened yet. Press uppercase P in the dashboard or run weaver printout.</p></section>'}
+${unreadable.length ? `<section class="archive-group"><h2 class="bad">Unreadable archives</h2><p class="hint">Skipped without hiding healthy printouts: ${unreadable.map((item) => `<code>${esc(item)}</code>`).join(' ')}</p></section>` : ''}</article>`;
   return page('Weaver — printouts', body);
 }
 
