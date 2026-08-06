@@ -11,7 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { JsonValue, PrintoutFieldDelta } from './types.js';
+import type { JsonValue, PrintoutChange, PrintoutFieldDelta, WorkstreamDoc } from './types.js';
 
 export interface PrintoutCheckpoint {
   throughRevision: number;
@@ -59,6 +59,56 @@ export function diffPrintoutFields(before: unknown, after: unknown, pointer = ''
 
 export function writeJournalReceipt<T extends { revision: number }>(dir: string, receipt: T): void {
   atomicWrite(path.join(dir, 'revisions', revisionName(receipt.revision)), JSON.stringify(receipt, null, 2) + '\n');
+}
+
+function changedEntities<T extends { id: string }>(
+  kind: PrintoutChange['kind'],
+  before: T[],
+  after: T[],
+): PrintoutChange[] {
+  const old = new Map(before.map((value) => [value.id, value]));
+  const next = new Map(after.map((value) => [value.id, value]));
+  return [...new Set([...old.keys(), ...next.keys()])]
+    .sort()
+    .flatMap((id) => {
+      const prior = old.get(id);
+      const current = next.get(id);
+      if (JSON.stringify(prior) === JSON.stringify(current)) return [];
+      return [{ kind, id, fields: diffPrintoutFields(prior, current) }];
+    });
+}
+
+/**
+ * Central exact diff: eventless writers and intermediate values survive.
+ * Backend-agnostic (a pure function of two docs) so every StateStore backend
+ * builds identical receipts.
+ */
+export function printoutChanges(before: WorkstreamDoc, after: WorkstreamDoc): PrintoutChange[] {
+  const changes: PrintoutChange[] = [];
+  if (JSON.stringify(before.workstream) !== JSON.stringify(after.workstream)) {
+    changes.push({ kind: 'workstream', fields: diffPrintoutFields(before.workstream, after.workstream) });
+  }
+  changes.push(
+    ...changedEntities('decision', before.decisions, after.decisions),
+    ...changedEntities('assignment', before.assignments, after.assignments),
+    ...changedEntities('deliverable', before.deliverables, after.deliverables),
+    ...changedEntities('interaction', before.interactions, after.interactions),
+    ...changedEntities('observation', before.observations, after.observations),
+    ...changedEntities('wake', before.wakes, after.wakes),
+    ...changedEntities('steering', before.steering, after.steering),
+    ...changedEntities('attention', before.attention, after.attention),
+    ...changedEntities('pass', before.passes, after.passes),
+  );
+  if (JSON.stringify(before.spend) !== JSON.stringify(after.spend)) {
+    changes.push({ kind: 'spend', fields: diffPrintoutFields(before.spend, after.spend) });
+  }
+  if (JSON.stringify(before.capacity) !== JSON.stringify(after.capacity)) {
+    changes.push({ kind: 'capacity', fields: diffPrintoutFields(before.capacity, after.capacity) });
+  }
+  if (JSON.stringify(before.lease) !== JSON.stringify(after.lease)) {
+    changes.push({ kind: 'lease', fields: diffPrintoutFields(before.lease, after.lease) });
+  }
+  return changes;
 }
 
 export function readJournalReceipts<T extends { revision: number }>(

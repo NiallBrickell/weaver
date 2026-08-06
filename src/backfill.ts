@@ -171,13 +171,13 @@ export function parseRulesFile(filePath: string): {
 // ---------------------------------------------------------------------------
 // Dedup + write (shared by both sources).
 
-function applyCandidates(
+async function applyCandidates(
   candidates: BackfillCandidate[],
   tags: string[],
   dryRun: boolean,
   report: BackfillReport,
-): void {
-  const existing = new Set(loadPolicies().policies.map((p) => normalizeStatement(p.statement)));
+): Promise<void> {
+  const existing = new Set((await loadPolicies()).policies.map((p) => normalizeStatement(p.statement)));
   for (const c of candidates) {
     const key = normalizeStatement(c.statement);
     if (existing.has(key)) {
@@ -189,7 +189,7 @@ function applyCandidates(
       report.wouldCreate.push(c);
     } else {
       report.created.push(
-        proposeBackfillPolicy({
+        await proposeBackfillPolicy({
           statement: c.statement,
           tags,
           effectKind: c.effectKind,
@@ -203,7 +203,7 @@ function applyCandidates(
   }
 }
 
-export function backfillRules(paths: string[], tags: string[], dryRun: boolean): BackfillReport {
+export async function backfillRules(paths: string[], tags: string[], dryRun: boolean): Promise<BackfillReport> {
   const report: BackfillReport = { created: [], wouldCreate: [], duplicates: [], skipped: [] };
   const candidates: BackfillCandidate[] = [];
   for (const p of paths) {
@@ -211,7 +211,7 @@ export function backfillRules(paths: string[], tags: string[], dryRun: boolean):
     candidates.push(...parsed.candidates);
     report.skipped.push(...parsed.skipped);
   }
-  applyCandidates(candidates, tags, dryRun, report);
+  await applyCandidates(candidates, tags, dryRun, report);
   return report;
 }
 
@@ -380,7 +380,7 @@ export async function backfillSessions(
       interventionSummary: `backfilled from Claude Code ${ref}: "${s.quote.slice(0, 200)}"`,
     });
   }
-  applyCandidates(candidates, tags, opts.dryRun, report);
+  await applyCandidates(candidates, tags, opts.dryRun, report);
   return report;
 }
 

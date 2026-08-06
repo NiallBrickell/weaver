@@ -21,8 +21,8 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-test('capacity retry makes a real stored wait due without changing billing or authority', () => {
-  createWorkstream({
+test('capacity retry makes a real stored wait due without changing billing or authority', async () => {
+  await createWorkstream({
     slug: 'capacity-cli',
     title: 'Capacity CLI',
     objective: 'resume durable work',
@@ -41,7 +41,7 @@ test('capacity retry makes a real stored wait due without changing billing or au
     detectedAt: virtualNow().toISOString(),
     retryAt: new Date(virtualNow().getTime() + 60_000).toISOString(),
   };
-  arrive('capacity-cli', (doc) => {
+  await arrive('capacity-cli', (doc) => {
     doc.wakes.push({
       id: 'wake_wait',
       reason: 'typed provider wait',
@@ -69,7 +69,7 @@ test('capacity retry makes a real stored wait due without changing billing or au
     { cwd: process.cwd(), env: process.env, encoding: 'utf8' },
   );
 
-  const doc = load('capacity-cli');
+  const doc = await load('capacity-cli');
   assert.match(output, /changed no billing or identity/);
   assert.ok(doc.capacity!.byModel.sonnet!.wait.retryAt <= virtualNow().toISOString());
   assert.equal(doc.capacity!.state, 'backoff');

@@ -31,6 +31,7 @@ import {
 } from './capacity.js';
 import {
   RevisionConflictError,
+  arrive,
   load,
   mutate,
   newId,
@@ -113,7 +114,7 @@ export async function runCoordinatorPass(
   slug: string,
   wakeReasons: string[],
 ): Promise<PassOutcome> {
-  let doc = load(slug);
+  let doc = await load(slug);
   const ws = doc.workstream;
 
   // Budget is a hard ceiling.
@@ -134,7 +135,7 @@ export async function runCoordinatorPass(
   // classification, and capacity clearing must all speak about ONE model.
   const passModel = pickCoordinatorModel(doc, virtualNow().toISOString());
   const degraded = passModel !== coordinatorModel();
-  doc = mutate(slug, doc.revision, (d, event) => {
+  doc = await mutate(slug, doc.revision, (d, event) => {
     d.lease = {
       passId,
       acquiredAt: new Date().toISOString(),
@@ -154,7 +155,7 @@ export async function runCoordinatorPass(
 
   // The revision this pass writes against; advanced after each of its own writes.
   const rev = { value: doc.revision };
-  const matchedPolicies = matchPolicies(doc.workstream.tags ?? []);
+  const matchedPolicies = await matchPolicies(doc.workstream.tags ?? []);
   const projection = buildProjection(doc, wakeReasons, matchedPolicies);
   let finished = false;
 
@@ -165,12 +166,12 @@ export async function runCoordinatorPass(
   });
 
   /** Run a revision-checked mutation on behalf of the model; map conflicts to tool errors. */
-  const change = (
+  const change = async (
     fn: (d: WorkstreamDoc, event: (t: string, s: string, r?: string[]) => void) => string,
   ) => {
     try {
       let msg = '';
-      const next = mutate(slug, rev.value, (d, event) => {
+      const next = await mutate(slug, rev.value, (d, event) => {
         msg = fn(d, event);
         const rec = d.passes.find((p) => p.id === passId);
         if (rec) rec.changes.push(msg);
@@ -316,13 +317,13 @@ export async function runCoordinatorPass(
         'Read the full content of a deliverable so you can judge it against acceptance criteria before adopting or rejecting.',
         { deliverable_id: z.string() },
         async (a) => {
-          const d = load(slug);
+          const d = await load(slug);
           const del = d.deliverables.find((x) => x.id === a.deliverable_id);
           if (!del) return err(`no deliverable ${a.deliverable_id}`);
-          if (!verifyArtifact(slug, del.path, del.contentHash)) {
+          if (!(await verifyArtifact(slug, del.path, del.contentHash))) {
             return err(`INTEGRITY FAILURE: ${del.id} on-disk content no longer matches its recorded hash — do not adopt; raise_attention instead`);
           }
-          return ok(readArtifact(slug, del.path));
+          return ok(await readArtifact(slug, del.path));
         },
       ),
 
@@ -330,8 +331,20 @@ export async function runCoordinatorPass(
         'adopt_submission',
         'Accept an assignment\'s submitted deliverable into the workstream. Pins the exact content revision. Only do this after reading the artifact and checking acceptance criteria.',
         { assignment_id: z.string(), reason: z.string() },
-        async (a) =>
-          change((d, event) => {
+        async (a) => {
+          // Artifact integrity is read OUTSIDE the synchronous mutator (the
+          // store is async now). Safe against the CAS: the pre-read is at the
+          // revision this pass writes against — if anything moved in between,
+          // mutate throws RevisionConflictError before the mutator runs, so a
+          // stale verification can never be acted on. The mutator re-checks
+          // that the deliverable it pins is the exact content verified here.
+          const pre = await load(slug);
+          const preAsg = pre.assignments.find((x) => x.id === a.assignment_id);
+          const preDel = preAsg?.submission?.deliverableId
+            ? pre.deliverables.find((x) => x.id === preAsg.submission!.deliverableId)
+            : undefined;
+          const preIntact = preDel ? await verifyArtifact(slug, preDel.path, preDel.contentHash) : false;
+          return change((d, event) => {
             const asg = d.assignments.find((x) => x.id === a.assignment_id);
             if (!asg) throw new Error(`no assignment ${a.assignment_id}`);
             if (asg.state !== 'awaiting_review' || !asg.submission) throw new Error(`${asg.id} has no submission awaiting review`);
@@ -345,7 +358,7 @@ export async function runCoordinatorPass(
               ? d.deliverables.find((x) => x.id === asg.submission!.deliverableId)
               : undefined;
             if (del) {
-              if (!verifyArtifact(slug, del.path, del.contentHash)) {
+              if (!preIntact || del.id !== preDel?.id || del.contentHash !== preDel.contentHash) {
                 throw new Error(`integrity failure on ${del.id}; adoption refused`);
               }
               del.adopted = {
@@ -358,7 +371,8 @@ export async function runCoordinatorPass(
             asg.state = 'completed';
             event('submission.adopted', `${asg.id} adopted${del ? ` (pinned ${del.contentHash.slice(0, 8)})` : ''}: ${a.reason}`, [asg.id]);
             return `adopted ${asg.id}${del ? `, pinned ${del.id}@${del.contentHash.slice(0, 8)}` : ''}`;
-          }),
+          });
+        },
       ),
 
       tool(
@@ -546,7 +560,7 @@ export async function runCoordinatorPass(
         },
         async (a) => {
           try {
-            const policy = proposePolicy({
+            const policy = await proposePolicy({
               statement: a.statement,
               tags: a.tags,
               effectKind: a.effect_kind,
@@ -557,7 +571,7 @@ export async function runCoordinatorPass(
               interventionSummary: a.intervention_summary,
             });
             // Record the proposal on the workstream's own event tail too.
-            const noted = change((d, event) => {
+            const noted = await change((d, event) => {
               event('policy.proposed', `${policy.id} [shadow/${a.effect_kind}] "${a.statement}" (tags: ${a.tags.join(', ')})`, [policy.id]);
               return `proposed policy ${policy.id} (shadow)`;
             });
@@ -578,14 +592,14 @@ export async function runCoordinatorPass(
         },
         async (a) => {
           try {
-            const policy = recordPolicyOutcome({
+            const policy = await recordPolicyOutcome({
               policyId: a.policy_id,
               workstreamSlug: slug,
               passId,
               note: a.note,
               interventionFree: a.intervention_free,
             });
-            const noted = change((d, event) => {
+            const noted = await change((d, event) => {
               event('policy.evidence', `${policy.id} now [${policy.status}]: ${a.note}`, [policy.id]);
               return `recorded evidence on ${policy.id} (status: ${policy.status})`;
             });
@@ -731,11 +745,11 @@ export async function runCoordinatorPass(
   }
 
   // Finalize provenance regardless of how the model behaved. This is an
-  // arrival-style write: the pass is over, whatever revision we're at.
+  // arrival-style write (arrive = read-current-then-mutate): the pass is
+  // over, whatever revision we're at.
   const outcome: PassRecord['outcome'] = hadError ? 'error' : finished ? 'completed' : 'no_finish';
   let summary: string | undefined;
-  const current = load(slug).revision;
-  mutate(slug, current, (d, event) => {
+  await arrive(slug, (d, event) => {
     const rec = d.passes.find((p) => p.id === passId);
     if (rec) {
       rec.outcome = rec.outcome === 'completed' ? 'completed' : outcome;

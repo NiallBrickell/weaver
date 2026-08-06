@@ -67,12 +67,12 @@ export function acquireRunnerLock(): (() => void) | null {
  * ordinary retry, and `weaver capacity retry` is the explicit path after a
  * provider-side billing change. Success expedites only that model's waits.
  */
-export function infraBackoffSlugs(): string[] {
+export async function infraBackoffSlugs(): Promise<string[]> {
   const out: string[] = [];
   const now = virtualNow().toISOString();
-  for (const slug of listWorkstreams()) {
+  for (const slug of await listWorkstreams()) {
     try {
-      const d = load(slug);
+      const d = await load(slug);
       if (d.workstream.status !== 'active') continue;
       if (Object.values(d.capacity?.byModel ?? {}).some(
         (entry) => entry.wait.retryAt > now,
@@ -93,11 +93,11 @@ function credentialsMtime(): number {
   }
 }
 
-function infraBackoffModels(slugs: string[]): string[] {
+async function infraBackoffModels(slugs: string[]): Promise<string[]> {
   const models = new Set<string>();
   const now = virtualNow().toISOString();
   for (const slug of slugs) {
-    for (const entry of Object.values(load(slug).capacity?.byModel ?? {})) {
+    for (const entry of Object.values((await load(slug)).capacity?.byModel ?? {})) {
       if (entry.wait.retryAt > now) models.add(entry.wait.model);
     }
   }
@@ -122,20 +122,20 @@ async function capacityProbe(model: string): Promise<boolean> {
   return false;
 }
 
-export function expediteBackoffWakes(
+export async function expediteBackoffWakes(
   slugs: string[],
   log: (l: string) => void,
   recoveredModel?: string,
-): void {
+): Promise<void> {
   const now = virtualNow().toISOString();
   for (const slug of slugs) {
     try {
-      const before = load(slug);
+      const before = await load(slug);
       const hasMatchingWait = Object.values(before.capacity?.byModel ?? {}).some(
         (entry) => !recoveredModel || entry.wait.model === recoveredModel,
       );
       if (!hasMatchingWait) continue;
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         const wakeIds = d.wakes
           .filter((wake) =>
             wake.status === 'pending' &&
@@ -233,19 +233,19 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       // Auth recovery: one probe (never concurrently) when credential-file
       // metadata changes. Usage/rate recovery waits for the stored wake or an
       // explicit `weaver capacity retry`; blind probes only consume capacity.
-      const backedOff = probing ? [] : infraBackoffSlugs();
+      const backedOff = probing ? [] : await infraBackoffSlugs();
       if (backedOff.length) {
         const credMtime = credentialsMtime();
         const credChanged = credMtime !== lastCredMtime;
         if (credChanged) {
           lastCredMtime = credMtime;
           probing = true;
-          const models = infraBackoffModels(backedOff);
+          const models = await infraBackoffModels(backedOff);
           log(`[run] credentials changed — probing ${models.join(', ')} for ${backedOff.length} stream(s) in infra-backoff`);
           void Promise.all(models.map(async (model) => ({ model, ok: await capacityProbe(model) })))
-            .then((results) => {
+            .then(async (results) => {
               for (const result of results) {
-                if (result.ok) expediteBackoffWakes(backedOff, log, result.model);
+                if (result.ok) await expediteBackoffWakes(backedOff, log, result.model);
               }
             })
             .finally(() => { probing = false; });
@@ -253,16 +253,16 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       } else {
         lastCredMtime = credentialsMtime();
       }
-      const due = listWorkstreams()
-        .filter((slug) => {
-          if (inFlight.has(slug)) return false;
-          try {
-            return load(slug).workstream.status === 'active';
-          } catch {
-            return false;
-          }
-        })
-        .sort((a, b) => (lastTickedAt.get(a) ?? 0) - (lastTickedAt.get(b) ?? 0));
+      const due: string[] = [];
+      for (const slug of await listWorkstreams()) {
+        if (inFlight.has(slug)) continue;
+        try {
+          if ((await load(slug)).workstream.status === 'active') due.push(slug);
+        } catch {
+          /* unreadable stream — its own tick reports it */
+        }
+      }
+      due.sort((a, b) => (lastTickedAt.get(a) ?? 0) - (lastTickedAt.get(b) ?? 0));
       for (const slug of due) {
         if (inFlight.size >= opts.concurrency) break;
         inFlight.add(slug);

@@ -325,29 +325,32 @@ function readArchiveRecords(): { records: PrintoutArchiveRecord[]; unreadable: s
   } catch { return { records: [], unreadable }; }
 }
 
-function scopeTitle(scope: string): string {
+async function scopeTitle(scope: string): Promise<string> {
   if (scope === 'fleet') return 'Fleet';
-  try { return load(scope).workstream.title; }
+  try { return (await load(scope)).workstream.title; }
   catch { return scope; }
 }
 
-export function renderPrintoutIndexHtml(records: PrintoutArchiveRecord[], unreadable: string[] = []): string {
+export async function renderPrintoutIndexHtml(records: PrintoutArchiveRecord[], unreadable: string[] = []): Promise<string> {
   const groups = new Map<string, PrintoutArchiveRecord[]>();
   for (const record of records) groups.set(record.scope, [...(groups.get(record.scope) ?? []), record]);
-  const ordered = [...groups.entries()].sort(([a], [b]) => a === 'fleet' ? -1 : b === 'fleet' ? 1 : scopeTitle(a).localeCompare(scopeTitle(b)));
+  const titles = new Map<string, string>();
+  for (const scope of groups.keys()) titles.set(scope, await scopeTitle(scope));
+  const title = (scope: string) => titles.get(scope) ?? scope;
+  const ordered = [...groups.entries()].sort(([a], [b]) => a === 'fleet' ? -1 : b === 'fleet' ? 1 : title(a).localeCompare(title(b)));
   const body = `
 <div class="topbar"><nav class="nav"><a href="../inspect.html">← Knowledge inspector</a></nav></div>
 <header class="hero"><span class="eyebrow">Weaver history</span><h1>Printouts</h1><p>Saved browser snapshots of generated catch-up windows. These pages make the record readable; they do not create authority or change workstream state.</p></header>
-${ordered.length ? ordered.map(([scope, items]) => `<section id="${esc(scope)}"><h2>${esc(scopeTitle(scope))} <span class="pill">${esc(scope)}</span></h2><div class="archive-list">${items.map((item) => `<a class="archive-row" href="${esc(item.relativePath)}"><strong>${esc(formatWhen(item.through))}</strong><span>${item.workstreamCount} workstream${item.workstreamCount === 1 ? '' : 's'}</span></a>`).join('')}</div></section>`).join('\n') : '<section><h2>Printouts</h2><p class="empty">No printout has been opened yet. Press uppercase P in the dashboard or run weaver printout.</p></section>'}
+${ordered.length ? ordered.map(([scope, items]) => `<section id="${esc(scope)}"><h2>${esc(title(scope))} <span class="pill">${esc(scope)}</span></h2><div class="archive-list">${items.map((item) => `<a class="archive-row" href="${esc(item.relativePath)}"><strong>${esc(formatWhen(item.through))}</strong><span>${item.workstreamCount} workstream${item.workstreamCount === 1 ? '' : 's'}</span></a>`).join('')}</div></section>`).join('\n') : '<section><h2>Printouts</h2><p class="empty">No printout has been opened yet. Press uppercase P in the dashboard or run weaver printout.</p></section>'}
 ${unreadable.length ? `<section><h2 class="bad">Unreadable archives</h2><p class="hint">Skipped without hiding healthy printouts: ${unreadable.map((item) => `<code>${esc(item)}</code>`).join(' ')}</p></section>` : ''}`;
   return page('Weaver — printouts', body);
 }
 
 /** Regenerate the browseable hub from published immutable archive metadata. */
-export function writePrintoutIndex(): string {
+export async function writePrintoutIndex(): Promise<string> {
   const { records, unreadable } = readArchiveRecords();
   const target = path.join(siteDir(), 'index.html');
-  atomicWrite(target, redactSecrets(renderPrintoutIndexHtml(records, unreadable), loadAllSecrets()));
+  atomicWrite(target, redactSecrets(await renderPrintoutIndexHtml(records, unreadable), loadAllSecrets()));
   return target;
 }
 
@@ -359,11 +362,11 @@ export const openLocalHtml: HtmlFileOpener = (filePath, signal) => new Promise<v
 
 /** Freeze, publish archive+hub, open, then acknowledge — failure repeats, never loses. */
 export async function publishPrintoutHtml(slug?: string, options: PublishPrintoutOptions = {}): Promise<PublishedPrintout> {
-  const report = preparePrintout(slug);
+  const report = await preparePrintout(slug);
   const archive = writeArchive(report);
   const published = { ...archive.metadata, published: true };
   atomicWrite(archive.metadataPath, JSON.stringify(published, null, 2) + '\n');
-  const hubPath = writePrintoutIndex();
+  const hubPath = await writePrintoutIndex();
   try {
     await (options.openFile ?? openLocalHtml)(archive.htmlPath, options.signal);
   } catch (error) {

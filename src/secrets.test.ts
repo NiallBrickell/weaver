@@ -29,8 +29,8 @@ beforeEach(() => {
   process.env.WEAVER_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-sec-'));
 });
 
-function makeWs(slug: string): void {
-  createWorkstream({
+async function makeWs(slug: string): Promise<void> {
+  await createWorkstream({
     slug,
     title: 'Secrets test',
     objective: 'test secrets',
@@ -42,8 +42,8 @@ function makeWs(slug: string): void {
   });
 }
 
-function addAction(slug: string, action: Partial<Assignment>): void {
-  arrive(slug, (d) => {
+async function addAction(slug: string, action: Partial<Assignment>): Promise<void> {
+  await arrive(slug, (d) => {
     d.assignments.push({
       id: 'asg_act',
       objective: 'perform the act',
@@ -154,53 +154,52 @@ test('human-authored text embedding a secret VALUE is refused; $NAME references 
   assertNoSecretValues('curl -H "Auth: $API_KEY" x', secrets);
 });
 
-test('verify runs with secrets in env and its captured output is redacted', () => {
-  makeWs('sec-verify-ws');
+test('verify runs with secrets in env and its captured output is redacted', async () => {
+  await makeWs('sec-verify-ws');
   setSecret('MY_TOKEN', 'tok-supersecret-999', 'sec-verify-ws');
   // The expected value lives OUTSIDE typed state — the store guard (rightly)
   // refuses any stored command that embeds the literal.
   fs.writeFileSync(path.join(process.env.WEAVER_HOME!, 'expected.txt'), 'tok-supersecret-999');
-  addAction('sec-verify-ws', {
+  await addAction('sec-verify-ws', {
     exec: {
       cwd: process.env.WEAVER_HOME!,
       verify: 'test "$MY_TOKEN" = "$(cat expected.txt)" && echo "got $MY_TOKEN"',
     },
   });
-  assert.equal(verifyAction('sec-verify-ws', 'asg_act'), true);
-  const out = load('sec-verify-ws').assignments[0]!.exec!.verified!.output;
+  assert.equal(await verifyAction('sec-verify-ws', 'asg_act'), true);
+  const out = (await load('sec-verify-ws')).assignments[0]!.exec!.verified!.output;
   assert.ok(out.includes('«secret:MY_TOKEN»'));
   assert.ok(!out.includes('tok-supersecret-999'));
 });
 
-test('EVERY doc write refuses embedded secret values at the store layer (steer, reply, any path)', () => {
-  makeWs('sec-store-ws');
+test('EVERY doc write refuses embedded secret values at the store layer (steer, reply, any path)', async () => {
+  await makeWs('sec-store-ws');
   setSecret('TOKEN', 'value-1234-secret', 'sec-store-ws');
-  assert.throws(
-    () =>
-      arrive('sec-store-ws', (d) => {
-        d.steering.push({ id: 'steer_x', body: 'use value-1234-secret to auth', at: new Date().toISOString() });
-      }),
+  await assert.rejects(
+    arrive('sec-store-ws', (d) => {
+      d.steering.push({ id: 'steer_x', body: 'use value-1234-secret to auth', at: new Date().toISOString() });
+    }),
     /reference it as \$TOKEN/,
   );
   // The refused write mutated nothing.
-  assert.equal(load('sec-store-ws').steering.length, 0);
+  assert.equal((await load('sec-store-ws')).steering.length, 0);
 });
 
 test('writeArtifact redacts values before hashing, so the pin matches disk and no artifact carries a value', async () => {
-  makeWs('sec-artifact-ws');
+  await makeWs('sec-artifact-ws');
   setSecret('KEY', 'artifact-secret-99', 'sec-artifact-ws');
   const { readArtifact: readA, writeArtifact, sha256 } = await import('./store.js');
-  const { relPath, hash } = writeArtifact('sec-artifact-ws', 'out.md', 'header artifact-secret-99 footer');
-  const onDisk = readA('sec-artifact-ws', relPath);
+  const { relPath, hash } = await writeArtifact('sec-artifact-ws', 'out.md', 'header artifact-secret-99 footer');
+  const onDisk = await readA('sec-artifact-ws', relPath);
   assert.ok(!onDisk.includes('artifact-secret-99'));
   assert.ok(onDisk.includes('«secret:KEY»'));
   assert.equal(sha256(onDisk), hash);
 });
 
 test('engine-executed exec.run gets secrets in env; the execution record never contains the value', async () => {
-  makeWs('sec-run-ws');
+  await makeWs('sec-run-ws');
   setSecret('API_KEY', 'key-abcd-1234-efgh', 'sec-run-ws');
-  addAction('sec-run-ws', {
+  await addAction('sec-run-ws', {
     state: 'queued',
     exec: {
       cwd: process.env.WEAVER_HOME!,
@@ -210,11 +209,11 @@ test('engine-executed exec.run gets secrets in env; the execution record never c
     },
   });
   await tick('sec-run-ws', { maxPasses: 0 });
-  const doc = load('sec-run-ws');
+  const doc = await load('sec-run-ws');
   const asg = doc.assignments[0]!;
   assert.equal(asg.exec!.verified!.ok, true);
   const record = doc.deliverables.find((d) => d.kind === 'execution_record')!;
-  const content = readArtifact('sec-run-ws', record.path);
+  const content = await readArtifact('sec-run-ws', record.path);
   assert.ok(!content.includes('key-abcd-1234-efgh'), 'execution record leaked the secret value');
   assert.ok(content.includes('«secret:API_KEY»'));
   const raw = JSON.stringify(doc);
