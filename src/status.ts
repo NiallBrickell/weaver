@@ -5,6 +5,7 @@
 
 import type { WorkstreamDoc } from './types.js';
 import { virtualNow } from './clock.js';
+import { infrastructureWaitSummary } from './capacity.js';
 
 const LINE_MAX = 300;
 
@@ -28,6 +29,32 @@ function sinceCutoff(doc: WorkstreamDoc): string | undefined {
   return humanActs[humanActs.length - 1];
 }
 
+/**
+ * Operator surfaces render capacity only from the typed, deliberately-safe
+ * state; wake prose is never a capacity signal.
+ * One outage can produce several retry wakes; collapse identical summaries so
+ * the five-question view reports the organizational position once.
+ */
+function infrastructureWaits(doc: WorkstreamDoc): {
+  summaries: string[];
+  next: string[];
+} {
+  const summaries = new Set<string>();
+  const nextBySummary = new Map<string, string>();
+  for (const entry of Object.values(doc.capacity?.byModel ?? {})) {
+    const summary = infrastructureWaitSummary(entry.wait);
+    summaries.add(summary);
+    const candidate = entry.wait.retryAt <= virtualNow().toISOString()
+      ? 'infrastructure retry is due now'
+      : `infrastructure retry scheduled at ${entry.wait.retryAt.slice(0, 16)}`;
+    const current = nextBySummary.get(summary);
+    if (!current || candidate === 'infrastructure retry is due now' || candidate < current) {
+      nextBySummary.set(summary, candidate);
+    }
+  }
+  return { summaries: [...summaries], next: [...nextBySummary.values()] };
+}
+
 export function renderStatus(doc: WorkstreamDoc): string {
   const ws = doc.workstream;
   const out: string[] = [];
@@ -44,7 +71,17 @@ export function renderStatus(doc: WorkstreamDoc): string {
   const queued = doc.assignments.filter((a) => a.state === 'queued');
   const awaiting = doc.assignments.filter((a) => a.state === 'awaiting_review');
   const pendingWakes = doc.wakes.filter((w) => w.status === 'pending');
+  const normalWakes = pendingWakes.filter((w) => !w.infrastructure);
+  const recoveredCapacityWakes = pendingWakes.filter(
+    (wake) => wake.infrastructure && !doc.capacity?.byModel[wake.infrastructure.model],
+  );
+  const infrastructure = infrastructureWaits(doc);
+  const nowVirtual = virtualNow().toISOString();
   const nowLines = [
+    ...infrastructure.summaries.map((summary) => `WAITING — ${summary}`),
+    ...recoveredCapacityWakes
+      .filter((wake) => wake.condition.type === 'immediate' || wake.condition.dueAtVirtual <= nowVirtual)
+      .map(() => 'READY — Claude capacity recovered; reconciliation is due now'),
     ...running.map((a) => `working: ${a.id} "${a.objective}"`),
     ...queued.map((a) => `queued: ${a.id} "${a.objective}"`),
     ...awaiting.map((a) => `awaiting review: ${a.id} "${a.objective}"`),
@@ -80,7 +117,13 @@ export function renderStatus(doc: WorkstreamDoc): string {
 
   // NEXT
   const nextLines = [
-    ...pendingWakes.map((w) =>
+    ...infrastructure.next,
+    ...recoveredCapacityWakes.map((wake) =>
+      wake.condition.type === 'time' && wake.condition.dueAtVirtual > nowVirtual
+        ? `capacity recovery wake at ${wake.condition.dueAtVirtual.slice(0, 16)}`
+        : 'capacity recovery reconciliation is due now',
+    ),
+    ...normalWakes.map((w) =>
       w.condition.type === 'time'
         ? `wake at ${w.condition.dueAtVirtual.slice(0, 16)}: ${w.reason}`
         : `wake (immediate): ${w.reason}`,

@@ -14,10 +14,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { coordinatorModel } from './coordinator.js';
 import { tick } from './engine.js';
 import { sdkEnv } from './secrets.js';
 import { arrive, listWorkstreams, load, weaverHome } from './store.js';
+import { virtualNow } from './clock.js';
+import { clearCapacityBackoff, resolveCapacityAttention } from './capacity.js';
 
 function lockDir(): string {
   return path.join(weaverHome(), '.runner.lock');
@@ -60,20 +61,21 @@ export function acquireRunnerLock(): (() => void) | null {
  * the streams the world had changed (the operator watched a healed fleet sit
  * out its backoff). While any backoff wake is pending, the runner (a) watches
  * the credential file and probes IMMEDIATELY when it changes, and (b) probes
- * every few minutes regardless. A probe is one throwaway max-1-turn pass on
- * the coordinator model — the only true test, since limits are per-model. On
- * success every infra-backoff wake fleet-wide is expedited to now.
+ * every few minutes regardless. A probe is one throwaway max-1-turn pass for
+ * each model represented by a typed wait — the only true test because limits
+ * can be model-specific. Success expedites only that model's waits.
  */
 const PROBE_EVERY_MS = 3 * 60_000;
-const BACKOFF_WAKE_RE = /retry after infrastructure failure/;
-
-function infraBackoffSlugs(): string[] {
+export function infraBackoffSlugs(): string[] {
   const out: string[] = [];
+  const now = virtualNow().toISOString();
   for (const slug of listWorkstreams()) {
     try {
       const d = load(slug);
       if (d.workstream.status !== 'active') continue;
-      if (d.wakes.some((w) => w.status === 'pending' && w.condition.type === 'time' && BACKOFF_WAKE_RE.test(w.reason))) {
+      if (Object.values(d.capacity?.byModel ?? {}).some(
+        (entry) => entry.wait.retryAt > now,
+      )) {
         out.push(slug);
       }
     } catch { /* unreadable stream — its own tick reports it */ }
@@ -83,43 +85,92 @@ function infraBackoffSlugs(): string[] {
 
 function credentialsMtime(): number {
   try {
-    return fs.statSync(path.join(os.homedir(), '.claude', '.credentials.json')).mtimeMs;
+    const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
+    return fs.statSync(path.join(configDir, '.credentials.json')).mtimeMs;
   } catch {
     return 0; // e.g. macOS keychain storage — the periodic probe still covers recovery
   }
 }
 
-async function authProbe(): Promise<boolean> {
+function infraBackoffModels(slugs: string[]): string[] {
+  const models = new Set<string>();
+  const now = virtualNow().toISOString();
+  for (const slug of slugs) {
+    for (const entry of Object.values(load(slug).capacity?.byModel ?? {})) {
+      if (entry.wait.retryAt > now) models.add(entry.wait.model);
+    }
+  }
+  return [...models].sort();
+}
+
+async function authProbe(model: string): Promise<boolean> {
   try {
     for await (const m of query({
       prompt: 'Reply with the single word: ok',
       options: {
-        model: coordinatorModel(),
+        model,
         maxTurns: 1,
         allowedTools: [],
         persistSession: false,
         env: sdkEnv(),
       },
     })) {
-      if (m.type === 'result') return m.subtype === 'success';
+      if (m.type === 'result') return m.subtype === 'success' && !m.is_error;
     }
   } catch { /* fall through */ }
   return false;
 }
 
-function expediteBackoffWakes(slugs: string[], log: (l: string) => void): void {
-  const now = new Date().toISOString();
+export function expediteBackoffWakes(
+  slugs: string[],
+  log: (l: string) => void,
+  recoveredModel?: string,
+): void {
+  const now = virtualNow().toISOString();
   for (const slug of slugs) {
     try {
+      const before = load(slug);
+      const hasMatchingWait = Object.values(before.capacity?.byModel ?? {}).some(
+        (entry) => !recoveredModel || entry.wait.model === recoveredModel,
+      );
+      if (!hasMatchingWait) continue;
       arrive(slug, (d, event) => {
+        const expedited = new Set<string>();
         for (const w of d.wakes) {
-          if (w.status === 'pending' && w.condition.type === 'time' && BACKOFF_WAKE_RE.test(w.reason)) {
+          if (
+            w.status === 'pending' &&
+            w.condition.type === 'time' &&
+            w.infrastructure &&
+            (!recoveredModel || w.infrastructure.model === recoveredModel)
+          ) {
             w.condition = { type: 'time', dueAtVirtual: now };
+            w.infrastructure.retryAt = now;
+            expedited.add(w.id);
             event('wake.expedited', `${w.id} pulled forward — auth/credit probe succeeded, the outage behind this backoff is over`, [w.id]);
           }
         }
+        for (const asg of d.assignments) {
+          const wait = asg.attempts.at(-1)?.infrastructure;
+          if (wait && (!recoveredModel || wait.model === recoveredModel) && wait.retryAt > now) {
+            wait.retryAt = now;
+          }
+        }
+        for (const item of d.attention) {
+          if (item.status === 'open' && item.refId && expedited.has(item.refId)) {
+            item.status = 'resolved';
+            item.resolvedAt = new Date().toISOString();
+            item.resolvedBy = 'capacity-probe';
+          }
+        }
+        const recoveredModels = Object.keys(d.capacity?.byModel ?? {}).filter(
+          (model) => !recoveredModel || model === recoveredModel,
+        );
+        for (const model of recoveredModels) {
+          clearCapacityBackoff(d, model);
+          resolveCapacityAttention(d, model, 'capacity-probe');
+        }
       });
-      log(`[run] ${slug}: infra-backoff wake expedited — credits/auth recovered`);
+      log(`[run] ${slug}: infra-backoff wake expedited — credits/auth recovered${recoveredModel ? ` for ${recoveredModel}` : ''}`);
     } catch { /* stream's own tick will retry on schedule */ }
   }
 }
@@ -185,9 +236,14 @@ export async function runLoop(opts: RunnerOptions): Promise<never> {
           lastCredMtime = credMtime;
           lastProbeAt = Date.now();
           probing = true;
-          log(`[run] ${backedOff.length} stream(s) in infra-backoff — probing auth/credits${credChanged ? ' (credentials changed)' : ''}`);
-          void authProbe()
-            .then((ok) => { if (ok) expediteBackoffWakes(backedOff, log); })
+          const models = infraBackoffModels(backedOff);
+          log(`[run] ${backedOff.length} stream(s) in infra-backoff — probing auth/credits for ${models.join(', ')}${credChanged ? ' (credentials changed)' : ''}`);
+          void Promise.all(models.map(async (model) => ({ model, ok: await authProbe(model) })))
+            .then((results) => {
+              for (const result of results) {
+                if (result.ok) expediteBackoffWakes(backedOff, log, result.model);
+              }
+            })
             .finally(() => { probing = false; });
         }
       } else {
