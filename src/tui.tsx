@@ -32,7 +32,7 @@ import { runInspect } from './inspect.js';
 import { requestedPrintoutScope } from './printoutControls.js';
 import { publishPrintoutHtml } from './printoutHtml.js';
 import { acquireRunnerLock, liveRunnerPid, runLoop, runnerLoopHealthy } from './runner.js';
-import { listWorkstreams, workstreamDir, weaverHome } from './store.js';
+import { listWorkstreams, load, weaverHome } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 
 const STALE_ATTEMPT_MS = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
@@ -184,9 +184,9 @@ async function snapshot(): Promise<Snapshot> {
   for (const slug of await listWorkstreams()) {
     let doc: WorkstreamDoc;
     try {
-      doc = JSON.parse(
-        fs.readFileSync(path.join(workstreamDir(slug), 'workstream.json'), 'utf8'),
-      ) as WorkstreamDoc;
+      // Through the store so the dashboard reflects whichever backend
+      // WEAVER_STORE selected; snapshot() is an effect, not a render path.
+      doc = await load(slug);
     } catch (e) {
       streams.push({
         slug, bucket: 4, queuedNow: false, routine: false, paused: false, spent: 0, maxCost: 0, passes: 0, maxPasses: 0,

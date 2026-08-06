@@ -19,16 +19,16 @@
  * pre-adapter store had.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { virtualNow } from '../clock.js';
-import { diffPrintoutFields, printoutChanges, writeJournalReceipt } from '../printoutJournal.js';
+import { changedById, printoutChanges, writeJournalReceipt } from '../printoutJournal.js';
 import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
+import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc, newId, sha256 } from './doc.js';
 import { RevisionConflictError, type Mutator, type StateStore } from './types.js';
 
-const EVENT_TAIL_LIMIT = 200;
+export { newId, sha256 };
 
 export function weaverHome(): string {
   return process.env.WEAVER_HOME ?? path.resolve(process.cwd(), 'state');
@@ -54,16 +54,13 @@ export function printoutJournalDir(slug: string): string {
   return path.join(workstreamDir(slug), 'printout');
 }
 
+/** Printout receipts for the GLOBAL policy store (fs sidecar on this machine). */
+export function policyJournalDir(): string {
+  return path.join(weaverHome(), '.printout', 'policies');
+}
+
 function policiesPath(): string {
   return path.join(weaverHome(), 'policies.json');
-}
-
-export function newId(prefix: string): string {
-  return `${prefix}_${randomUUID().slice(0, 8)}`;
-}
-
-export function sha256(content: string): string {
-  return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
 /** Serialize the actual read/check/write region across local processes. */
@@ -165,60 +162,20 @@ export class FsStore implements StateStore {
         throw new Error(`workstream '${core.slug}' already exists`);
       }
       fs.mkdirSync(artifactsDir(core.slug), { recursive: true });
-      const doc: WorkstreamDoc = {
-        schemaVersion: 1,
-        revision: 0,
-        workstream: {
-          ...core,
-          id: newId('ws'),
-          status: 'active',
-          createdAt: new Date().toISOString(),
-        },
-        decisions: [],
-        assignments: [],
-        deliverables: [],
-        interactions: [],
-        observations: [],
-        wakes: [],
-        steering: [],
-        attention: [],
-        passes: [],
-        events: [],
-        spend: { coordinatorPasses: 0, totalCostUsd: 0, humanInterventions: 0 },
-        capacity: null,
-        lease: null,
-      };
-      const created: EventRecord = {
-        at: new Date().toISOString(),
-        atVirtual: virtualNow().toISOString(),
-        type: 'workstream.created',
-        summary: `Workstream '${core.title}' created`,
-      };
-      doc.events.push(created);
-      const receipt: PrintoutMutationReceipt = {
-        revision: 0,
-        at: created.at,
-        atVirtual: created.atVirtual,
-        changes: [
-          { kind: 'workstream', fields: diffPrintoutFields(undefined, doc.workstream) },
-          { kind: 'spend', fields: diffPrintoutFields(undefined, doc.spend) },
-          { kind: 'capacity', fields: diffPrintoutFields(undefined, doc.capacity) },
-          { kind: 'lease', fields: diffPrintoutFields(undefined, doc.lease) },
-        ],
-        events: [created],
-      };
-      writeAtomic(core.slug, doc, receipt);
+      const doc = initialDoc(core);
+      writeAtomic(core.slug, doc, creationReceipt(doc));
       return doc;
     });
   }
 
   async mutate(slug: string, expectedRevision: number | undefined, fn: Mutator): Promise<WorkstreamDoc> {
     // The write lock serializes the whole read-check-write region across
-    // processes (the arrival contract); WITHIN it there is also NO await
-    // between the load, the revision check, and the write, so a concurrent
-    // in-process writer can never interleave inside it either. (An awaited
-    // load here once opened exactly that window; the store contract test on
-    // concurrent arrivals catches it.)
+    // processes (the arrival contract: expectedRevision undefined must land
+    // without a spurious conflict); WITHIN it there is also NO await between
+    // the load, the revision check, and the write, so a concurrent in-process
+    // writer can never interleave inside it either. (An awaited load here once
+    // opened exactly that window; the store contract test on concurrent
+    // arrivals catches it.)
     return withWriteLock(slug, () => {
       const doc = this.loadSync(slug);
       if (expectedRevision !== undefined && doc.revision !== expectedRevision) {
@@ -226,21 +183,7 @@ export class FsStore implements StateStore {
       }
       const before = structuredClone(doc);
       const emitted: EventRecord[] = [];
-      const event = (type: string, summary: string, refs?: string[]) => {
-        const rec: EventRecord = {
-          at: new Date().toISOString(),
-          atVirtual: virtualNow().toISOString(),
-          type,
-          summary,
-          ...(refs ? { refs } : {}),
-        };
-        emitted.push(rec);
-        doc.events.push(rec);
-        if (doc.events.length > EVENT_TAIL_LIMIT) {
-          doc.events.splice(0, doc.events.length - EVENT_TAIL_LIMIT);
-        }
-      };
-      fn(doc, event);
+      fn(doc, eventHelperFor(doc, emitted));
       doc.revision += 1;
       const receipt: PrintoutMutationReceipt = {
         revision: doc.revision,
@@ -269,17 +212,63 @@ export class FsStore implements StateStore {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         throw new Error(`cannot read global policy store: ${error instanceof Error ? error.message : error}`);
       }
-      return { schemaVersion: 1, revision: 0, policies: [] };
+      return emptyPolicyStore();
     }
   }
 
-  async savePolicies(store: PolicyStore, receipt: PolicyMutationReceipt): Promise<void> {
-    fs.mkdirSync(path.dirname(policiesPath()), { recursive: true });
-    // Receipt first, same as workstream heads (see writeAtomic).
-    writeJournalReceipt(path.join(weaverHome(), '.printout', 'policies'), receipt);
-    const tmp = `${policiesPath()}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(store, null, 2) + '\n');
-    fs.renameSync(tmp, policiesPath());
+  /**
+   * The policy store is GLOBAL (shared across workstreams), so two concurrent
+   * ticks can race the read-modify-write. A short mkdir lock serializes
+   * same-machine processes (10s stale-holder reclaim); inside the lock the
+   * read→mutate→write runs without yielding, so in-process writers cannot
+   * interleave either. A network backend serializes with its own CAS instead.
+   */
+  async mutatePolicies(fn: (store: PolicyStore) => void): Promise<PolicyStore> {
+    const dir = `${policiesPath()}.lock`;
+    // A missing home dir would make every mkdir below ENOENT — indistinguishable
+    // from contention, so the spin would run out the clock on a fresh install.
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      try {
+        fs.mkdirSync(dir);
+        break;
+      } catch {
+        try {
+          if (fs.statSync(dir).mtimeMs < Date.now() - 10_000) {
+            fs.rmSync(dir, { recursive: true, force: true });
+            continue;
+          }
+        } catch { /* raced with the holder's release — retry */ }
+        if (Date.now() > deadline) throw new Error('policy store lock timeout');
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+    try {
+      // Synchronous from read to rename: no yield between load and write.
+      let store: PolicyStore;
+      try {
+        store = JSON.parse(fs.readFileSync(policiesPath(), 'utf8')) as PolicyStore;
+      } catch {
+        store = emptyPolicyStore();
+      }
+      const before = new Map(store.policies.map((policy) => [policy.id, structuredClone(policy)]));
+      fn(store);
+      store.revision += 1;
+      const receipt: PolicyMutationReceipt = {
+        revision: store.revision,
+        at: new Date().toISOString(),
+        changes: changedById([...before.values()], store.policies),
+      };
+      // Receipt first, same as workstream heads (see writeAtomic).
+      writeJournalReceipt(policyJournalDir(), receipt);
+      const tmp = `${policiesPath()}.tmp-${process.pid}`;
+      fs.writeFileSync(tmp, JSON.stringify(store, null, 2) + '\n');
+      fs.renameSync(tmp, policiesPath());
+      return store;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   /**
