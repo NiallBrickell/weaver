@@ -1,21 +1,23 @@
 ---
 title: "The dashboard"
-description: "The needs-you queue: every judgment call is one keypress; everything mechanical stays out of it"
+description: "See every outcome, what changed, what needs your judgment, and whether it is actually done"
 ---
 
-`weaver watch` opens the interactive terminal dashboard. Its design center is a single idea: **the only turns a human should spend on a workstream are judgment calls**, so those are the first thing on screen and every one is answerable with a single keypress.
+`weaver watch` opens the interactive terminal dashboard. It shows whole outcomes rather than a collection of current agent sessions: what is moving, what changed, what is waiting, what needs you, and what has enough evidence to be called done. Weaver absorbs the routine transitions between research, implementation, review, verification, and retry; your turns are reserved for judgment.
 
 ## ⚡ NEEDS YOU
 
 The queue at the top holds exactly three kinds of item:
 
-- **Gated actions** — a workstream wants to touch the real world, and the pilot judged it beyond routine-safe. The card is written in plain language (what approving allows, why, blast radius), with the actual commands extracted and shown before anything else. `a` approves, `x` rejects. Routine-safe commands are approved by the pilot itself, on the record as `by:pilot` — what reaches this queue is only what genuinely needs your judgment.
+- **Gated actions** — a workstream wants to touch the real world, and [Pilot](https://github.com/erdoai/pilot) judged it beyond routine-safe. The card is written in plain language (what approving allows, why, blast radius), with the actual commands extracted and shown before anything else. `a` approves, `x` rejects. Routine-safe commands are approved by Pilot itself, on the record as `by:pilot` — what reaches this queue is only what genuinely needs your judgment.
 - **Sends** — an outbound message awaits approval. `a` / `x`.
 - **Attention** — a verdict, a blocker only you can unblock, or a question. `d` resolves it; `enter` expands the full text (scroll with `[` and `]`).
 
 One decision renders as exactly one row — coordinator commentary about an approvable item folds into the item. Pressing `s` on anything opens a steering prompt: type a sentence, and it becomes durable direction the workstream acts on next tick.
 
 Worker failures never appear here. A worker that flakes goes back to the coordinator to retry; it reaches you only if the coordinator itself concludes the assignment is genuinely stuck.
+
+Pilot keeps routine tool decisions from interrupting a live agent run. Weaver keeps completed or failed runs from turning into project-management work for you: it reviews the result, updates the outcome, and starts whatever comes next. A worker finishing is therefore not, by itself, a needs-you event.
 
 ## The fleet
 
@@ -35,6 +37,6 @@ Everything rendered is a projection of typed state. No transcript parsing, no id
 
 ## Watching a run work: `weaver tail`
 
-The dashboard shows decisions and status — what a workstream *is*, judged from typed state. Sometimes you want the opposite altitude: the raw activity of a run while it happens. `weaver tail <slug>` prints the recent feed and then follows it live — every tool call a worker makes (the command, the file), snippets of what it's saying, and the run's result line. `--all` adds coordinator passes to the feed.
+The dashboard shows the outcome spanning many agent runs. Sometimes you want to inspect one of those disposable runs while it happens: `weaver tail <slug>` prints the recent feed and then follows it live — every tool call a worker makes (the command, the file), snippets of what it's saying, and the run's result line. `--all` adds coordinator passes to the feed.
 
 The feed is observability, never truth: it's an append-only file next to the workstream's state, redacted against known secrets before anything touches disk, and nothing in the harness reads it back. Adoption, attention, and the five questions still live entirely in typed state — and session ids remain recorded per attempt as provenance, so `claude --resume <sessionId>` replay is unaffected. If the dashboard is where you spend judgment, `tail` is where you watch the work get done.
