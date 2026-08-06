@@ -14,9 +14,18 @@ import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod';
 import { virtualNow } from './clock.js';
 import { armWall } from './wall.js';
+import {
+  clearCapacityBackoff,
+  ensureCapacityAttention,
+  infrastructureWaitSummary,
+  recordCapacityBackoff,
+  resolveCapacityAttention,
+  SdkFailureTracker,
+} from './capacity.js';
 import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, newId, readArtifact, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
+import type { InfrastructureWait, WorkstreamDoc } from './types.js';
 
 export function workerModel(): string {
   return process.env.WEAVER_WORKER_MODEL ?? 'sonnet';
@@ -162,6 +171,94 @@ ${SHARED_RULES}`;
 const ACTION_SYSTEM = `You are an isolated worker executing ONE human-approved real-world ACTION inside a larger workstream you cannot see. You have Bash in your working directory and real CLIs. Perform EXACTLY the act the briefing describes — nothing beyond it, nothing on targets the briefing does not name, and every "do not" the briefing states is absolute. If a step fails, report the failure honestly via submit_result; never improvise a different action to "make it work". If the briefing lists credential environment variables, use them via the shell (\`$NAME\`) — never echo, print, or persist their values anywhere. Your submission is a report of what you did with exact references (identifiers, URLs, command output) — the harness will independently verify the effect, so precision matters and embellishment will be caught.
 ${SHARED_RULES}`;
 
+export function finalizeWorkerRun(
+  slug: string,
+  assignmentId: string,
+  runId: string,
+  outcome: {
+    submitted: boolean;
+    costUsd: number;
+    sessionId?: string;
+    infrastructure: InfrastructureWait | null;
+    terminalReason?: string;
+  },
+): void {
+  arrive(slug, (d, event) => {
+    const a = d.assignments.find((x) => x.id === assignmentId)!;
+    const attempt = a.attempts.find((t) => t.runId === runId);
+    if (attempt) {
+      attempt.endedAt = attempt.endedAt ?? new Date().toISOString();
+      attempt.costUsd = outcome.costUsd;
+      if (outcome.sessionId) attempt.sessionId = outcome.sessionId;
+      if (outcome.infrastructure) attempt.infrastructure = outcome.infrastructure;
+    }
+    d.spend.totalCostUsd += outcome.costUsd;
+    if (outcome.submitted) {
+      clearCapacityBackoff(d, workerModel());
+      resolveCapacityAttention(d, workerModel(), 'worker');
+      return;
+    }
+
+    if (outcome.infrastructure) {
+      const infrastructure = outcome.infrastructure;
+      const explanation = infrastructureWaitSummary(infrastructure);
+      a.state = 'queued';
+      if (attempt) attempt.terminalReason = 'infrastructure_backoff';
+      const wakeId = newId('wake');
+      d.wakes.push({
+        id: wakeId,
+        reason: explanation,
+        condition: { type: 'time', dueAtVirtual: infrastructure.retryAt },
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        infrastructure,
+      });
+      const capacity = recordCapacityBackoff(d, infrastructure);
+      ensureCapacityAttention(d, capacity, wakeId, () => newId('att'));
+      event('worker.backoff', `${assignmentId} attempt ${runId} parked on ${infrastructure.kind} until ${infrastructure.retryAt}`, [assignmentId, runId, wakeId]);
+      return;
+    }
+
+    clearCapacityBackoff(d, workerModel());
+    resolveCapacityAttention(d, workerModel(), 'worker');
+    a.state = 'failed';
+    const why = outcome.terminalReason ?? 'no_submission';
+    if (attempt) attempt.terminalReason = why;
+    // No attention here: a flaky worker is the COORDINATOR's problem — the
+    // wake below hands it the failure to retry or rework. Attention is for
+    // judgment only the human can supply; it escalates only if the
+    // coordinator itself decides the assignment is truly stuck.
+    d.wakes.push({
+      id: newId('wake'),
+      reason: `assignment ${assignmentId} failed without a submission (${why})${why === 'error_max_turns' ? ' — the brief exceeded the worker turn ceiling; split it into smaller assignments rather than re-dispatching the same shape' : ''}`,
+      condition: { type: 'immediate' },
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+    event('worker.failed', `${assignmentId} attempt ${runId} ended without submission (${why})`, [assignmentId]);
+  });
+}
+
+/** A due worker-originated wait is a fleet-capacity retry permit. One fresh
+ * worker attempt consumes all matching permits, but never a coordinator's
+ * independent commitment to reconcile the stream. */
+export function consumeDueWorkerInfrastructureWakes(
+  doc: WorkstreamDoc,
+  model: string,
+  now: string,
+): void {
+  for (const wake of doc.wakes) {
+    if (
+      wake.status === 'pending' &&
+      wake.infrastructure?.source === 'worker' &&
+      wake.infrastructure.model === model &&
+      (wake.condition.type === 'immediate' || wake.condition.dueAtVirtual <= now)
+    ) {
+      wake.status = 'cancelled';
+    }
+  }
+}
+
 export async function runWorker(slug: string, assignmentId: string): Promise<void> {
   const doc = load(slug);
   const asg = doc.assignments.find((a) => a.id === assignmentId);
@@ -185,6 +282,11 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
   const runId = newId('run');
   arrive(slug, (d, event) => {
     const a = d.assignments.find((x) => x.id === assignmentId)!;
+    const now = virtualNow().toISOString();
+    // A due infrastructure wake is a retry permit, not separate intended
+    // work. This fresh attempt consumes matching permits; success creates its
+    // submission wake, while another outage creates one new future permit.
+    consumeDueWorkerInfrastructureWakes(d, workerModel(), now);
     a.state = 'running';
     a.attempts.push({
       runId,
@@ -303,6 +405,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
   let costUsd = 0;
   let sessionId: string | undefined;
   let resultSubtype: string | undefined;
+  const sdkFailure = new SdkFailureTracker();
   // Hard wall under the 45m stale/slot horizons: a hung SDK call must fail
   // (→ no_submission → coordinator retries) rather than starve the runner.
   // Sleep-aware: laptop-lid suspension doesn't count toward the wall.
@@ -370,6 +473,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
       },
     })) {
       tailMessage(slug, 'worker', assignmentId, message);
+      sdkFailure.observe(message);
       if (message.type === 'result') {
         sessionId = message.session_id;
         costUsd = 'total_cost_usd' in message ? message.total_cost_usd : 0;
@@ -377,42 +481,27 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
       }
     }
   } catch (e) {
+    sdkFailure.capture(e);
     process.stderr.write(`worker ${runId} error: ${e instanceof Error ? e.message : e}\n`);
     resultSubtype = resultSubtype ?? `exception: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`;
   } finally {
     wall.disarm();
   }
 
-  arrive(slug, (d, event) => {
-    const a = d.assignments.find((x) => x.id === assignmentId)!;
-    const attempt = a.attempts.find((t) => t.runId === runId);
-    if (attempt) {
-      attempt.endedAt = attempt.endedAt ?? new Date().toISOString();
-      attempt.costUsd = costUsd;
-      if (sessionId) attempt.sessionId = sessionId;
-    }
-    d.spend.totalCostUsd += costUsd;
-    if (!submitted) {
-      a.state = 'failed';
-      // The REAL terminal reason, not a generic label: 'error_max_turns'
-      // means the brief was too big for the ceiling — the coordinator's
-      // remedy is SPLITTING, not re-dispatching the same shape. Four
-      // identical retries once burned $20+ because every failure read
-      // 'no_submission' and the ceiling was invisible.
-      const why = resultSubtype ?? 'no_submission';
-      if (attempt) attempt.terminalReason = why;
-      // No attention here: a flaky worker is the COORDINATOR's problem — the
-      // wake below hands it the failure to retry or rework. Attention is for
-      // judgment only the human can supply; it escalates only if the
-      // coordinator itself decides the assignment is truly stuck.
-      d.wakes.push({
-        id: newId('wake'),
-        reason: `assignment ${assignmentId} failed without a submission (${why})${why === 'error_max_turns' ? ' — the brief exceeded the worker turn ceiling; split it into smaller assignments rather than re-dispatching the same shape' : ''}`,
-        condition: { type: 'immediate' },
-        status: 'pending',
-        createdAt: new Date().toISOString(),
-      });
-      event('worker.failed', `${assignmentId} attempt ${runId} ended without submission (${why})`, [assignmentId]);
-    }
+  const infrastructure = sdkFailure.classify({
+    source: 'worker',
+    sourceId: runId,
+    model: workerModel(),
+    now: virtualNow(),
+    wallNow: new Date(),
+    wallFired: wall.fired(),
+  });
+
+  finalizeWorkerRun(slug, assignmentId, runId, {
+    submitted,
+    costUsd,
+    ...(sessionId ? { sessionId } : {}),
+    infrastructure,
+    ...(resultSubtype ? { terminalReason: resultSubtype } : {}),
   });
 }
