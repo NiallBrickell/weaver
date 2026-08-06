@@ -60,6 +60,7 @@ export function emitTail(
   ref: string,
   kind: TailEvent['kind'],
   detail: string,
+  extraSecrets: Record<string, string> = {},
 ): void {
   // Non-fatal by construction: a full disk, a missing dir, a permissions
   // hiccup — none of it may cost a pass. Redaction happens INSIDE the guard,
@@ -76,7 +77,7 @@ export function emitTail(
       source,
       ref,
       kind,
-      detail: redactSecrets(detail, loadSecrets(slug)),
+      detail: redactSecrets(detail, { ...loadSecrets(slug), ...extraSecrets }),
     };
     fs.appendFileSync(p, JSON.stringify(event) + '\n');
   } catch {
@@ -94,13 +95,21 @@ export function tailMessage(
   source: TailEvent['source'],
   ref: string,
   message: SDKMessage,
+  extraSecrets: Record<string, string> = {},
 ): void {
   if (message.type === 'assistant') {
     for (const block of message.message.content) {
       if (block.type === 'text' && block.text.trim()) {
-        emitTail(slug, source, ref, 'text', oneLine(block.text, 200));
+        emitTail(slug, source, ref, 'text', oneLine(block.text, 200), extraSecrets);
       } else if (block.type === 'tool_use') {
-        emitTail(slug, source, ref, 'tool', toolDetail(block.name, block.input as Record<string, unknown>));
+        emitTail(
+          slug,
+          source,
+          ref,
+          'tool',
+          toolDetail(block.name, block.input as Record<string, unknown>),
+          extraSecrets,
+        );
       }
     }
   } else if (message.type === 'result') {
@@ -108,7 +117,7 @@ export function tailMessage(
       message.subtype === 'success'
         ? `${message.is_error ? 'ended with error' : 'done'} in ${message.num_turns} turns ($${message.total_cost_usd.toFixed(3)})`
         : `${message.subtype} after ${message.num_turns} turns ($${message.total_cost_usd.toFixed(3)})`;
-    emitTail(slug, source, ref, 'result', detail);
+    emitTail(slug, source, ref, 'result', detail, extraSecrets);
   }
 }
 

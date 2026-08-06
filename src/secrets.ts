@@ -79,18 +79,32 @@ export function removeSecret(name: string, slug?: string): boolean {
   return true;
 }
 
+/** Runtime principal selectors belong to the executor substrate, never a run request. */
+export const CLAUDE_AUTH_ENV_NAMES = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+] as const;
+
+export function withoutClaudeAuth<T extends string | undefined>(
+  env: Record<string, T>,
+): Record<string, T> {
+  const filtered = { ...env };
+  for (const name of CLAUDE_AUTH_ENV_NAMES) delete filtered[name];
+  return filtered;
+}
+
 /**
  * Environment for SDK subprocesses. Weaver rides the LOCAL Claude Code
- * subscription login — never API credits. A stray exported API key in the
- * launching shell would silently switch the SDK to API billing, so it is
- * stripped unconditionally. (SDK `env` REPLACES the subprocess environment,
- * hence the process.env spread.)
+ * subscription login — never API credits or injected OAuth tokens. Stray
+ * exported credentials in the launching shell would silently change the
+ * principal or billing path, so they are stripped unconditionally. The
+ * operator's ambient CLAUDE_CONFIG_DIR remains the sole local-login selector.
+ * (SDK `env` REPLACES the subprocess environment, hence the process.env
+ * spread.)
  */
 export function sdkEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = { ...process.env, ...extra };
-  delete env.ANTHROPIC_API_KEY;
-  delete env.ANTHROPIC_AUTH_TOKEN;
-  return env;
+  return withoutClaudeAuth({ ...process.env, ...extra });
 }
 
 /**

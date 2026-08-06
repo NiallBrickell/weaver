@@ -1,7 +1,15 @@
 import { strict as assert } from 'node:assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, it } from 'node:test';
 import { LocalSdkExecutor } from './executor/localSdk.js';
-import { isReadOnlyMcpTool, isReadOnlyShellCommand, selectExecutor } from './worker.js';
+import {
+  isReadOnlyMcpTool,
+  isReadOnlyShellCommand,
+  operatorMcpCapability,
+  selectExecutor,
+} from './worker.js';
 
 describe('executor selection', () => {
   const withEnv = (value: string | undefined, fn: () => void) => {
@@ -24,6 +32,69 @@ describe('executor selection', () => {
   it('an unknown executor fails hard, naming the variable — never a silent local fallback', () => {
     withEnv('managed-agents', () =>
       assert.throws(() => selectExecutor(), /WEAVER_EXECUTOR 'managed-agents'/),
+    );
+  });
+});
+
+describe('operator MCP capability', () => {
+  it('preserves global and applicable project servers with referenced environment', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-mcp-capability-'));
+    const configPath = path.join(root, '.claude.json');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          langfuse: {
+            type: 'http',
+            url: 'https://example.invalid/langfuse',
+            headers: { Authorization: 'Bearer ${LANGFUSE_TOKEN}' },
+          },
+        },
+        projects: {
+          [root]: {
+            mcpServers: {
+              magpie: { command: 'magpie-mcp', env: { TOKEN: '${MAGPIE_TOKEN}' } },
+            },
+          },
+          '/somewhere/else': { mcpServers: { unrelated: { command: 'nope' } } },
+        },
+      }),
+    );
+
+    const capability = operatorMcpCapability([path.join(root, 'repo')], configPath, {
+      LANGFUSE_TOKEN: 'synthetic-langfuse-token',
+      MAGPIE_TOKEN: 'synthetic-magpie-token',
+      UNRELATED_HOST_SECRET: 'must-not-cross',
+    });
+
+    assert.deepEqual(Object.keys(capability.servers).sort(), ['langfuse', 'magpie']);
+    assert.deepEqual(capability.env, {
+      LANGFUSE_TOKEN: 'synthetic-langfuse-token',
+      MAGPIE_TOKEN: 'synthetic-magpie-token',
+    });
+  });
+
+  it('treats a missing config as empty but fails loudly on malformed config', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-mcp-capability-'));
+    const configPath = path.join(root, '.claude.json');
+    assert.deepEqual(operatorMcpCapability([], configPath, {}), { servers: {}, env: {} });
+    fs.writeFileSync(configPath, '{ malformed');
+    assert.throws(
+      () => operatorMcpCapability([], configPath, {}),
+      /invalid inherited MCP configuration/,
+    );
+  });
+
+  it('fails rather than overwrite an inherited server colliding with the harness surface', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-mcp-capability-'));
+    const configPath = path.join(root, '.claude.json');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ mcpServers: { weaver: { command: 'operator-owned-server' } } }),
+    );
+    assert.throws(
+      () => operatorMcpCapability([], configPath, {}),
+      /server name 'weaver' is reserved/,
     );
   });
 });

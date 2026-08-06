@@ -79,6 +79,24 @@ test('a detail carrying a stored secret VALUE never reaches disk', async () => {
   assert.ok(raw.includes('«secret:WS_TOKEN»'));
 });
 
+test('an executor-relayed MCP credential is redacted without entering the secret store', async () => {
+  await makeWs();
+  const transient = 'synthetic-mcp-header-value';
+  tailMessage(
+    SLUG,
+    'worker',
+    'asg_mcp',
+    {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: `bad remote output ${transient}` }] },
+    } as never,
+    { WEAVER_INTERNAL_MCP_HEADER_1: transient },
+  );
+  const raw = fs.readFileSync(tailPath(SLUG), 'utf8');
+  assert.doesNotMatch(raw, /synthetic-mcp-header-value/);
+  assert.match(raw, /«secret:WEAVER_INTERNAL_MCP_HEADER_1»/);
+});
+
 test('past the size threshold the file rotates to .1, overwriting any previous generation', async () => {
   await makeWs();
   const p = tailPath(SLUG);

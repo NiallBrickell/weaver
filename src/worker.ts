@@ -13,8 +13,14 @@ import { join } from 'node:path';
 import { virtualNow } from './clock.js';
 import { LocalSdkExecutor } from './executor/localSdk.js';
 import type { SubmitReply, SubmitSurface, WorkerExecutor } from './executor/types.js';
+import { secureMcpConfiguration, type SecuredMcpConfiguration } from './mcpConfig.js';
 import { armWall } from './wall.js';
-import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
+import {
+  CLAUDE_AUTH_ENV_NAMES,
+  loadSecrets,
+  redactSecrets,
+  withoutClaudeAuth,
+} from './secrets.js';
 import { arrive, load, newId, readArtifact, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
 
@@ -143,9 +149,22 @@ function readOnlyMcpSupervisor() {
  * Action workers get the full surface under live pilot supervision; read-only
  * workers get the same servers behind the deterministic read-only gate below.
  */
-export function operatorMcpServers(dirs: string[]): Record<string, unknown> {
+export function operatorMcpCapability(
+  dirs: string[],
+  configPath = join(homedir(), '.claude.json'),
+  ambientEnv: Record<string, string | undefined> = process.env,
+): SecuredMcpConfiguration {
+  let raw: string;
   try {
-    const cfg = JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8')) as {
+    raw = readFileSync(configPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { servers: {}, env: {} };
+    throw new Error(
+      `cannot read inherited MCP configuration ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
+    const cfg = JSON.parse(raw) as {
       mcpServers?: Record<string, unknown>;
       projects?: Record<string, { mcpServers?: Record<string, unknown> }>;
     };
@@ -156,9 +175,14 @@ export function operatorMcpServers(dirs: string[]): Record<string, unknown> {
         Object.assign(merged, cfg.projects![p]!.mcpServers ?? {});
       }
     }
-    return merged;
-  } catch {
-    return {};
+    if (Object.prototype.hasOwnProperty.call(merged, 'weaver')) {
+      throw new Error("server name 'weaver' is reserved for the harness submit surface");
+    }
+    return secureMcpConfiguration(merged, ambientEnv, CLAUDE_AUTH_ENV_NAMES);
+  } catch (error) {
+    throw new Error(
+      `invalid inherited MCP configuration ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -182,6 +206,14 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
   // A misconfigured WEAVER_EXECUTOR fails here, before any state moves.
   const executor = selectExecutor();
+  const readDirs = asg.readDirs ?? [];
+  const isAction = asg.kind === 'action';
+  // Inherited capabilities are resolved before the attempt begins. Missing
+  // config means no MCPs; unreadable, malformed, or forbidden config fails
+  // loudly instead of moving the assignment to running with a reduced toolset.
+  const operatorMcp = operatorMcpCapability(
+    isAction && asg.exec ? [asg.exec.cwd, ...readDirs] : readDirs,
+  );
 
   // Declared inputs: ADOPTED deliverables of dependency assignments only — a
   // rejected candidate never becomes another worker's input.
@@ -214,7 +246,9 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
   const sections: string[] = [];
   // Action workers get secret VALUES as env vars only; every path back into
   // durable state is scrubbed so a value can never outlive the process.
-  const secrets = asg.kind === 'action' ? loadSecrets(slug) : {};
+  const secrets = isAction ? loadSecrets(slug) : {};
+  const executionSecrets = withoutClaudeAuth(secrets);
+  const redactionSecrets = { ...secrets, ...operatorMcp.env };
 
   // The worker's entire write surface, kept in the harness: whatever substrate
   // runs the model loop, these closures are the only path into durable state.
@@ -235,8 +269,8 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
         };
       }
       submitted = true;
-      const cleanContent = redactSecrets(fullContent, secrets);
-      const cleanSummary = redactSecrets(a.summary, secrets);
+      const cleanContent = redactSecrets(fullContent, redactionSecrets);
+      const cleanSummary = redactSecrets(a.summary, redactionSecrets);
       const { relPath, hash } = await writeArtifact(slug, a.artifact.file_name, cleanContent);
       await arrive(slug, (d, event) => {
         const asg2 = d.assignments.find((x) => x.id === assignmentId)!;
@@ -278,12 +312,12 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
     ``,
     `## Acceptance criteria (you will be judged against these literally)`,
     ...asg.acceptanceCriteria.map((c) => `- ${c}`),
-    ...(Object.keys(secrets).length
+    ...(Object.keys(executionSecrets).length
       ? [
           ``,
           `## Credentials`,
-          `These secrets are set as environment variables in your shell — use them directly (e.g. \`$${Object.keys(secrets).sort()[0]}\`), never echo their values or write them into files or your submission:`,
-          ...Object.keys(secrets)
+          `These secrets are set as environment variables in your shell — use them directly (e.g. \`$${Object.keys(executionSecrets).sort()[0]}\`), never echo their values or write them into files or your submission:`,
+          ...Object.keys(executionSecrets)
             .sort()
             .map((n) => `- ${n}`),
         ]
@@ -299,8 +333,6 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
   const abort = new AbortController();
   const wall = armWall(abort, 40 * 60_000, 'worker');
   try {
-    const readDirs = asg.readDirs ?? [];
-    const isAction = asg.kind === 'action';
     if (isAction) {
       // Structural gate, independent of the engine's scheduling: an action
       // worker must never start without its recorded human approval.
@@ -315,7 +347,6 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
       : readDirs.length
         ? ['Read', 'Grep', 'Glob', 'Bash'] // Bash gated to read-only history commands below
         : [];
-    const operatorMcp = operatorMcpServers(isAction ? [asg.exec!.cwd, ...readDirs] : readDirs);
     const outcome = await executor.execute({
       workstreamSlug: slug,
       assignmentId,
@@ -323,7 +354,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
       systemPrompt: isAction ? ACTION_SYSTEM : WORKER_SYSTEM,
       model: workerModel(),
       tools: baseTools,
-      env: sdkEnv(secrets),
+      env: executionSecrets,
       ...(isAction
         ? {
             cwd: asg.exec!.cwd,
@@ -341,7 +372,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
             additionalDirectories: readDirs,
             sandbox: false,
           }),
-      operatorMcpServers: operatorMcp,
+      operatorMcp,
       // Action workers: ONLY the submit surface is auto-allowed — every
       // real tool call (Bash, edits, operator MCPs) routes through the live
       // pilot supervisor, judged at execution time exactly like the
@@ -355,19 +386,23 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
         : [...baseTools.filter((t) => t !== 'Bash'), 'mcp__weaver__*'],
       supervise: isAction ? pilotSupervisor(asg.exec!.cwd, slug) : readOnlyMcpSupervisor(),
       submit,
-      maxTurns: isAction || readDirs.length || Object.keys(operatorMcp).length ? 80 : 30,
+      maxTurns: isAction || readDirs.length || Object.keys(operatorMcp.servers).length ? 80 : 30,
       abort,
       onMessage: (message) => {
-        tailMessage(slug, 'worker', assignmentId, message);
+        tailMessage(slug, 'worker', assignmentId, message, operatorMcp.env);
       },
     });
     costUsd = outcome.costUsd;
     sessionId = outcome.sessionId;
     if (outcome.error) {
-      process.stderr.write(`worker ${runId} error: ${outcome.error}\n`);
+      process.stderr.write(
+        `worker ${runId} error: ${redactSecrets(outcome.error, redactionSecrets)}\n`,
+      );
     }
   } catch (e) {
-    process.stderr.write(`worker ${runId} error: ${e instanceof Error ? e.message : e}\n`);
+    process.stderr.write(
+      `worker ${runId} error: ${redactSecrets(e instanceof Error ? e.message : String(e), redactionSecrets)}\n`,
+    );
   } finally {
     wall.disarm();
   }

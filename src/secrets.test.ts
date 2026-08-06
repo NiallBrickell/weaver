@@ -17,6 +17,7 @@ import {
   removeSecret,
   secretNames,
   setSecret,
+  withoutClaudeAuth,
 } from './secrets.js';
 import { createWorkstream, load, readArtifact } from './store.js';
 import { virtualNow } from './clock.js';
@@ -87,6 +88,18 @@ test('redactSecrets scrubs every value, longest first, and skips tiny values', a
   const secrets = { LONG: 'abcdef-secret', SHORT: 'abcdef', TINY: 'ab' };
   const out = redactSecrets('x abcdef-secret y abcdef z ab', secrets);
   assert.equal(out, 'x «secret:LONG» y «secret:SHORT» z ab');
+});
+
+test('executor requests cannot inherit or inject Claude runtime credentials', () => {
+  assert.deepEqual(
+    withoutClaudeAuth({
+      SAFE_MCP_TOKEN: 'synthetic-mcp-token',
+      ANTHROPIC_API_KEY: 'synthetic-api-key',
+      ANTHROPIC_AUTH_TOKEN: 'synthetic-auth-token',
+      CLAUDE_CODE_OAUTH_TOKEN: 'synthetic-oauth-token',
+    }),
+    { SAFE_MCP_TOKEN: 'synthetic-mcp-token' },
+  );
 });
 
 test('human-authored text embedding a secret VALUE is refused; $NAME references pass', async () => {

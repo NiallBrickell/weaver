@@ -15,6 +15,7 @@
  */
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { SecuredMcpConfiguration } from '../mcpConfig.js';
 
 /** Harness verdict on one live tool call. Deterministic or pilot-judged, always fail-closed. */
 export type ToolDecision =
@@ -91,11 +92,20 @@ export interface WorkerExecutionRequest {
   additionalDirectories: string[];
   /** Confine the loop's shell to cwd at the OS level (action workers unless overridden). */
   sandbox: boolean;
-  /** Subprocess environment, already secret-injected and API-key-stripped by
-   * the harness. Values in here must never reach durable state. */
-  env: Record<string, string | undefined>;
-  /** The operator's MCP server configs for the dirs this run touches. */
-  operatorMcpServers: Record<string, unknown>;
+  /** Explicit workstream secret additions only, with Claude runtime auth
+   * removed. A local machine's ambient process environment and Claude account
+   * principal are substrate state and must never be transported to a remote
+   * executor. Each executor merges these into its own filtered base. */
+  env: Record<string, string>;
+  /**
+   * The complete inherited MCP capability for the dirs this run touches:
+   * every server config plus the generated environment values referenced by
+   * its supported placeholders. Executors must provision the pair together. A
+   * remote substrate that cannot support one inherited server (for example a
+   * machine-local stdio command) must fail before the model loop; silently
+   * dropping a server would make worker capabilities depend on substrate.
+   */
+  operatorMcp: SecuredMcpConfiguration;
   supervise: ToolSupervisor;
   submit: SubmitSurface;
   /** Harness-armed kill switch (the sleep-aware wall). */

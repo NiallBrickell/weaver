@@ -10,6 +10,7 @@
 
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { sdkEnv } from '../secrets.js';
 import type {
   SubmitReply,
   WorkerExecutionOutcome,
@@ -23,6 +24,8 @@ function asToolResult(r: SubmitReply): { content: { type: 'text'; text: string }
 }
 
 export class LocalSdkExecutor implements WorkerExecutor {
+  constructor(private readonly executeQuery: typeof query = query) {}
+
   async execute(req: WorkerExecutionRequest): Promise<WorkerExecutionOutcome> {
     const server = createSdkMcpServer({
       name: 'weaver',
@@ -56,20 +59,20 @@ export class LocalSdkExecutor implements WorkerExecutor {
     let sessionId: string | undefined;
     let error: string | undefined;
     try {
-      for await (const message of query({
+      for await (const message of this.executeQuery({
         prompt: req.prompt,
         options: {
           model: req.model,
           systemPrompt: req.systemPrompt,
           tools: req.tools,
-          env: req.env,
+          env: sdkEnv({ ...req.env, ...req.operatorMcp.env }),
           ...(req.cwd !== undefined
             ? { cwd: req.cwd, additionalDirectories: req.additionalDirectories }
             : {}),
           ...(req.sandbox
             ? { sandbox: { enabled: true, autoAllowBashIfSandboxed: true, failIfUnavailable: false } }
             : {}),
-          mcpServers: { ...req.operatorMcpServers, weaver: server } as never,
+          mcpServers: { ...req.operatorMcp.servers, weaver: server } as never,
           allowedTools: req.allowedTools,
           permissionMode: 'default',
           canUseTool: req.supervise as never,
