@@ -12,7 +12,6 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { infrastructureWaitSummary } from './capacity.js';
 import { virtualNow } from './clock.js';
 import { listWorkstreams, weaverHome, workstreamDir } from './store.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
@@ -63,23 +62,6 @@ function width(): number {
 function fit(text: string, reserved: number): string {
   const room = width() - reserved;
   return text.length > room ? `${text.slice(0, room - 1)}…` : text;
-}
-
-function wrap(text: string, reserved: number): string[] {
-  const room = Math.max(30, width() - reserved);
-  const words = text.split(/\s+/);
-  const lines: string[] = [];
-  let line = '';
-  for (const word of words) {
-    if (line && line.length + word.length + 1 > room) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = line ? `${line} ${word}` : word;
-    }
-  }
-  if (line) lines.push(line);
-  return lines;
 }
 
 interface WsView {
@@ -151,25 +133,10 @@ function viewOf(slug: string): WsView {
 
   const nowV = virtualNow().toISOString();
   const pendingWakes = doc.wakes.filter((w) => w.status === 'pending');
-  const infrastructure = [...new Set(
-    Object.values(doc.capacity?.byModel ?? {})
-      .map((entry) => infrastructureWaitSummary(entry.wait)),
-  )];
-  for (const summary of infrastructure) {
-    const lines = wrap(summary, 17);
-    details.push(`${BLUE}${BOLD}▸ WAITING${R} ${lines[0] ?? ''}`);
-    details.push(...lines.slice(1).map((line) => `  ${DIM}${line}${R}`));
-  }
-  // Typed infrastructure waits have a safe summary above. Never fall back to
-  // their raw provider reason; ordinary wakes retain their existing display.
-  const recoveredCapacityWakes = pendingWakes.filter(
-    (wake) => wake.infrastructure && !doc.capacity?.byModel[wake.infrastructure.model],
-  );
-  const normalWakes = pendingWakes.filter((w) => !w.infrastructure);
-  const dueNow = [...normalWakes, ...recoveredCapacityWakes].filter(
+  const dueNow = pendingWakes.filter(
     (w) => w.condition.type === 'immediate' || w.condition.dueAtVirtual <= nowV,
   ).length;
-  const nextWake = normalWakes
+  const nextWake = pendingWakes
     .filter((w) => w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
     .sort((a, b) =>
       (a.condition as { dueAtVirtual: string }).dueAtVirtual.localeCompare(

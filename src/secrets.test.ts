@@ -15,7 +15,6 @@ import {
   loadSecrets,
   redactSecrets,
   removeSecret,
-  sdkEnv,
   secretNames,
   setSecret,
 } from './secrets.js';
@@ -82,47 +81,6 @@ test('invalid names and empty values are refused', () => {
   assert.throws(() => setSecret('lower_case', 'x-value'));
   assert.throws(() => setSecret('GH TOKEN', 'x-value'));
   assert.throws(() => setSecret('OK_NAME', ''));
-});
-
-test('sdkEnv strips ambient API and OAuth credentials but preserves the operator-selected login', () => {
-  const keys = [
-    'ANTHROPIC_API_KEY',
-    'ANTHROPIC_AUTH_TOKEN',
-    'CLAUDE_CODE_OAUTH_TOKEN',
-    'CLAUDE_CONFIG_DIR',
-  ] as const;
-  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-  try {
-    process.env.ANTHROPIC_API_KEY = 'ambient-api-key';
-    process.env.ANTHROPIC_AUTH_TOKEN = 'ambient-auth-token';
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'ambient-oauth-token';
-    process.env.CLAUDE_CONFIG_DIR = '/operator/selected/claude-config';
-
-    const env = sdkEnv();
-    assert.ok(!('ANTHROPIC_API_KEY' in env));
-    assert.ok(!('ANTHROPIC_AUTH_TOKEN' in env));
-    assert.ok(!('CLAUDE_CODE_OAUTH_TOKEN' in env));
-    assert.equal(env.CLAUDE_CONFIG_DIR, '/operator/selected/claude-config');
-  } finally {
-    for (const key of keys) {
-      const value = previous[key];
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-});
-
-test('sdkEnv extras cannot reintroduce API or OAuth credentials', () => {
-  const env = sdkEnv({
-    ANTHROPIC_API_KEY: 'extra-api-key',
-    ANTHROPIC_AUTH_TOKEN: 'extra-auth-token',
-    CLAUDE_CODE_OAUTH_TOKEN: 'extra-oauth-token',
-    SAFE_EXTRA: 'kept',
-  });
-  assert.ok(!('ANTHROPIC_API_KEY' in env));
-  assert.ok(!('ANTHROPIC_AUTH_TOKEN' in env));
-  assert.ok(!('CLAUDE_CODE_OAUTH_TOKEN' in env));
-  assert.equal(env.SAFE_EXTRA, 'kept');
 });
 
 test('redactSecrets scrubs every value, longest first, and skips tiny values', () => {

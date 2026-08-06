@@ -10,7 +10,7 @@ git clone https://github.com/erdoai/weaver && cd weaver
 yarn install
 ```
 
-Weaver authenticates as the one operator already logged into Claude Code on this machine — no API key, stored token, or account pool. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN` are deliberately stripped from spawned sessions so billing or identity can never silently switch. [Claude capacity & billing](/claude-capacity) explains Agent SDK credits, supported overflow, and what Weaver does when capacity runs out.
+Weaver authenticates through your machine's Claude Code login — no API key. Any `ANTHROPIC_API_KEY` in the environment is deliberately stripped from spawned sessions so billing can never silently switch to API credits.
 
 ## Create a workstream
 

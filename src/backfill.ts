@@ -30,7 +30,6 @@ import {
   proposeBackfillPolicy,
   type PolicyRecord,
 } from './policies.js';
-import { sdkEnv } from './secrets.js';
 
 export interface BackfillCandidate {
   statement: string;
@@ -357,7 +356,6 @@ export async function backfillSessions(
       permissionMode: 'dontAsk',
       maxTurns: 4,
       persistSession: false,
-      env: sdkEnv(),
     },
   })) {
     void message;

@@ -171,7 +171,6 @@ export function createWorkstream(core: Omit<WorkstreamCore, 'id' | 'createdAt' |
       },
     ],
     spend: { coordinatorPasses: 0, totalCostUsd: 0, humanInterventions: 0 },
-    capacity: null,
     lease: null,
   };
   fs.mkdirSync(dir, { recursive: true });

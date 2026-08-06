@@ -10,7 +10,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { runnableAssignments, tick, verifyAction } from './engine.js';
+import { tick, verifyAction } from './engine.js';
 import { arrive, createWorkstream, load, newId, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { Assignment } from './types.js';
@@ -174,66 +174,6 @@ test('a stale running attempt is recovered: crash recorded, assignment re-queued
   const attempt = asg.attempts[0]!;
   assert.equal(attempt.terminalReason, 'crashed');
   assert.ok(attempt.endedAt);
-});
-
-test('a typed provider wait parks every model assignment until recovery without parsing prose', () => {
-  createWorkstream({
-    slug: 'capacity-ws',
-    title: 'Capacity test',
-    objective: 'defer model work',
-    tags: [],
-    successCriteria: [],
-    constraints: [],
-    autonomy: { sendsRequireApproval: true },
-    budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
-  });
-  const retryAt = new Date(virtualNow().getTime() + 60_000).toISOString();
-  arrive('capacity-ws', (d) => {
-    d.assignments.push(
-      {
-        id: 'asg_first', objective: 'first', briefing: 'n/a', kind: 'research', acceptanceCriteria: ['n/a'],
-        dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
-      },
-      {
-        id: 'asg_second', objective: 'second', briefing: 'n/a', kind: 'research', acceptanceCriteria: ['n/a'],
-        dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
-      },
-    );
-    d.wakes.push({
-      id: 'wake_capacity',
-      reason: 'arbitrary presentation text',
-      condition: { type: 'time', dueAtVirtual: retryAt },
-      status: 'pending',
-      createdAt: new Date().toISOString(),
-      infrastructure: {
-        kind: 'sdk_credit_exhausted',
-        recovery: 'claim_sdk_credit_or_enable_usage_credits',
-        source: 'worker',
-        sourceId: 'run_capacity',
-        model: 'sonnet',
-        detectedAt: virtualNow().toISOString(),
-        retryAt,
-      },
-    });
-    d.capacity = {
-      state: 'backoff',
-      byModel: {
-        sonnet: {
-          wait: d.wakes.at(-1)!.infrastructure!,
-          consecutiveBackoffs: 1,
-          firstBackoffAtVirtual: virtualNow().toISOString(),
-          lastBackoffAtVirtual: virtualNow().toISOString(),
-        },
-      },
-    };
-  });
-
-  const doc = load('capacity-ws');
-  assert.deepEqual(runnableAssignments(doc), []);
-  doc.wakes[0]!.condition = { type: 'time', dueAtVirtual: virtualNow().toISOString() };
-  doc.wakes[0]!.infrastructure!.retryAt = virtualNow().toISOString();
-  doc.capacity!.byModel.sonnet!.wait.retryAt = virtualNow().toISOString();
-  assert.deepEqual(runnableAssignments(doc), ['asg_first', 'asg_second']);
 });
 
 // ---------------------------------------------------------------------------

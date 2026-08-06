@@ -54,9 +54,6 @@ export interface Attempt {
   endedAt?: Iso;
   costUsd?: number;
   terminalReason?: string;
-  /** Provider-side outage/limit that ended this disposable attempt. The
-   * assignment remains intended work and is retried after the typed wait. */
-  infrastructure?: InfrastructureWait;
 }
 
 export interface Assignment {
@@ -216,47 +213,6 @@ export interface Observation {
 // ---------------------------------------------------------------------------
 // Waits & inputs
 
-export type CapacityCategory =
-  | 'sdk_credit_exhausted'
-  | 'session_limit'
-  | 'rate_limit'
-  | 'auth'
-  | 'other';
-
-/** Closed on purpose: recovering capacity can never mean selecting, pooling,
- * or rotating accounts. Credentials stay in Claude Code, outside Weaver. */
-export type InfrastructureRecovery =
-  | 'claim_sdk_credit_or_enable_usage_credits'
-  | 'reauthenticate'
-  | 'automatic_retry';
-
-export interface InfrastructureWait {
-  kind: CapacityCategory;
-  recovery: InfrastructureRecovery;
-  source: 'coordinator' | 'worker';
-  sourceId: Id;
-  model: string;
-  detectedAt: Iso;
-  retryAt: Iso;
-  resetAt?: Iso;
-  rateLimitType?: string;
-}
-
-export interface CapacityBackoff {
-  wait: InfrastructureWait;
-  consecutiveBackoffs: number;
-  firstBackoffAtVirtual: Iso;
-  lastBackoffAtVirtual: Iso;
-}
-
-/** Current provider capacity is a typed, model-indexed organizational fact.
- * The index matters because coordinator and worker models can recover at
- * different times; one scalar category would silently collapse that state. */
-export interface CapacityState {
-  state: 'backoff';
-  byModel: Record<string, CapacityBackoff>;
-}
-
 export type WakeCondition =
   | { type: 'time'; dueAtVirtual: Iso }
   | { type: 'immediate' };
@@ -268,9 +224,6 @@ export interface Wake {
   status: 'pending' | 'fired' | 'cancelled';
   createdAt: Iso;
   firedInPass?: Id;
-  /** Typed provider wait. Human-readable `reason` is presentation only and
-   * must never be parsed to decide recovery behavior. */
-  infrastructure?: InfrastructureWait;
 }
 
 export interface Steering {
@@ -286,7 +239,7 @@ export interface Steering {
 
 export interface AttentionItem {
   id: Id;
-  kind: 'approval' | 'review' | 'blocker' | 'budget' | 'capacity';
+  kind: 'approval' | 'review' | 'blocker' | 'budget';
   summary: string;
   /** Reference to the interaction/assignment/etc. this concerns. */
   refId?: Id;
@@ -313,7 +266,6 @@ export interface PassRecord {
   summary?: string;
   changes: string[];
   outcome: 'completed' | 'error' | 'no_finish' | 'running';
-  infrastructure?: InfrastructureWait;
 }
 
 export interface EventRecord {
@@ -371,9 +323,6 @@ export interface WorkstreamDoc {
      * interventions-per-successful-outcome metric the learning loop optimizes. */
     humanInterventions: number;
   };
-  /** Typed source of truth for current Agent SDK capacity constraints. Old
-   * documents may omit this additive field and are treated as recovered. */
-  capacity?: CapacityState | null;
   /** Single-flight reconciliation lease. */
   lease: { passId: Id; acquiredAt: Iso; expiresAt: Iso } | null;
 }
