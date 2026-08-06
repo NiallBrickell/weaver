@@ -18,6 +18,7 @@ import { tick } from './engine.js';
 import { sdkEnv } from './secrets.js';
 import { arrive, listWorkstreams, load, weaverHome } from './store.js';
 import { virtualNow } from './clock.js';
+import { clearCapacityBackoff, resolveCapacityAttention } from './capacity.js';
 
 function lockDir(): string {
   return path.join(weaverHome(), '.runner.lock');
@@ -72,11 +73,8 @@ export function infraBackoffSlugs(): string[] {
     try {
       const d = load(slug);
       if (d.workstream.status !== 'active') continue;
-      if (d.wakes.some((w) =>
-        w.status === 'pending' &&
-        w.condition.type === 'time' &&
-        w.condition.dueAtVirtual > now &&
-        w.infrastructure,
+      if (Object.values(d.capacity?.byModel ?? {}).some(
+        (entry) => entry.wait.retryAt > now,
       )) {
         out.push(slug);
       }
@@ -98,15 +96,8 @@ function infraBackoffModels(slugs: string[]): string[] {
   const models = new Set<string>();
   const now = virtualNow().toISOString();
   for (const slug of slugs) {
-    for (const wake of load(slug).wakes) {
-      if (
-        wake.status === 'pending' &&
-        wake.condition.type === 'time' &&
-        wake.condition.dueAtVirtual > now &&
-        wake.infrastructure
-      ) {
-        models.add(wake.infrastructure.model);
-      }
+    for (const entry of Object.values(load(slug).capacity?.byModel ?? {})) {
+      if (entry.wait.retryAt > now) models.add(entry.wait.model);
     }
   }
   return [...models].sort();
@@ -138,11 +129,9 @@ export function expediteBackoffWakes(
   const now = virtualNow().toISOString();
   for (const slug of slugs) {
     try {
-      const hasMatchingWait = load(slug).wakes.some((w) =>
-        w.status === 'pending' &&
-        w.condition.type === 'time' &&
-        w.infrastructure &&
-        (!recoveredModel || w.infrastructure.model === recoveredModel),
+      const before = load(slug);
+      const hasMatchingWait = Object.values(before.capacity?.byModel ?? {}).some(
+        (entry) => !recoveredModel || entry.wait.model === recoveredModel,
       );
       if (!hasMatchingWait) continue;
       arrive(slug, (d, event) => {
@@ -172,6 +161,13 @@ export function expediteBackoffWakes(
             item.resolvedAt = new Date().toISOString();
             item.resolvedBy = 'capacity-probe';
           }
+        }
+        const recoveredModels = Object.keys(d.capacity?.byModel ?? {}).filter(
+          (model) => !recoveredModel || model === recoveredModel,
+        );
+        for (const model of recoveredModels) {
+          clearCapacityBackoff(d, model);
+          resolveCapacityAttention(d, model, 'capacity-probe');
         }
       });
       log(`[run] ${slug}: infra-backoff wake expedited — credits/auth recovered${recoveredModel ? ` for ${recoveredModel}` : ''}`);

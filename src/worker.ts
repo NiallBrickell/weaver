@@ -14,7 +14,14 @@ import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod';
 import { virtualNow } from './clock.js';
 import { armWall } from './wall.js';
-import { infrastructureWaitSummary, SdkFailureTracker } from './capacity.js';
+import {
+  clearCapacityBackoff,
+  ensureCapacityAttention,
+  infrastructureWaitSummary,
+  recordCapacityBackoff,
+  resolveCapacityAttention,
+  SdkFailureTracker,
+} from './capacity.js';
 import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, newId, readArtifact, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
@@ -186,7 +193,11 @@ export function finalizeWorkerRun(
       if (outcome.infrastructure) attempt.infrastructure = outcome.infrastructure;
     }
     d.spend.totalCostUsd += outcome.costUsd;
-    if (outcome.submitted) return;
+    if (outcome.submitted) {
+      clearCapacityBackoff(d, workerModel());
+      resolveCapacityAttention(d, workerModel(), 'worker');
+      return;
+    }
 
     if (outcome.infrastructure) {
       const infrastructure = outcome.infrastructure;
@@ -202,27 +213,14 @@ export function finalizeWorkerRun(
         createdAt: new Date().toISOString(),
         infrastructure,
       });
-      if (infrastructure.recovery === 'reauthenticate') {
-        const existing = d.attention.find(
-          (item) => item.status === 'open' && item.summary.startsWith('Claude authentication needs attention'),
-        );
-        if (existing) {
-          existing.refId = wakeId;
-        } else {
-          d.attention.push({
-            id: newId('att'),
-            kind: 'blocker',
-            summary: explanation,
-            refId: wakeId,
-            status: 'open',
-            createdAt: new Date().toISOString(),
-          });
-        }
-      }
+      const capacity = recordCapacityBackoff(d, infrastructure);
+      ensureCapacityAttention(d, capacity, wakeId, () => newId('att'));
       event('worker.backoff', `${assignmentId} attempt ${runId} parked on ${infrastructure.kind} until ${infrastructure.retryAt}`, [assignmentId, runId, wakeId]);
       return;
     }
 
+    clearCapacityBackoff(d, workerModel());
+    resolveCapacityAttention(d, workerModel(), 'worker');
     a.state = 'failed';
     const why = outcome.terminalReason ?? 'no_submission';
     if (attempt) attempt.terminalReason = why;

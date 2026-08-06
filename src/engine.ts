@@ -407,12 +407,8 @@ function recoverCrashedAttempts(slug: string): number {
 
 export function runnableAssignments(doc: WorkstreamDoc): string[] {
   const now = virtualNow().toISOString();
-  const providerWait = doc.wakes.some(
-    (wake) =>
-      wake.status === 'pending' &&
-      wake.infrastructure &&
-      wake.condition.type === 'time' &&
-      wake.condition.dueAtVirtual > now,
+  const providerWait = Object.values(doc.capacity?.byModel ?? {}).some(
+    (entry) => entry.wait.retryAt > now,
   );
   if (providerWait) return [];
   return doc.assignments

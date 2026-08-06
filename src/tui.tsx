@@ -300,9 +300,8 @@ function snapshot(): Snapshot {
     const nowV = virtualNow().toISOString();
     const pending = doc.wakes.filter((w) => w.status === 'pending');
     const infrastructure = [...new Set(
-      pending
-        .filter((w) => w.infrastructure)
-        .map((w) => infrastructureWaitSummary(w.infrastructure!)),
+      Object.values(doc.capacity?.byModel ?? {})
+        .map((entry) => infrastructureWaitSummary(entry.wait)),
     )];
     const dueNow = pending.filter((w) => w.condition.type === 'immediate' || w.condition.dueAtVirtual <= nowV).length;
     if (dueNow && !working) details.push(`○ ${dueNow} wake(s) due — in line for the runner`);

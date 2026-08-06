@@ -125,7 +125,7 @@ test('worker infrastructure failure preserves the assignment and schedules a typ
   try {
     runningWorker('worker-infra');
     const infrastructure: InfrastructureWait = {
-      kind: 'agent_sdk_credits_exhausted',
+      kind: 'sdk_credit_exhausted',
       recovery: 'claim_sdk_credit_or_enable_usage_credits',
       source: 'worker',
       sourceId: 'run_worker',
@@ -143,7 +143,8 @@ test('worker infrastructure failure preserves the assignment and schedules a typ
     const asg = doc.assignments[0]!;
     assert.equal(asg.state, 'queued');
     assert.equal(asg.attempts[0]!.terminalReason, 'infrastructure_backoff');
-    assert.equal(asg.attempts[0]!.infrastructure!.kind, 'agent_sdk_credits_exhausted');
+    assert.equal(asg.attempts[0]!.infrastructure!.kind, 'sdk_credit_exhausted');
+    assert.equal(doc.capacity!.byModel.sonnet!.consecutiveBackoffs, 1);
     assert.equal(doc.wakes.length, 1);
     assert.equal(doc.wakes[0]!.condition.type, 'time');
     assert.equal(doc.wakes[0]!.infrastructure!.sourceId, 'run_worker');
@@ -181,7 +182,7 @@ test('a worker retry consumes worker capacity permits but preserves coordinator 
     const due = virtualNow().toISOString();
     arrive('worker-permits', (d) => {
       const base: InfrastructureWait = {
-        kind: 'usage_limit',
+        kind: 'rate_limit',
         recovery: 'automatic_retry',
         source: 'worker',
         sourceId: 'run_old',

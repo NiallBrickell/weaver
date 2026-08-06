@@ -21,11 +21,13 @@ A credit, rate-limit, overload, or authentication failure is infrastructure stat
 
 1. Weaver closes the disposable model attempt without accepting any claimed work.
 2. The assignment and organizational position remain in durable typed state. No SDK session or model context stays alive.
-3. Weaver records a delayed infrastructure-backoff wake instead of an immediate retry or a workstream failure strike.
+3. Weaver records a delayed infrastructure-backoff wake and updates `WorkstreamDoc.capacity`, the typed source of truth. Capacity entries are kept per model because coordinator and worker models can recover independently.
 4. The runner periodically probes each affected Claude model. A Claude credential-file metadata change also prompts a probe; Weaver never reads or copies the credential value.
 5. When a model's probe passes, Weaver pulls matching backed-off workstreams forward and fresh processes continue from their stored projections.
 
 This makes an outage cost waiting rather than duplicated model work or a retry storm. Killing and restarting Weaver during the wait changes nothing.
+
+Sustained capacity trouble becomes one deduplicated operator card instead of permanent silent waiting: Agent SDK credit and authentication failures surface after three consecutive backoffs; session and rate limits get twelve attempts to self-clear first. Recovery resolves the card automatically. The card can explain how to recover, but it cannot enable spend or change identity.
 
 ## Recover explicitly
 

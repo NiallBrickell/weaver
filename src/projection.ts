@@ -13,6 +13,7 @@ import type { PolicyRecord } from './policies.js';
 import { renderPoliciesForProjection } from './policies.js';
 import { secretNames } from './secrets.js';
 import { virtualNow } from './clock.js';
+import { infrastructureWaitSummary } from './capacity.js';
 
 const SCHEMA_VERSION = 1;
 export const PROMPT_VERSION = 1;
@@ -74,6 +75,9 @@ export function buildProjection(
     const adoption = a?.adoption.state ?? 'none';
     return `${d.id} "${d.title}" (${d.kind}) — candidate, adoption=${adoption}, hash ${d.contentHash.slice(0, 8)}, from ${d.producedByAssignment ?? '?'}`;
   });
+  const capacityLines = Object.values(doc.capacity?.byModel ?? {}).map(
+    (entry) => `${entry.wait.model} [${entry.wait.kind}, ${entry.consecutiveBackoffs} consecutive] — ${infrastructureWaitSummary(entry.wait)}`,
+  );
   const s3 = [
     `## 3. Current operating state`,
     `Accepted work products:`,
@@ -81,6 +85,9 @@ export function buildProjection(
     ``,
     `Candidate work products awaiting review:`,
     fmtList(candLines, 'none'),
+    ``,
+    `Current Agent SDK capacity:`,
+    fmtList(capacityLines, 'available'),
   ].join('\n');
 
   // 4. Standing decisions with lineage

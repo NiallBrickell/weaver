@@ -30,8 +30,8 @@ function sinceCutoff(doc: WorkstreamDoc): string | undefined {
 }
 
 /**
- * Infrastructure waits carry provider output in their original wake reason,
- * but operator surfaces render only the typed, deliberately-safe summary.
+ * Operator surfaces render capacity only from the typed, deliberately-safe
+ * state; wake prose is never a capacity signal.
  * One outage can produce several retry wakes; collapse identical summaries so
  * the five-question view reports the organizational position once.
  */
@@ -41,12 +41,12 @@ function infrastructureWaits(doc: WorkstreamDoc): {
 } {
   const summaries = new Set<string>();
   const nextBySummary = new Map<string, string>();
-  for (const wake of doc.wakes.filter((w) => w.status === 'pending' && w.infrastructure)) {
-    const summary = infrastructureWaitSummary(wake.infrastructure!);
+  for (const entry of Object.values(doc.capacity?.byModel ?? {})) {
+    const summary = infrastructureWaitSummary(entry.wait);
     summaries.add(summary);
-    const candidate = wake.condition.type === 'time'
-      ? `infrastructure retry scheduled at ${wake.condition.dueAtVirtual.slice(0, 16)}`
-      : 'infrastructure retry is due now';
+    const candidate = entry.wait.retryAt <= virtualNow().toISOString()
+      ? 'infrastructure retry is due now'
+      : `infrastructure retry scheduled at ${entry.wait.retryAt.slice(0, 16)}`;
     const current = nextBySummary.get(summary);
     if (!current || candidate === 'infrastructure retry is due now' || candidate < current) {
       nextBySummary.set(summary, candidate);

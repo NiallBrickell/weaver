@@ -152,9 +152,8 @@ function viewOf(slug: string): WsView {
   const nowV = virtualNow().toISOString();
   const pendingWakes = doc.wakes.filter((w) => w.status === 'pending');
   const infrastructure = [...new Set(
-    pendingWakes
-      .filter((w) => w.infrastructure)
-      .map((w) => infrastructureWaitSummary(w.infrastructure!)),
+    Object.values(doc.capacity?.byModel ?? {})
+      .map((entry) => infrastructureWaitSummary(entry.wait)),
   )];
   for (const summary of infrastructure) {
     const lines = wrap(summary, 17);

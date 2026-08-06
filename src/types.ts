@@ -216,12 +216,12 @@ export interface Observation {
 // ---------------------------------------------------------------------------
 // Waits & inputs
 
-export type InfrastructureKind =
-  | 'agent_sdk_credits_exhausted'
-  | 'usage_limit'
-  | 'authentication'
-  | 'provider_unavailable'
-  | 'timeout';
+export type CapacityCategory =
+  | 'sdk_credit_exhausted'
+  | 'session_limit'
+  | 'rate_limit'
+  | 'auth'
+  | 'other';
 
 /** Closed on purpose: recovering capacity can never mean selecting, pooling,
  * or rotating accounts. Credentials stay in Claude Code, outside Weaver. */
@@ -231,7 +231,7 @@ export type InfrastructureRecovery =
   | 'automatic_retry';
 
 export interface InfrastructureWait {
-  kind: InfrastructureKind;
+  kind: CapacityCategory;
   recovery: InfrastructureRecovery;
   source: 'coordinator' | 'worker';
   sourceId: Id;
@@ -240,6 +240,21 @@ export interface InfrastructureWait {
   retryAt: Iso;
   resetAt?: Iso;
   rateLimitType?: string;
+}
+
+export interface CapacityBackoff {
+  wait: InfrastructureWait;
+  consecutiveBackoffs: number;
+  firstBackoffAtVirtual: Iso;
+  lastBackoffAtVirtual: Iso;
+}
+
+/** Current provider capacity is a typed, model-indexed organizational fact.
+ * The index matters because coordinator and worker models can recover at
+ * different times; one scalar category would silently collapse that state. */
+export interface CapacityState {
+  state: 'backoff';
+  byModel: Record<string, CapacityBackoff>;
 }
 
 export type WakeCondition =
@@ -271,7 +286,7 @@ export interface Steering {
 
 export interface AttentionItem {
   id: Id;
-  kind: 'approval' | 'review' | 'blocker' | 'budget';
+  kind: 'approval' | 'review' | 'blocker' | 'budget' | 'capacity';
   summary: string;
   /** Reference to the interaction/assignment/etc. this concerns. */
   refId?: Id;
@@ -356,6 +371,9 @@ export interface WorkstreamDoc {
      * interventions-per-successful-outcome metric the learning loop optimizes. */
     humanInterventions: number;
   };
+  /** Typed source of truth for current Agent SDK capacity constraints. Old
+   * documents may omit this additive field and are treated as recovered. */
+  capacity?: CapacityState | null;
   /** Single-flight reconciliation lease. */
   lease: { passId: Id; acquiredAt: Iso; expiresAt: Iso } | null;
 }

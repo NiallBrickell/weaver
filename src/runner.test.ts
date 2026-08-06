@@ -35,7 +35,7 @@ function make(slug: string): void {
 
 function wait(sourceId = 'pass_wait'): InfrastructureWait {
   return {
-    kind: 'authentication',
+    kind: 'auth',
     recovery: 'reauthenticate',
     source: 'coordinator',
     sourceId,
@@ -45,24 +45,45 @@ function wait(sourceId = 'pass_wait'): InfrastructureWait {
   };
 }
 
+function setCapacity(d: ReturnType<typeof load>, waits: InfrastructureWait[]): void {
+  d.capacity = {
+    state: 'backoff',
+    byModel: Object.fromEntries(waits.map((infrastructure) => [
+      infrastructure.model,
+      {
+        wait: infrastructure,
+        consecutiveBackoffs: 1,
+        firstBackoffAtVirtual: infrastructure.detectedAt,
+        lastBackoffAtVirtual: infrastructure.detectedAt,
+      },
+    ])),
+  };
+}
+
 test('runner discovers only pending typed infrastructure waits, never magic prose', () => {
   make('typed');
   make('prose');
   make('paused');
-  arrive('typed', (d) => d.wakes.push({
-    id: 'wake_typed', reason: 'wording may change', condition: { type: 'time', dueAtVirtual: wait().retryAt },
-    status: 'pending', createdAt: new Date().toISOString(), infrastructure: wait(),
-  }));
+  arrive('typed', (d) => {
+    const infrastructure = wait();
+    d.wakes.push({
+      id: 'wake_typed', reason: 'wording may change', condition: { type: 'time', dueAtVirtual: infrastructure.retryAt },
+      status: 'pending', createdAt: new Date().toISOString(), infrastructure,
+    });
+    setCapacity(d, [infrastructure]);
+  });
   arrive('prose', (d) => d.wakes.push({
     id: 'wake_prose', reason: 'retry after infrastructure failure', condition: { type: 'time', dueAtVirtual: wait().retryAt },
     status: 'pending', createdAt: new Date().toISOString(),
   }));
   arrive('paused', (d) => {
+    const infrastructure = wait();
     d.workstream.status = 'paused';
     d.wakes.push({
-      id: 'wake_paused', reason: 'typed but paused', condition: { type: 'time', dueAtVirtual: wait().retryAt },
-      status: 'pending', createdAt: new Date().toISOString(), infrastructure: wait(),
+      id: 'wake_paused', reason: 'typed but paused', condition: { type: 'time', dueAtVirtual: infrastructure.retryAt },
+      status: 'pending', createdAt: new Date().toISOString(), infrastructure,
     });
+    setCapacity(d, [infrastructure]);
   });
   assert.deepEqual(infraBackoffSlugs(), ['typed']);
 });
@@ -85,6 +106,7 @@ test('successful probe expedition uses virtual time and unblocks worker attempts
       dependsOn: [], state: 'queued', attempts: [{ runId: 'run_wait', startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), infrastructure }],
       adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
     });
+    setCapacity(d, [infrastructure]);
   });
 
   expediteBackoffWakes(['expedite'], () => {});
@@ -94,6 +116,7 @@ test('successful probe expedition uses virtual time and unblocks worker attempts
   assert.ok(wake.condition.type === 'time' && wake.condition.dueAtVirtual <= virtualNow().toISOString());
   assert.equal(doc.assignments[0]!.attempts[0]!.infrastructure!.retryAt, wake.condition.type === 'time' ? wake.condition.dueAtVirtual : '');
   assert.equal(doc.attention[0]!.status, 'resolved');
+  assert.equal(doc.capacity, null);
 });
 
 test('a model probe expedites only waits for the model that actually recovered', () => {
@@ -111,10 +134,12 @@ test('a model probe expedites only waits for the model that actually recovered',
         status: 'pending', createdAt: new Date().toISOString(), infrastructure: sonnet,
       },
     );
+    setCapacity(d, [fable, sonnet]);
   });
 
   expediteBackoffWakes(['models'], () => {}, 'claude-fable-5');
   const [fableWake, sonnetWake] = load('models').wakes;
   assert.ok(fableWake!.condition.type === 'time' && fableWake!.condition.dueAtVirtual <= virtualNow().toISOString());
   assert.equal(sonnetWake!.condition.type === 'time' ? sonnetWake!.condition.dueAtVirtual : '', sonnet.retryAt);
+  assert.equal(load('models').capacity!.byModel.sonnet!.wait.model, 'sonnet');
 });

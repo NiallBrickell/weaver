@@ -20,7 +20,14 @@ import { matchPolicies, proposePolicy, recordPolicyOutcome } from './policies.js
 import { sdkEnv } from './secrets.js';
 import { tailMessage } from './tail.js';
 import { armWall } from './wall.js';
-import { infrastructureWaitSummary, SdkFailureTracker } from './capacity.js';
+import {
+  clearCapacityBackoff,
+  ensureCapacityAttention,
+  infrastructureWaitSummary,
+  recordCapacityBackoff,
+  resolveCapacityAttention,
+  SdkFailureTracker,
+} from './capacity.js';
 import {
   RevisionConflictError,
   load,
@@ -29,7 +36,7 @@ import {
   readArtifact,
   verifyArtifact,
 } from './store.js';
-import type { Assignment, PassRecord, WorkstreamDoc } from './types.js';
+import type { Assignment, InfrastructureWait, PassRecord, WorkstreamDoc } from './types.js';
 
 const LEASE_MS = 15 * 60_000;
 
@@ -39,6 +46,22 @@ export function coordinatorModel(): string {
   // bounded pass per coalesced wake) and at the moments that matter, so it
   // gets the most capable model; volume work (workers) stays on sonnet.
   return process.env.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5';
+}
+
+/** Deterministic capacity-state half of pass finalization. Kept outside the
+ * SDK loop so thresholds and deduplication are contract-testable. */
+export function recordCoordinatorCapacityBackoff(
+  doc: WorkstreamDoc,
+  infrastructure: InfrastructureWait,
+  wakeId: string,
+): void {
+  const capacity = recordCapacityBackoff(doc, infrastructure);
+  ensureCapacityAttention(doc, capacity, wakeId, () => newId('att'));
+}
+
+export function clearCoordinatorCapacityBackoff(doc: WorkstreamDoc, model: string): void {
+  clearCapacityBackoff(doc, model);
+  resolveCapacityAttention(doc, model, 'coordinator');
 }
 
 const SYSTEM_PROMPT = `You are the coordinator of a durable Workstream. You are DISPOSABLE: this pass is one bounded reconciliation over durable typed state, like a controller loop — you were not "here" before, and you will not be "here" after. The projection you received is your complete organizational position; there is no other memory.
@@ -692,6 +715,9 @@ export async function runCoordinatorPass(
       summary = rec.summary;
     }
     if (d.lease?.passId === passId) d.lease = null;
+    if (!infrastructure) {
+      clearCoordinatorCapacityBackoff(d, coordinatorModel());
+    }
     // Provider waits are execution attempts, not logical coordinator passes:
     // a month-long credit outage must not consume the workstream's pass cap.
     if (!infrastructure) d.spend.coordinatorPasses += 1;
@@ -722,23 +748,7 @@ export async function runCoordinatorPass(
         createdAt: new Date().toISOString(),
         infrastructure,
       });
-      if (infrastructure.recovery === 'reauthenticate') {
-        const existing = d.attention.find(
-          (item) => item.status === 'open' && item.summary.startsWith('Claude authentication needs attention'),
-        );
-        if (existing) {
-          existing.refId = wakeId;
-        } else {
-          d.attention.push({
-            id: newId('att'),
-            kind: 'blocker',
-            summary: explanation,
-            refId: wakeId,
-            status: 'open',
-            createdAt: new Date().toISOString(),
-          });
-        }
-      }
+      recordCoordinatorCapacityBackoff(d, infrastructure, wakeId);
       event('pass.backoff', `${passId} parked on ${infrastructure.kind} until ${infrastructure.retryAt}`, [passId, wakeId]);
     } else if (outcome !== 'completed') {
       const recent = d.passes.filter((p) => !p.infrastructure).slice(-3);

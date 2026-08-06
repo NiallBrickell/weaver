@@ -14,9 +14,11 @@ import type {
   SDKRateLimitInfo,
 } from '@anthropic-ai/claude-agent-sdk';
 import type {
-  InfrastructureKind,
+  CapacityBackoff,
+  CapacityCategory,
   InfrastructureRecovery,
   InfrastructureWait,
+  WorkstreamDoc,
 } from './types.js';
 
 const DEFAULT_RETRY_MS = 15 * 60_000;
@@ -36,12 +38,29 @@ function latestReset(info: SDKRateLimitInfo | undefined): string | undefined {
 }
 
 const CREDIT_TEXT =
-  /out of (?:usage credits|extra usage)|credits?_required|credit balance|billing|usage allocation (?:has been )?disabled|usage limit is set to \$?0|requires usage credits/i;
+  /out of (?:usage credits|extra usage)|credits?_required|\bcredits?\b|billing|usage allocation (?:has been )?disabled|usage limit is set to \$?0|requires usage credits|run \/usage-credits/i;
 const AUTH_TEXT =
-  /401|unauthoriz|authentication|not logged in|log ?in|oauth_org_not_allowed|token (?:revoked|expired)/i;
+  /401|unauthoriz|authentication|not logged in|log ?in|oauth_org_not_allowed|token (?:revoked|expired)|process aborted/i;
+const SESSION_TEXT = /session limit|hit your session limit/i;
 const RATE_TEXT =
-  /session limit|rate.?limit|usage limit|quota|exceeded your|you(?:'|’)ve (?:hit|reached) your|429/i;
+  /rate.?limit|usage limit|quota|exceeded your|you(?:'|’)ve reached your .* limit|429/i;
 const PROVIDER_TEXT = /overloaded|529|server error|service unavailable/i;
+
+/** Compatibility classifier for thrown errors and older SDK result text.
+ * Structured SDK fields take precedence in SdkFailureTracker, but this pure
+ * function remains a strict superset of Weaver's original infra regex. */
+export function classifyCapacityFailure(
+  errorText: string,
+  wallFired = false,
+): CapacityCategory | null {
+  if (wallFired) return 'other';
+  if (CREDIT_TEXT.test(errorText)) return 'sdk_credit_exhausted';
+  if (SESSION_TEXT.test(errorText)) return 'session_limit';
+  if (RATE_TEXT.test(errorText)) return 'rate_limit';
+  if (AUTH_TEXT.test(errorText)) return 'auth';
+  if (PROVIDER_TEXT.test(errorText)) return 'other';
+  return null;
+}
 
 export interface InfrastructureSource {
   source: 'coordinator' | 'worker';
@@ -94,9 +113,7 @@ export class SdkFailureTracker {
 
   classify(source: InfrastructureSource): InfrastructureWait | null {
     const now = source.now ?? new Date();
-    if (source.wallFired) {
-      return this.make('timeout', 'automatic_retry', source, now);
-    }
+    if (source.wallFired) return this.make('other', 'automatic_retry', source, now);
     if (!this.failed) return null;
 
     const text = `${this.texts.join(' ')} ${this.terminalReason ?? ''}`;
@@ -110,11 +127,11 @@ export class SdkFailureTracker {
       disabled === 'group_zero_credit_limit' ||
       disabled === 'member_zero_credit_limit' ||
       this.errors.has('billing_error') ||
-      CREDIT_TEXT.test(text);
+      classifyCapacityFailure(text) === 'sdk_credit_exhausted';
 
     if (creditsRequired) {
       return this.make(
-        'agent_sdk_credits_exhausted',
+        'sdk_credit_exhausted',
         'claim_sdk_credit_or_enable_usage_credits',
         source,
         now,
@@ -123,30 +140,33 @@ export class SdkFailureTracker {
     if (
       this.errors.has('authentication_failed') ||
       this.errors.has('oauth_org_not_allowed') ||
-      AUTH_TEXT.test(text)
+      classifyCapacityFailure(text) === 'auth'
     ) {
-      return this.make('authentication', 'reauthenticate', source, now);
+      return this.make('auth', 'reauthenticate', source, now);
+    }
+    if (classifyCapacityFailure(text) === 'session_limit') {
+      return this.make('session_limit', 'automatic_retry', source, now);
     }
     if (
       this.errors.has('rate_limit') ||
       this.rateLimit?.status === 'rejected' ||
       this.terminalReason === 'blocking_limit' ||
-      RATE_TEXT.test(text)
+      classifyCapacityFailure(text) === 'rate_limit'
     ) {
-      return this.make('usage_limit', 'automatic_retry', source, now);
+      return this.make('rate_limit', 'automatic_retry', source, now);
     }
     if (
       this.errors.has('overloaded') ||
       this.errors.has('server_error') ||
-      PROVIDER_TEXT.test(text)
+      classifyCapacityFailure(text) === 'other'
     ) {
-      return this.make('provider_unavailable', 'automatic_retry', source, now);
+      return this.make('other', 'automatic_retry', source, now);
     }
     return null;
   }
 
   private make(
-    kind: InfrastructureKind,
+    kind: CapacityCategory,
     recovery: InfrastructureRecovery,
     source: InfrastructureSource,
     now: Date,
@@ -174,15 +194,100 @@ export class SdkFailureTracker {
 
 export function infrastructureWaitSummary(wait: InfrastructureWait): string {
   switch (wait.kind) {
-    case 'agent_sdk_credits_exhausted':
+    case 'sdk_credit_exhausted':
       return 'Claude Agent SDK capacity is exhausted; work is safely parked. Claim the included SDK credit in Claude Settings > Usage, or run `/usage-credits` in Claude Code for paid overflow with a provider spend cap. Weaver will probe and resume automatically.';
-    case 'authentication':
+    case 'auth':
       return 'Claude authentication needs attention; work is safely parked. Run `claude auth login` in a terminal and complete the intended operator login. Weaver never accepts credentials or tokens and will detect recovery.';
-    case 'usage_limit':
+    case 'session_limit':
+      return `Claude's session limit is active; work is safely parked until ${wait.retryAt.slice(0, 16)}. Weaver will retry and probe automatically.`;
+    case 'rate_limit':
       return `Claude usage is limited; work is safely parked until ${wait.retryAt.slice(0, 16)}. Weaver will retry and probe automatically.`;
-    case 'provider_unavailable':
-      return `Claude is temporarily unavailable; work is safely parked until ${wait.retryAt.slice(0, 16)} and will resume automatically.`;
-    case 'timeout':
-      return `The Claude SDK stopped responding; work is safely parked until ${wait.retryAt.slice(0, 16)} and will retry automatically.`;
+    case 'other':
+      return `Claude is temporarily unavailable or stopped responding; work is safely parked until ${wait.retryAt.slice(0, 16)} and will retry automatically.`;
+  }
+}
+
+export function recordCapacityBackoff(
+  doc: WorkstreamDoc,
+  wait: InfrastructureWait,
+): CapacityBackoff {
+  const previous = doc.capacity?.byModel[wait.model];
+  const sameCategory = previous?.wait.kind === wait.kind;
+  const entry: CapacityBackoff = {
+    wait,
+    consecutiveBackoffs: sameCategory ? previous.consecutiveBackoffs + 1 : 1,
+    firstBackoffAtVirtual: sameCategory
+      ? previous.firstBackoffAtVirtual
+      : wait.detectedAt,
+    lastBackoffAtVirtual: wait.detectedAt,
+  };
+  doc.capacity = {
+    state: 'backoff',
+    byModel: { ...(doc.capacity?.byModel ?? {}), [wait.model]: entry },
+  };
+  return entry;
+}
+
+export function clearCapacityBackoff(doc: WorkstreamDoc, model: string): void {
+  if (!doc.capacity?.byModel[model]) return;
+  const byModel = { ...doc.capacity.byModel };
+  delete byModel[model];
+  doc.capacity = Object.keys(byModel).length ? { state: 'backoff', byModel } : null;
+}
+
+export function capacityAttentionThreshold(category: CapacityCategory): number {
+  return category === 'sdk_credit_exhausted' || category === 'auth' ? 3 : 12;
+}
+
+export function capacityAttentionSummary(entry: CapacityBackoff): string {
+  const { wait, consecutiveBackoffs } = entry;
+  const prefix = `Claude capacity (${wait.model}/${wait.kind}) has blocked work ${consecutiveBackoffs} times.`;
+  if (wait.kind === 'auth') {
+    return `${prefix} Run \`claude auth login\` and complete the intended operator login; Weaver reads no credential values. Agent SDK plan guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan`;
+  }
+  if (wait.kind === 'sdk_credit_exhausted') {
+    return `${prefix} Claim the included Agent SDK credit, or enable paid overflow with a provider spend cap via \`/usage-credits\`. Guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan and https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans`;
+  }
+  return `${prefix} The limit should self-clear; check Claude plan status if it persists. Guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan`;
+}
+
+export function ensureCapacityAttention(
+  doc: WorkstreamDoc,
+  entry: CapacityBackoff,
+  refId: string,
+  makeId: () => string,
+): void {
+  if (entry.consecutiveBackoffs < capacityAttentionThreshold(entry.wait.kind)) return;
+  const key = `Claude capacity (${entry.wait.model}/${entry.wait.kind})`;
+  const existing = doc.attention.find(
+    (item) => item.status === 'open' && item.kind === 'capacity' && item.summary.startsWith(key),
+  );
+  if (existing) {
+    existing.summary = capacityAttentionSummary(entry);
+    existing.refId = refId;
+    return;
+  }
+  doc.attention.push({
+    id: makeId(),
+    kind: 'capacity',
+    summary: capacityAttentionSummary(entry),
+    refId,
+    status: 'open',
+    createdAt: new Date().toISOString(),
+  });
+}
+
+export function resolveCapacityAttention(
+  doc: WorkstreamDoc,
+  model: string,
+  resolvedBy: string,
+): void {
+  const key = `Claude capacity (${model}/`;
+  for (const item of doc.attention) {
+    if (item.status === 'open' && item.kind === 'capacity' && item.summary.startsWith(key)) {
+      item.status = 'resolved';
+      item.resolvedAt = new Date().toISOString();
+      item.resolvedBy = resolvedBy;
+    }
   }
 }

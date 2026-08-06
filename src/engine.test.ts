@@ -206,7 +206,7 @@ test('a typed provider wait parks every model assignment until recovery without 
       status: 'pending',
       createdAt: new Date().toISOString(),
       infrastructure: {
-        kind: 'agent_sdk_credits_exhausted',
+        kind: 'sdk_credit_exhausted',
         recovery: 'claim_sdk_credit_or_enable_usage_credits',
         source: 'worker',
         sourceId: 'run_capacity',
@@ -215,12 +215,24 @@ test('a typed provider wait parks every model assignment until recovery without 
         retryAt,
       },
     });
+    d.capacity = {
+      state: 'backoff',
+      byModel: {
+        sonnet: {
+          wait: d.wakes.at(-1)!.infrastructure!,
+          consecutiveBackoffs: 1,
+          firstBackoffAtVirtual: virtualNow().toISOString(),
+          lastBackoffAtVirtual: virtualNow().toISOString(),
+        },
+      },
+    };
   });
 
   const doc = load('capacity-ws');
   assert.deepEqual(runnableAssignments(doc), []);
   doc.wakes[0]!.condition = { type: 'time', dueAtVirtual: virtualNow().toISOString() };
   doc.wakes[0]!.infrastructure!.retryAt = virtualNow().toISOString();
+  doc.capacity!.byModel.sonnet!.wait.retryAt = virtualNow().toISOString();
   assert.deepEqual(runnableAssignments(doc), ['asg_first', 'asg_second']);
 });
 
