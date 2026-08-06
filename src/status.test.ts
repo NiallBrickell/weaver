@@ -16,6 +16,12 @@ import type {
 } from './types.js';
 
 const NOW = '2026-08-06T12:00:00.000Z';
+// renderStatus compares retryAt against the REAL clock (virtualNow), so
+// "scheduled later" fixtures must be genuinely in the future — a hardcoded
+// tomorrow-ish timestamp becomes a time bomb the moment wall time passes it
+// (this suite broke at exactly 2026-08-06T12:15Z).
+const FUTURE_1 = new Date(Date.now() + 60 * 60_000).toISOString();
+const FUTURE_2 = new Date(Date.now() + 90 * 60_000).toISOString();
 
 function infrastructure(
   kind: CapacityCategory,
@@ -29,7 +35,7 @@ function infrastructure(
     sourceId: 'pass_capacity',
     model: 'claude-fable-5',
     detectedAt: NOW,
-    retryAt: '2026-08-06T12:15:00.000Z',
+    retryAt: FUTURE_1,
     ...overrides,
   };
 }
@@ -135,7 +141,7 @@ test('duplicate infrastructure wakes collapse and raw provider/account values ne
     'sdk_credit_exhausted',
     'claim_sdk_credit_or_enable_usage_credits',
   );
-  const later = { ...credit, sourceId: 'pass_capacity_2', model: 'sonnet', retryAt: '2026-08-06T12:30:00.000Z' };
+  const later = { ...credit, sourceId: 'pass_capacity_2', model: 'sonnet', retryAt: FUTURE_2 };
   const status = renderStatus(doc([
     infrastructureWake('wake_credit_1', credit),
     infrastructureWake('wake_credit_2', later),
@@ -143,7 +149,7 @@ test('duplicate infrastructure wakes collapse and raw provider/account values ne
 
   assert.equal(occurrences(status, 'Claude Agent SDK capacity is exhausted'), 1);
   assert.equal(occurrences(status, 'infrastructure retry scheduled at'), 1);
-  assert.match(status, /infrastructure retry scheduled at 2026-08-06T12:15/);
+  assert.match(status, new RegExp(`infrastructure retry scheduled at ${FUTURE_1.slice(0, 16).replace(/[-:]/g, '\\$&')}`));
   assert.doesNotMatch(status, /secret-token-value|other@example\.com|RAW PROVIDER ERROR/);
 });
 
