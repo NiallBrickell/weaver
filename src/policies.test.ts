@@ -34,29 +34,29 @@ function propose(tags: string[] = ['hiring']) {
   });
 }
 
-test('a proposed policy starts in shadow and matches only workstreams sharing a tag', () => {
-  const p = propose(['hiring', 'outreach']);
+test('a proposed policy starts in shadow and matches only workstreams sharing a tag', async () => {
+  const p = await propose(['hiring', 'outreach']);
   assert.equal(p.status, 'shadow');
   assert.equal(p.widensAuthority, false);
 
-  assert.equal(matchPolicies(['hiring']).length, 1);
-  assert.equal(matchPolicies(['outreach', 'unrelated']).length, 1);
-  assert.equal(matchPolicies(['marketing']).length, 0);
-  assert.equal(matchPolicies([]).length, 0);
+  assert.equal((await matchPolicies(['hiring'])).length, 1);
+  assert.equal((await matchPolicies(['outreach', 'unrelated'])).length, 1);
+  assert.equal((await matchPolicies(['marketing'])).length, 0);
+  assert.equal((await matchPolicies([])).length, 0);
 });
 
-test('promotion is earned: intervention-free evidence promotes shadow → active; corrected evidence does not', () => {
-  const p1 = propose();
-  recordPolicyOutcome({
+test('promotion is earned: intervention-free evidence promotes shadow → active; corrected evidence does not', async () => {
+  const p1 = await propose();
+  await recordPolicyOutcome({
     policyId: p1.id,
     workstreamSlug: 'ws-two',
     passId: 'pass_y',
     note: 'applied, but the human still had to correct the same point',
     interventionFree: false,
   });
-  assert.equal(loadPolicies().policies.find((x) => x.id === p1.id)!.status, 'shadow');
+  assert.equal((await loadPolicies()).policies.find((x) => x.id === p1.id)!.status, 'shadow');
 
-  const updated = recordPolicyOutcome({
+  const updated = await recordPolicyOutcome({
     policyId: p1.id,
     workstreamSlug: 'ws-three',
     passId: 'pass_z',
@@ -67,9 +67,9 @@ test('promotion is earned: intervention-free evidence promotes shadow → active
   assert.equal(updated.evidence.length, 2);
 });
 
-test('supersession keeps lineage and removes the old policy from matching', () => {
-  const p1 = propose();
-  const p2 = supersedePolicy(p1.id, {
+test('supersession keeps lineage and removes the old policy from matching', async () => {
+  const p1 = await propose();
+  const p2 = await supersedePolicy(p1.id, {
     statement: 'Principal-facing claims are verified against the facts pack AND enumerated for confirm-or-correct',
     tags: ['hiring'],
     effectKind: 'add_verification',
@@ -78,19 +78,19 @@ test('supersession keeps lineage and removes the old policy from matching', () =
     passId: 'pass_w',
     interventionSummary: 'Original rule did not distinguish derived claims from fabricated ones',
   });
-  const store = loadPolicies();
+  const store = await loadPolicies();
   const old = store.policies.find((x) => x.id === p1.id)!;
   assert.equal(old.status, 'superseded');
   assert.equal(old.supersededBy, p2.id);
 
-  const matched = matchPolicies(['hiring']);
+  const matched = await matchPolicies(['hiring']);
   assert.equal(matched.length, 1);
   assert.equal(matched[0]!.id, p2.id);
 });
 
-test('outcome evidence on a superseded policy is rejected', () => {
-  const p1 = propose();
-  supersedePolicy(p1.id, {
+test('outcome evidence on a superseded policy is rejected', async () => {
+  const p1 = await propose();
+  await supersedePolicy(p1.id, {
     statement: 'replacement',
     tags: ['hiring'],
     effectKind: 'advisory',
@@ -99,7 +99,7 @@ test('outcome evidence on a superseded policy is rejected', () => {
     passId: 'p',
     interventionSummary: 's',
   });
-  assert.throws(() =>
+  await assert.rejects(
     recordPolicyOutcome({
       policyId: p1.id,
       workstreamSlug: 'ws',
@@ -110,11 +110,11 @@ test('outcome evidence on a superseded policy is rejected', () => {
   );
 });
 
-test('the effect vocabulary is closed: only verification, narrowing, or advice are representable', () => {
+test('the effect vocabulary is closed: only verification, narrowing, or advice are representable', async () => {
   // Type-level guarantee exercised at runtime: the store never contains a
   // widening effect because no constructor accepts one.
-  propose();
-  for (const p of loadPolicies().policies) {
+  await propose();
+  for (const p of (await loadPolicies()).policies) {
     assert.ok(['add_verification', 'narrow_authority', 'advisory'].includes(p.effect.kind));
     assert.equal(p.widensAuthority, false);
   }

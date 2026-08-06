@@ -18,8 +18,8 @@ beforeEach(() => {
   process.env.WEAVER_PILOT_URL = 'http://127.0.0.1:1';
 });
 
-test('digest covers live and archived streams with citable ids', () => {
-  createWorkstream({
+test('digest covers live and archived streams with citable ids', async () => {
+  await createWorkstream({
     slug: 'live-one',
     title: 'Live stream',
     objective: 'do the live thing',
@@ -29,7 +29,7 @@ test('digest covers live and archived streams with citable ids', () => {
     autonomy: { sendsRequireApproval: true },
     budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
-  arrive('live-one', (d, event) => {
+  await arrive('live-one', (d, event) => {
     d.attention.push({
       id: 'att_x1',
       kind: 'blocker',
@@ -40,7 +40,7 @@ test('digest covers live and archived streams with citable ids', () => {
     event('attention.raised', 'needs a decision', ['att_x1']);
   });
   // Archive a second stream by moving its dir wholesale.
-  createWorkstream({
+  await createWorkstream({
     slug: 'old-one',
     title: 'Old stream',
     objective: 'finished long ago',
@@ -54,7 +54,7 @@ test('digest covers live and archived streams with citable ids', () => {
   fs.mkdirSync(archive, { recursive: true });
   fs.renameSync(workstreamDir('old-one'), path.join(archive, 'old-one'));
 
-  const digest = buildFleetDigest();
+  const digest = await buildFleetDigest();
   assert.match(digest, /## live-one \[active\] — Live stream/);
   assert.match(digest, /att_x1/);
   assert.match(digest, /## old-one \(archived\)/);

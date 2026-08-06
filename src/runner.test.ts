@@ -20,8 +20,8 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-function make(slug: string): void {
-  createWorkstream({
+async function make(slug: string): Promise<void> {
+  await createWorkstream({
     slug,
     title: slug,
     objective: 'test typed recovery',
@@ -45,7 +45,7 @@ function wait(sourceId = 'pass_wait'): InfrastructureWait {
   };
 }
 
-function setCapacity(d: ReturnType<typeof load>, waits: InfrastructureWait[]): void {
+function setCapacity(d: Awaited<ReturnType<typeof load>>, waits: InfrastructureWait[]): void {
   d.capacity = {
     state: 'backoff',
     byModel: Object.fromEntries(waits.map((infrastructure) => [
@@ -60,11 +60,11 @@ function setCapacity(d: ReturnType<typeof load>, waits: InfrastructureWait[]): v
   };
 }
 
-test('runner discovers only pending typed infrastructure waits, never magic prose', () => {
-  make('typed');
-  make('prose');
-  make('paused');
-  arrive('typed', (d) => {
+test('runner discovers only pending typed infrastructure waits, never magic prose', async () => {
+  await make('typed');
+  await make('prose');
+  await make('paused');
+  await arrive('typed', (d) => {
     const infrastructure = wait();
     d.wakes.push({
       id: 'wake_typed', reason: 'wording may change', condition: { type: 'time', dueAtVirtual: infrastructure.retryAt },
@@ -72,11 +72,11 @@ test('runner discovers only pending typed infrastructure waits, never magic pros
     });
     setCapacity(d, [infrastructure]);
   });
-  arrive('prose', (d) => d.wakes.push({
+  await arrive('prose', (d) => d.wakes.push({
     id: 'wake_prose', reason: 'retry after infrastructure failure', condition: { type: 'time', dueAtVirtual: wait().retryAt },
     status: 'pending', createdAt: new Date().toISOString(),
   }));
-  arrive('paused', (d) => {
+  await arrive('paused', (d) => {
     const infrastructure = wait();
     d.workstream.status = 'paused';
     d.wakes.push({
@@ -85,14 +85,14 @@ test('runner discovers only pending typed infrastructure waits, never magic pros
     });
     setCapacity(d, [infrastructure]);
   });
-  assert.deepEqual(infraBackoffSlugs(), ['typed']);
+  assert.deepEqual(await infraBackoffSlugs(), ['typed']);
 });
 
-test('successful probe expedition uses virtual time and unblocks worker attempts', () => {
-  make('expedite');
+test('successful probe expedition uses virtual time and unblocks worker attempts', async () => {
+  await make('expedite');
   advanceClock('5d');
   const infrastructure = wait('run_wait');
-  arrive('expedite', (d) => {
+  await arrive('expedite', (d) => {
     d.wakes.push({
       id: 'wake_wait', reason: 'opaque', condition: { type: 'time', dueAtVirtual: infrastructure.retryAt },
       status: 'pending', createdAt: new Date().toISOString(), infrastructure,
@@ -109,8 +109,8 @@ test('successful probe expedition uses virtual time and unblocks worker attempts
     setCapacity(d, [infrastructure]);
   });
 
-  expediteBackoffWakes(['expedite'], () => {});
-  const doc = load('expedite');
+  await expediteBackoffWakes(['expedite'], () => {});
+  const doc = await load('expedite');
   const wake = doc.wakes[0]!;
   assert.equal(wake.condition.type, 'time');
   assert.ok(wake.condition.type === 'time' && wake.condition.dueAtVirtual <= virtualNow().toISOString());
@@ -119,11 +119,11 @@ test('successful probe expedition uses virtual time and unblocks worker attempts
   assert.equal(doc.capacity, null);
 });
 
-test('a model probe expedites only waits for the model that actually recovered', () => {
-  make('models');
+test('a model probe expedites only waits for the model that actually recovered', async () => {
+  await make('models');
   const fable = wait('pass_fable');
   const sonnet = { ...wait('run_sonnet'), source: 'worker' as const, model: 'sonnet' };
-  arrive('models', (d) => {
+  await arrive('models', (d) => {
     d.wakes.push(
       {
         id: 'wake_fable', reason: 'fable', condition: { type: 'time', dueAtVirtual: fable.retryAt },
@@ -137,11 +137,11 @@ test('a model probe expedites only waits for the model that actually recovered',
     setCapacity(d, [fable, sonnet]);
   });
 
-  expediteBackoffWakes(['models'], () => {}, 'claude-fable-5');
-  const [fableWake, sonnetWake] = load('models').wakes;
+  await expediteBackoffWakes(['models'], () => {}, 'claude-fable-5');
+  const [fableWake, sonnetWake] = (await load('models')).wakes;
   assert.ok(fableWake!.condition.type === 'time' && fableWake!.condition.dueAtVirtual <= virtualNow().toISOString());
   assert.equal(sonnetWake!.condition.type === 'time' ? sonnetWake!.condition.dueAtVirtual : '', sonnet.retryAt);
-  assert.equal(load('models').capacity!.byModel.sonnet!.wait.model, 'sonnet');
+  assert.equal((await load('models')).capacity!.byModel.sonnet!.wait.model, 'sonnet');
 });
 
 test('an embedded runner whose owner aborts returns instead of pinning the process', async () => {

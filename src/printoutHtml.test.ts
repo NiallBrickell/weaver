@@ -17,8 +17,8 @@ beforeEach(() => {
   process.env.WEAVER_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-printout-html-'));
 });
 
-function make(slug: string, title = `Printout ${slug}`): void {
-  createWorkstream({
+async function make(slug: string, title = `Printout ${slug}`): Promise<void> {
+  await createWorkstream({
     slug,
     title,
     objective: `make ${slug} legible`,
@@ -30,13 +30,13 @@ function make(slug: string, title = `Printout ${slug}`): void {
   });
 }
 
-function delivered(slug?: string): void {
-  acknowledgePrintout(preparePrintout(slug));
+async function delivered(slug?: string): Promise<void> {
+  acknowledgePrintout(await preparePrintout(slug));
 }
 
-test('HTML is semantic, self-contained, escaped, collapsible, and copyable', () => {
-  make('semantic', '<img src=x onerror=alert(1)> & semantic');
-  arrive('semantic', (doc, event) => {
+test('HTML is semantic, self-contained, escaped, collapsible, and copyable', async () => {
+  await make('semantic', '<img src=x onerror=alert(1)> & semantic');
+  await arrive('semantic', (doc, event) => {
     doc.assignments.push({
       id: 'asg_verified', objective: 'Open PR <script>alert(2)</script>', briefing: 'use gh', kind: 'action',
       exec: { cwd: '/tmp', verify: 'gh pr view', verified: { ok: true, output: 'PR is OPEN', at: new Date().toISOString() } },
@@ -46,7 +46,7 @@ test('HTML is semantic, self-contained, escaped, collapsible, and copyable', () 
     event('action.verified', 'PR readback passed');
   });
 
-  const html = renderPrintoutHtml(preparePrintout('semantic'));
+  const html = renderPrintoutHtml(await preparePrintout('semantic'));
   assert.match(html, /class="hero"/);
   assert.match(html, /<details class="report" id="semantic" open>/);
   assert.match(html, /<details class="technical"><summary>Exact typed mutation timeline/);
@@ -60,12 +60,16 @@ test('HTML is semantic, self-contained, escaped, collapsible, and copyable', () 
 });
 
 test('browser handoff gates the exact frozen checkpoint and preserves concurrent arrivals', async () => {
-  make('race');
-  delivered('race');
-  arrive('race', (_doc, event) => event('first.change', 'first frozen change'));
-  const beforePublishRevision = load('race').revision;
+  await make('race');
+  await delivered('race');
+  await arrive('race', (_doc, event) => event('first.change', 'first frozen change'));
+  const beforePublishRevision = (await load('race')).revision;
   let releaseOpen!: () => void;
   const browserGate = new Promise<void>((resolve) => { releaseOpen = resolve; });
+  // The publish flow is async end to end (the store is), so the test must
+  // wait for the browser handoff to BEGIN before asserting the frozen state.
+  let openStarted!: () => void;
+  const openStartedGate = new Promise<void>((resolve) => { openStarted = resolve; });
   let openedPath = '';
 
   const pending = publishPrintoutHtml('race', {
@@ -73,44 +77,46 @@ test('browser handoff gates the exact frozen checkpoint and preserves concurrent
       openedPath = filePath;
       assert.ok(fs.existsSync(filePath));
       assert.ok(fs.existsSync(path.join(weaverHome(), 'printouts', 'index.html')));
+      openStarted();
       await browserGate;
     },
   });
+  await openStartedGate;
   assert.ok(openedPath.endsWith('.html'));
-  assert.equal(load('race').revision, beforePublishRevision);
+  assert.equal((await load('race')).revision, beforePublishRevision);
 
-  arrive('race', (_doc, event) => event('second.change', 'arrived during browser handoff'));
+  await arrive('race', (_doc, event) => event('second.change', 'arrived during browser handoff'));
   releaseOpen();
   const published = await pending;
   const archived = fs.readFileSync(published.path, 'utf8');
   assert.match(archived, /first frozen change/);
   assert.doesNotMatch(archived, /arrived during browser handoff/);
 
-  const next = preparePrintout('race').text;
+  const next = (await preparePrintout('race')).text;
   assert.doesNotMatch(next, /first frozen change/);
   assert.match(next, /arrived during browser handoff/);
 });
 
 test('failed browser opening leaves the window pending while retaining a discoverable archive', async () => {
-  make('open-failure');
-  delivered('open-failure');
-  arrive('open-failure', (_doc, event) => event('pending.change', 'repeat this window'));
+  await make('open-failure');
+  await delivered('open-failure');
+  await arrive('open-failure', (_doc, event) => event('pending.change', 'repeat this window'));
 
   await assert.rejects(
     publishPrintoutHtml('open-failure', { openFile: async () => { throw new Error('no browser'); } }),
     /HTML is available at .*no browser/,
   );
-  assert.match(preparePrintout('open-failure').text, /repeat this window/);
+  assert.match((await preparePrintout('open-failure')).text, /repeat this window/);
   const hub = fs.readFileSync(path.join(weaverHome(), 'printouts', 'index.html'), 'utf8');
   assert.match(hub, /open-failure/);
   assert.match(hub, /archives\/open-failure\/.*\.html/);
 });
 
 test('archives are immutable and the hub retains every delivered window', async () => {
-  make('archive');
+  await make('archive');
   const first = await publishPrintoutHtml('archive', { openFile: async () => {} });
   const firstBytes = fs.readFileSync(first.path);
-  arrive('archive', (_doc, event) => event('later.change', 'a second window'));
+  await arrive('archive', (_doc, event) => event('later.change', 'a second window'));
   const second = await publishPrintoutHtml('archive', { openFile: async () => {} });
 
   assert.notEqual(first.path, second.path);
@@ -123,8 +129,8 @@ test('archives are immutable and the hub retains every delivered window', async 
 });
 
 test('unusual scopes cannot collide in the archive filesystem', async () => {
-  make('odd.dot');
-  make('odd+dot');
+  await make('odd.dot');
+  await make('odd+dot');
   const first = await publishPrintoutHtml('odd.dot', { openFile: async () => {} });
   const second = await publishPrintoutHtml('odd+dot', { openFile: async () => {} });
 
@@ -133,8 +139,8 @@ test('unusual scopes cannot collide in the archive filesystem', async () => {
   assert.ok(second.path.startsWith(path.join(weaverHome(), 'printouts', 'archives') + path.sep));
 });
 
-test('the hub has an honest empty state, skips malformed metadata, and ignores metadata hrefs', () => {
-  const emptyHub = writePrintoutIndex();
+test('the hub has an honest empty state, skips malformed metadata, and ignores metadata hrefs', async () => {
+  const emptyHub = await writePrintoutIndex();
   assert.match(fs.readFileSync(emptyHub, 'utf8'), /No printout has been opened yet/);
 
   const dir = path.join(weaverHome(), 'printouts', 'archives', 'unsafe');
@@ -145,7 +151,7 @@ test('the hub has an honest empty state, skips malformed metadata, and ignores m
     relativePath: '../../outside.html', published: true,
   }));
   fs.writeFileSync(path.join(dir, 'broken.json'), '{not json');
-  const rebuilt = fs.readFileSync(writePrintoutIndex(), 'utf8');
+  const rebuilt = fs.readFileSync(await writePrintoutIndex(), 'utf8');
   assert.match(rebuilt, /archives\/unsafe\/valid\.html/);
   assert.doesNotMatch(rebuilt, /\.\.\/\.\.\/outside\.html/);
   assert.match(rebuilt, /Unreadable archives/);
@@ -153,11 +159,11 @@ test('the hub has an honest empty state, skips malformed metadata, and ignores m
 });
 
 test('fleet archives and knowledge pages redact colliding local secret names', async () => {
-  make('alpha');
-  make('beta');
+  await make('alpha');
+  await make('beta');
   const alphaValue = 'alpha-local-secret-4815';
   const betaValue = 'beta-local-secret-9264';
-  proposeBackfillPolicy({
+  await proposeBackfillPolicy({
     statement: `Never expose ${alphaValue} or ${betaValue}`,
     tags: ['shared'],
     effectKind: 'advisory',
@@ -170,7 +176,7 @@ test('fleet archives and knowledge pages redact colliding local secret names', a
   setSecret('TOKEN', betaValue, 'beta');
 
   const published = await publishPrintoutHtml(undefined, { openFile: async () => {} });
-  runInspect();
+  await runInspect();
   for (const file of [
     published.path,
     published.hubPath,

@@ -41,9 +41,9 @@ function digestOne(slug: string, dir: string): string {
 }
 
 /** Deterministic anchor: every workstream, live then archived. */
-export function buildFleetDigest(): string {
+export async function buildFleetDigest(): Promise<string> {
   const parts: string[] = [];
-  for (const slug of listWorkstreams()) parts.push(digestOne(slug, workstreamDir(slug)));
+  for (const slug of await listWorkstreams()) parts.push(digestOne(slug, workstreamDir(slug)));
   const archive = path.join(weaverHome(), '_archive');
   try {
     for (const slug of fs.readdirSync(archive)) {
@@ -64,7 +64,7 @@ Rules:
 - Answer the question first, in 2-5 sentences, then the evidence. No speculation dressed as history.`;
 
 export async function ask(question: string): Promise<string> {
-  const digest = buildFleetDigest();
+  const digest = await buildFleetDigest();
   const home = weaverHome();
   let text = '';
   for await (const msg of query({
