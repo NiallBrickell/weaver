@@ -79,9 +79,11 @@ function withWriteLock<T>(slug: string, fn: () => T): T {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') throw error;
       let live = true;
+      let observedPid: number | undefined;
       try {
         const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8'));
         if (Number.isInteger(pid) && pid > 0) {
+          observedPid = pid;
           try { process.kill(pid, 0); }
           catch { live = false; }
         } else {
@@ -94,7 +96,19 @@ function withWriteLock<T>(slug: string, fn: () => T): T {
         } catch { live = false; }
       }
       if (!live) {
-        fs.rmSync(dir, { recursive: true, force: true });
+        // Reclaim ONLY if the lock still names the dead pid we probed. The
+        // probe raced the holder's release: between our pid read and here the
+        // holder can finish and a THIRD process can acquire — blindly deleting
+        // the dir then removes a LIVE holder's lock, two writers hold at once,
+        // and one revision is silently lost (observed as 7 of 8 simultaneous
+        // arrivals landing). A changed or missing pid file means the lock
+        // already moved on; just contend again.
+        try {
+          if (observedPid === undefined ||
+              Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8')) === observedPid) {
+            fs.rmSync(dir, { recursive: true, force: true });
+          }
+        } catch { /* released or replaced since the probe — contend again */ }
         continue;
       }
       if (Date.now() > deadline) throw new Error(`workstream '${slug}' write lock timeout`);
@@ -283,12 +297,30 @@ export class FsStore implements StateStore {
       fs.writeFileSync(pidFile, String(process.pid));
       return async () => fs.rmSync(dir, { recursive: true, force: true });
     } catch {
+      let observedPid: number | undefined;
       try {
-        const pid = Number(fs.readFileSync(pidFile, 'utf8'));
-        process.kill(pid, 0); // throws if the holder is dead
+        observedPid = Number(fs.readFileSync(pidFile, 'utf8'));
+        process.kill(observedPid, 0); // throws if the holder is dead
         return null; // a live process holds the lock
       } catch {
-        fs.rmSync(dir, { recursive: true, force: true });
+        if (observedPid === undefined) {
+          // No readable pid: the holder may be between mkdir and its pid
+          // write. Only a stale dir is reclaimable; a fresh one counts as
+          // held — the next tick simply retries.
+          try {
+            if (fs.statSync(dir).mtimeMs >= Date.now() - 10_000) return null;
+          } catch { /* vanished — contend again */ }
+        }
+        // Reclaim ONLY if the lock still names the pid we probed: the probe
+        // races the holder's release, and a third process may have acquired
+        // in between — deleting its live lock would let two ticks run at
+        // once (same TOCTOU as the write lock above).
+        try {
+          if (observedPid === undefined ||
+              Number(fs.readFileSync(pidFile, 'utf8')) === observedPid) {
+            fs.rmSync(dir, { recursive: true, force: true });
+          }
+        } catch { /* released or replaced since the probe — contend again */ }
         return this.tryTickLock(slug);
       }
     }
