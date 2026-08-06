@@ -6,7 +6,7 @@ description: "Standing loops that wake with their decision log, constraints, and
 A routine is just a workstream tagged `routine` whose coordinator schedules its own next wake after each cycle — an error-triage sweep every 12 hours, an evals-health check daily, a usage report weekly.
 
 ```bash
-yarn weaver create --slug sentry-sweep --tag routine \
+weaver create --slug sentry-sweep --tag routine \
   --title "Sentry sweep" \
   --objective "Each cycle: triage recent issues, root-cause the real ones, open PRs for clear fixes. Schedule the next wake ~12h out. Report only deltas."
 ```

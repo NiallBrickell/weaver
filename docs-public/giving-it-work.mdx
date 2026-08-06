@@ -17,6 +17,8 @@ Everything a `create` invocation would ask for is derived from the message — s
 
 An optional second argument overrides the done-bar when the default (fixed, merged through review, evidence in the PR) isn't what you mean — `weaver do "<message>" "verified live in the product afterwards, read-only"`. Production is never touched during verification unless that second sentence explicitly asks, and then only read-only.
 
+For anything longer than a sentence, run **`weaver do` with no arguments**: it prompts for the message and reads it raw from stdin — type or paste freely across lines, finish with Ctrl-D (or a line containing only `.`). This is the safe path for real messages, because a shell-quoted argument is parsed by the shell first: `$36.69` inside double quotes becomes `.69`, an embedded quote ends the argument. Stdin has no such grammar — what you paste is what the brief preserves. Either way, derivation is one model pass (20–60s) with a progress spinner, so thinking never looks like a hang.
+
 ## Four shapes
 
 ### Build something
@@ -24,7 +26,7 @@ An optional second argument overrides the done-bar when the default (fixed, merg
 A feature, a migration, a redesign — work whose deliverable is a diff. The objective names the outcome and the evidence; the constraints name what stays yours.
 
 ```bash
-yarn weaver create --slug lead-follow-up \
+weaver create --slug lead-follow-up \
   --title "Follow up with new leads by email" \
   --objective "When a lead submits the form, send a follow-up email with a scheduling link. Design it, build it, open a PR with before/after evidence." \
   --constraint "Repo mutations only via gated actions in a fresh worktree" \

@@ -22,6 +22,8 @@ For code, that layer has existed for decades: git history holds accepted work, P
 > ```
 >
 > Verification never touches production unless you ask for it like this — and even then, read-only.
+>
+> For anything longer than a sentence, run `weaver do` with **no arguments** and type or paste a multiline message (finish with Ctrl-D) — raw stdin, so `$`, quotes, and newlines survive exactly as written, with a progress spinner while the brief is derived.
 
 Weaver is that missing layer, built standalone on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk):
 
@@ -64,14 +66,14 @@ Every shape follows the same arc: side-effect-free research → adoption → gat
 
 ```bash
 yarn install
-yarn weaver create --slug my-stream --title "..." --objective "..." [--tag routine]
-yarn weaver steer my-stream "context, repo paths, what done looks like"
-yarn weaver run                # resident runner: ticks every active workstream (10 in parallel)
-yarn weaver watch              # interactive dashboard: the needs-you queue + fleet at a glance
+weaver create --slug my-stream --title "..." --objective "..." [--tag routine]
+weaver steer my-stream "context, repo paths, what done looks like"
+weaver run                # resident runner: ticks every active workstream (10 in parallel)
+weaver watch              # interactive dashboard: the needs-you queue + fleet at a glance
 ```
 
 - **Routines**: tag a workstream `routine` and have it schedule its own next wake — a standing loop (Sentry sweep, evals health, usage reports) that, unlike cron'd prompts, wakes with its decision log, constraints, and learned policies intact. Run #30 is smarter than run #1.
-- **Secrets**: `echo VALUE | yarn weaver secret set NAME [--ws slug]`. Models only ever see *names*; the engine injects values into approved action shells and scrubs them from everything captured back. The store refuses any write that embeds a known secret value.
+- **Secrets**: `echo VALUE | weaver secret set NAME [--ws slug]`. Models only ever see *names*; the engine injects values into approved action shells and scrubs them from everything captured back. The store refuses any write that embeds a known secret value.
 - **Operator access**: workers inherit the MCP servers you've registered for the directories they touch. Approved action workers get the full surface plus your real CLIs — they act as you, on your machine, with every call pilot-supervised. Research workers get the same servers behind a deterministic read-only gate — retrieval calls work, mutating calls are denied — plus a shell gated to history-reading commands (`git log`, `gh pr view`, …), because your commit messages and PR threads are where you recorded your thinking, and re-deriving a decision you already wrote down is the intervention Weaver exists to prevent. Querying and reading is research; changing anything is an action.
 - Auth rides the local Claude Code subscription login; API keys are stripped from every spawned process. Cost figures are SDK-reported estimates, used only as a runaway backstop.
 
