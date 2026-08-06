@@ -172,7 +172,7 @@ ${SHARED_RULES}`;
 const ACTION_SYSTEM = `You are an isolated worker executing ONE human-approved real-world ACTION inside a larger workstream you cannot see. You have Bash in your working directory and real CLIs. Perform EXACTLY the act the briefing describes — nothing beyond it, nothing on targets the briefing does not name, and every "do not" the briefing states is absolute. If a step fails, report the failure honestly via submit_result; never improvise a different action to "make it work". If the briefing lists credential environment variables, use them via the shell (\`$NAME\`) — never echo, print, or persist their values anywhere. Your submission is a report of what you did with exact references (identifiers, URLs, command output) — the harness will independently verify the effect, so precision matters and embellishment will be caught.
 ${SHARED_RULES}`;
 
-export function finalizeWorkerRun(
+export async function finalizeWorkerRun(
   slug: string,
   assignmentId: string,
   runId: string,
@@ -183,8 +183,8 @@ export function finalizeWorkerRun(
     infrastructure: InfrastructureWait | null;
     terminalReason?: string;
   },
-): void {
-  arrive(slug, (d, event) => {
+): Promise<void> {
+  await arrive(slug, (d, event) => {
     const a = d.assignments.find((x) => x.id === assignmentId)!;
     const attempt = a.attempts.find((t) => t.runId === runId);
     if (attempt) {
@@ -261,7 +261,7 @@ export function consumeDueWorkerInfrastructureWakes(
 }
 
 export async function runWorker(slug: string, assignmentId: string): Promise<void> {
-  const doc = load(slug);
+  const doc = await load(slug);
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg) throw new Error(`no assignment ${assignmentId}`);
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
@@ -276,12 +276,12 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
       ? doc.deliverables.find((d) => d.id === dep.submission!.deliverableId)
       : undefined;
     if (del) {
-      inputs.push(`### Input from ${depId} — "${del.title}"\n\n${readArtifact(slug, del.path)}`);
+      inputs.push(`### Input from ${depId} — "${del.title}"\n\n${await readArtifact(slug, del.path)}`);
     }
   }
 
   const runId = newId('run');
-  arrive(slug, (d, event) => {
+  await arrive(slug, (d, event) => {
     const a = d.assignments.find((x) => x.id === assignmentId)!;
     const now = virtualNow().toISOString();
     // A due infrastructure wake is a retry permit, not separate intended
@@ -351,8 +351,8 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
           submitted = true;
           const cleanContent = redactSecrets(fullContent, redactionSecrets);
           const cleanSummary = redactSecrets(a.summary, redactionSecrets);
-          const { relPath, hash } = writeArtifact(slug, a.artifact.file_name, cleanContent);
-          arrive(slug, (d, event) => {
+          const { relPath, hash } = await writeArtifact(slug, a.artifact.file_name, cleanContent);
+          await arrive(slug, (d, event) => {
             const asg2 = d.assignments.find((x) => x.id === assignmentId)!;
             const delId = newId('del');
             d.deliverables.push({
@@ -517,7 +517,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
     wallFired: wall.fired(),
   });
 
-  finalizeWorkerRun(slug, assignmentId, runId, {
+  await finalizeWorkerRun(slug, assignmentId, runId, {
     submitted,
     costUsd,
     ...(sessionId ? { sessionId } : {}),

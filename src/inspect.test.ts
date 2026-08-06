@@ -42,10 +42,10 @@ beforeEach(() => {
 });
 
 /** A doc exercising every section: lineage, deliverables, action, steering. */
-function populate(slug: string): void {
-  const { relPath, hash } = writeArtifact(slug, 'draft.md', 'adopted draft content');
-  const cand = writeArtifact(slug, 'cand.md', 'candidate content');
-  arrive(slug, (d, event) => {
+async function populate(slug: string): Promise<void> {
+  const { relPath, hash } = await writeArtifact(slug, 'draft.md', 'adopted draft content');
+  const cand = await writeArtifact(slug, 'cand.md', 'candidate content');
+  await arrive(slug, (d, event) => {
     d.decisions.push(
       {
         id: 'dec_old1',
@@ -114,10 +114,10 @@ function populate(slug: string): void {
   });
 }
 
-test('inspect on a synthetic doc renders lineage, adoption, actions, and interventions', () => {
-  makeWorkstream();
-  populate('inspect-ws');
-  const pol = proposePolicy({
+test('inspect on a synthetic doc renders lineage, adoption, actions, and interventions', async () => {
+  await makeWorkstream();
+  await populate('inspect-ws');
+  const pol = await proposePolicy({
     statement: 'Verify candidate email addresses before drafting outreach',
     tags: ['hiring'],
     effectKind: 'add_verification',
@@ -126,7 +126,7 @@ test('inspect on a synthetic doc renders lineage, adoption, actions, and interve
     passId: 'pass_1',
     interventionSummary: 'human corrected an unverified address',
   });
-  recordPolicyOutcome({
+  await recordPolicyOutcome({
     policyId: pol.id,
     workstreamSlug: 'other-ws',
     passId: 'pass_9',
@@ -134,7 +134,7 @@ test('inspect on a synthetic doc renders lineage, adoption, actions, and interve
     interventionFree: true,
   });
 
-  const out = runInspect('inspect-ws');
+  const out = await runInspect('inspect-ws');
   assert.equal(out, path.join(workstreamDir('inspect-ws'), 'inspect.html'));
   const html = fs.readFileSync(out, 'utf8');
 
@@ -155,7 +155,7 @@ test('inspect on a synthetic doc renders lineage, adoption, actions, and interve
   assert.match(html, /intervention-free/);
 
   // Deliverables: adoption ≠ completion — pinned hash for adopted, candidate listed.
-  const doc = load('inspect-ws');
+  const doc = await load('inspect-ws');
   const pinned = doc.deliverables.find((d) => d.id === 'del_adopted1')!.adopted!.contentHash.slice(0, 8);
   assert.ok(html.includes(pinned));
   assert.match(html, /del_adopted1/);
@@ -174,10 +174,10 @@ test('inspect on a synthetic doc renders lineage, adoption, actions, and interve
   assert.match(html, /asg_act1 approved by human/);
 });
 
-test('overview renders all workstreams and the global policy store; empty sections are honest', () => {
-  makeWorkstream('ws-one');
-  makeWorkstream('ws-two');
-  const pol = proposePolicy({
+test('overview renders all workstreams and the global policy store; empty sections are honest', async () => {
+  await makeWorkstream('ws-one');
+  await makeWorkstream('ws-two');
+  const pol = await proposePolicy({
     statement: 'Always dry-run destructive commands first',
     tags: ['ops'],
     effectKind: 'advisory',
@@ -187,7 +187,7 @@ test('overview renders all workstreams and the global policy store; empty sectio
     interventionSummary: 'human caught a destructive command',
   });
 
-  const out = runInspect();
+  const out = await runInspect();
   assert.equal(out, path.join(weaverHome(), 'inspect.html'));
   const html = fs.readFileSync(out, 'utf8');
   assert.match(html, /ws-one/);
@@ -211,17 +211,17 @@ test('overview renders all workstreams and the global policy store; empty sectio
 
   // No workstreams at all is still an honest page.
   freshHome();
-  const emptyHtml = renderOverviewHtml([], loadPolicies().policies);
+  const emptyHtml = renderOverviewHtml([], (await loadPolicies()).policies);
   assert.match(emptyHtml, /No workstreams under this WEAVER_HOME/);
   assert.match(emptyHtml, /No learned policies/);
 });
 
-test('rendered HTML is redacted: a known secret value never reaches the file', () => {
-  makeWorkstream();
+test('rendered HTML is redacted: a known secret value never reaches the file', async () => {
+  await makeWorkstream();
   // The value lands in state BEFORE the secret is known (so the store-side
   // assertNoSecretValues guard could not have caught it) — the inspector's
   // own redaction lens must still scrub it.
-  arrive('inspect-ws', (d) => {
+  await arrive('inspect-ws', (d) => {
     d.decisions.push({
       id: 'dec_leak1',
       title: 'Use the staging token',
@@ -233,24 +233,24 @@ test('rendered HTML is redacted: a known secret value never reaches the file', (
   });
   setSecret('STAGING_TOKEN', 'tok-verysecret9', 'inspect-ws');
 
-  const out = runInspect('inspect-ws');
+  const out = await runInspect('inspect-ws');
   const html = fs.readFileSync(out, 'utf8');
   assert.ok(!html.includes('tok-verysecret9'));
   assert.ok(html.includes('«secret:STAGING_TOKEN»'));
 
   // The pure renderer (pre-redaction) is what would have leaked — proving the
   // redaction step is load-bearing, not incidental.
-  const raw = renderWorkstreamHtml(load('inspect-ws'), []);
+  const raw = renderWorkstreamHtml(await load('inspect-ws'), []);
   assert.ok(raw.includes('tok-verysecret9'));
 });
 
-test('entering at one workstream still generates the fleet page its back link points to', () => {
+test('entering at one workstream still generates the fleet page its back link points to', async () => {
   // The dashboard's [i] on a selected stream lands here directly, so this page
   // is an entry point, not only a click-through from the overview.
-  makeWorkstream('ws-one');
-  makeWorkstream('ws-two');
+  await makeWorkstream('ws-one');
+  await makeWorkstream('ws-two');
 
-  const out = runInspect('ws-one');
+  const out = await runInspect('ws-one');
   assert.equal(out, path.join(workstreamDir('ws-one'), 'inspect.html'));
   const html = fs.readFileSync(out, 'utf8');
   assert.match(html, /href="\.\.\/inspect\.html"/);
@@ -263,12 +263,12 @@ test('entering at one workstream still generates the fleet page its back link po
   assert.match(overviewHtml, /href="ws-two\/inspect\.html"/);
 });
 
-test('one unreadable workstream does not blank the others; it is named, not dropped', () => {
-  makeWorkstream('ws-good');
-  makeWorkstream('ws-broken');
+test('one unreadable workstream does not blank the others; it is named, not dropped', async () => {
+  await makeWorkstream('ws-good');
+  await makeWorkstream('ws-broken');
   fs.writeFileSync(path.join(workstreamDir('ws-broken'), 'workstream.json'), '{ not json');
 
-  const out = runInspect();
+  const out = await runInspect();
   const html = fs.readFileSync(out, 'utf8');
   assert.match(html, /href="ws-good\/inspect\.html"/);
   assert.match(html, /Unreadable, no page generated/);
@@ -276,12 +276,12 @@ test('one unreadable workstream does not blank the others; it is named, not drop
   assert.ok(fs.existsSync(path.join(workstreamDir('ws-good'), 'inspect.html')));
 
   // Asking for the broken one by name is still a loud failure, not an empty page.
-  assert.throws(() => runInspect('ws-broken'));
+  await assert.rejects(runInspect('ws-broken'));
 });
 
-test('escaping: state text cannot inject markup into the page', () => {
-  makeWorkstream();
-  arrive('inspect-ws', (d) => {
+test('escaping: state text cannot inject markup into the page', async () => {
+  await makeWorkstream();
+  await arrive('inspect-ws', (d) => {
     d.decisions.push({
       id: newId('dec'),
       title: '<script>alert(1)</script>',
@@ -291,7 +291,7 @@ test('escaping: state text cannot inject markup into the page', () => {
       decidedAtVirtual: virtualNow().toISOString(),
     });
   });
-  const html = renderWorkstreamHtml(load('inspect-ws'), []);
+  const html = renderWorkstreamHtml(await load('inspect-ws'), []);
   assert.ok(!html.includes('<script>alert(1)</script>'));
   assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
   // The click-detail JSON block must not be terminated early by state text.

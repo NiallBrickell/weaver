@@ -317,8 +317,8 @@ export function renderWorkstreamPrintout(
   return redactSecrets(out.join('\n'), loadSecrets(doc.workstream.slug));
 }
 
-function prepareOne(slug: string): WorkstreamPrintout {
-  const doc = load(slug);
+async function prepareOne(slug: string): Promise<WorkstreamPrintout> {
+  const doc = await load(slug);
   const through = new Date().toISOString();
   const dir = printoutJournalDir(slug);
   const previous = readLatestPrintoutCheckpoint(dir);
@@ -341,8 +341,8 @@ function currentPolicy(policy: PolicyRecord): string {
   return `- ${policy.id} [${policy.status}/${policy.effect.kind}] “${flat(policy.statement)}” — tags ${policy.scope.tags.join(', ')}; source ${policyOrigin(policy)}; evidence ${policy.evidence.length}`;
 }
 
-function preparePolicies(): PolicyPrintout {
-  const store = loadPolicies();
+async function preparePolicies(): Promise<PolicyPrintout> {
+  const store = await loadPolicies();
   const through = new Date().toISOString();
   const dir = policyPrintoutJournalDir();
   const previous = readLatestPrintoutCheckpoint(dir);
@@ -379,12 +379,12 @@ function preparePolicies(): PolicyPrintout {
 }
 
 /** Prepare a frozen report without changing organizational state or acknowledging delivery. */
-export function preparePrintout(slug?: string): PrintoutReport {
-  const slugs = slug ? [slug] : listWorkstreams();
+export async function preparePrintout(slug?: string): Promise<PrintoutReport> {
+  const slugs = slug ? [slug] : await listWorkstreams();
   const reports: WorkstreamPrintout[] = [];
   const errors: { slug: string; message: string }[] = [];
   for (const current of slugs) {
-    try { reports.push(prepareOne(current)); }
+    try { reports.push(await prepareOne(current)); }
     catch (error) {
       if (slug) throw error;
       errors.push({ slug: current, message: error instanceof Error ? error.message : String(error) });
@@ -392,7 +392,7 @@ export function preparePrintout(slug?: string): PrintoutReport {
   }
   let policies: PolicyPrintout | undefined;
   if (!slug) {
-    try { policies = preparePolicies(); }
+    try { policies = await preparePolicies(); }
     catch (error) { errors.push({ slug: 'global-policies', message: error instanceof Error ? error.message : String(error) }); }
   }
   const through = [...reports.map((report) => report.through), ...(policies ? [policies.through] : [])].sort().at(-1) ?? new Date().toISOString();

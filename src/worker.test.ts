@@ -101,8 +101,8 @@ function workerHome(): string {
   return dir;
 }
 
-function runningWorker(slug: string): void {
-  createWorkstream({
+async function runningWorker(slug: string): Promise<void> {
+  await createWorkstream({
     slug,
     title: slug,
     objective: 'test worker finalization',
@@ -112,7 +112,7 @@ function runningWorker(slug: string): void {
     autonomy: { sendsRequireApproval: true },
     budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
-  arrive(slug, (d) => d.assignments.push({
+  await arrive(slug, (d) => d.assignments.push({
     id: 'asg_worker', objective: 'produce evidence', briefing: 'n/a', kind: 'research',
     acceptanceCriteria: ['n/a'], dependsOn: [], state: 'running',
     attempts: [{ runId: 'run_worker', startedAt: new Date().toISOString() }],
@@ -120,10 +120,10 @@ function runningWorker(slug: string): void {
   }));
 }
 
-test('worker infrastructure failure preserves the assignment and schedules a typed future retry', () => {
+test('worker infrastructure failure preserves the assignment and schedules a typed future retry', async () => {
   const home = workerHome();
   try {
-    runningWorker('worker-infra');
+    await runningWorker('worker-infra');
     const infrastructure: InfrastructureWait = {
       kind: 'usage_limit',
       recovery: 'wait_or_enable_usage_credits',
@@ -133,13 +133,13 @@ test('worker infrastructure failure preserves the assignment and schedules a typ
       detectedAt: virtualNow().toISOString(),
       retryAt: new Date(virtualNow().getTime() + 60_000).toISOString(),
     };
-    finalizeWorkerRun('worker-infra', 'asg_worker', 'run_worker', {
+    await finalizeWorkerRun('worker-infra', 'asg_worker', 'run_worker', {
       submitted: false,
       costUsd: 0,
       infrastructure,
     });
 
-    const doc = load('worker-infra');
+    const doc = await load('worker-infra');
     const asg = doc.assignments[0]!;
     assert.equal(asg.state, 'queued');
     assert.equal(asg.attempts[0]!.terminalReason, 'infrastructure_backoff');
@@ -155,16 +155,16 @@ test('worker infrastructure failure preserves the assignment and schedules a typ
   }
 });
 
-test('ordinary no-submission remains a failed assignment with immediate reconciliation', () => {
+test('ordinary no-submission remains a failed assignment with immediate reconciliation', async () => {
   const home = workerHome();
   try {
-    runningWorker('worker-ordinary');
-    finalizeWorkerRun('worker-ordinary', 'asg_worker', 'run_worker', {
+    await runningWorker('worker-ordinary');
+    await finalizeWorkerRun('worker-ordinary', 'asg_worker', 'run_worker', {
       submitted: false,
       costUsd: 0,
       infrastructure: null,
     });
-    const doc = load('worker-ordinary');
+    const doc = await load('worker-ordinary');
     assert.equal(doc.assignments[0]!.state, 'failed');
     assert.equal(doc.assignments[0]!.attempts[0]!.terminalReason, 'no_submission');
     assert.equal(doc.wakes[0]!.condition.type, 'immediate');
@@ -175,12 +175,12 @@ test('ordinary no-submission remains a failed assignment with immediate reconcil
   }
 });
 
-test('a worker retry consumes worker capacity permits but preserves coordinator wakes', () => {
+test('a worker retry consumes worker capacity permits but preserves coordinator wakes', async () => {
   const home = workerHome();
   try {
-    runningWorker('worker-permits');
+    await runningWorker('worker-permits');
     const due = virtualNow().toISOString();
-    arrive('worker-permits', (d) => {
+    await arrive('worker-permits', (d) => {
       const base: InfrastructureWait = {
         kind: 'rate_limit',
         recovery: 'automatic_retry',
@@ -203,7 +203,7 @@ test('a worker retry consumes worker capacity permits but preserves coordinator 
       );
     });
 
-    const doc = load('worker-permits');
+    const doc = await load('worker-permits');
     consumeDueWorkerInfrastructureWakes(doc, 'sonnet', due);
     assert.equal(doc.wakes.find((wake) => wake.id === 'wake_worker')!.status, 'cancelled');
     assert.equal(doc.wakes.find((wake) => wake.id === 'wake_coordinator')!.status, 'pending');
