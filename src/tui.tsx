@@ -264,6 +264,25 @@ function snapshot(): Snapshot {
     // Pilot-pending actions live in the stream details (visible, not yours).
     details.unshift(...pendingPilot);
 
+    // A DONE stream's details ARE its outcome — the dashboard is the only
+    // surface the operator uses, so "what did it actually do" must live here,
+    // not in a CLI they won't open: the conclusion (with its evidence), then
+    // the hard tallies (readback-confirmed acts, adopted artifacts).
+    if (ws.status === 'done') {
+      details.length = 0;
+      const concluded = [...doc.events].reverse().find((e) => e.type === 'workstream.concluded');
+      if (concluded) {
+        const text = concluded.summary.replace(/^coordinator concluded the workstream:\s*/, '');
+        details.push(`✓ ${text.slice(0, 105)}`);
+        for (let off = 105; off < Math.min(text.length, 315); off += 105) {
+          details.push(`  ${text.slice(off, off + 105)}`);
+        }
+      }
+      const verifiedActs = doc.assignments.filter((x) => x.kind === 'action' && x.exec?.verified?.ok).length;
+      const adopted = doc.deliverables.filter((x) => x.adopted).length;
+      details.push(`  ${verifiedActs} verified action(s) · ${adopted} adopted deliverable(s) · ${doc.spend.coordinatorPasses} passes · you ${doc.spend.humanInterventions ?? 0}× — [i] full record`);
+    }
+
     const nextWake = pending
       .filter((w) => w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
       .sort((a, b) =>
