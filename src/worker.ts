@@ -302,6 +302,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
 
   let costUsd = 0;
   let sessionId: string | undefined;
+  let resultSubtype: string | undefined;
   // Hard wall under the 45m stale/slot horizons: a hung SDK call must fail
   // (→ no_submission → coordinator retries) rather than starve the runner.
   // Sleep-aware: laptop-lid suspension doesn't count toward the wall.
@@ -372,10 +373,12 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
       if (message.type === 'result') {
         sessionId = message.session_id;
         costUsd = 'total_cost_usd' in message ? message.total_cost_usd : 0;
+        if (message.subtype !== 'success') resultSubtype = message.subtype;
       }
     }
   } catch (e) {
     process.stderr.write(`worker ${runId} error: ${e instanceof Error ? e.message : e}\n`);
+    resultSubtype = resultSubtype ?? `exception: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`;
   } finally {
     wall.disarm();
   }
@@ -391,19 +394,25 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
     d.spend.totalCostUsd += costUsd;
     if (!submitted) {
       a.state = 'failed';
-      if (attempt) attempt.terminalReason = 'no_submission';
+      // The REAL terminal reason, not a generic label: 'error_max_turns'
+      // means the brief was too big for the ceiling — the coordinator's
+      // remedy is SPLITTING, not re-dispatching the same shape. Four
+      // identical retries once burned $20+ because every failure read
+      // 'no_submission' and the ceiling was invisible.
+      const why = resultSubtype ?? 'no_submission';
+      if (attempt) attempt.terminalReason = why;
       // No attention here: a flaky worker is the COORDINATOR's problem — the
       // wake below hands it the failure to retry or rework. Attention is for
       // judgment only the human can supply; it escalates only if the
       // coordinator itself decides the assignment is truly stuck.
       d.wakes.push({
         id: newId('wake'),
-        reason: `assignment ${assignmentId} failed without a submission`,
+        reason: `assignment ${assignmentId} failed without a submission (${why})${why === 'error_max_turns' ? ' — the brief exceeded the worker turn ceiling; split it into smaller assignments rather than re-dispatching the same shape' : ''}`,
         condition: { type: 'immediate' },
         status: 'pending',
         createdAt: new Date().toISOString(),
       });
-      event('worker.failed', `${assignmentId} attempt ${runId} ended without submission`, [assignmentId]);
+      event('worker.failed', `${assignmentId} attempt ${runId} ended without submission (${why})`, [assignmentId]);
     }
   });
 }
