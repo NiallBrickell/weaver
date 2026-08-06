@@ -72,9 +72,16 @@ export function renderStatus(doc: WorkstreamDoc): string {
   const awaiting = doc.assignments.filter((a) => a.state === 'awaiting_review');
   const pendingWakes = doc.wakes.filter((w) => w.status === 'pending');
   const normalWakes = pendingWakes.filter((w) => !w.infrastructure);
+  const recoveredCapacityWakes = pendingWakes.filter(
+    (wake) => wake.infrastructure && !doc.capacity?.byModel[wake.infrastructure.model],
+  );
   const infrastructure = infrastructureWaits(doc);
+  const nowVirtual = virtualNow().toISOString();
   const nowLines = [
     ...infrastructure.summaries.map((summary) => `WAITING — ${summary}`),
+    ...recoveredCapacityWakes
+      .filter((wake) => wake.condition.type === 'immediate' || wake.condition.dueAtVirtual <= nowVirtual)
+      .map(() => 'READY — Claude capacity recovered; reconciliation is due now'),
     ...running.map((a) => `working: ${a.id} "${a.objective}"`),
     ...queued.map((a) => `queued: ${a.id} "${a.objective}"`),
     ...awaiting.map((a) => `awaiting review: ${a.id} "${a.objective}"`),
@@ -111,6 +118,11 @@ export function renderStatus(doc: WorkstreamDoc): string {
   // NEXT
   const nextLines = [
     ...infrastructure.next,
+    ...recoveredCapacityWakes.map((wake) =>
+      wake.condition.type === 'time' && wake.condition.dueAtVirtual > nowVirtual
+        ? `capacity recovery wake at ${wake.condition.dueAtVirtual.slice(0, 16)}`
+        : 'capacity recovery reconciliation is due now',
+    ),
     ...normalWakes.map((w) =>
       w.condition.type === 'time'
         ? `wake at ${w.condition.dueAtVirtual.slice(0, 16)}: ${w.reason}`

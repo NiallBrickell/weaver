@@ -162,8 +162,11 @@ function viewOf(slug: string): WsView {
   }
   // Typed infrastructure waits have a safe summary above. Never fall back to
   // their raw provider reason; ordinary wakes retain their existing display.
+  const recoveredCapacityWakes = pendingWakes.filter(
+    (wake) => wake.infrastructure && !doc.capacity?.byModel[wake.infrastructure.model],
+  );
   const normalWakes = pendingWakes.filter((w) => !w.infrastructure);
-  const dueNow = normalWakes.filter(
+  const dueNow = [...normalWakes, ...recoveredCapacityWakes].filter(
     (w) => w.condition.type === 'immediate' || w.condition.dueAtVirtual <= nowV,
   ).length;
   const nextWake = normalWakes

@@ -146,3 +146,20 @@ test('duplicate infrastructure wakes collapse and raw provider/account values ne
   assert.match(status, /infrastructure retry scheduled at 2026-08-06T12:15/);
   assert.doesNotMatch(status, /secret-token-value|other@example\.com|RAW PROVIDER ERROR/);
 });
+
+test('a successful probe exposes its due reconciliation after clearing capacity state', () => {
+  const credit = infrastructure(
+    'sdk_credit_exhausted',
+    'claim_sdk_credit_or_enable_usage_credits',
+    { retryAt: '2026-08-06T12:00:00.000Z' },
+  );
+  const wake = infrastructureWake('wake_recovered', credit);
+  wake.condition = { type: 'immediate' };
+  const recovered = doc([wake]);
+  recovered.capacity = null;
+  const status = renderStatus(recovered);
+
+  assert.match(status, /READY — Claude capacity recovered; reconciliation is due now/);
+  assert.doesNotMatch(status, /workstream is dormant/);
+  assert.doesNotMatch(status, /RAW PROVIDER ERROR/);
+});
