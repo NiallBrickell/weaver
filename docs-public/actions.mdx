@@ -5,6 +5,10 @@ description: "The one way anything real happens: gated, executed with real tools
 
 Weaver has no channel adapters, no integration layer, no per-service plumbing. A kind-`action` assignment is the single way a workstream touches the world: the worker gets real Bash in an approved working directory and uses real CLIs and MCP servers directly — open the PR with `gh`, query Sentry through the operator's MCP, call the API with `curl`. Weaver's contribution is the gate before and the readback after.
 
+## Where Pilot fits
+
+[Pilot](https://github.com/NiallBrickell/pilot) keeps a live agent from bringing every routine tool decision back to you. Weaver decides why an action is needed, whether it advances the outcome, and what must happen after it. Pilot supervises the command while it runs; Weaver stays responsible for the outcome until the outside world confirms the effect.
+
 ## The lifecycle
 
 <Steps>

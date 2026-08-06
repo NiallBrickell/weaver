@@ -1,23 +1,23 @@
 ---
 title: "Introduction"
-description: "A durable execution layer for agent work: direction, history, review, and verified outcomes that outlive every model run"
+description: "Agents can do a task. Weaver manages the outcome until it is actually done."
 ---
 
-Agent harnesses already run models for hours. Memory features already carry facts between sessions. Weaver is about the durable execution around those runs: when an agent system works on an outcome for hours or weeks — fixing an upload bug across code and telemetry, running a standing error-triage routine, or progressing a hiring pipeline — where is the record of *why the current course exists*, *what was actually done to the world*, and *what made the system better than it was last month?*
+Agents are already very good at individual pieces of work: investigate a bug, write a patch, draft a job description, analyse an incident. The trouble starts between those pieces. Research has to become a change; the change has to survive review, get merged, and be tested; a failed check needs another attempt; a candidate needs following up next week. The agent stops, the work comes back to you, and you become the person who remembers what happened and starts the next session.
 
-Git already gives code artifacts a durable substrate: commits show what changed, pull requests review the diff, CI checks the build, and the repo outlives every editor session. But code work is larger than its diff. Git does not hold the objective, the evidence from logs and product telemetry, the approaches rejected before the accepted change, the authority behind external actions, what is waiting, or whether the outcome actually succeeded. Non-code work often lacks even Git's artifact history. Without a durable execution layer, both kinds of agent work collapse back into a conversation that degrades until someone starts over.
+[Pilot](https://github.com/NiallBrickell/pilot) stops a live agent session coming back to you for routine approvals or because it gave up too early. Weaver handles what happens after and between those sessions. You give it the outcome; it keeps the work moving across fresh agents, reviews, failures, approvals, and waits, and comes back only for judgment or authority that genuinely needs you. A feature is not done because an agent wrote code. It is done when the change is reviewed, merged, tested, and shown to work — and Weaver stays with it until then.
 
-Weaver adds that organizational execution layer across code, operations, research, and external processes, built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk):
+Weaver is built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk), which supplies the agents that enter the work, advance it, and leave:
 
-> **A Workstream is the durable organizational execution — direction, work, deliverables, interactions, results. Coordinator runs and workers are disposable: they enter, advance bounded work, publish results, and leave.**
+> **A Workstream is the outcome and everything required to finish it: direction, work, decisions, evidence, interactions, and results. Individual agent runs come and go; the Workstream keeps going.**
 
-## The split
+## What changes for you
 
-**Durable**: one typed document per workstream — decisions with supersession lineage, assignments with attempt history and adoption state, deliverables pinned by content hash, interactions as separate draft/send/receipt/reply facts, wakes as stored data, human steering, the needs-you queue. Every write is revision-checked.
+**The work keeps going**: Weaver turns an outcome into bounded assignments, reviews what comes back, remembers the decisions, and starts the next work. Waiting for CI, a review, a reply, or next Tuesday does not hand the outcome back to you.
 
-**Disposable**: every coordinator pass and worker run is a fresh model session that exits. Nothing survives a wait except stored data. A fresh coordinator — days later, possibly a different model — receives the same organizational position from a typed projection, never from a transcript.
+**Agent runs can end**: every coordinator and worker is a fresh session that exits. A later agent receives the objective, current course, accepted work, open loops, and next commitment — not an old conversation it has to reinterpret.
 
-**Human contract**: five questions answered without reading any transcript — *now / since I left / needs me / next / why* — and a queue of judgment calls where every item is one keypress.
+**You get decisions, not chores**: Weaver handles the mechanical continuation and shows you only the judgment calls. When you return, it answers *now / since I left / needs me / next / why* without asking you to reconstruct the work.
 
 ## Where to go next
 

@@ -1,10 +1,10 @@
 # Weaver
 
-**A durable execution layer for agent work: direction, history, review, and verified outcomes that outlive every model run.**
+**Agents can do a task. Weaver manages the outcome until it is actually done.**
 
-Agent harnesses already run models for hours. Memory features already carry facts between sessions. Weaver is about the durable execution around those runs: when an agent system works on an outcome for hours or weeks — fixing an upload bug across code and telemetry, running a standing Sentry-triage routine, or progressing a hiring pipeline — *where is the record of why the current course exists, what was actually done to the world, and what made the system better than it was last month?*
+Agents are already very good at individual pieces of work: investigate a bug, write a patch, draft a job description, analyse an incident. The trouble starts between those pieces. Research has to become a change; the change has to survive review, get merged, and be tested; a failed check needs another attempt; a candidate needs following up next week. The agent stops, the work comes back to you, and you become the person who remembers what happened and starts the next session.
 
-Git already gives code artifacts a durable substrate: commits show what changed, pull requests review the diff, CI checks the build, and the repo outlives every editor session. But code work is larger than its diff. Git does not hold the objective, the evidence from logs and product telemetry, the approaches rejected before the accepted change, the authority behind external actions, what is waiting, or whether the outcome actually succeeded. Non-code work often lacks even Git's artifact history. Without a durable execution layer, both kinds of agent work collapse back into a conversation that degrades until someone starts over.
+[Pilot](https://github.com/NiallBrickell/pilot) stops a live agent session coming back to you for routine approvals or because it gave up too early. Weaver handles what happens after and between those sessions. You give it the outcome; it keeps the work moving across fresh agents, reviews, failures, approvals, and waits, and comes back only for judgment or authority that genuinely needs you. A feature is not done because an agent wrote code. It is done when the change is reviewed, merged, tested, and shown to work — and Weaver stays with it until then.
 
 > ### ⚡ Quick start — one sentence is the whole interface
 >
@@ -12,7 +12,7 @@ Git already gives code artifacts a durable substrate: commits show what changed,
 > weaver do "a user hit an upload bug yesterday — no progress bar, composer stuck on 'waiting for upload'. Dig in, check PostHog and Axiom, fix it."
 > ```
 >
-> That's it. The slug, title, brief, and success criteria are derived from your message (recurring phrasing like "every week…" makes it a routine automatically); the house constraints — isolated worktrees, review loop, self-merge bar, credential discipline — are applied without being asked for. Workers set up their own environments; nothing about worktrees, branches, or env files is yours to think about. Watch it on the dashboard (`weaver watch`), redirect it anytime (`weaver steer <slug> "…"`), and it only interrupts you for genuine judgment calls. `weaver create` remains for when you want to hand-set every field.
+> That's it. You named the outcome, not a prompt for one agent. Weaver derives the slug, title, brief, and success criteria (recurring phrasing like "every week…" makes it a routine automatically), then keeps crossing the boundaries between research, implementation, review, verification, and waiting until the done-bar is met. The house constraints — isolated worktrees, review loop, self-merge bar, credential discipline — are applied without being asked for. Workers set up their own environments; nothing about worktrees, branches, or env files is yours to think about. Watch it on the dashboard (`weaver watch`), redirect it anytime (`weaver steer <slug> "…"`), and it only interrupts you for genuine judgment calls. `weaver create` remains for when you want to hand-set every field.
 >
 > When the default done-bar (fixed, merged through review, evidence in the PR) isn't what you mean, say what is — as an optional second sentence:
 >
@@ -25,42 +25,42 @@ Git already gives code artifacts a durable substrate: commits show what changed,
 >
 > For anything longer than a sentence, run `weaver do` with **no arguments** and type or paste a multiline message (finish with Ctrl-D) — raw stdin, so `$`, quotes, and newlines survive exactly as written, with a progress spinner while the brief is derived.
 
-Weaver adds that organizational execution layer across code, operations, research, and external processes, built standalone on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk):
+Weaver is built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk), which supplies the agents that enter the work, advance it, and leave:
 
-> **A Workstream is the durable organizational execution — direction, work, deliverables, interactions, results. Coordinator runs and workers are disposable: they enter, advance bounded work, publish results, and leave.**
+> **A Workstream is the outcome and everything required to finish it: direction, work, decisions, evidence, interactions, and results. Individual agent runs come and go; the Workstream keeps going.**
 
 ## What's actually new here
 
-Not the agent loop (the SDK provides it), not scheduling, not "long-running agents". Three things:
+Not another agent loop (the SDK provides that), and not one agent kept alive forever. Weaver adds three things that let fresh agents manage one outcome across time:
 
-### 1. Decision lineage — why the course exists, not just what changed
+### 1. The outcome survives every agent run
 
-Every course change is a typed **decision**: what became authoritative, why, superseding what. A fresh coordinator — days later, possibly a different model — receives standing decisions from state and *cannot silently reverse one*; supersession is explicit and keeps both sides. The returning human reads **now / since-you-left / needs-me / next / why** without opening a transcript, and "why" is a real lineage, not a summary's guess. For code work, the diff shows what changed; the decision log shows why the tenth approach was chosen over the nine that were corrected away, which external evidence supported it, and what remains before the objective is actually done.
+Every course change is a typed **decision**: what became authoritative, why, superseding what. A fresh agent — days later, possibly a different model — receives the current course, accepted work, open loops, and next commitment without needing the old conversation. It continues the outcome instead of rediscovering the task. For code work, the diff shows what changed; the Workstream also knows why that approach won, which external evidence supported it, whether it has been merged and tested, and what still stands between the current state and done.
 
 ### 2. Verified outcomes — the system cannot grade its own homework
 
-A worker finishing is not the work being done. Adoption is a separate act that pins an immutable content hash. Real-world **actions** (open a PR, run a deploy, call an API) are gated on human approval, and count as done only when a deterministic **readback** — a shell command the engine runs, no model involved — confirms the effect in the outside world. A crashed action is never blindly re-run; the world is re-inspected instead. Self-reported success is structurally worthless here, which is exactly what makes the history trustworthy enough to build on.
+A worker finishing is not the work being done. Adoption is a separate act that pins an immutable content hash. Real-world **actions** (open a PR, run a deploy, call an API) are gated: Pilot approves routine-safe commands under your standing rules, while anything beyond them needs you. An action counts as done only when a deterministic **readback** — a shell command the engine runs, no model involved — confirms the effect in the outside world. A crashed action is never blindly re-run; the world is re-inspected instead. Self-reported success is structurally worthless here, which is exactly what makes the history trustworthy enough to build on.
 
 ### 3. Improvement you can audit — corrections become policies that earn their place
 
 When a human corrects the course, the correction is distilled into a **policy**: plain language, typed scope, full provenance. New policies run in *shadow*; they're promoted to *active* only by evidence — a later matching workstream applied them and needed no correction on the same point. Wrong policies are superseded with lineage, like decisions. The reward being optimized is **human interventions per successful outcome** (tracked on every workstream), and a closed effect vocabulary guarantees a policy can add verification or narrow authority but can never spend, send, merge, or widen access. This is "improves over time" as a measurable, inspectable claim — not a memory feature's marketing copy.
 
-## The shape
+## How it holds onto the outcome
 
-- **Durable**: one typed document per workstream (revision-checked writes, single-flight lease) + content-addressed artifacts. The projection every coordinator pass receives is assembled from this state — never from a transcript, never from a summary that could quietly become truth.
-- **Disposable**: every coordinator pass and worker run is a fresh SDK `query()` that exits. Nothing survives a wait except stored data; wakes (time, completions, replies, human steering) are rows, not sleeping processes.
-- **Human contract**: a **needs-you queue** of judgment calls — approve/reject an action with the exact commands visible, resolve a verdict, steer with a sentence. Everything mechanical stays out of it, and every intervention is counted, because driving that count down per outcome *is* the product.
+- **The outcome has a home**: one structured record keeps the objective, constraints, decisions, accepted work, evidence, open loops, and waits together. A transcript or generated summary can never quietly rewrite what is true.
+- **Agents can come and go**: every coordinator pass and worker run starts fresh and exits. When a reply arrives next week or a check fails tomorrow, the next agent gets the same organizational position rather than asking you to reconstruct it.
+- **Routine continuation stays with Weaver**: a worker result is reviewed, an external action is confirmed, and the next piece of work is started without becoming your project-management task. The **needs-you queue** is reserved for authority, judgment, and blockers only you can resolve.
 
 ## What you give it
 
-A workstream is any bounded outcome you would otherwise have to supervise — something with a nameable "done" and judgment calls worth recording. Four shapes cover most of it:
+A workstream is any bounded outcome that spans several tasks, stages, people, or waits — something with a nameable "done" that you would otherwise have to keep supervising. Four shapes cover most of it:
 
-- **Build something** — a feature or migration whose deliverable is a diff: research the code, record the design as a decision, build through gated actions in a worktree, open a PR confirmed by readback.
+- **Build something** — a feature or migration: research the code, choose an approach, implement it, get it through review, merge when authorized, run the required tests, and confirm the result.
 - **Keep something healthy** — standing routines (error triage, evals health, usage reports) that schedule their own next wake and return with their decision log and learned policies intact.
 - **Find something out** — audits and investigations whose deliverable is an adopted, hash-pinned report; its standing decisions become the seed context for the build workstream that follows.
 - **Run a real-world process** — hiring, growth experiments, outreach: drafts are work products, sends are gated with authority revalidated at egress, and replies wake the workstream without ever granting authority.
 
-Every shape follows the same arc: side-effect-free research → adoption → gated action (a pilot auto-approves the routine-safe; real blast radius fails closed to you) → deterministic readback → wait, with everything exited and nothing resident. The full walkthrough with example objectives is in [docs-public/giving-it-work.mdx](./docs-public/giving-it-work.mdx).
+Every shape follows the same arc: understand the next piece → do and review it → act through Pilot when the outside world must change → confirm the effect → wait or start the next piece → finish only when the outcome's done-bar is met. The full walkthrough with example objectives is in [docs-public/giving-it-work.mdx](./docs-public/giving-it-work.mdx).
 
 ## Running it
 
@@ -72,7 +72,7 @@ weaver run                # resident runner: ticks every active workstream (10 i
 weaver watch              # interactive dashboard: the needs-you queue + fleet at a glance
 ```
 
-- **Routines**: tag a workstream `routine` and have it schedule its own next wake — a standing loop (Sentry sweep, evals health, usage reports) that, unlike cron'd prompts, wakes with its decision log, constraints, and learned policies intact. Run #30 is smarter than run #1.
+- **Routines**: tag a workstream `routine` and have it schedule its own next wake — a standing loop (Sentry sweep, evals health, usage reports) that, unlike cron'd prompts, wakes with its decision log, constraints, and learned policies intact. Run #30 inherits the decisions and corrections from runs 1–29.
 - **Secrets**: `echo VALUE | weaver secret set NAME [--ws slug]`. Models only ever see *names*; the engine injects values into approved action shells and scrubs them from everything captured back. The store refuses any write that embeds a known secret value.
 - **Operator access**: workers inherit the MCP servers you've registered for the directories they touch. Approved action workers get the full surface plus your real CLIs — they act as you, on your machine, with every call pilot-supervised. Research workers get the same servers behind a deterministic read-only gate — retrieval calls work, mutating calls are denied — plus a shell gated to history-reading commands (`git log`, `gh pr view`, …), because your commit messages and PR threads are where you recorded your thinking, and re-deriving a decision you already wrote down is the intervention Weaver exists to prevent. Querying and reading is research; changing anything is an action.
 - Auth rides the local Claude Code subscription login; API keys are stripped from every spawned process. Cost figures are SDK-reported estimates, used only as a runaway backstop.

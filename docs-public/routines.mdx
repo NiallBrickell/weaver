@@ -3,7 +3,7 @@ title: "Routines"
 description: "Standing loops that wake with their decision log, constraints, and learned policies intact"
 ---
 
-A routine is just a workstream tagged `routine` whose coordinator schedules its own next wake after each cycle — an error-triage sweep every 12 hours, an evals-health check daily, a usage report weekly.
+A routine is an outcome that never ends after one report. It does the current cycle, checks what actually happened, records what the next cycle must know, and schedules its own next wake — an error-triage sweep every 12 hours, an evals-health check daily, a usage report weekly.
 
 ```bash
 weaver create --slug sentry-sweep --tag routine \
@@ -13,14 +13,14 @@ weaver create --slug sentry-sweep --tag routine \
 
 ## Why this beats a cron'd prompt
 
-A scheduled prompt wakes up amnesiac: same questions, same mistakes, run #30 identical to run #1. A Weaver routine wakes up with:
+A scheduled prompt can produce a fresh piece of work on a timer, but the responsibility between cycles still belongs to you. A Weaver routine owns that recurring outcome and wakes up with:
 
 - **Its decision log** — triage dispositions, superseded approaches, standing judgments about what counts as noise.
 - **Its constraints** — the hard rules you set once ("open PRs, never merge", "targeted tests only").
 - **Learned policies** — every correction you made in *any* matching workstream, already applied, still auditable.
 - **Verified history** — what it claims it did last cycle was confirmed by readback, so this cycle builds on facts.
 
-Run #30 should know your taste well enough to surface only the genuine judgment calls. The `you N×` intervention count per cycle is the check that it actually does.
+Run #30 inherits the decisions and corrections from runs 1–29, then continues the outcome from there. The `you N×` intervention count per cycle shows whether routine supervision is actually moving away from you.
 
 ## Mechanics
 

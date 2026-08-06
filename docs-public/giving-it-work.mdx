@@ -5,6 +5,8 @@ description: "The shapes of work a workstream can hold, and the arc every workst
 
 A workstream is any bounded outcome you would otherwise have to supervise: something with a nameable "done", a reason to exist for longer than one sitting, and judgment calls along the way that are worth recording. If you can say what done looks like and what must stay under your control, Weaver can carry it.
 
+Give Weaver the thing you want to become true, not merely the first work product. "Investigate why uploads stall" can end with a report. "Fix the upload failure" carries the same investigation through a code change, review, merge, tests, and evidence that the fix worked. Weaver is useful precisely where the outcome crosses those boundaries or has to wait before the next piece of work can begin.
+
 ## The one-sentence way
 
 Most workstreams should start as a sentence, not a form:
@@ -33,7 +35,7 @@ weaver create --slug lead-follow-up \
   --constraint "Open pull requests only — merging is the founder's act"
 ```
 
-The coordinator researches the current code first, records the design as a decision, then builds through gated actions — worktree, targeted tests, pull request — each confirmed by readback. Weeks later, "why is it built this way?" has an answer with lineage, not a guess.
+The coordinator researches the current code first, records the chosen design, then keeps the feature moving through implementation, review and revision, merge when authorized, the required tests, and any agreed post-change check. It concludes only when the done-bar is met. Weeks later, "why is it built this way?" still has an answer rather than a guess.
 
 ### Keep something healthy
 
@@ -41,7 +43,7 @@ Standing loops: an error-triage sweep, an evals-health check, a weekly usage rep
 
 ### Find something out
 
-An audit, a subsystem map, a root-cause investigation. The deliverable is an adopted report with citations — and *adopted* is the point: the coordinator verifies submissions against acceptance criteria before anything becomes authoritative, and the accepted version is pinned by content hash. The findings then seed the next workstream: an investigation's standing decisions are exactly the context a build workstream wants.
+An audit, a subsystem map, a root-cause investigation. If the objective is to fix something, investigation is one stage and the same workstream continues into the change and its verification. If the report itself is the outcome, the coordinator verifies it against the acceptance criteria and pins the accepted version so the result cannot silently change later.
 
 ### Run a real-world process
 
@@ -49,13 +51,14 @@ A hiring pipeline, a growth experiment, an outreach sequence — work where the 
 
 ## The arc every workstream follows
 
-Whatever the shape, a workstream moves through the same stages — and the dashboard vocabulary maps onto them directly:
+Whatever the shape, Weaver keeps responsibility while the outcome moves through the same stages:
 
-1. **Research first** (`WORKING`). Side-effect-free workers map the territory: read-only directory grants, no network effects, one submission tool as their entire write surface. Early life is deliberately research-heavy — the coordinator earns the right to act by understanding first.
-2. **Adoption** — the coordinator reviews each submission against its acceptance criteria and adopts or rejects it. Only adoption makes a result authoritative; the course it implies is recorded as a decision with lineage.
-3. **Action** — the workstream touches the world through a gated act: a worktree and a pull request, a send, an API call. The pilot auto-approves routine-safe commands; anything with real blast radius arrives on your [needs-you queue](/dashboard) as a one-keypress card. Your constraints are hard ceilings the whole way down.
-4. **Readback** — a deterministic shell check, run by the engine with no model in the loop, is the only thing that can call the effect real. See [Actions](/actions).
-5. **Wait** (`WAITING`). The workstream records what it's waiting for — a reply, a scheduled wake, your verdict — and everything exits. Nothing sleeps in a process; a fresh coordinator resumes from typed state whenever the wake condition arrives.
+1. **Understand the next piece** (`WORKING`). A fresh worker researches without changing the world and submits what it found.
+2. **Do and review it.** The coordinator checks the submission against its acceptance criteria, accepts or rejects it, records the chosen course, and dispatches the next bounded assignment. One worker finishing does not hand the outcome back to you.
+3. **Change the world through Pilot.** A worktree, pull request, send, or API call is a separate action. [Pilot](https://github.com/NiallBrickell/pilot) approves routine-safe commands inside the live run; anything with real blast radius arrives on your [needs-you queue](/dashboard). Your constraints remain hard ceilings.
+4. **Confirm the effect.** A deterministic check, run with no model in the loop, verifies what actually happened outside Weaver. A model saying "done" is not evidence. See [Actions](/actions).
+5. **Wait and resume** (`WAITING`). The workstream records what it is waiting for — a reply, a scheduled wake, your verdict — and everything exits. A fresh coordinator resumes from that position when the wake condition arrives.
+6. **Finish only at the done-bar.** Weaver closes the workstream when the whole outcome is evidenced, not when an agent produced the first plausible work product.
 
 ## What a good objective looks like
 

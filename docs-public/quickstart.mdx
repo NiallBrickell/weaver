@@ -1,6 +1,6 @@
 ---
 title: "Quickstart"
-description: "Create a workstream, steer it, and let the runner and dashboard take it from there"
+description: "Name the outcome once; Weaver keeps the work moving until the done-bar is met"
 ---
 
 ## Install
@@ -24,6 +24,8 @@ weaver create --slug fix-onboarding \
 
 Constraints are hard rules the coordinator must respect; they're yours alone to change (`weaver constraint <slug> add|remove`).
 
+This is not a prompt for one agent. The objective stays live while Weaver turns it into bounded assignments, reviews what comes back, starts the next stage, and remembers what still stands between the current state and done.
+
 ## Steer it
 
 ```bash
@@ -39,8 +41,8 @@ weaver run     # resident runner: ticks all active workstreams, 10 in parallel
 weaver watch   # interactive dashboard in a second terminal
 ```
 
-The runner holds no state — kill it, restart it, nothing is lost. Workstreams advance through **ticks**: readbacks → approved sends → approved actions → workers → coordinator passes, until quiescent.
+The runner holds no state — kill it, restart it, nothing is lost. It starts fresh agents for the next piece of work, confirms outside-world changes, handles failures, and resumes scheduled or event-driven waits without handing the outcome back to you.
 
-From here, everything you need to do arrives in the dashboard's [needs-you queue](/dashboard) as one-keypress decisions.
+From here, the dashboard's [needs-you queue](/dashboard) contains only judgment, authority, and blockers that genuinely need you. Finishing one assignment, failing a check, or moving from research to implementation is Weaver's job.
 
 Not sure what to hand it? [Giving it work](/giving-it-work) walks through the four shapes a workstream can hold — building, standing routines, investigations, real-world processes — and the arc each one follows from objective to verified effect.
