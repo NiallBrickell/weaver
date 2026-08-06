@@ -4,7 +4,7 @@
  * Layout (under WEAVER_HOME, default ./state):
  *   <slug>/workstream.json   — the WorkstreamDoc (single source of truth)
  *   <slug>/artifacts/<file>  — deliverable content, content-addressed by hash
- *   <slug>/.tick.lock/       — cross-process tick exclusion (mkdir is atomic)
+ *   <slug>/.tick.lock/       — ownership-marked cross-process tick exclusion
  *   policies.json            — the global learned-policy store
  *
  * Semantics this backend pins for every future backend: atomic tmp+rename
@@ -23,6 +23,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { virtualNow } from '../clock.js';
 import { changedById, printoutChanges, writeJournalReceipt } from '../printoutJournal.js';
+import { acquireProcessLock } from '../processLock.js';
 import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc, newId, sha256 } from './doc.js';
@@ -65,56 +66,10 @@ function policiesPath(): string {
 
 /** Serialize the actual read/check/write region across local processes. */
 function withWriteLock<T>(slug: string, fn: () => T): T {
-  const dir = writeLockDir(slug);
-  const deadline = Date.now() + 10_000;
-  for (;;) {
-    try {
-      fs.mkdirSync(dir);
-      fs.writeFileSync(path.join(dir, 'pid'), String(process.pid));
-      break;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'EEXIST') throw error;
-      let live = true;
-      let observedPid: number | undefined;
-      try {
-        const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8'));
-        if (Number.isInteger(pid) && pid > 0) {
-          observedPid = pid;
-          try { process.kill(pid, 0); }
-          catch { live = false; }
-        } else {
-          // The holder may be between mkdir and completing its pid write.
-          live = fs.statSync(dir).mtimeMs >= Date.now() - 10_000;
-        }
-      } catch {
-        try {
-          live = fs.statSync(dir).mtimeMs >= Date.now() - 10_000;
-        } catch { live = false; }
-      }
-      if (!live) {
-        // Reclaim ONLY if the lock still names the dead pid we probed. The
-        // probe raced the holder's release: between our pid read and here the
-        // holder can finish and a THIRD process can acquire — blindly deleting
-        // the dir then removes a LIVE holder's lock, two writers hold at once,
-        // and one revision is silently lost (observed as 7 of 8 simultaneous
-        // arrivals landing). A changed or missing pid file means the lock
-        // already moved on; just contend again.
-        try {
-          if (observedPid === undefined ||
-              Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8')) === observedPid) {
-            fs.rmSync(dir, { recursive: true, force: true });
-          }
-        } catch { /* released or replaced since the probe — contend again */ }
-        continue;
-      }
-      if (Date.now() > deadline) throw new Error(`workstream '${slug}' write lock timeout`);
-      const until = Date.now() + 10;
-      while (Date.now() < until) { /* writes are synchronous and normally sub-ms */ }
-    }
-  }
+  const release = acquireProcessLock(writeLockDir(slug), { timeoutMs: 10_000 });
+  if (!release) throw new Error(`workstream '${slug}' write lock timeout`);
   try { return fn(); }
-  finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  finally { release(); }
 }
 
 /** Atomic tmp+rename write. Secrets enforcement happens in src/store.ts BEFORE
@@ -218,32 +173,16 @@ export class FsStore implements StateStore {
 
   /**
    * The policy store is GLOBAL (shared across workstreams), so two concurrent
-   * ticks can race the read-modify-write. A short mkdir lock serializes
-   * same-machine processes (10s stale-holder reclaim); inside the lock the
-   * read→mutate→write runs without yielding, so in-process writers cannot
-   * interleave either. A network backend serializes with its own CAS instead.
+   * ticks can race the read-modify-write. The shared ownership-marked process
+   * lock serializes same-machine writers and reclaims only a holder proven
+   * dead; inside the lock the read→mutate→write runs without yielding, so
+   * in-process writers cannot interleave either. A network backend serializes
+   * with its own CAS instead.
    */
   async mutatePolicies(fn: (store: PolicyStore) => void): Promise<PolicyStore> {
     const dir = `${policiesPath()}.lock`;
-    // A missing home dir would make every mkdir below ENOENT — indistinguishable
-    // from contention, so the spin would run out the clock on a fresh install.
-    fs.mkdirSync(path.dirname(dir), { recursive: true });
-    const deadline = Date.now() + 10_000;
-    for (;;) {
-      try {
-        fs.mkdirSync(dir);
-        break;
-      } catch {
-        try {
-          if (fs.statSync(dir).mtimeMs < Date.now() - 10_000) {
-            fs.rmSync(dir, { recursive: true, force: true });
-            continue;
-          }
-        } catch { /* raced with the holder's release — retry */ }
-        if (Date.now() > deadline) throw new Error('policy store lock timeout');
-        await new Promise((r) => setTimeout(r, 25));
-      }
-    }
+    const release = acquireProcessLock(dir, { timeoutMs: 10_000, pollMs: 25 });
+    if (!release) throw new Error('policy store lock timeout');
     try {
       // Synchronous from read to rename: no yield between load and write.
       let store: PolicyStore;
@@ -267,7 +206,7 @@ export class FsStore implements StateStore {
       fs.renameSync(tmp, policiesPath());
       return store;
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      release();
     }
   }
 
@@ -275,43 +214,13 @@ export class FsStore implements StateStore {
    * Cross-PROCESS tick exclusion (the doc's revision check guards logical
    * conflicts, not two OS processes dispatching the same real-world act in the
    * same instant — e.g. `weaver run` resident plus a manual `weaver tick`).
-   * mkdir is atomic on every platform; a lock whose recorded pid is dead is
-   * stale and reclaimed.
+   * The shared process-lock primitive publishes complete owner metadata
+   * atomically; only a holder proven dead is reclaimed, and predecessor
+   * release cannot delete a successor's lock.
    */
   async tryTickLock(slug: string): Promise<(() => Promise<void>) | null> {
     const dir = path.join(workstreamDir(slug), '.tick.lock');
-    const pidFile = path.join(dir, 'pid');
-    try {
-      fs.mkdirSync(dir);
-      fs.writeFileSync(pidFile, String(process.pid));
-      return async () => fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      let observedPid: number | undefined;
-      try {
-        observedPid = Number(fs.readFileSync(pidFile, 'utf8'));
-        process.kill(observedPid, 0); // throws if the holder is dead
-        return null; // a live process holds the lock
-      } catch {
-        if (observedPid === undefined) {
-          // No readable pid: the holder may be between mkdir and its pid
-          // write. Only a stale dir is reclaimable; a fresh one counts as
-          // held — the next tick simply retries.
-          try {
-            if (fs.statSync(dir).mtimeMs >= Date.now() - 10_000) return null;
-          } catch { /* vanished — contend again */ }
-        }
-        // Reclaim ONLY if the lock still names the pid we probed: the probe
-        // races the holder's release, and a third process may have acquired
-        // in between — deleting its live lock would let two ticks run at
-        // once (same TOCTOU as the write lock above).
-        try {
-          if (observedPid === undefined ||
-              Number(fs.readFileSync(pidFile, 'utf8')) === observedPid) {
-            fs.rmSync(dir, { recursive: true, force: true });
-          }
-        } catch { /* released or replaced since the probe — contend again */ }
-        return this.tryTickLock(slug);
-      }
-    }
+    const release = acquireProcessLock(dir);
+    return release ? async () => release() : null;
   }
 }
