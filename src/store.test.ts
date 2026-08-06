@@ -181,3 +181,15 @@ test('artifact content is content-addressed: identical content yields the identi
   const c = await writeArtifact('test-ws', 'c.md', 'different content');
   assert.notEqual(a.hash, c.hash);
 });
+
+test('an async mutator is refused: late writes must not land after the CAS write', async () => {
+  await makeWorkstream();
+  const before = (await load('test-ws')).revision;
+  await assert.rejects(
+    // Deliberately violates the sync Mutator contract; TS void-leniency
+    // permits it at the type level, so the guard must be structural.
+    mutate('test-ws', before, (async () => {}) as unknown as Parameters<typeof mutate>[2]),
+    /mutator must be synchronous/,
+  );
+  assert.equal((await load('test-ws')).revision, before); // nothing persisted
+});

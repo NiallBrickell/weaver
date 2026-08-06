@@ -57,19 +57,30 @@ export async function load(slug: string): Promise<WorkstreamDoc> {
  * The mutator receives a fresh copy; it may push an event describing the
  * change via the provided `event` helper (bounded narrative tail).
  */
-export async function mutate(
-  slug: string,
-  expectedRevision: number,
-  fn: Mutator,
-): Promise<WorkstreamDoc> {
-  return getStore().mutate(slug, expectedRevision, (doc, event) => {
-    fn(doc, event);
+/** The shared-policy wrapper both mutate() and arrive() apply around a caller's mutator. */
+function checkedMutator(slug: string, fn: Mutator): Mutator {
+  return (doc, event) => {
+    // TS's void-leniency lets an ASYNC mutator satisfy the sync Mutator type;
+    // its late writes would land after the CAS write persisted — the same
+    // lost-update class the backend guards against, at the API boundary.
+    const r = fn(doc, event) as unknown;
+    if (r !== null && typeof r === 'object' && typeof (r as { then?: unknown }).then === 'function') {
+      throw new Error('mutator must be synchronous: an async mutator would apply changes after the revision-checked write');
+    }
     // Backend-agnostic secrets enforcement: the mutator has fully applied its
     // change (events included); serialize and refuse BEFORE the backend
     // persists anything. Only the revision bump happens after this point, and
     // a bare integer cannot embed a secret value.
     assertNoSecretValues(JSON.stringify(doc, null, 2), loadSecrets(slug));
-  });
+  };
+}
+
+export async function mutate(
+  slug: string,
+  expectedRevision: number,
+  fn: Mutator,
+): Promise<WorkstreamDoc> {
+  return getStore().mutate(slug, expectedRevision, checkedMutator(slug, fn));
 }
 
 /**
@@ -84,11 +95,7 @@ export async function mutate(
  * processes all land without a spurious conflict.
  */
 export async function arrive(slug: string, fn: Mutator): Promise<WorkstreamDoc> {
-  return getStore().mutate(slug, undefined, (doc, event) => {
-    fn(doc, event);
-    // Same backend-agnostic secrets enforcement as mutate() above.
-    assertNoSecretValues(JSON.stringify(doc, null, 2), loadSecrets(slug));
-  });
+  return getStore().mutate(slug, undefined, checkedMutator(slug, fn));
 }
 
 export async function createWorkstream(
