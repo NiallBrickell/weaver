@@ -39,10 +39,13 @@ Steering is durable human input: it wakes the workstream, the coordinator must a
 ```bash
 weaver run     # resident runner: ticks all active workstreams, 10 in parallel
 weaver watch   # interactive dashboard in a second terminal
+weaver stats   # outcome scoreboard: human interventions, quality signals, authority use
 ```
 
 The runner holds no state — kill it, restart it, nothing is lost. It starts fresh agents for the next piece of work, confirms outside-world changes, handles failures, and resumes scheduled or event-driven waits without handing the outcome back to you.
 
 From here, the dashboard's [needs-you queue](/dashboard) contains only judgment, authority, and blockers that genuinely need you. Finishing one assignment, failing a check, or moving from research to implementation is Weaver's job.
+
+Once you have repeated, comparable work, run `weaver stats`. It shows whether that work is needing you less often, alongside rejections and the Pilot-versus-human approval split that keep the trend honest. The [stats guide](/stats) explains exactly what the current chart does and does not measure.
 
 Not sure what to hand it? [Giving it work](/giving-it-work) walks through the four shapes a workstream can hold — building, standing routines, investigations, real-world processes — and the arc each one follows from objective to verified effect.

@@ -23,7 +23,7 @@ Pilot keeps routine tool decisions from interrupting a live agent run. Weaver ke
 
 Below the queue: every workstream with a colored status dot — red `NEEDS YOU`, cyan `WORKING`, bright-blue `QUEUED` (in line for the runner), blue `WAITING` (scheduled later), dim `IDLE`, green reserved for `DONE ✓` alone — plus a spend-estimate bar, pass count, and `you N×`: how many times you've intervened. [Routines](/routines) render in their own `↻ ROUTINES` section with next-run times.
 
-That `you N×` number is the product's scoreboard. The system is optimizing interventions-per-outcome downward — the dashboard should get *quieter per outcome* over time, and when it doesn't, that's a real signal.
+`you N×` is this workstream's local score: how many recorded human interventions it needed. [`weaver stats`](/stats) compares that across work and keeps rejections and approval boundaries beside the trend, so a quieter system cannot claim success merely by lowering the bar.
 
 A `DONE` row answers "so what did it actually do?" in place: select it and its detail lines are the coordinator's conclusion — with the evidence it cites — plus the hard tallies (readback-verified actions, adopted deliverables, passes, interventions), with `i` for the full record. Outcomes live where you already are, not behind a CLI.
 
