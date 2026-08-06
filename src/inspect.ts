@@ -587,18 +587,18 @@ function writeRedacted(filePath: string, html: string, secrets: Record<string, s
  * because pages link both ways: entering at a workstream must not leave the
  * "← all workstreams" link pointing at a stale or missing fleet page.
  */
-export function runInspect(slug?: string): string {
+export async function runInspect(slug?: string): Promise<string> {
   // The requested workstream is the one failure that must be loud: asking for
   // a page we cannot render is an error, not an empty site.
-  if (slug) load(slug);
-  const policies = loadPolicies().policies;
+  if (slug) await load(slug);
+  const policies = (await loadPolicies()).policies;
   const docs: WorkstreamDoc[] = [];
   const allSecrets: Record<string, string> = { ...loadSecrets() };
   const unreadable: string[] = [];
-  for (const s of listWorkstreams()) {
+  for (const s of await listWorkstreams()) {
     let doc: WorkstreamDoc;
     try {
-      doc = load(s);
+      doc = await load(s);
     } catch {
       // An unreadable doc is a state the dashboard already renders (UNREADABLE);
       // it must not blank out the knowledge pages of every healthy workstream.

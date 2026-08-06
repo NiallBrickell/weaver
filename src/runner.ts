@@ -67,11 +67,11 @@ export function acquireRunnerLock(): (() => void) | null {
 const PROBE_EVERY_MS = 3 * 60_000;
 const BACKOFF_WAKE_RE = /retry after infrastructure failure/;
 
-function infraBackoffSlugs(): string[] {
+async function infraBackoffSlugs(): Promise<string[]> {
   const out: string[] = [];
-  for (const slug of listWorkstreams()) {
+  for (const slug of await listWorkstreams()) {
     try {
-      const d = load(slug);
+      const d = await load(slug);
       if (d.workstream.status !== 'active') continue;
       if (d.wakes.some((w) => w.status === 'pending' && w.condition.type === 'time' && BACKOFF_WAKE_RE.test(w.reason))) {
         out.push(slug);
@@ -107,11 +107,11 @@ async function authProbe(): Promise<boolean> {
   return false;
 }
 
-function expediteBackoffWakes(slugs: string[], log: (l: string) => void): void {
+async function expediteBackoffWakes(slugs: string[], log: (l: string) => void): Promise<void> {
   const now = new Date().toISOString();
   for (const slug of slugs) {
     try {
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         for (const w of d.wakes) {
           if (w.status === 'pending' && w.condition.type === 'time' && BACKOFF_WAKE_RE.test(w.reason)) {
             w.condition = { type: 'time', dueAtVirtual: now };
@@ -177,7 +177,7 @@ export async function runLoop(opts: RunnerOptions): Promise<never> {
       } catch { /* lock dir may be mid-recreate */ }
       // Outage recovery: probe (never concurrently) while streams are parked
       // behind infra-backoff wakes; a credential-file change probes at once.
-      const backedOff = probing ? [] : infraBackoffSlugs();
+      const backedOff = probing ? [] : await infraBackoffSlugs();
       if (backedOff.length) {
         const credMtime = credentialsMtime();
         const credChanged = credMtime !== lastCredMtime;
@@ -187,22 +187,22 @@ export async function runLoop(opts: RunnerOptions): Promise<never> {
           probing = true;
           log(`[run] ${backedOff.length} stream(s) in infra-backoff — probing auth/credits${credChanged ? ' (credentials changed)' : ''}`);
           void authProbe()
-            .then((ok) => { if (ok) expediteBackoffWakes(backedOff, log); })
+            .then(async (ok) => { if (ok) await expediteBackoffWakes(backedOff, log); })
             .finally(() => { probing = false; });
         }
       } else {
         lastCredMtime = credentialsMtime();
       }
-      const due = listWorkstreams()
-        .filter((slug) => {
-          if (inFlight.has(slug)) return false;
-          try {
-            return load(slug).workstream.status === 'active';
-          } catch {
-            return false;
-          }
-        })
-        .sort((a, b) => (lastTickedAt.get(a) ?? 0) - (lastTickedAt.get(b) ?? 0));
+      const due: string[] = [];
+      for (const slug of await listWorkstreams()) {
+        if (inFlight.has(slug)) continue;
+        try {
+          if ((await load(slug)).workstream.status === 'active') due.push(slug);
+        } catch {
+          /* unreadable stream — its own tick reports it */
+        }
+      }
+      due.sort((a, b) => (lastTickedAt.get(a) ?? 0) - (lastTickedAt.get(b) ?? 0));
       for (const slug of due) {
         if (inFlight.size >= opts.concurrency) break;
         inFlight.add(slug);

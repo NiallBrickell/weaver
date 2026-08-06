@@ -23,8 +23,8 @@ beforeEach(() => {
 
 const SLUG = 'tail-ws';
 
-function makeWs(): void {
-  createWorkstream({
+async function makeWs(): Promise<void> {
+  await createWorkstream({
     slug: SLUG,
     title: 'Tail test',
     objective: 'test the tail',
@@ -44,8 +44,8 @@ function readEvents(): TailEvent[] {
     .map((l) => JSON.parse(l) as TailEvent);
 }
 
-test('emit appends valid single-line JSONL with the full event shape', () => {
-  makeWs();
+test('emit appends valid single-line JSONL with the full event shape', async () => {
+  await makeWs();
   emitTail(SLUG, 'worker', 'asg_1', 'tool', 'Bash git status');
   emitTail(SLUG, 'coordinator', 'pass_1', 'text', 'reviewing the submission');
   const events = readEvents();
@@ -60,15 +60,15 @@ test('emit appends valid single-line JSONL with the full event shape', () => {
   for (const e of events) assert.ok(!Number.isNaN(Date.parse(e.at)));
 });
 
-test('a write failure is swallowed — tailing must never break a pass', () => {
-  makeWs();
+test('a write failure is swallowed — tailing must never break a pass', async () => {
+  await makeWs();
   // Occupy the tail path with a directory: append fails with EISDIR.
   fs.mkdirSync(tailPath(SLUG));
   assert.doesNotThrow(() => emitTail(SLUG, 'worker', 'asg_1', 'tool', 'Bash true'));
 });
 
-test('a detail carrying a stored secret VALUE never reaches disk', () => {
-  makeWs();
+test('a detail carrying a stored secret VALUE never reaches disk', async () => {
+  await makeWs();
   setSecret('GLOBAL_TOKEN', 'global-secret-value-1');
   setSecret('WS_TOKEN', 'ws-secret-value-2', SLUG);
   emitTail(SLUG, 'worker', 'asg_1', 'tool', 'Bash curl -H "Auth: global-secret-value-1" -d ws-secret-value-2');
@@ -79,8 +79,8 @@ test('a detail carrying a stored secret VALUE never reaches disk', () => {
   assert.ok(raw.includes('«secret:WS_TOKEN»'));
 });
 
-test('past the size threshold the file rotates to .1, overwriting any previous generation', () => {
-  makeWs();
+test('past the size threshold the file rotates to .1, overwriting any previous generation', async () => {
+  await makeWs();
   const p = tailPath(SLUG);
   fs.writeFileSync(`${p}.1`, 'stale generation\n');
   fs.writeFileSync(p, 'x'.repeat(5 * 1024 * 1024 + 1));
@@ -93,8 +93,8 @@ test('past the size threshold the file rotates to .1, overwriting any previous g
   assert.equal(events[0]!.detail, 'Bash echo after-rotation');
 });
 
-test('tailMessage summarizes tool calls, prose snippets, and the result — nothing else', () => {
-  makeWs();
+test('tailMessage summarizes tool calls, prose snippets, and the result — nothing else', async () => {
+  await makeWs();
   const longCmd = `git log ${'-'.repeat(200)}`;
   tailMessage(SLUG, 'worker', 'asg_1', {
     type: 'assistant',

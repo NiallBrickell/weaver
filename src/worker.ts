@@ -163,7 +163,7 @@ const ACTION_SYSTEM = `You are an isolated worker executing ONE human-approved r
 ${SHARED_RULES}`;
 
 export async function runWorker(slug: string, assignmentId: string): Promise<void> {
-  const doc = load(slug);
+  const doc = await load(slug);
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg) throw new Error(`no assignment ${assignmentId}`);
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
@@ -178,12 +178,12 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
       ? doc.deliverables.find((d) => d.id === dep.submission!.deliverableId)
       : undefined;
     if (del) {
-      inputs.push(`### Input from ${depId} — "${del.title}"\n\n${readArtifact(slug, del.path)}`);
+      inputs.push(`### Input from ${depId} — "${del.title}"\n\n${await readArtifact(slug, del.path)}`);
     }
   }
 
   const runId = newId('run');
-  arrive(slug, (d, event) => {
+  await arrive(slug, (d, event) => {
     const a = d.assignments.find((x) => x.id === assignmentId)!;
     a.state = 'running';
     a.attempts.push({
@@ -244,8 +244,8 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
           submitted = true;
           const cleanContent = redactSecrets(fullContent, secrets);
           const cleanSummary = redactSecrets(a.summary, secrets);
-          const { relPath, hash } = writeArtifact(slug, a.artifact.file_name, cleanContent);
-          arrive(slug, (d, event) => {
+          const { relPath, hash } = await writeArtifact(slug, a.artifact.file_name, cleanContent);
+          await arrive(slug, (d, event) => {
             const asg2 = d.assignments.find((x) => x.id === assignmentId)!;
             const delId = newId('del');
             d.deliverables.push({
@@ -380,7 +380,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
     wall.disarm();
   }
 
-  arrive(slug, (d, event) => {
+  await arrive(slug, (d, event) => {
     const a = d.assignments.find((x) => x.id === assignmentId)!;
     const attempt = a.attempts.find((t) => t.runId === runId);
     if (attempt) {

@@ -157,10 +157,10 @@ function wrapRows(text: string, width: number): string[] {
   return rows;
 }
 
-function snapshot(): Snapshot {
+async function snapshot(): Promise<Snapshot> {
   const items: NeedsYouItem[] = [];
   const streams: StreamRow[] = [];
-  for (const slug of listWorkstreams()) {
+  for (const slug of await listWorkstreams()) {
     let doc: WorkstreamDoc;
     try {
       doc = JSON.parse(
@@ -390,7 +390,9 @@ const NO_SELECTION = -1;
 
 function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element {
   const { exit } = useApp();
-  const [snap, setSnap] = useState<Snapshot>(() => snapshot());
+  // The store is async, so the first snapshot arrives via the mount effect —
+  // render paths never await; state loads in effects/callbacks only.
+  const [snap, setSnap] = useState<Snapshot>({ items: [], streams: [] });
   const lastSnapJson = React.useRef('');
   const [runnerState, setRunnerState] = useState<'embedded' | 'external' | 'stalled' | 'none'>(
     embeddedRunner ? 'embedded' : liveRunnerPid() !== null ? 'external' : 'none',
@@ -404,26 +406,42 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   useEffect(() => {
     probePilot();
     const p = setInterval(probePilot, 30_000);
-    const t = setInterval(() => {
-      const s = snapshot();
-      const j = JSON.stringify(s);
-      if (j !== lastSnapJson.current) {
-        lastSnapJson.current = j;
-        setSnap(s); // Ink diffs in place — no clear, no flicker
+    let polling = false;
+    const poll = async () => {
+      if (polling) return; // never let a slow poll stack a second one
+      polling = true;
+      try {
+        const s = await snapshot();
+        const j = JSON.stringify(s);
+        if (j !== lastSnapJson.current) {
+          lastSnapJson.current = j;
+          setSnap(s); // Ink diffs in place — no clear, no flicker
+        }
+      } finally {
+        polling = false;
       }
       // Heartbeat truth, embedded or not: a live pid with a dead loop must
       // render STALLED, never ✓ — pid-aliveness lied to us once already.
       setRunnerState(runnerLoopHealthy() ? (embeddedRunner ? 'embedded' : 'external') : liveRunnerPid() !== null ? 'stalled' : 'none');
-    }, 2000);
+    };
+    void poll(); // first frame: same data path as every later one
+    const t = setInterval(() => void poll(), 2000);
     return () => { clearInterval(t); clearInterval(p); };
   }, [embeddedRunner]);
 
   const refresh = (msg: string) => {
     clearScreen();
-    const s = snapshot();
-    lastSnapJson.current = JSON.stringify(s);
-    setSnap(s);
-    setToast(msg);
+    void snapshot().then((s) => {
+      lastSnapJson.current = JSON.stringify(s);
+      setSnap(s);
+      setToast(msg);
+    }).catch((e) => setToast(`✗ ${e instanceof Error ? e.message : e}`));
+  };
+
+  /** Run an async human act; toast success (via refresh) or failure. The
+   * useInput handler itself must stay synchronous. */
+  const act = (fn: () => Promise<void>, done: string) => {
+    void fn().then(() => refresh(done)).catch((e) => setToast(`✗ ${e instanceof Error ? e.message : e}`));
   };
 
   // The selectable list: needs-you items first, then streams.
@@ -448,14 +466,13 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
       // or — with nothing selected, at the top — the fleet homepage with the
       // global policy store. Either way the whole site is regenerated, so the
       // links between the two directions resolve.
-      try {
-        const out = runInspect(selSlug);
-        if (process.platform === 'darwin') execFile('open', [out]);
-        // Where it went is only worth a toast when we couldn't open it for you.
-        setToast(process.platform === 'darwin' ? `knowledge → ${selSlug ?? 'fleet'}` : `knowledge → ${out}`);
-      } catch (e) {
-        setToast(`✗ ${e instanceof Error ? e.message : e}`);
-      }
+      void runInspect(selSlug)
+        .then((out) => {
+          if (process.platform === 'darwin') execFile('open', [out]);
+          // Where it went is only worth a toast when we couldn't open it for you.
+          setToast(process.platform === 'darwin' ? `knowledge → ${selSlug ?? 'fleet'}` : `knowledge → ${out}`);
+        })
+        .catch((e) => setToast(`✗ ${e instanceof Error ? e.message : e}`));
       return;
     }
     if (key.upArrow || input === 'k') { setCursor((c) => Math.max(NO_SELECTION, c - 1)); setScroll(0); }
@@ -463,41 +480,36 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
     if (key.pageDown || input === ']') setScroll((s) => s + 12);
     if (key.pageUp || input === '[') setScroll((s) => Math.max(0, s - 12));
     if (!sel) return;
-    try {
-      if (sel.type === 'item') {
-        const it = sel.item;
-        if (input === 'a') {
-          if (it.kind === 'action') { approveAction(it.slug, it.refId); refresh(`approved ${it.refId} — runner will execute + verify`); }
-          else if (it.kind === 'send') { approveSend(it.slug, it.refId); refresh(`approved ${it.refId} — runner will send`); }
-        } else if (input === 'x') {
-          if (it.kind === 'action') { rejectAction(it.slug, it.refId); refresh(`rejected ${it.refId}`); }
-          else if (it.kind === 'send') { rejectSend(it.slug, it.refId); refresh(`rejected ${it.refId}`); }
-        } else if (input === 'd' && it.kind === 'attention') {
-          resolveAttention(it.slug, it.refId);
-          refresh(`resolved ${it.refId}`);
-        } else if (input === 's') {
-          setSteering({ slug: it.slug, text: '', ...(it.kind === 'attention' ? { answersAttentionId: it.refId } : {}) });
-        } else if (key.return) {
-          setExpanded((e) => {
-            const n = new Set(e);
-            n.has(it.key) ? n.delete(it.key) : n.add(it.key);
-            return n;
-          });
-        }
-      } else {
-        const st = sel.stream;
-        if (input === 's') setSteering({ slug: st.slug, text: '' });
-        else if (input === 'p') { setPaused(st.slug, !st.paused); refresh(`${st.slug} ${st.paused ? 'resumed' : 'paused'}`); }
-        else if (key.return) {
-          setExpanded((e) => {
-            const n = new Set(e);
-            n.has(st.slug) ? n.delete(st.slug) : n.add(st.slug);
-            return n;
-          });
-        }
+    if (sel.type === 'item') {
+      const it = sel.item;
+      if (input === 'a') {
+        if (it.kind === 'action') act(() => approveAction(it.slug, it.refId), `approved ${it.refId} — runner will execute + verify`);
+        else if (it.kind === 'send') act(() => approveSend(it.slug, it.refId), `approved ${it.refId} — runner will send`);
+      } else if (input === 'x') {
+        if (it.kind === 'action') act(() => rejectAction(it.slug, it.refId), `rejected ${it.refId}`);
+        else if (it.kind === 'send') act(() => rejectSend(it.slug, it.refId), `rejected ${it.refId}`);
+      } else if (input === 'd' && it.kind === 'attention') {
+        act(() => resolveAttention(it.slug, it.refId), `resolved ${it.refId}`);
+      } else if (input === 's') {
+        setSteering({ slug: it.slug, text: '', ...(it.kind === 'attention' ? { answersAttentionId: it.refId } : {}) });
+      } else if (key.return) {
+        setExpanded((e) => {
+          const n = new Set(e);
+          n.has(it.key) ? n.delete(it.key) : n.add(it.key);
+          return n;
+        });
       }
-    } catch (e) {
-      setToast(`✗ ${e instanceof Error ? e.message : e}`);
+    } else {
+      const st = sel.stream;
+      if (input === 's') setSteering({ slug: st.slug, text: '' });
+      else if (input === 'p') act(() => setPaused(st.slug, !st.paused), `${st.slug} ${st.paused ? 'resumed' : 'paused'}`);
+      else if (key.return) {
+        setExpanded((e) => {
+          const n = new Set(e);
+          n.has(st.slug) ? n.delete(st.slug) : n.add(st.slug);
+          return n;
+        });
+      }
     }
   });
 
@@ -694,14 +706,13 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
             onSubmit={(t: string) => {
               setSteering(null);
               if (t.trim()) {
-                try {
-                  addSteering(steering.slug, t.trim(), {
-                    ...(steering.answersAttentionId ? { resolvesAttentionId: steering.answersAttentionId } : {}),
-                  });
-                  refresh(steering.answersAttentionId ? `answered ${steering.slug} — card cleared` : `steered ${steering.slug}`);
-                } catch (e) {
-                  setToast(`✗ ${e instanceof Error ? e.message : e}`);
-                }
+                act(
+                  () =>
+                    addSteering(steering.slug, t.trim(), {
+                      ...(steering.answersAttentionId ? { resolvesAttentionId: steering.answersAttentionId } : {}),
+                    }),
+                  steering.answersAttentionId ? `answered ${steering.slug} — card cleared` : `steered ${steering.slug}`,
+                );
               }
             }}
           />

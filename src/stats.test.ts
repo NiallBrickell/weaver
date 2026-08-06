@@ -41,8 +41,8 @@ beforeEach(() => {
   freshHome();
 });
 
-function makeWorkstream(slug = 'stats-ws', title = 'Measure me'): void {
-  createWorkstream({
+async function makeWorkstream(slug = 'stats-ws', title = 'Measure me'): Promise<void> {
+  await createWorkstream({
     slug,
     title,
     objective: 'prove the stats layer computes from durable state',
@@ -69,9 +69,9 @@ function baseAssignment(id: string, at: string) {
   };
 }
 
-test('datedInterventions: one human act is one act, pilot approvals are not acts', () => {
-  makeWorkstream();
-  arrive('stats-ws', (d) => {
+test('datedInterventions: one human act is one act, pilot approvals are not acts', async () => {
+  await makeWorkstream();
+  await arrive('stats-ws', (d) => {
     // A steering that answered two twin attention cards: ONE act.
     d.steering.push({ id: 'steer_1', body: 'do it', at: '2026-08-04T10:00:00.000Z' });
     d.attention.push(
@@ -86,7 +86,7 @@ test('datedInterventions: one human act is one act, pilot approvals are not acts
       { ...baseAssignment('asg_p', '2026-08-04T08:00:00.000Z'), exec: { cwd: '/', verify: 'true', approval: { by: 'pilot', at: '2026-08-05T11:00:00.000Z' } } },
     );
   });
-  const acts = datedInterventions(load('stats-ws'));
+  const acts = datedInterventions(await load('stats-ws'));
   assert.deepEqual(
     acts.map((a) => a.kind),
     ['steering', 'resolution', 'approval'],
@@ -98,9 +98,9 @@ test('datedInterventions: one human act is one act, pilot approvals are not acts
   );
 });
 
-test('system and legacy resolutions never count as human interventions', () => {
-  makeWorkstream();
-  arrive('stats-ws', (d) => {
+test('system and legacy resolutions never count as human interventions', async () => {
+  await makeWorkstream();
+  await arrive('stats-ws', (d) => {
     d.attention.push(
       { id: 'att_p', kind: 'approval', summary: 'a', status: 'resolved', createdAt: '2026-08-04T08:00:00.000Z', resolvedAt: '2026-08-04T09:00:00.000Z', resolvedBy: 'pilot' },
       { id: 'att_c', kind: 'review', summary: 'b', status: 'resolved', createdAt: '2026-08-04T08:00:00.000Z', resolvedAt: '2026-08-04T10:00:00.000Z', resolvedBy: 'coordinator' },
@@ -110,14 +110,14 @@ test('system and legacy resolutions never count as human interventions', () => {
     );
     d.spend.humanInterventions = 1; // the legacy resolution WAS a human act once
   });
-  const doc = load('stats-ws');
+  const doc = await load('stats-ws');
   assert.equal(datedInterventions(doc).length, 0);
   assert.equal(undatedInterventions([doc]), 1);
 });
 
-test('one keypress is one act: approval folds the card it auto-resolves, actor stamped durably', () => {
-  makeWorkstream();
-  arrive('stats-ws', (d) => {
+test('one keypress is one act: approval folds the card it auto-resolves, actor stamped durably', async () => {
+  await makeWorkstream();
+  await arrive('stats-ws', (d) => {
     const gated = baseAssignment('asg_g', '2026-08-04T08:00:00.000Z');
     gated.state = 'gated' as never;
     (gated as { exec?: object }).exec = { cwd: '/', verify: 'true', ask: 'approve?' };
@@ -126,11 +126,11 @@ test('one keypress is one act: approval folds the card it auto-resolves, actor s
   });
   process.env.WEAVER_ACTOR = 'claude-session';
   try {
-    approveAction('stats-ws', 'asg_g');
+    await approveAction('stats-ws', 'asg_g');
   } finally {
     delete process.env.WEAVER_ACTOR;
   }
-  const doc = load('stats-ws');
+  const doc = await load('stats-ws');
   assert.equal(doc.attention[0]!.resolvedBy, 'claude-session');
   const acts = datedInterventions(doc);
   assert.equal(acts.length, 1); // approval + its auto-resolved card = ONE act
@@ -140,9 +140,9 @@ test('one keypress is one act: approval folds the card it auto-resolves, actor s
   assert.equal(undatedInterventions([doc]), 0); // dated acts match the counter exactly
 });
 
-test('interruptionLoad: top-3 actors chart, tail folds to other, totals stay unfolded', () => {
-  makeWorkstream();
-  arrive('stats-ws', (d) => {
+test('interruptionLoad: top-3 actors chart, tail folds to other, totals stay unfolded', async () => {
+  await makeWorkstream();
+  await arrive('stats-ws', (d) => {
     const day = (n: number, actor: string) => ({ id: `steer_${actor}${n}`, body: 'x', by: actor, at: `2026-08-04T0${n}:00:00.000Z` });
     d.steering.push(
       day(1, 'niall'), day(2, 'niall'), day(3, 'niall'),
@@ -151,16 +151,16 @@ test('interruptionLoad: top-3 actors chart, tail folds to other, totals stay unf
       day(8, 'intern'),
     );
   });
-  const load_ = interruptionLoad([load('stats-ws')], ['2026-08-04']);
+  const load_ = interruptionLoad([await load('stats-ws')], ['2026-08-04']);
   assert.deepEqual(load_.segments, ['niall', 'claude-session', 'maurice', 'other']);
   assert.deepEqual(load_.rows[0]!.counts, { niall: 3, 'claude-session': 2, maurice: 2, other: 1 });
   assert.equal(load_.totals.length, 4); // intern unfolded in the table
   assert.equal(load_.totals[0]!.byKind.steering, 3);
 });
 
-test('fleetDays: gap-filled, adoption dated by pin, rejection dated by its pass, costs summed', () => {
-  makeWorkstream();
-  arrive('stats-ws', (d) => {
+test('fleetDays: gap-filled, adoption dated by pin, rejection dated by its pass, costs summed', async () => {
+  await makeWorkstream();
+  await arrive('stats-ws', (d) => {
     d.passes.push({ id: 'pass_1', startedAt: '2026-08-01T12:00:00.000Z', baseRevision: 1, wakeReasons: [], changes: [], outcome: 'completed', costUsd: 2 });
     d.passes.push({ id: 'pass_2', startedAt: '2026-08-03T12:00:00.000Z', baseRevision: 2, wakeReasons: [], changes: [], outcome: 'completed', costUsd: 1 });
     d.deliverables.push({
@@ -172,7 +172,7 @@ test('fleetDays: gap-filled, adoption dated by pin, rejection dated by its pass,
     rejected.attempts.push({ runId: 'run_1', startedAt: '2026-08-01T12:05:00.000Z', costUsd: 0.5 });
     d.assignments.push(rejected);
   });
-  const days = fleetDays([load('stats-ws')], '2026-08-04');
+  const days = fleetDays([await load('stats-ws')], '2026-08-04');
   assert.deepEqual(days.map((d) => d.day), ['2026-08-01', '2026-08-02', '2026-08-03', '2026-08-04']);
   assert.equal(days[0]!.rejections, 1); // dated by pass_1's startedAt
   assert.equal(days[0]!.costUsd, 2.5); // pass cost + attempt cost
@@ -180,7 +180,7 @@ test('fleetDays: gap-filled, adoption dated by pin, rejection dated by its pass,
   assert.equal(days[2]!.adoptions, 1); // dated by the adoption pin
 });
 
-test('cumulativeRatio: null until the first adoption, then interventions/adoptions', () => {
+test('cumulativeRatio: null until the first adoption, then interventions/adoptions', async () => {
   const days = fleetDays([], '2026-08-01');
   assert.deepEqual(days, []);
   const series = cumulativeRatio([
@@ -206,7 +206,7 @@ function policy(over: Partial<PolicyRecord>): PolicyRecord {
   };
 }
 
-test('policy timeline: promotion at first intervention-free evidence, supersession at superseder creation', () => {
+test('policy timeline: promotion at first intervention-free evidence, supersession at superseder creation', async () => {
   const promoted = policy({
     id: 'pol_a',
     status: 'active',
@@ -225,7 +225,7 @@ test('policy timeline: promotion at first intervention-free evidence, supersessi
   assert.deepEqual(series[3], { day: '2026-08-04', active: 1, shadow: 1, superseded: 1 });
 });
 
-test('provenanceSplit: seeded vs learned live', () => {
+test('provenanceSplit: seeded vs learned live', async () => {
   const split = provenanceSplit([
     policy({ id: 'p1', status: 'active' }),
     policy({ id: 'p2', provenance: { workstreamSlug: 'w', passId: 'p', interventionSummary: 'corrected' } }),
@@ -234,31 +234,31 @@ test('provenanceSplit: seeded vs learned live', () => {
   assert.deepEqual(split.learned, { active: 0, shadow: 1, superseded: 0 });
 });
 
-test('undated interventions are reported, never hidden and never negative', () => {
-  makeWorkstream();
-  arrive('stats-ws', (d) => {
+test('undated interventions are reported, never hidden and never negative', async () => {
+  await makeWorkstream();
+  await arrive('stats-ws', (d) => {
     d.steering.push({ id: 'steer_1', body: 'dated act', at: '2026-08-04T10:00:00.000Z' });
     d.spend.humanInterventions = 3; // counter includes 2 acts with no durable timestamp
   });
-  assert.equal(undatedInterventions([load('stats-ws')]), 2);
-  arrive('stats-ws', (d) => {
+  assert.equal(undatedInterventions([await load('stats-ws')]), 2);
+  await arrive('stats-ws', (d) => {
     d.spend.humanInterventions = 0; // defensive: counter behind the records
   });
-  assert.equal(undatedInterventions([load('stats-ws')]), 0);
+  assert.equal(undatedInterventions([await load('stats-ws')]), 0);
 });
 
-test('renderStatsHtml: empty fleet renders honestly, never invents data', () => {
+test('renderStatsHtml: empty fleet renders honestly, never invents data', async () => {
   const html = renderStatsHtml(computeStats([], [], new Date('2026-08-05T00:00:00.000Z')));
   assert.match(html, /No fleet activity yet/);
   assert.doesNotMatch(html, /NaN/);
 });
 
-test('runStats writes stats.html with secrets redacted', () => {
+test('runStats writes stats.html with secrets redacted', async () => {
   // The value lands in state BEFORE it becomes a secret (the store rejects
   // writes that embed known secret values) — output redaction covers exactly
   // this: content that predates the secret's registration.
-  makeWorkstream('secret-ws', 'Title mentioning hunter2-value');
-  arrive('secret-ws', (d) => {
+  await makeWorkstream('secret-ws', 'Title mentioning hunter2-value');
+  await arrive('secret-ws', (d) => {
     d.steering.push({ id: 'steer_1', body: 'go', at: '2026-08-04T10:00:00.000Z' });
     d.spend.humanInterventions = 1; // the headline ratio anchors to the counter
     d.deliverables.push({
@@ -267,7 +267,7 @@ test('runStats writes stats.html with secrets redacted', () => {
     });
   });
   setSecret('TOKEN', 'hunter2-value');
-  const out = runStats(new Date('2026-08-05T00:00:00.000Z'));
+  const out = await runStats(new Date('2026-08-05T00:00:00.000Z'));
   const html = fs.readFileSync(out, 'utf8');
   assert.ok(out.endsWith('stats.html'));
   assert.doesNotMatch(html, /hunter2-value/);
@@ -279,16 +279,16 @@ test('runStats writes stats.html with secrets redacted', () => {
   assert.equal(payload.totals.perOutcome, 1);
 });
 
-test('computeStats week-ago delta needs eight days of history', () => {
-  makeWorkstream();
-  arrive('stats-ws', (d) => {
+test('computeStats week-ago delta needs eight days of history', async () => {
+  await makeWorkstream();
+  await arrive('stats-ws', (d) => {
     d.steering.push({ id: 'steer_1', body: 'go', at: '2026-08-01T10:00:00.000Z' });
     d.deliverables.push({
       id: 'del_1', title: 'done', kind: 'markdown', path: 'a.md', contentHash: 'h1', createdAtVirtual: '2026-08-01T11:00:00.000Z',
       adopted: { contentHash: 'h1', passId: 'pass_1', atVirtual: '2026-08-01T11:00:00.000Z' },
     });
   });
-  const docs: WorkstreamDoc[] = [load('stats-ws')];
+  const docs: WorkstreamDoc[] = [await load('stats-ws')];
   const short = computeStats(docs, [], new Date('2026-08-05T00:00:00.000Z'));
   assert.equal(short.totals.perOutcomeWeekAgo, null);
   const long = computeStats(docs, [], new Date('2026-08-12T00:00:00.000Z'));

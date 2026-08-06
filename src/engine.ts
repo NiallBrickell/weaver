@@ -11,13 +11,12 @@
  */
 
 import { execSync } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join as pathJoin } from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { runCoordinatorPass } from './coordinator.js';
 import { loadSecrets, redactSecrets } from './secrets.js';
 import { runWorker } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
-import { arrive, load, newId, readArtifact, verifyArtifact, workstreamDir, writeArtifact } from './store.js';
+import { arrive, load, newId, readArtifact, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { WorkstreamDoc } from './types.js';
 
@@ -31,32 +30,32 @@ function dueWakes(doc: WorkstreamDoc): typeof doc.wakes {
 }
 
 /** Step 1a: execute approved sends. Authority is revalidated here, at egress. */
-function executeApprovedSends(slug: string): number {
-  const doc = load(slug);
+async function executeApprovedSends(slug: string): Promise<number> {
+  const doc = await load(slug);
   let executed = 0;
   for (const int of doc.interactions.filter((i) => i.status === 'approved')) {
     // Revalidate at egress: approval present, pinned content intact, budget alive.
     const del = doc.deliverables.find((d) => d.id === int.deliverableId);
     if (!del || !int.pinnedHash || del.adopted?.contentHash !== int.pinnedHash) {
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         const i2 = d.interactions.find((x) => x.id === int.id)!;
         i2.status = 'rejected';
         event('send.refused', `${int.id} refused at egress: pinned content missing or drifted`, [int.id]);
       });
       continue;
     }
-    if (!verifyArtifact(slug, del.path, int.pinnedHash)) {
-      arrive(slug, (d, event) => {
+    if (!(await verifyArtifact(slug, del.path, int.pinnedHash))) {
+      await arrive(slug, (d, event) => {
         const i2 = d.interactions.find((x) => x.id === int.id)!;
         i2.status = 'rejected';
         event('send.refused', `${int.id} refused at egress: artifact integrity failure`, [int.id]);
       });
       continue;
     }
-    const body = readArtifact(slug, del.path);
+    const body = await readArtifact(slug, del.path);
     try {
       const rec = providerSend(slug, int.id, { to: int.to, subject: int.subject, body });
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         const i2 = d.interactions.find((x) => x.id === int.id)!;
         i2.status = 'sent';
         i2.externalRef = rec.ref;
@@ -65,7 +64,7 @@ function executeApprovedSends(slug: string): number {
       });
     } catch (e) {
       if (e instanceof SendCrashedAfterEgress) {
-        arrive(slug, (d, event) => {
+        await arrive(slug, (d, event) => {
           const i2 = d.interactions.find((x) => x.id === int.id)!;
           i2.status = 'unknown';
           event('send.unknown', `${int.id} result UNKNOWN (crash after egress) — readback required, no re-send`, [int.id]);
@@ -80,12 +79,12 @@ function executeApprovedSends(slug: string): number {
 }
 
 /** Step 1b: resolve unknown sends by provider readback — never a second send. */
-function resolveUnknownSends(slug: string): number {
-  const doc = load(slug);
+async function resolveUnknownSends(slug: string): Promise<number> {
+  const doc = await load(slug);
   let resolved = 0;
   for (const int of doc.interactions.filter((i) => i.status === 'unknown')) {
     const rec = providerLookup(slug, int.id);
-    arrive(slug, (d, event) => {
+    await arrive(slug, (d, event) => {
       const i2 = d.interactions.find((x) => x.id === int.id)!;
       if (rec) {
         i2.status = 'confirmed';
@@ -115,7 +114,7 @@ function resolveUnknownSends(slug: string): number {
  */
 async function pilotApproveGatedActions(slug: string): Promise<number> {
   const base = process.env.WEAVER_PILOT_URL ?? 'http://127.0.0.1:9721';
-  const doc = load(slug);
+  const doc = await load(slug);
   let approved = 0;
   const gated = doc.assignments.filter(
     (a) => a.kind === 'action' && a.state === 'gated' && a.exec && !a.exec.approval && !a.exec.pilotVerdict,
@@ -163,7 +162,7 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
       continue;
     }
     if (!verdict) continue;
-    arrive(slug, (d, event) => {
+    await arrive(slug, (d, event) => {
       const a2 = d.assignments.find((x) => x.id === asg.id)!;
       if (!a2.exec || a2.state !== 'gated') return;
       a2.exec.pilotVerdict = { ...verdict!, at: new Date().toISOString() };
@@ -194,8 +193,8 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
  * the same principle as email readback — after an act (or a crash), truth
  * comes from re-inspecting the world, never from re-doing the act.
  */
-export function verifyAction(slug: string, assignmentId: string): boolean {
-  const doc = load(slug);
+export async function verifyAction(slug: string, assignmentId: string): Promise<boolean> {
+  const doc = await load(slug);
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg?.exec) throw new Error(`${assignmentId} is not an action assignment`);
   const secrets = loadSecrets(slug);
@@ -215,7 +214,7 @@ export function verifyAction(slug: string, assignmentId: string): boolean {
     output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
   }
   output = redactSecrets(output, secrets);
-  arrive(slug, (d, event) => {
+  await arrive(slug, (d, event) => {
     const a2 = d.assignments.find((x) => x.id === assignmentId)!;
     a2.exec!.verified = { ok, output: output.slice(0, 2000), at: new Date().toISOString() };
     event(
@@ -236,15 +235,15 @@ export function verifyAction(slug: string, assignmentId: string): boolean {
  * re-running). The result is submitted for coordinator review like any other
  * action, and only the verify readback can call the effect real.
  */
-function executeHumanActions(slug: string): number {
-  const doc = load(slug);
+async function executeHumanActions(slug: string): Promise<number> {
+  const doc = await load(slug);
   let executed = 0;
   const due = doc.assignments.filter(
     (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.exec.approval,
   );
   for (const asg of due) {
     const runId = newId('run');
-    arrive(slug, (d, event) => {
+    await arrive(slug, (d, event) => {
       const a2 = d.assignments.find((x) => x.id === asg.id)!;
       a2.state = 'running';
       a2.attempts.push({ runId, model: 'engine', runnerPid: process.pid, startedAt: new Date().toISOString() });
@@ -283,8 +282,8 @@ function executeHumanActions(slug: string): number {
       output.slice(0, 8000) || '(none)',
       '```',
     ].join('\n');
-    const { relPath, hash } = writeArtifact(slug, `${asg.id}-engine-execution.md`, report);
-    arrive(slug, (d, event) => {
+    const { relPath, hash } = await writeArtifact(slug, `${asg.id}-engine-execution.md`, report);
+    await arrive(slug, (d, event) => {
       const a2 = d.assignments.find((x) => x.id === asg.id)!;
       const delId = newId('del');
       d.deliverables.push({
@@ -328,11 +327,11 @@ function executeHumanActions(slug: string): number {
  * world, so it is never blindly re-queued. The verify readback runs instead,
  * and a coordinator (or human) decides from that evidence.
  */
-function recoverCrashedAttempts(slug: string): number {
+async function recoverCrashedAttempts(slug: string): Promise<number> {
   // Long research/synthesis workers legitimately run 20+ minutes; recovering
   // a live worker as "crashed" forks the work, so the horizon errs long.
   const staleMs = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
-  const doc = load(slug);
+  const doc = await load(slug);
   let recovered = 0;
   for (const asg of doc.assignments.filter((a) => a.state === 'running')) {
     const attempt = asg.attempts[asg.attempts.length - 1];
@@ -349,7 +348,7 @@ function recoverCrashedAttempts(slug: string): number {
     }
     if (!driverDead && Date.now() - new Date(attempt.startedAt).getTime() < staleMs) continue;
     const isAction = asg.kind === 'action';
-    arrive(slug, (d, event) => {
+    await arrive(slug, (d, event) => {
       const a2 = d.assignments.find((x) => x.id === asg.id)!;
       const t2 = a2.attempts.find((t) => t.runId === attempt.runId);
       if (t2 && !t2.endedAt) {
@@ -373,11 +372,11 @@ function recoverCrashedAttempts(slug: string): number {
       const MAX_ACTION_ATTEMPTS = 3;
       let landed = false;
       try {
-        landed = verifyAction(slug, asg.id);
+        landed = await verifyAction(slug, asg.id);
       } catch (e) {
         process.stderr.write(`readback for crashed action ${asg.id} failed to run: ${e instanceof Error ? e.message : e}\n`);
       }
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         const a2 = d.assignments.find((x) => x.id === asg.id)!;
         if (landed) {
           a2.state = 'awaiting_review';
@@ -429,32 +428,6 @@ export interface TickReport {
   skipped?: string;
 }
 
-/**
- * Cross-PROCESS tick exclusion (the doc's revision check guards logical
- * conflicts, not two OS processes dispatching the same real-world act in the
- * same instant — e.g. `weaver run` resident plus a manual `weaver tick`).
- * mkdir is atomic on every platform; a lock whose recorded pid is dead is
- * stale and reclaimed.
- */
-function acquireTickLock(slug: string): (() => void) | null {
-  const dir = pathJoin(workstreamDir(slug), '.tick.lock');
-  const pidFile = pathJoin(dir, 'pid');
-  try {
-    mkdirSync(dir);
-    writeFileSync(pidFile, String(process.pid));
-    return () => rmSync(dir, { recursive: true, force: true });
-  } catch {
-    try {
-      const pid = Number(readFileSync(pidFile, 'utf8'));
-      process.kill(pid, 0); // throws if the holder is dead
-      return null; // a live process holds the lock
-    } catch {
-      rmSync(dir, { recursive: true, force: true });
-      return acquireTickLock(slug);
-    }
-  }
-}
-
 export async function tick(
   slug: string,
   opts: { maxPasses?: number } = {},
@@ -467,12 +440,15 @@ export async function tick(
     workersRun: [],
     passes: [],
   };
-  const releaseTick = acquireTickLock(slug);
+  // Cross-process tick exclusion lives behind the store (fs impl: mkdir lock,
+  // dead holders reclaimed) — the doc's revision check guards logical
+  // conflicts, not two OS processes dispatching the same act in one instant.
+  const releaseTick = await tryTickLock(slug);
   if (!releaseTick) return { ...report, skipped: 'another process is ticking this workstream' };
   try {
     return await tickLocked(slug, maxPasses, report);
   } finally {
-    releaseTick();
+    await releaseTick();
   }
 }
 
@@ -482,20 +458,20 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     report.cycles = cycle + 1;
     let progressed = false;
 
-    if (recoverCrashedAttempts(slug) > 0) progressed = true;
+    if ((await recoverCrashedAttempts(slug)) > 0) progressed = true;
     if ((await pilotApproveGatedActions(slug)) > 0) progressed = true;
-    report.unknownsResolved += resolveUnknownSends(slug);
-    const sent = executeApprovedSends(slug);
+    report.unknownsResolved += await resolveUnknownSends(slug);
+    const sent = await executeApprovedSends(slug);
     report.sendsExecuted += sent;
     if (sent > 0) progressed = true;
 
     // Human-authored commands: engine executes, then readback judges.
-    const engineActs = load(slug).assignments
+    const engineActs = (await load(slug)).assignments
       .filter((a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.exec.approval)
       .map((a) => a.id);
-    if (executeHumanActions(slug) > 0) {
+    if ((await executeHumanActions(slug)) > 0) {
       for (const id of engineActs) {
-        const ok = verifyAction(slug, id);
+        const ok = await verifyAction(slug, id);
         process.stderr.write(`[tick] engine action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
       }
       progressed = true;
@@ -504,11 +480,11 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     // Budget gates WORKERS, not just coordinator passes — a long research run
     // must not be able to sail past maxCostUsd. Over budget: launch nothing,
     // tell the human once, and let them top up or wind down.
-    const docBudget = load(slug);
+    const docBudget = await load(slug);
     if (docBudget.spend.totalCostUsd >= docBudget.workstream.budget.maxCostUsd) {
       const hasOpen = docBudget.attention.some((a) => a.kind === 'budget' && a.status === 'open');
       if (!hasOpen) {
-        arrive(slug, (d, event) => {
+        await arrive(slug, (d, event) => {
           d.attention.push({
             id: newId('att'),
             kind: 'budget',
@@ -520,16 +496,16 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
         });
       }
     } else {
-    const runnable = runnableAssignments(load(slug));
+    const runnable = runnableAssignments(await load(slug));
     for (const id of runnable) {
       process.stderr.write(`[tick] running worker for ${id}…\n`);
       await runWorker(slug, id);
       report.workersRun.push(id);
       // Action assignments: the worker's claim settles nothing — run the
       // deterministic readback now so the reviewing pass sees verified truth.
-      const after = load(slug).assignments.find((a) => a.id === id);
+      const after = (await load(slug)).assignments.find((a) => a.id === id);
       if (after?.kind === 'action' && after.exec) {
-        const ok = verifyAction(slug, id);
+        const ok = await verifyAction(slug, id);
         process.stderr.write(`[tick] action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
       }
       progressed = true;
@@ -542,10 +518,10 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     // forever looking innocently idle. Restore the loop: clear the lease, mark
     // the pass crashed, and re-fire its reasons as a fresh immediate wake.
     {
-      const d0 = load(slug);
+      const d0 = await load(slug);
       if (d0.lease && new Date(d0.lease.expiresAt).getTime() <= Date.now()) {
         const deadPassId = d0.lease.passId;
-        arrive(slug, (d, event) => {
+        await arrive(slug, (d, event) => {
           const rec = d.passes.find((p) => p.id === deadPassId);
           if (rec && rec.outcome === 'running') {
             rec.outcome = 'error';
@@ -566,7 +542,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       }
     }
 
-    const preDoc = load(slug);
+    const preDoc = await load(slug);
     const due = dueWakes(preDoc);
     // A live lease means no pass can start: leave the wakes PENDING for the
     // next tick rather than burning them against a pass that cannot run.
@@ -579,7 +555,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       // Event/log lines truncate long wake reasons (coordinators write rich
       // handoff notes into them); the pass itself still receives them in full.
       const brief = reasons.map((r) => (r.length > 160 ? `${r.slice(0, 157)}…` : r));
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         for (const w of d.wakes) {
           if (due.some((x) => x.id === w.id)) w.status = 'fired';
         }
@@ -592,7 +568,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       } catch (e) {
         // The pass never started (lease race, budget ceiling): restore the
         // wakes so the arrival is not silently lost.
-        arrive(slug, (d, event) => {
+        await arrive(slug, (d, event) => {
           for (const w of d.wakes) {
             if (due.some((x) => x.id === w.id) && w.status === 'fired' && !w.firedInPass) {
               w.status = 'pending';

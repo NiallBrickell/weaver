@@ -27,7 +27,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { newId, weaverHome } from './store.js';
+import { getStore, newId, weaverHome } from './store.js';
 import type { Id, Iso } from './types.js';
 
 export type PolicyEffectKind = 'add_verification' | 'narrow_authority' | 'advisory';
@@ -79,38 +79,27 @@ export interface PolicyRecord {
   createdAt: Iso;
 }
 
-interface PolicyStore {
+export interface PolicyStore {
   schemaVersion: 1;
   revision: number;
   policies: PolicyRecord[];
 }
 
-function storePath(): string {
-  return path.join(weaverHome(), 'policies.json');
-}
-
-export function loadPolicies(): PolicyStore {
-  try {
-    return JSON.parse(fs.readFileSync(storePath(), 'utf8')) as PolicyStore;
-  } catch {
-    return { schemaVersion: 1, revision: 0, policies: [] };
-  }
-}
-
-function writePolicies(store: PolicyStore): void {
-  fs.mkdirSync(path.dirname(storePath()), { recursive: true });
-  const tmp = `${storePath()}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(store, null, 2) + '\n');
-  fs.renameSync(tmp, storePath());
+/** Reads/writes go through the StateStore backend (src/store.ts). */
+export async function loadPolicies(): Promise<PolicyStore> {
+  return getStore().loadPolicies();
 }
 
 /**
  * The policy store is GLOBAL (shared across workstreams), so with concurrent
- * ticks two processes can race the read-modify-write. A short mkdir spin-lock
- * serializes them; a holder that died is reclaimed after 10s.
+ * ticks two processes can race the read-modify-write. A short mkdir lock
+ * serializes them; a holder that died is reclaimed after 10s. The lock is
+ * deliberately fs-local (like the runner pid lock, NOT part of the StateStore
+ * interface): it guards same-machine process concurrency; a network backend
+ * serializes its own writes (PR 2).
  */
-function withPolicyLock<T>(fn: () => T): T {
-  const dir = `${storePath()}.lock`;
+async function withPolicyLock<T>(fn: () => Promise<T>): Promise<T> {
+  const dir = path.join(weaverHome(), 'policies.json.lock');
   // A missing home dir would make every mkdir below ENOENT — indistinguishable
   // from contention, so the spin would run out the clock on a fresh install.
   fs.mkdirSync(path.dirname(dir), { recursive: true });
@@ -127,23 +116,22 @@ function withPolicyLock<T>(fn: () => T): T {
         }
       } catch { /* raced with the holder's release — retry */ }
       if (Date.now() > deadline) throw new Error('policy store lock timeout');
-      const until = Date.now() + 25;
-      while (Date.now() < until) { /* spin — writes are sub-ms */ }
+      await new Promise((r) => setTimeout(r, 25));
     }
   }
   try {
-    return fn();
+    return await fn();
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
-function mutatePolicies(fn: (store: PolicyStore) => void): PolicyStore {
-  return withPolicyLock(() => {
-    const store = loadPolicies();
+async function mutatePolicies(fn: (store: PolicyStore) => void): Promise<PolicyStore> {
+  return withPolicyLock(async () => {
+    const store = await loadPolicies();
     fn(store);
     store.revision += 1;
-    writePolicies(store);
+    await getStore().savePolicies(store);
     return store;
   });
 }
@@ -151,9 +139,9 @@ function mutatePolicies(fn: (store: PolicyStore) => void): PolicyStore {
 /** Add a scope tag to a set of policies (idempotent). Used to reclassify —
  * e.g. marking session-backfilled rules that are really 'tool-dev' feedback
  * about Weaver itself, which seed export then excludes. */
-export function tagPolicies(ids: Id[], tag: string): number {
+export async function tagPolicies(ids: Id[], tag: string): Promise<number> {
   let n = 0;
-  mutatePolicies((store) => {
+  await mutatePolicies((store) => {
     for (const p of store.policies) {
       if (ids.includes(p.id) && !p.scope.tags.includes(tag)) {
         p.scope.tags.push(tag);
@@ -186,7 +174,7 @@ export interface SeedFile {
  * short origin label. Superseded policies stay home: a rule the author
  * outgrew must not be seeded into a teammate.
  */
-export function exportSeed(author: string): SeedFile {
+export async function exportSeed(author: string): Promise<SeedFile> {
   const sanitizeOrigin = (p: PolicyRecord): string => {
     const raw = policyOrigin(p);
     return raw.replace(/\/[^\s§]*\//g, (m) => m.split('/').filter(Boolean).pop() + '/').slice(0, 80);
@@ -195,7 +183,7 @@ export function exportSeed(author: string): SeedFile {
     weaverSeed: 1,
     author,
     exportedAt: new Date().toISOString(),
-    policies: loadPolicies()
+    policies: (await loadPolicies())
       .policies.filter((p) => p.status !== 'superseded')
       // 'tool-dev' scoped rules are feedback about building Weaver itself
       // (TUI complaints, harness architecture notes) — lessons for whoever
@@ -218,12 +206,12 @@ export function exportSeed(author: string): SeedFile {
  * corrections supersede seeded rules with visible lineage. Dedup by
  * normalized statement makes re-import a no-op.
  */
-export function importSeed(seed: SeedFile, opts: { refuseAuthority: (text: string) => boolean }): {
+export async function importSeed(seed: SeedFile, opts: { refuseAuthority: (text: string) => boolean }): Promise<{
   imported: number;
   skippedDuplicate: number;
   refused: string[];
-} {
-  const existing = new Set(loadPolicies().policies.map((p) => normalizeStatement(p.statement)));
+}> {
+  const existing = new Set((await loadPolicies()).policies.map((p) => normalizeStatement(p.statement)));
   let imported = 0;
   let skippedDuplicate = 0;
   const refused: string[] = [];
@@ -237,7 +225,7 @@ export function importSeed(seed: SeedFile, opts: { refuseAuthority: (text: strin
       continue;
     }
     existing.add(normalizeStatement(p.statement));
-    proposeBackfillPolicy({
+    await proposeBackfillPolicy({
       statement: p.statement,
       tags: p.tags,
       effectKind: p.effect.kind,
@@ -266,15 +254,15 @@ export function normalizeStatement(s: string): string {
 }
 
 /** Policies whose scope shares at least one tag with the workstream (shadow + active). */
-export function matchPolicies(tags: string[]): PolicyRecord[] {
-  return loadPolicies().policies.filter(
+export async function matchPolicies(tags: string[]): Promise<PolicyRecord[]> {
+  return (await loadPolicies()).policies.filter(
     (p) =>
       p.status !== 'superseded' &&
       p.scope.tags.some((t) => tags.includes(t)),
   );
 }
 
-export function proposePolicy(args: {
+export async function proposePolicy(args: {
   statement: string;
   tags: string[];
   effectKind: PolicyEffectKind;
@@ -283,7 +271,7 @@ export function proposePolicy(args: {
   passId: Id;
   steeringId?: Id;
   interventionSummary: string;
-}): PolicyRecord {
+}): Promise<PolicyRecord> {
   const record: PolicyRecord = {
     id: newId('pol'),
     statement: args.statement,
@@ -300,7 +288,7 @@ export function proposePolicy(args: {
     evidence: [],
     createdAt: new Date().toISOString(),
   };
-  mutatePolicies((s) => s.policies.push(record));
+  await mutatePolicies((s) => s.policies.push(record));
   return record;
 }
 
@@ -309,7 +297,7 @@ export function proposePolicy(args: {
  * Identical lifecycle to proposePolicy — shadow status, closed effect
  * vocabulary, widensAuthority: false — only the provenance variant differs.
  */
-export function proposeBackfillPolicy(args: {
+export async function proposeBackfillPolicy(args: {
   statement: string;
   tags: string[];
   effectKind: PolicyEffectKind;
@@ -317,7 +305,7 @@ export function proposeBackfillPolicy(args: {
   source: 'backfill:rules' | 'backfill:sessions' | 'seed';
   ref: string;
   interventionSummary: string;
-}): PolicyRecord {
+}): Promise<PolicyRecord> {
   const record: PolicyRecord = {
     id: newId('pol'),
     statement: args.statement,
@@ -329,7 +317,7 @@ export function proposeBackfillPolicy(args: {
     evidence: [],
     createdAt: new Date().toISOString(),
   };
-  mutatePolicies((s) => s.policies.push(record));
+  await mutatePolicies((s) => s.policies.push(record));
   return record;
 }
 
@@ -338,15 +326,15 @@ export function proposeBackfillPolicy(args: {
  * shadow → active only when evidence shows a matching workstream applied the
  * policy and needed no further intervention on the same point.
  */
-export function recordPolicyOutcome(args: {
+export async function recordPolicyOutcome(args: {
   policyId: Id;
   workstreamSlug: string;
   passId: Id;
   note: string;
   interventionFree: boolean;
-}): PolicyRecord {
+}): Promise<PolicyRecord> {
   let updated: PolicyRecord | undefined;
-  mutatePolicies((s) => {
+  await mutatePolicies((s) => {
     const p = s.policies.find((x) => x.id === args.policyId);
     if (!p) throw new Error(`no policy ${args.policyId}`);
     if (p.status === 'superseded') throw new Error(`${p.id} is superseded by ${p.supersededBy}`);
@@ -366,9 +354,9 @@ export function recordPolicyOutcome(args: {
 }
 
 /** Replace a policy that turned out wrong; lineage kept, like decisions. */
-export function supersedePolicy(oldId: Id, replacement: Omit<Parameters<typeof proposePolicy>[0], never>): PolicyRecord {
-  const next = proposePolicy(replacement);
-  mutatePolicies((s) => {
+export async function supersedePolicy(oldId: Id, replacement: Omit<Parameters<typeof proposePolicy>[0], never>): Promise<PolicyRecord> {
+  const next = await proposePolicy(replacement);
+  await mutatePolicies((s) => {
     const old = s.policies.find((x) => x.id === oldId);
     if (!old) throw new Error(`no policy ${oldId}`);
     old.status = 'superseded';

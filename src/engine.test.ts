@@ -27,8 +27,8 @@ function outboxDir(slug: string): string {
 
 const SLUG = 'send-ws';
 
-function makeApprovedSend(opts: { driftPin?: boolean } = {}): string {
-  createWorkstream({
+async function makeApprovedSend(opts: { driftPin?: boolean } = {}): Promise<string> {
+  await createWorkstream({
     slug: SLUG,
     title: 'Send test',
     objective: 'test sends',
@@ -38,9 +38,9 @@ function makeApprovedSend(opts: { driftPin?: boolean } = {}): string {
     autonomy: { sendsRequireApproval: true },
     budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
-  const { relPath, hash } = writeArtifact(SLUG, 'email.md', 'To: x\nSubject: y\nBody: hello');
+  const { relPath, hash } = await writeArtifact(SLUG, 'email.md', 'To: x\nSubject: y\nBody: hello');
   const intId = newId('int');
-  arrive(SLUG, (d) => {
+  await arrive(SLUG, (d) => {
     const delId = newId('del');
     d.deliverables.push({
       id: delId,
@@ -81,24 +81,24 @@ afterEach(() => {
 });
 
 test('an approved send executes once and records the provider ref', async () => {
-  const intId = makeApprovedSend();
+  const intId = await makeApprovedSend();
   const report = await tick(SLUG, { maxPasses: 0 });
   assert.equal(report.sendsExecuted, 1);
-  const int = load(SLUG).interactions.find((i) => i.id === intId)!;
+  const int = (await load(SLUG)).interactions.find((i) => i.id === intId)!;
   assert.equal(int.status, 'sent');
   assert.equal(int.externalRef, `prov_${intId}`);
   assert.equal(fs.readdirSync(outboxDir(SLUG)).length, 1);
 });
 
 test('crash after egress leaves UNKNOWN; readback confirms; the provider has exactly one record', async () => {
-  const intId = makeApprovedSend();
+  const intId = await makeApprovedSend();
 
   process.env.WEAVER_SEND_UNKNOWN = '1';
   // First cycle sends (provider records it, then "crash"); a later cycle in the
   // same tick resolves the unknown by READBACK — even with chaos still on,
   // because readback never sends.
   await tick(SLUG, { maxPasses: 0 });
-  const int = load(SLUG).interactions.find((i) => i.id === intId)!;
+  const int = (await load(SLUG)).interactions.find((i) => i.id === intId)!;
   assert.equal(int.status, 'confirmed');
   assert.equal(int.externalRef, `prov_${intId}`);
 
@@ -106,21 +106,21 @@ test('crash after egress leaves UNKNOWN; readback confirms; the provider has exa
   assert.equal(fs.readdirSync(outboxDir(SLUG)).length, 1);
 
   // And the event trail shows the unknown → readback path, not a resend.
-  const types = load(SLUG).events.map((e) => e.type);
+  const types = (await load(SLUG)).events.map((e) => e.type);
   assert.ok(types.includes('send.unknown'));
   assert.ok(types.includes('send.confirmed'));
 });
 
 test('a send whose pinned content drifted is refused at egress, not sent', async () => {
-  const intId = makeApprovedSend({ driftPin: true });
+  const intId = await makeApprovedSend({ driftPin: true });
   await tick(SLUG, { maxPasses: 0 });
-  const int = load(SLUG).interactions.find((i) => i.id === intId)!;
+  const int = (await load(SLUG)).interactions.find((i) => i.id === intId)!;
   assert.equal(int.status, 'rejected');
   assert.equal(fs.existsSync(outboxDir(SLUG)), false);
 });
 
 test('a stale running attempt is recovered: crash recorded, assignment re-queued', async () => {
-  createWorkstream({
+  await createWorkstream({
     slug: 'crash-ws',
     title: 'Crash test',
     objective: 'test recovery',
@@ -133,7 +133,7 @@ test('a stale running attempt is recovered: crash recorded, assignment re-queued
   // A running assignment whose worker died. It depends on an incomplete
   // assignment so the recovered queue entry is NOT runnable — the tick must
   // not launch a real worker.
-  arrive('crash-ws', (d) => {
+  await arrive('crash-ws', (d) => {
     d.assignments.push(
       {
         id: 'asg_dep',
@@ -169,7 +169,7 @@ test('a stale running attempt is recovered: crash recorded, assignment re-queued
     delete process.env.WEAVER_ATTEMPT_STALE_MS;
   }
 
-  const asg = load('crash-ws').assignments.find((a) => a.id === 'asg_orphan')!;
+  const asg = (await load('crash-ws')).assignments.find((a) => a.id === 'asg_orphan')!;
   assert.equal(asg.state, 'queued');
   const attempt = asg.attempts[0]!;
   assert.equal(attempt.terminalReason, 'crashed');
@@ -179,8 +179,8 @@ test('a stale running attempt is recovered: crash recorded, assignment re-queued
 // ---------------------------------------------------------------------------
 // Action assignments: gated until approval, confirmed only by readback.
 
-function makeActionWorkstream(slug: string, action: Partial<Assignment>): void {
-  createWorkstream({
+async function makeActionWorkstream(slug: string, action: Partial<Assignment>): Promise<void> {
+  await createWorkstream({
     slug,
     title: 'Action test',
     objective: 'test actions',
@@ -190,7 +190,7 @@ function makeActionWorkstream(slug: string, action: Partial<Assignment>): void {
     autonomy: { sendsRequireApproval: true },
     budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
-  arrive(slug, (d) => {
+  await arrive(slug, (d) => {
     d.assignments.push({
       id: 'asg_act',
       objective: 'perform the act',
@@ -209,34 +209,34 @@ function makeActionWorkstream(slug: string, action: Partial<Assignment>): void {
 }
 
 test('a gated action never runs: tick launches no worker for it', async () => {
-  makeActionWorkstream('gated-ws', {});
+  await makeActionWorkstream('gated-ws', {});
   const report = await tick('gated-ws', { maxPasses: 0 });
   assert.deepEqual(report.workersRun, []);
-  assert.equal(load('gated-ws').assignments[0]!.state, 'gated');
+  assert.equal((await load('gated-ws')).assignments[0]!.state, 'gated');
 });
 
-test('readback records CONFIRMED on exit 0 and FAILED (with output) otherwise', () => {
-  makeActionWorkstream('verify-ws', {
+test('readback records CONFIRMED on exit 0 and FAILED (with output) otherwise', async () => {
+  await makeActionWorkstream('verify-ws', {
     exec: { cwd: process.env.WEAVER_HOME!, verify: 'echo effect-present' },
   });
-  assert.equal(verifyAction('verify-ws', 'asg_act'), true);
-  let asg = load('verify-ws').assignments[0]!;
+  assert.equal(await verifyAction('verify-ws', 'asg_act'), true);
+  let asg = (await load('verify-ws')).assignments[0]!;
   assert.equal(asg.exec!.verified!.ok, true);
   assert.match(asg.exec!.verified!.output, /effect-present/);
 
-  makeActionWorkstream('verify-fail-ws', {
+  await makeActionWorkstream('verify-fail-ws', {
     exec: { cwd: process.env.WEAVER_HOME!, verify: 'echo no-effect >&2; false' },
   });
-  assert.equal(verifyAction('verify-fail-ws', 'asg_act'), false);
-  asg = load('verify-fail-ws').assignments[0]!;
+  assert.equal(await verifyAction('verify-fail-ws', 'asg_act'), false);
+  asg = (await load('verify-fail-ws')).assignments[0]!;
   assert.equal(asg.exec!.verified!.ok, false);
   assert.match(asg.exec!.verified!.output, /no-effect/);
-  const types = load('verify-fail-ws').events.map((e) => e.type);
+  const types = (await load('verify-fail-ws')).events.map((e) => e.type);
   assert.ok(types.includes('action.verify_failed'));
 });
 
 test('crashed action, effect LANDED: never re-run — submitted for review on readback evidence', async () => {
-  makeActionWorkstream('action-crash-ws', {
+  await makeActionWorkstream('action-crash-ws', {
     state: 'running',
     exec: {
       cwd: process.env.WEAVER_HOME!,
@@ -255,7 +255,7 @@ test('crashed action, effect LANDED: never re-run — submitted for review on re
     delete process.env.WEAVER_ATTEMPT_STALE_MS;
   }
 
-  const doc = load('action-crash-ws');
+  const doc = await load('action-crash-ws');
   const asg = doc.assignments[0]!;
   assert.equal(asg.attempts[0]!.terminalReason, 'crashed');
   assert.equal(asg.exec!.verified!.ok, true); // readback discovered the effect landed
@@ -265,7 +265,7 @@ test('crashed action, effect LANDED: never re-run — submitted for review on re
 
 test('crashed action, effect ABSENT: the approved idempotent act is re-queued, bounded; exhaustion escalates', async () => {
   // exec.run keeps the re-run on the ENGINE path — deterministic, no model.
-  makeActionWorkstream('action-requeue-ws', {
+  await makeActionWorkstream('action-requeue-ws', {
     state: 'running',
     exec: {
       cwd: process.env.WEAVER_HOME!,
@@ -281,7 +281,7 @@ test('crashed action, effect ABSENT: the approved idempotent act is re-queued, b
   } finally {
     delete process.env.WEAVER_ATTEMPT_STALE_MS;
   }
-  let doc = load('action-requeue-ws');
+  let doc = await load('action-requeue-ws');
   // Approval attaches to the ACT: no human in the loop — the same tick
   // re-queued it and the engine already re-executed (attempt 2).
   assert.equal(doc.assignments[0]!.attempts.length, 2);
@@ -289,7 +289,7 @@ test('crashed action, effect ABSENT: the approved idempotent act is re-queued, b
   assert.ok(!doc.attention.some((a) => a.kind === 'blocker' && a.status === 'open' && a.summary.includes('judgment')));
 
   // Exhaustion: with MAX attempts already burned, escalate instead of looping.
-  makeActionWorkstream('action-exhausted-ws', {
+  await makeActionWorkstream('action-exhausted-ws', {
     state: 'running',
     exec: {
       cwd: process.env.WEAVER_HOME!,
@@ -308,13 +308,13 @@ test('crashed action, effect ABSENT: the approved idempotent act is re-queued, b
   } finally {
     delete process.env.WEAVER_ATTEMPT_STALE_MS;
   }
-  doc = load('action-exhausted-ws');
+  doc = await load('action-exhausted-ws');
   assert.equal(doc.assignments[0]!.state, 'failed');
   assert.ok(doc.attention.some((a) => a.refId === 'asg_act' && a.status === 'open'));
 });
 
 test('a human-authored exec.run action is executed by the ENGINE (no worker) and judged by readback', async () => {
-  makeActionWorkstream('engine-act-ws', {
+  await makeActionWorkstream('engine-act-ws', {
     state: 'queued',
     exec: {
       cwd: process.env.WEAVER_HOME!,
@@ -325,7 +325,7 @@ test('a human-authored exec.run action is executed by the ENGINE (no worker) and
   });
   const report = await tick('engine-act-ws', { maxPasses: 0 });
   assert.deepEqual(report.workersRun, []); // engine path, never a model worker
-  const doc = load('engine-act-ws');
+  const doc = await load('engine-act-ws');
   const asg = doc.assignments[0]!;
   assert.equal(asg.state, 'awaiting_review');
   assert.equal(asg.attempts[0]!.model, 'engine');
@@ -335,24 +335,24 @@ test('a human-authored exec.run action is executed by the ENGINE (no worker) and
 });
 
 test('an exec.run action without approval is not executed', async () => {
-  makeActionWorkstream('engine-gated-ws', {
+  await makeActionWorkstream('engine-gated-ws', {
     state: 'gated',
     exec: { cwd: process.env.WEAVER_HOME!, run: 'echo nope > leaked.txt', verify: 'true' },
   });
   await tick('engine-gated-ws', { maxPasses: 0 });
-  assert.equal(load('engine-gated-ws').assignments[0]!.state, 'gated');
+  assert.equal((await load('engine-gated-ws')).assignments[0]!.state, 'gated');
   assert.equal(fs.existsSync(path.join(process.env.WEAVER_HOME!, 'leaked.txt')), false);
 });
 
 test('human adoption cannot outrank readback: an action without a passing verify is refused', async () => {
   const { adoptSubmission } = await import('./humanActs.js');
-  makeActionWorkstream('adopt-guard-ws', {
+  await makeActionWorkstream('adopt-guard-ws', {
     state: 'awaiting_review',
     submission: { summary: 'I did the thing, trust me' },
   });
   await assert.rejects(async () => adoptSubmission('adopt-guard-ws', 'asg_act'), /readback has not run/);
 
-  makeActionWorkstream('adopt-guard-fail-ws', {
+  await makeActionWorkstream('adopt-guard-fail-ws', {
     state: 'awaiting_review',
     submission: { summary: 'claimed success' },
     exec: {
@@ -363,7 +363,7 @@ test('human adoption cannot outrank readback: an action without a passing verify
   });
   await assert.rejects(async () => adoptSubmission('adopt-guard-fail-ws', 'asg_act'), /readback FAILED/);
 
-  makeActionWorkstream('adopt-guard-ok-ws', {
+  await makeActionWorkstream('adopt-guard-ok-ws', {
     state: 'awaiting_review',
     submission: { summary: 'done' },
     exec: {
@@ -372,12 +372,12 @@ test('human adoption cannot outrank readback: an action without a passing verify
       verified: { ok: true, output: 'effect present', at: new Date().toISOString() },
     },
   });
-  adoptSubmission('adopt-guard-ok-ws', 'asg_act');
-  assert.equal(load('adopt-guard-ok-ws').assignments[0]!.adoption.state, 'accepted');
+  await adoptSubmission('adopt-guard-ok-ws', 'asg_act');
+  assert.equal((await load('adopt-guard-ok-ws')).assignments[0]!.adoption.state, 'accepted');
 });
 
 test('a second process cannot tick a workstream mid-tick: live lock skips, dead lock is reclaimed', async () => {
-  createWorkstream({
+  await createWorkstream({
     slug: 'lock-ws',
     title: 'Lock test',
     objective: 'tick exclusion',
@@ -401,7 +401,7 @@ test('a second process cannot tick a workstream mid-tick: live lock skips, dead 
 });
 
 test('a fresh running attempt is NOT treated as crashed', async () => {
-  createWorkstream({
+  await createWorkstream({
     slug: 'fresh-ws',
     title: 'Fresh attempt',
     objective: 'no false recovery',
@@ -411,7 +411,7 @@ test('a fresh running attempt is NOT treated as crashed', async () => {
     autonomy: { sendsRequireApproval: true },
     budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
-  arrive('fresh-ws', (d) => {
+  await arrive('fresh-ws', (d) => {
     d.assignments.push({
       id: 'asg_live',
       objective: 'still genuinely running',
@@ -426,11 +426,11 @@ test('a fresh running attempt is NOT treated as crashed', async () => {
     });
   });
   await tick('fresh-ws', { maxPasses: 0 }); // default 10-minute staleness
-  assert.equal(load('fresh-ws').assignments[0]!.state, 'running');
+  assert.equal((await load('fresh-ws')).assignments[0]!.state, 'running');
 });
 
 test('an attempt whose driver process is dead is recovered immediately, no horizon wait', async () => {
-  createWorkstream({
+  await createWorkstream({
     slug: 'deadpid-ws',
     title: 'Dead driver',
     objective: 'immediate orphan recovery',
@@ -440,7 +440,7 @@ test('an attempt whose driver process is dead is recovered immediately, no horiz
     autonomy: { sendsRequireApproval: true },
     budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
-  arrive('deadpid-ws', (d) => {
+  await arrive('deadpid-ws', (d) => {
     d.assignments.push(
       {
         id: 'asg_dep_open',
@@ -469,7 +469,7 @@ test('an attempt whose driver process is dead is recovered immediately, no horiz
     );
   });
   await tick('deadpid-ws', { maxPasses: 0 }); // default 45m horizon — pid check must not wait for it
-  const asg = load('deadpid-ws').assignments.find((a) => a.id === 'asg_orphaned')!;
+  const asg = (await load('deadpid-ws')).assignments.find((a) => a.id === 'asg_orphaned')!;
   assert.equal(asg.state, 'queued');
   assert.equal(asg.attempts[0]!.terminalReason, 'crashed');
 });
@@ -517,12 +517,12 @@ const GATED_WITH_CMDS = {
 
 test('pilot alive → a WORKER action auto-approves (live per-command supervision takes over)', async () => {
   await withPilotStub(() => 'approve', async (requests) => {
-    makeActionWorkstream('pilot-ok-ws', {
+    await makeActionWorkstream('pilot-ok-ws', {
       ...GATED_WITH_CMDS,
       exec: { ...GATED_WITH_CMDS.exec, cwd: process.env.WEAVER_HOME! },
       dependsOn: ['asg_hold'],
     });
-    arrive('pilot-ok-ws', (d) => {
+    await arrive('pilot-ok-ws', (d) => {
       d.assignments.push({
         id: 'asg_hold', objective: 'hold', briefing: 'n/a', kind: 'research',
         acceptanceCriteria: ['n/a'], dependsOn: [], state: 'awaiting_review',
@@ -530,7 +530,7 @@ test('pilot alive → a WORKER action auto-approves (live per-command supervisio
       });
     });
     await tick('pilot-ok-ws', { maxPasses: 0 });
-    const asg = load('pilot-ok-ws').assignments.find((a) => a.id === 'asg_act')!;
+    const asg = (await load('pilot-ok-ws')).assignments.find((a) => a.id === 'asg_act')!;
     assert.equal(asg.state, 'queued');
     assert.equal(asg.exec!.approval!.by, 'pilot');
     assert.equal(requests.length, 0); // no plan pre-eval — supervision happens per tool call
@@ -539,7 +539,7 @@ test('pilot alive → a WORKER action auto-approves (live per-command supervisio
 
 test('an ENGINE-RUN command pilot denies stays gated for the human, verdict cached (no re-ask)', async () => {
   await withPilotStub((cmd) => (cmd.includes('rm -rf') ? 'deny' : 'approve'), async (requests) => {
-    makeActionWorkstream('pilot-deny-ws', {
+    await makeActionWorkstream('pilot-deny-ws', {
       exec: {
         cwd: process.env.WEAVER_HOME!,
         run: 'rm -rf /something/important',
@@ -547,7 +547,7 @@ test('an ENGINE-RUN command pilot denies stays gated for the human, verdict cach
       },
     });
     await tick('pilot-deny-ws', { maxPasses: 0 });
-    const asg = load('pilot-deny-ws').assignments[0]!;
+    const asg = (await load('pilot-deny-ws')).assignments[0]!;
     assert.equal(asg.state, 'gated');
     assert.equal(asg.exec!.approval, undefined);
     assert.ok(asg.exec!.pilotVerdict);
@@ -560,12 +560,12 @@ test('an ENGINE-RUN command pilot denies stays gated for the human, verdict cach
 test('pilot unreachable → fails closed: gated, no verdict recorded, retried later', async () => {
   process.env.WEAVER_PILOT_URL = 'http://127.0.0.1:1';
   try {
-    makeActionWorkstream('pilot-down-ws', {
+    await makeActionWorkstream('pilot-down-ws', {
       ...GATED_WITH_CMDS,
       exec: { ...GATED_WITH_CMDS.exec, cwd: process.env.WEAVER_HOME! },
     });
     await tick('pilot-down-ws', { maxPasses: 0 });
-    const asg = load('pilot-down-ws').assignments[0]!;
+    const asg = (await load('pilot-down-ws')).assignments[0]!;
     assert.equal(asg.state, 'gated');
     assert.equal(asg.exec!.pilotVerdict, undefined);
   } finally {
@@ -575,20 +575,20 @@ test('pilot unreachable → fails closed: gated, no verdict recorded, retried la
 
 test('steering that answers an attention card resolves it in the same act', async () => {
   const { addSteering } = await import('./humanActs.js');
-  createWorkstream({
+  await createWorkstream({
     slug: 'answer-ws', title: 'Answer test', objective: 'steer-resolves-attention',
     tags: [], successCriteria: [], constraints: [],
     autonomy: { sendsRequireApproval: true },
     budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
-  arrive('answer-ws', (d) => {
+  await arrive('answer-ws', (d) => {
     d.attention.push({
       id: 'att_q', kind: 'blocker', summary: 'Which field shows the timezone?',
       status: 'open', createdAt: new Date().toISOString(),
     });
   });
-  addSteering('answer-ws', 'It is the Preferred Callback Time field.', { resolvesAttentionId: 'att_q' });
-  const doc = load('answer-ws');
+  await addSteering('answer-ws', 'It is the Preferred Callback Time field.', { resolvesAttentionId: 'att_q' });
+  const doc = await load('answer-ws');
   assert.equal(doc.attention.find((a) => a.id === 'att_q')!.status, 'resolved');
   assert.equal(doc.steering.length, 1);
   assert.ok(doc.wakes.some((w) => w.status === 'pending')); // coordinator still gets the answer

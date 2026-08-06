@@ -39,12 +39,12 @@ function resolveRefAttention(d: any, refId: string): void {
   }
 }
 
-export function addSteering(
+export async function addSteering(
   slug: string,
   body: string,
   opts: { resolvesAttentionId?: string } = {},
-): void {
-  arrive(slug, (d, event) => {
+): Promise<void> {
+  await arrive(slug, (d, event) => {
     const id = newId('steer');
     d.steering.push({ id, body, by: actor(), at: new Date().toISOString() });
     // Steering FROM an attention card is the answer TO it — one act, so the
@@ -69,8 +69,8 @@ export function addSteering(
   });
 }
 
-export function approveSend(slug: string, intId: string): void {
-  arrive(slug, (d, event) => {
+export async function approveSend(slug: string, intId: string): Promise<void> {
+  await arrive(slug, (d, event) => {
     const int = d.interactions.find((i) => i.id === intId);
     if (!int) throw new Error(`no interaction ${intId}`);
     if (int.status !== 'awaiting_approval') throw new Error(`${intId} is ${int.status}, not awaiting_approval`);
@@ -84,8 +84,8 @@ export function approveSend(slug: string, intId: string): void {
   });
 }
 
-export function rejectSend(slug: string, intId: string): void {
-  arrive(slug, (d, event) => {
+export async function rejectSend(slug: string, intId: string): Promise<void> {
+  await arrive(slug, (d, event) => {
     const int = d.interactions.find((i) => i.id === intId);
     if (!int) throw new Error(`no interaction ${intId}`);
     int.status = 'rejected';
@@ -98,8 +98,8 @@ export function rejectSend(slug: string, intId: string): void {
   });
 }
 
-export function approveAction(slug: string, asgId: string): void {
-  arrive(slug, (d, event) => {
+export async function approveAction(slug: string, asgId: string): Promise<void> {
+  await arrive(slug, (d, event) => {
     const asg = d.assignments.find((a) => a.id === asgId);
     if (!asg) throw new Error(`no assignment ${asgId}`);
     if (asg.kind !== 'action' || !asg.exec) throw new Error(`${asgId} is not an action assignment`);
@@ -112,8 +112,8 @@ export function approveAction(slug: string, asgId: string): void {
   });
 }
 
-export function rejectAction(slug: string, asgId: string, reason = 'rejected by human'): void {
-  arrive(slug, (d, event) => {
+export async function rejectAction(slug: string, asgId: string, reason = 'rejected by human'): Promise<void> {
+  await arrive(slug, (d, event) => {
     const asg = d.assignments.find((a) => a.id === asgId);
     if (!asg) throw new Error(`no assignment ${asgId}`);
     if (asg.state !== 'gated') throw new Error(`${asgId} is ${asg.state}, not gated`);
@@ -126,8 +126,8 @@ export function rejectAction(slug: string, asgId: string, reason = 'rejected by 
   });
 }
 
-export function resolveAttention(slug: string, attId: string, note = ''): void {
-  arrive(slug, (d, event) => {
+export async function resolveAttention(slug: string, attId: string, note = ''): Promise<void> {
+  await arrive(slug, (d, event) => {
     const att = d.attention.find((a) => a.id === attId && a.status === 'open');
     if (!att) throw new Error(`no open attention ${attId}`);
     // One human answer settles every word-for-word twin (repeated strike
@@ -151,8 +151,8 @@ export function resolveAttention(slug: string, attId: string, note = ''): void {
  * real-world effect real, so an action without a passing `exec.verified` is
  * refused here exactly as it is in the coordinator's adopt_submission tool.
  */
-export function adoptSubmission(slug: string, asgId: string, reason = 'adopted by human'): void {
-  arrive(slug, (d, event) => {
+export async function adoptSubmission(slug: string, asgId: string, reason = 'adopted by human'): Promise<void> {
+  await arrive(slug, (d, event) => {
     const asg = d.assignments.find((x) => x.id === asgId);
     if (!asg) throw new Error(`no assignment ${asgId}`);
     if (asg.state !== 'awaiting_review' || !asg.submission) throw new Error(`${asgId} has no submission awaiting review`);
@@ -178,8 +178,8 @@ export function adoptSubmission(slug: string, asgId: string, reason = 'adopted b
   });
 }
 
-export function setPaused(slug: string, paused: boolean): void {
-  arrive(slug, (d, event) => {
+export async function setPaused(slug: string, paused: boolean): Promise<void> {
+  await arrive(slug, (d, event) => {
     d.workstream.status = paused ? 'paused' : 'active';
     event(paused ? 'workstream.paused' : 'workstream.resumed', `${actor()} ${paused ? 'paused' : 'resumed'} the workstream`);
   });
