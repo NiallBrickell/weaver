@@ -119,7 +119,11 @@ export function buildProjection(
           ? ' AWAITING HUMAN APPROVAL'
           : ' readback:not-yet-run'
       : '';
-    return `${a.id} [${a.state}/adoption:${a.adoption.state}] (${a.kind}) "${a.objective}"${dep} attempts=${attempts}${sub}${act}`;
+    // WHY the last attempt died is dispatch-shaping information:
+    // error_max_turns means "split the brief", not "retry the same shape".
+    const lastReason = a.attempts[a.attempts.length - 1]?.terminalReason;
+    const died = a.state === 'failed' && lastReason ? ` last-attempt:${lastReason}` : '';
+    return `${a.id} [${a.state}/adoption:${a.adoption.state}] (${a.kind}) "${a.objective}"${dep} attempts=${attempts}${died}${sub}${act}`;
   });
   const s5 = [
     `## 5. Assignments`,
