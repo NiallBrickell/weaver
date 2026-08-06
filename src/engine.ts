@@ -13,9 +13,9 @@
 import { execSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join as pathJoin } from 'node:path';
-import { runCoordinatorPass } from './coordinator.js';
+import { pickCoordinatorModel, runCoordinatorPass } from './coordinator.js';
 import { loadSecrets, redactSecrets } from './secrets.js';
-import { runWorker } from './worker.js';
+import { runWorker, workerModel } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
 import { arrive, load, newId, readArtifact, verifyArtifact, workstreamDir, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
@@ -407,9 +407,9 @@ function recoverCrashedAttempts(slug: string): number {
 
 export function runnableAssignments(doc: WorkstreamDoc): string[] {
   const now = virtualNow().toISOString();
-  const providerWait = Object.values(doc.capacity?.byModel ?? {}).some(
-    (entry) => entry.wait.retryAt > now,
-  );
+  const model = workerModel();
+  const workerRetryAt = doc.capacity?.byModel[model]?.wait.retryAt;
+  const providerWait = workerRetryAt ? workerRetryAt > now : false;
   if (providerWait) return [];
   return doc.assignments
     .filter((a) => a.state === 'queued')
@@ -418,7 +418,7 @@ export function runnableAssignments(doc: WorkstreamDoc): string[] {
     // becomes a tight worker retry loop before its wake is due.
     .filter((a) => {
       const wait = a.attempts.at(-1)?.infrastructure;
-      return !wait || wait.retryAt <= now;
+      return !wait || wait.model !== model || wait.retryAt <= now;
     })
     // exec.run actions belong to the engine, never to a model worker
     .filter((a) => !a.exec?.run)
@@ -429,6 +429,13 @@ export function runnableAssignments(doc: WorkstreamDoc): string[] {
       }),
     )
     .map((a) => a.id);
+}
+
+export function coordinatorBackoffActive(doc: WorkstreamDoc): boolean {
+  const now = virtualNow().toISOString();
+  const selectedModel = pickCoordinatorModel(doc, now);
+  const retryAt = doc.capacity?.byModel[selectedModel]?.wait.retryAt;
+  return retryAt ? retryAt > now : false;
 }
 
 export interface TickReport {
@@ -610,7 +617,12 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     // A live lease means no pass can start: leave the wakes PENDING for the
     // next tick rather than burning them against a pass that cannot run.
     const leaseLive = preDoc.lease && new Date(preDoc.lease.expiresAt).getTime() > Date.now();
-    if (due.length > 0 && !leaseLive && report.passes.length < maxPasses) {
+    if (
+      due.length > 0 &&
+      !coordinatorBackoffActive(preDoc) &&
+      !leaseLive &&
+      report.passes.length < maxPasses
+    ) {
       const reasons = [...new Set(due.map((w) => w.reason))];
       // Mark fired BEFORE the pass (coalesced, at-least-once): a crash mid-pass
       // loses the wake but the projection's arrivals still carry the facts,

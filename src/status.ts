@@ -42,7 +42,7 @@ function infrastructureWaits(doc: WorkstreamDoc): {
   const summaries = new Set<string>();
   const nextBySummary = new Map<string, string>();
   for (const entry of Object.values(doc.capacity?.byModel ?? {})) {
-    const summary = infrastructureWaitSummary(entry.wait);
+    const summary = infrastructureWaitSummary(entry.wait, doc.workstream.slug);
     summaries.add(summary);
     const candidate = entry.wait.retryAt <= virtualNow().toISOString()
       ? 'infrastructure retry is due now'

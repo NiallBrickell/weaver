@@ -30,26 +30,31 @@ function isoFromEpoch(value: number | undefined): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-function latestReset(info: SDKRateLimitInfo | undefined): string | undefined {
+function earliestFutureReset(
+  info: SDKRateLimitInfo | undefined,
+  wallNow: Date,
+): string | undefined {
   const values = [info?.resetsAt, info?.overageResetsAt]
     .map(isoFromEpoch)
-    .filter((v): v is string => Boolean(v));
-  return values.sort().at(-1);
+    .filter((v): v is string => v !== undefined && Date.parse(v) > wallNow.getTime());
+  return values.sort().at(0);
 }
 
-const CREDIT_TEXT =
-  /out of (?:usage credits|extra usage)|credits?_required|\bcredits?\b|billing|usage allocation (?:has been )?disabled|usage limit is set to \$?0|requires usage credits|run \/usage-credits/i;
 const AUTH_TEXT =
   /401|unauthoriz|authentication|not logged in|log ?in|oauth_org_not_allowed|token (?:revoked|expired)|process aborted/i;
-const SESSION_TEXT = /session limit|hit your session limit/i;
+const SESSION_TEXT = /session limit|hit your session limit|5-?hour limit/i;
 // Limit wording varies by plan window ("hit your weekly limit · resets Aug 8",
 // "reached your usage limit") and Anthropic renames these freely — so match
-// the shape (hit/reached + any named limit + optional reset time), not one
-// remembered phrasing. A miss here burns three strikes and pages the human
-// with a fleet of false blockers, as the weekly limit did on 2026-08-06.
-const RATE_TEXT =
-  /rate.?limit|usage limit|quota|exceeded your|you(?:'|’)ve (?:reached|hit) your [\w -]*limit|(?:weekly|monthly|daily|5-?hour) limit|limit ·? ?resets/i;
+// the shape, not one remembered phrasing. These are plan-usage waits; a miss
+// would turn infrastructure into work failure and page the human falsely.
+const USAGE_TEXT =
+  /out of (?:usage credits|extra usage)|credits?_required|\bcredits?\b|billing|usage allocation (?:has been )?disabled|usage limit|requires usage credits|run \/usage-credits|exceeded your .* limit|you(?:'|’)ve (?:reached|hit) your [\w -]*limit|(?:weekly|monthly|daily) limit|limit ·? ?resets/i;
+const RATE_TEXT = /rate.?limit|quota|429/i;
 const PROVIDER_TEXT = /overloaded|529|server error|service unavailable/i;
+
+function capacityFamily(category: CapacityCategory): CapacityCategory {
+  return category === 'sdk_credit_exhausted' ? 'usage_limit' : category;
+}
 
 /** Compatibility classifier for thrown errors and older SDK result text.
  * Structured SDK fields take precedence in SdkFailureTracker, but this pure
@@ -59,8 +64,8 @@ export function classifyCapacityFailure(
   wallFired = false,
 ): CapacityCategory | null {
   if (wallFired) return 'other';
-  if (CREDIT_TEXT.test(errorText)) return 'sdk_credit_exhausted';
   if (SESSION_TEXT.test(errorText)) return 'session_limit';
+  if (USAGE_TEXT.test(errorText)) return 'usage_limit';
   if (RATE_TEXT.test(errorText)) return 'rate_limit';
   if (AUTH_TEXT.test(errorText)) return 'auth';
   if (PROVIDER_TEXT.test(errorText)) return 'other';
@@ -123,7 +128,7 @@ export class SdkFailureTracker {
 
     const text = `${this.texts.join(' ')} ${this.terminalReason ?? ''}`;
     const disabled = this.rateLimit?.overageDisabledReason;
-    const creditsRequired =
+    const usageBlocked =
       this.rateLimit?.errorCode === 'credits_required' ||
       disabled === 'out_of_credits' ||
       disabled === 'seat_tier_level_disabled' ||
@@ -132,12 +137,12 @@ export class SdkFailureTracker {
       disabled === 'group_zero_credit_limit' ||
       disabled === 'member_zero_credit_limit' ||
       this.errors.has('billing_error') ||
-      classifyCapacityFailure(text) === 'sdk_credit_exhausted';
+      classifyCapacityFailure(text) === 'usage_limit';
 
-    if (creditsRequired) {
+    if (usageBlocked) {
       return this.make(
-        'sdk_credit_exhausted',
-        'claim_sdk_credit_or_enable_usage_credits',
+        'usage_limit',
+        'wait_or_enable_usage_credits',
         source,
         now,
       );
@@ -151,6 +156,12 @@ export class SdkFailureTracker {
     }
     if (classifyCapacityFailure(text) === 'session_limit') {
       return this.make('session_limit', 'automatic_retry', source, now);
+    }
+    if (this.rateLimit?.rateLimitType === 'five_hour') {
+      return this.make('session_limit', 'automatic_retry', source, now);
+    }
+    if (this.rateLimit?.rateLimitType?.startsWith('seven_day')) {
+      return this.make('usage_limit', 'wait_or_enable_usage_credits', source, now);
     }
     if (
       this.errors.has('rate_limit') ||
@@ -176,8 +187,8 @@ export class SdkFailureTracker {
     source: InfrastructureSource,
     now: Date,
   ): InfrastructureWait {
-    const resetAt = latestReset(this.rateLimit);
     const wallNow = source.wallNow ?? new Date();
+    const resetAt = earliestFutureReset(this.rateLimit, wallNow);
     const resetDelay = resetAt ? Date.parse(resetAt) - wallNow.getTime() : -1;
     // Provider resets are wall-clock facts; Weaver wakes use virtual time.
     // Preserve the delay between them instead of comparing unlike clocks.
@@ -197,18 +208,23 @@ export class SdkFailureTracker {
   }
 }
 
-export function infrastructureWaitSummary(wait: InfrastructureWait): string {
+export function infrastructureWaitSummary(
+  wait: InfrastructureWait,
+  slug?: string,
+): string {
+  const retry = `weaver capacity retry ${slug ?? '<slug>'}`;
   switch (wait.kind) {
+    case 'usage_limit':
     case 'sdk_credit_exhausted':
-      return 'Claude Agent SDK capacity is exhausted; work is safely parked. Claim the included SDK credit in Claude Settings > Usage, or run `/usage-credits` in Claude Code for paid overflow with a provider spend cap. Weaver will probe and resume automatically.';
+      return `Claude plan usage is limited; work is safely parked until its scheduled retry. Check \`/usage\` in Claude Code; wait for the reset or explicitly enable usage credits in Claude Settings > Usage, then run \`${retry}\`. Weaver never changes billing.`;
     case 'auth':
-      return 'Claude authentication needs attention; work is safely parked. Run `claude auth login` in a terminal and complete the intended operator login. Weaver never accepts credentials or tokens and will detect recovery.';
+      return `Claude authentication needs attention; work is safely parked. Run \`claude auth login\` in a terminal and complete the intended operator login. Weaver never accepts credentials or tokens; it retries when credential metadata changes, or after \`${retry}\`.`;
     case 'session_limit':
-      return `Claude's session limit is active; work is safely parked until ${wait.retryAt.slice(0, 16)}. Weaver will retry and probe automatically.`;
+      return "Claude's session limit is active; work is safely parked until its scheduled retry.";
     case 'rate_limit':
-      return `Claude usage is limited; work is safely parked until ${wait.retryAt.slice(0, 16)}. Weaver will retry and probe automatically.`;
+      return 'Claude is rate limited; work is safely parked until its scheduled retry.';
     case 'other':
-      return `Claude is temporarily unavailable or stopped responding; work is safely parked until ${wait.retryAt.slice(0, 16)} and will retry automatically.`;
+      return 'Claude is temporarily unavailable or stopped responding; work is safely parked until its scheduled retry.';
   }
 }
 
@@ -217,13 +233,14 @@ export function recordCapacityBackoff(
   wait: InfrastructureWait,
 ): CapacityBackoff {
   const previous = doc.capacity?.byModel[wait.model];
-  const sameCategory = previous?.wait.kind === wait.kind;
+  const previousInFamily = previous &&
+    capacityFamily(previous.wait.kind) === capacityFamily(wait.kind)
+    ? previous
+    : undefined;
   const entry: CapacityBackoff = {
     wait,
-    consecutiveBackoffs: sameCategory ? previous.consecutiveBackoffs + 1 : 1,
-    firstBackoffAtVirtual: sameCategory
-      ? previous.firstBackoffAtVirtual
-      : wait.detectedAt,
+    consecutiveBackoffs: previousInFamily ? previousInFamily.consecutiveBackoffs + 1 : 1,
+    firstBackoffAtVirtual: previousInFamily?.firstBackoffAtVirtual ?? wait.detectedAt,
     lastBackoffAtVirtual: wait.detectedAt,
   };
   doc.capacity = {
@@ -241,19 +258,54 @@ export function clearCapacityBackoff(doc: WorkstreamDoc, model: string): void {
 }
 
 export function capacityAttentionThreshold(category: CapacityCategory): number {
-  return category === 'sdk_credit_exhausted' || category === 'auth' ? 3 : 12;
+  return category === 'auth' ? 1 : 12;
 }
 
-export function capacityAttentionSummary(entry: CapacityBackoff): string {
+export function capacityAttentionSummary(entry: CapacityBackoff, slug?: string): string {
   const { wait, consecutiveBackoffs } = entry;
+  const retry = `weaver capacity retry ${slug ?? '<slug>'}`;
   const prefix = `Claude capacity (${wait.model}/${wait.kind}) has blocked work ${consecutiveBackoffs} times.`;
   if (wait.kind === 'auth') {
-    return `${prefix} Run \`claude auth login\` and complete the intended operator login; Weaver reads no credential values. Agent SDK plan guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan`;
+    return `${prefix} Run \`claude auth login\` and complete the intended operator login; Weaver reads no credential values. If credential metadata is unavailable, run \`${retry}\` afterward. Agent SDK plan guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan`;
   }
-  if (wait.kind === 'sdk_credit_exhausted') {
-    return `${prefix} Claim the included Agent SDK credit, or enable paid overflow with a provider spend cap via \`/usage-credits\`. Guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan and https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans`;
+  if (wait.kind === 'usage_limit' || wait.kind === 'sdk_credit_exhausted') {
+    return `${prefix} Check \`/usage\` in Claude Code. Wait for the reset, or explicitly enable usage credits with a provider spending limit in Claude Settings > Usage, then run \`${retry}\`. Weaver never changes billing. Guidance: https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan and https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans`;
   }
   return `${prefix} The limit should self-clear; check Claude plan status if it persists. Guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan`;
+}
+
+/** Make a stored provider wait due without claiming the provider recovered.
+ * The next real coordinator/worker attempt is the proof: success clears the
+ * matching capacity state, while another rejection records a fresh wait. */
+export function retryCapacityNow(
+  doc: WorkstreamDoc,
+  now: string,
+  requestedModel?: string,
+): string[] {
+  const models = Object.keys(doc.capacity?.byModel ?? {})
+    .filter((model) => !requestedModel || model === requestedModel);
+  if (!models.length) return [];
+  const selected = new Set(models);
+
+  for (const wake of doc.wakes) {
+    if (
+      wake.status === 'pending' &&
+      wake.condition.type === 'time' &&
+      wake.infrastructure &&
+      selected.has(wake.infrastructure.model)
+    ) {
+      wake.condition = { type: 'time', dueAtVirtual: now };
+      wake.infrastructure.retryAt = now;
+    }
+  }
+  for (const assignment of doc.assignments) {
+    const wait = assignment.attempts.at(-1)?.infrastructure;
+    if (wait && selected.has(wait.model)) wait.retryAt = now;
+  }
+  for (const model of models) {
+    doc.capacity!.byModel[model]!.wait.retryAt = now;
+  }
+  return models.sort();
 }
 
 export function ensureCapacityAttention(
@@ -263,19 +315,19 @@ export function ensureCapacityAttention(
   makeId: () => string,
 ): void {
   if (entry.consecutiveBackoffs < capacityAttentionThreshold(entry.wait.kind)) return;
-  const key = `Claude capacity (${entry.wait.model}/${entry.wait.kind})`;
+  const key = `Claude capacity (${entry.wait.model}/`;
   const existing = doc.attention.find(
     (item) => item.status === 'open' && item.kind === 'capacity' && item.summary.startsWith(key),
   );
   if (existing) {
-    existing.summary = capacityAttentionSummary(entry);
+    existing.summary = capacityAttentionSummary(entry, doc.workstream.slug);
     existing.refId = refId;
     return;
   }
   doc.attention.push({
     id: makeId(),
     kind: 'capacity',
-    summary: capacityAttentionSummary(entry),
+    summary: capacityAttentionSummary(entry, doc.workstream.slug),
     refId,
     status: 'open',
     createdAt: new Date().toISOString(),

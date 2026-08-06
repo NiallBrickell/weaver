@@ -105,7 +105,7 @@ function occurrences(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }
 
-test('credit exhaustion is a clear WAITING position with only supported recovery actions', () => {
+test('legacy credit state renders the current plan-usage recovery contract', () => {
   const credit = infrastructure(
     'sdk_credit_exhausted',
     'claim_sdk_credit_or_enable_usage_credits',
@@ -119,9 +119,10 @@ test('credit exhaustion is a clear WAITING position with only supported recovery
   };
   const status = renderStatus(doc([infrastructureWake('wake_credit', credit), ordinary]));
 
-  assert.match(status, /WAITING — Claude Agent SDK capacity is exhausted; work is safely parked/);
-  assert.match(status, /Claim the included SDK credit in Claude Settings > Usage/);
-  assert.match(status, /run `\/usage-credits` in Claude Code/);
+  assert.match(status, /WAITING — Claude plan usage is limited; work is safely parked/);
+  assert.match(status, /Check `\/usage` in Claude Code/);
+  assert.match(status, /explicitly enable usage credits in Claude Settings > Usage/);
+  assert.match(status, /weaver capacity retry capacity-status/);
   assert.match(status, /wake at 2026-08-07T09:00: review the adopted evidence/);
   assert.match(status, /## Needs you\n  \(nothing — the workstream can proceed without you\)/);
 });
@@ -147,7 +148,7 @@ test('duplicate infrastructure wakes collapse and raw provider/account values ne
     infrastructureWake('wake_credit_2', later),
   ]));
 
-  assert.equal(occurrences(status, 'Claude Agent SDK capacity is exhausted'), 1);
+  assert.equal(occurrences(status, 'Claude plan usage is limited'), 1);
   assert.equal(occurrences(status, 'infrastructure retry scheduled at'), 1);
   assert.match(status, new RegExp(`infrastructure retry scheduled at ${FUTURE_1.slice(0, 16).replace(/[-:]/g, '\\$&')}`));
   assert.doesNotMatch(status, /secret-token-value|other@example\.com|RAW PROVIDER ERROR/);

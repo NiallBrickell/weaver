@@ -88,6 +88,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--max-passes N] [--max-cost USD]
   weaver list
   weaver status <slug>
+  weaver capacity retry <slug> [--model <model>]   make a parked provider wait due after you change Claude-side usage/auth settings; does not change billing or identity
   weaver log <slug>                          full event tail
   weaver tail <slug> [--all]                 live activity feed: worker tool calls, output snippets, results as they happen
                                              (--all adds coordinator passes; sessionId provenance / \`claude --resume <id>\` is unaffected)
@@ -218,6 +219,32 @@ async function main(): Promise<void> {
     case 'status': {
       const slug = rest[0] ?? fail('slug required');
       process.stdout.write(renderStatus(load(slug)) + '\n');
+      break;
+    }
+
+    case 'capacity': {
+      const subcommand = rest[0] ?? fail('capacity subcommand required (retry)');
+      if (subcommand !== 'retry') fail(`unknown capacity subcommand '${subcommand}' (expected retry)`);
+      const slug = rest[1] ?? fail('usage: weaver capacity retry <slug> [--model <model>]');
+      const model = opt(rest, 'model');
+      const current = load(slug);
+      const available = Object.keys(current.capacity?.byModel ?? {});
+      if (!available.length) fail(`${slug} has no provider capacity wait to retry`);
+      if (model && !available.includes(model)) {
+        fail(`${slug} has no provider capacity wait for '${model}' (waiting: ${available.join(', ')})`);
+      }
+      const { retryCapacityNow } = await import('./capacity.js');
+      let retried: string[] = [];
+      arrive(slug, (d, event) => {
+        retried = retryCapacityNow(d, virtualNow().toISOString(), model);
+        event(
+          'capacity.retry_requested',
+          `operator made provider retry due for ${retried.join(', ')}; recovery remains unconfirmed until the next real run`,
+        );
+      });
+      process.stdout.write(
+        `provider retry due for ${retried.join(', ')} — Weaver changed no billing or identity; the next runner/tick will test recovery\n`,
+      );
       break;
     }
 
