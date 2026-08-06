@@ -73,6 +73,29 @@ export async function load(slug: string): Promise<WorkstreamDoc> {
 }
 
 /**
+ * Direct children of one manager slug — a single-level scan, never resolved
+ * transitively (kernel rule 1: flat identities, no trees). O(fleet) on the fs
+ * backend; flagged as a fast-follow for the in-flight Postgres adapter to
+ * index instead. Unreadable sibling docs are skipped, never thrown: one
+ * corrupt workstream must not blind a manager to the rest of its fleet.
+ */
+export async function listManagedBy(managerSlug: string): Promise<{ slug: string; status: WorkstreamDoc['workstream']['status'] }[]> {
+  const out: { slug: string; status: WorkstreamDoc['workstream']['status'] }[] = [];
+  for (const slug of await listWorkstreams()) {
+    let doc: WorkstreamDoc;
+    try {
+      doc = await load(slug);
+    } catch {
+      continue;
+    }
+    if (doc.workstream.managedBy?.slug === managerSlug) {
+      out.push({ slug, status: doc.workstream.status });
+    }
+  }
+  return out;
+}
+
+/**
  * Apply a revision-checked mutation. `expectedRevision` must equal the stored
  * revision or the write fails with RevisionConflictError. Returns the new doc.
  *

@@ -365,6 +365,51 @@ export interface PrintoutMutationReceipt {
 // ---------------------------------------------------------------------------
 // The document
 
+/**
+ * Set once at creation, immutable thereafter. The single source of truth for
+ * a managed-workstream link — the manager's OWN doc stores no mirrored
+ * "manages" array; `listManagedBy` (store.ts) derives that by scanning. Flat
+ * by design: each doc renders only its own single pointer and its own
+ * single-level `listManagedBy` scan, never a resolved chain (kernel rule 1).
+ */
+export interface ManagedBy {
+  slug: Id;
+  sinceVirtual: Iso;
+}
+
+/**
+ * Durable input from a managing workstream to one it manages — NOT Steering
+ * (kernel rule 9): must never touch spend.humanInterventions, and must
+ * render distinctly (projection §6) so a coordinator can't mistake it for
+ * human authority. Advisory text only; it grants no authority over the
+ * receiving workstream's assignments, budget, constraints, or approvals.
+ */
+export interface ManagerDirection {
+  id: Id;
+  fromWorkstreamSlug: Id;
+  body: string;
+  atVirtual: Iso;
+  consumedByPass?: Id;
+}
+
+/**
+ * Idempotent cross-workstream notice, lives on the RECEIVING (manager) doc.
+ * `dedupKey` makes a duplicate insert a no-op — the same shape as
+ * `Reply.ingressKey`/`Observation.ingressKey` — so re-derivation from durable
+ * facts (conclusion, open attention) on every delivery attempt is safe to
+ * repeat after a crash.
+ */
+export interface ManagerNotice {
+  id: Id;
+  dedupKey: string;
+  kind: 'finished' | 'needs_attention';
+  fromWorkstreamSlug: Id;
+  summary: string;
+  /** Conclusion passId, or the source attention item's id. */
+  refId?: Id;
+  receivedAtVirtual: Iso;
+}
+
 export interface WorkstreamCore {
   id: Id;
   slug: string;
@@ -383,6 +428,8 @@ export interface WorkstreamCore {
     maxCostUsd: number;
   };
   status: 'active' | 'paused' | 'done';
+  /** Set only by create_managed_workstream; absent means unmanaged. */
+  managedBy?: ManagedBy;
   /** Durable outcome claim and its cited typed evidence. The referenced facts
    * remain the authority; this prose cannot make an unverified act real. */
   conclusion?: {
@@ -418,6 +465,12 @@ export interface WorkstreamDoc {
   capacity?: CapacityState | null;
   /** Single-flight reconciliation lease. */
   lease: WorkstreamLease;
+  /** Directions received FROM this workstream's manager (if any). Additive:
+   * old documents may omit it and are treated as having none. */
+  managerDirections?: ManagerDirection[];
+  /** Notices received from workstreams THIS workstream manages. Additive:
+   * old documents may omit it and are treated as having none. */
+  managerNotices?: ManagerNotice[];
 }
 
 export interface WorkstreamSpend {
