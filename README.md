@@ -6,6 +6,8 @@ Agents are already very good at individual pieces of work: investigate a bug, wr
 
 [Pilot](https://github.com/erdoai/pilot) stops a live agent session coming back to you for routine approvals or because it gave up too early. Weaver handles what happens after and between those sessions. You give it the outcome; it keeps the work moving across fresh agents, reviews, failures, approvals, and waits, and comes back only for judgment or authority that genuinely needs you. A feature is not done because an agent wrote code. It is done when the change is reviewed, merged, tested, and shown to work — and Weaver stays with it until then.
 
+That promise has a simple test: over comparable completed outcomes, does Weaver need you less often without the work getting worse or its authority growing? [`weaver stats`](./docs-public/stats.mdx) shows the human touches, rejections, approvals, and learned policies behind that trend. The target is not more agent activity; it is good outcomes that need less supervision.
+
 > ### ⚡ Quick start — one sentence is the whole interface
 >
 > ```bash
@@ -43,7 +45,7 @@ A worker finishing is not the work being done. Adoption is a separate act that p
 
 ### 3. Improvement you can audit — corrections become policies that earn their place
 
-When a human corrects the course, the correction is distilled into a **policy**: plain language, typed scope, full provenance. New policies run in *shadow*; they're promoted to *active* only by evidence — a later matching workstream applied them and needed no correction on the same point. Wrong policies are superseded with lineage, like decisions. The reward being optimized is **human interventions per successful outcome** (tracked on every workstream), and a closed effect vocabulary guarantees a policy can add verification or narrow authority but can never spend, send, merge, or widen access. This is "improves over time" as a measurable, inspectable claim — not a memory feature's marketing copy.
+When a human corrects the course, the correction is distilled into a **policy**: plain language, typed scope, full provenance. New policies run in *shadow*; they're promoted to *active* only by evidence — a later matching workstream applied them and needed no correction on the same point. Wrong policies are superseded with lineage, like decisions. Weaver keeps score with one question: for the same kind of successful outcome, how often did a person have to step in? Fewer interventions count as improvement only while verification stays at least as strong and learning never expands authority. [`weaver stats`](./docs-public/stats.mdx) makes the evidence and guardrails inspectable.
 
 ## How it holds onto the outcome
 
@@ -70,6 +72,7 @@ weaver create --slug my-stream --title "..." --objective "..." [--tag routine]
 weaver steer my-stream "context, repo paths, what done looks like"
 weaver run                # resident runner: ticks every active workstream (10 in parallel)
 weaver watch              # interactive dashboard: the needs-you queue + fleet at a glance
+weaver stats              # see whether comparable work is needing less of you
 ```
 
 - **Routines**: tag a workstream `routine` and have it schedule its own next wake — a standing loop (Sentry sweep, evals health, usage reports) that, unlike cron'd prompts, wakes with its decision log, constraints, and learned policies intact. Run #30 inherits the decisions and corrections from runs 1–29.
@@ -81,6 +84,7 @@ weaver watch              # interactive dashboard: the needs-you queue + fleet a
 
 - [docs/harness.md](./docs/harness.md) — where each kernel invariant lives in code
 - [docs/learning.md](./docs/learning.md) — the learning loop, and why it's deliberately shaped as an RL substrate
+- [docs-public/stats.mdx](./docs-public/stats.mdx) — the outcome scoreboard and the limits of what it currently measures
 - [CLAUDE.md](./CLAUDE.md) — the kernel rules and working agreements
 
 ## Provenance

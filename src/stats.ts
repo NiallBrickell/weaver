@@ -1,13 +1,12 @@
 /**
- * weaver stats — the fleet convergence dashboard.
+ * weaver stats — the fleet outcome scoreboard.
  *
  * Renders the METRICS layer across every workstream as one self-contained
  * static HTML file (no server, no CDN, charts drawn client-side from embedded
- * JSON): interventions per adopted outcome over time — the number the
- * learning loop drives down — plus autonomy ratio, policy promotions, and
- * per-workstream stats. `weaver inspect` answers "why is the course the
- * course"; this answers "is the human getting out of the loop, guarded by
- * quality".
+ * JSON): recorded interventions per adopted work product over time, plus the
+ * approval split, policy evidence, and per-workstream stats. Adoption is not
+ * completion, so this is a leading indicator for the product target (human
+ * interventions per successful outcome), not that target mislabeled.
  *
  * Every time series is computed from DURABLE typed records: steering
  * timestamps, gate approvals, deliverable adoption pins, pass records, policy
@@ -174,7 +173,7 @@ export interface RatioPoint {
   ratio: number | null; // null until the first adoption exists
 }
 
-/** The convergence curve: cumulative interventions per adopted outcome. */
+/** The intervention curve: cumulative interventions per adopted work product. */
 export function cumulativeRatio(days: FleetDay[]): RatioPoint[] {
   let ints = 0;
   let adopts = 0;
@@ -853,10 +852,10 @@ const SCRIPT = String.raw`
     var policyDays = slice(DATA.policyDays);
 
     lineChart(document.getElementById('chart-activity'), {
-      label: 'Human interventions vs adopted outcomes per day',
+      label: 'Human interventions vs adopted work products per day',
       rows: days,
       series: [
-        { label: 'adopted outcomes', cssVar: '--s1', get: function (d) { return d.adoptions; } },
+        { label: 'adopted work products', cssVar: '--s1', get: function (d) { return d.adoptions; } },
         { label: 'human interventions', cssVar: '--s2', get: function (d) { return d.interventions; } },
       ],
     });
@@ -867,15 +866,15 @@ const SCRIPT = String.raw`
        { label: 'rejected', num: true, get: function (d) { return d.rejections; } }], days);
 
     lineChart(document.getElementById('chart-ratio'), {
-      label: 'Cumulative interventions per adopted outcome',
+      label: 'Cumulative interventions per adopted work product',
       rows: ratio,
-      series: [{ label: 'interventions per adopted outcome', cssVar: '--s1', get: function (d) { return d.ratio == null ? null : Math.round(d.ratio * 100) / 100; } }],
+      series: [{ label: 'interventions per adopted work product', cssVar: '--s1', get: function (d) { return d.ratio == null ? null : Math.round(d.ratio * 100) / 100; } }],
     });
     tableView(document.getElementById('table-ratio'),
       [{ label: 'day', get: function (d) { return d.day; } },
        { label: 'cum. interventions', num: true, get: function (d) { return d.interventions; } },
        { label: 'cum. adopted', num: true, get: function (d) { return d.adoptions; } },
-       { label: 'per outcome', num: true, get: function (d) { return d.ratio == null ? null : Math.round(d.ratio * 100) / 100; } }], ratio);
+       { label: 'per adopted work product', num: true, get: function (d) { return d.ratio == null ? null : Math.round(d.ratio * 100) / 100; } }], ratio);
 
     stackedCols(document.getElementById('chart-approvals'), {
       label: 'Action approvals per day: pilot vs human',
@@ -984,15 +983,15 @@ export function renderStatsHtml(stats: StatsPayload): string {
     const cls = diff < 0 ? 'down-good' : diff > 0 ? 'up-bad' : '';
     delta = `<div class="delta ${cls}">${diff <= 0 ? '' : '+'}${diff.toFixed(2)} over 7 days (dated acts)</div>`;
   } else {
-    delta = `<div class="delta">↓ is convergence — trend appears after a week of history</div>`;
+    delta = `<div class="delta">↓ means fewer recorded touches per adoption — compare like with like</div>`;
   }
   const autonomyPct =
     t.autoApproved + t.humanApproved > 0
       ? `${Math.round((t.autoApproved / (t.autoApproved + t.humanApproved)) * 100)}%`
       : '—';
   const kpis = [
-    tile('Interventions per adopted outcome', per == null ? '—' : per.toFixed(2), delta, true),
-    tile('Adopted outcomes', String(t.adoptions)),
+    tile('Interventions per adopted work product', per == null ? '—' : per.toFixed(2), delta, true),
+    tile('Adopted work products', String(t.adoptions)),
     tile('Human interventions', String(t.interventions), t.undated ? `<div class="delta">${t.undated} undated (budget/config edits)</div>` : ''),
     tile('Actions auto-approved', autonomyPct, `<div class="delta">${t.autoApproved} pilot · ${t.humanApproved} human</div>`),
     tile('Policies earned active', String(t.policiesActive), `<div class="delta">${t.policiesShadow} shadow · ${t.policiesSuperseded} superseded</div>`),
@@ -1040,8 +1039,8 @@ export function renderStatsHtml(stats: StatsPayload): string {
 </div>
 <div class="kpis">${kpis}</div>
 <section><div class="chart-grid two">
-${chartSection('activity', 'Outcomes vs interventions', 'Adopted outcomes and human interventions per day, fleet-wide. Convergence = the blue line holding while the orange one falls.')}
-${chartSection('ratio', 'The convergence curve', 'Cumulative human interventions per adopted outcome, over dated acts only — the trend line. The headline tile anchors to the lifetime counter instead, so the undated remainder can never quietly leave the numerator.')}
+${chartSection('activity', 'Work products vs interventions', 'Adopted work products and recorded human interventions per day, fleet-wide. Compare similar work; a quieter line is not a quality measure by itself.')}
+${chartSection('ratio', 'The intervention curve', 'Cumulative recorded human interventions per adopted work product, over dated acts only. This is a leading indicator, not completed-outcome success relabeled.')}
 </div></section>
 <section><div class="chart-grid two">
 ${chartSection('approvals', 'Who approves the real world', 'Gated actions approved per day: pilot auto-approvals (within the operator’s standing rules) vs explicit human keypresses. Authority is never learned — this ratio moves only when the operator widens pilot’s rules.')}
@@ -1057,16 +1056,16 @@ ${chartSection('policies', 'Policy population', 'Every policy starts shadow (unp
 </table></div>
 </section>
 <section>
-<h2>Whose rules survive</h2>
-<p class="hint">Seeded policies came from the operator’s pre-Weaver rules and transcripts; learned ones from live corrections. Both earn active status the same way — evidence, not endorsement. Convergence toward what ACTUALLY works shows up here as seeded rules being outgrown (superseded) while earned ones accumulate.</p>
+<h2>Whose rules accumulate evidence</h2>
+<p class="hint">Seeded policies came from the operator’s pre-Weaver rules and transcripts; learned ones from live corrections. Both earn active status through intervention-free matching work. This shows where evidence is accumulating, not which rule is universally best.</p>
 <div id="chart-provenance"></div>
 <div id="table-provenance"></div>
 </section>
 <section>
 <h2>Per workstream</h2>
-<p class="hint">Interventions/outcome varies by how much authority each workstream needs — the fleet-level trend is the signal, this table is where to look when it moves.</p>
+<p class="hint">The intervention count per adopted work product varies with task mix and required authority. The fleet trend is a prompt to investigate; this table is where to look when it moves.</p>
 <div class="scroll-x"><table>
-<thead><tr><th>Workstream</th><th class="num">Passes</th><th class="num">Adopted</th><th class="num">Rejected</th><th class="num">Interventions</th><th class="num">Per outcome</th><th class="num">Auto-approved</th><th class="num">Cost</th></tr></thead>
+<thead><tr><th>Workstream</th><th class="num">Passes</th><th class="num">Adopted work</th><th class="num">Rejected</th><th class="num">Interventions</th><th class="num">Per adoption</th><th class="num">Auto-approved</th><th class="num">Cost</th></tr></thead>
 <tbody>${rowsHtml}</tbody>
 </table></div>
 </section>`
@@ -1077,20 +1076,20 @@ ${chartSection('policies', 'Policy population', 'Every policy starts shadow (unp
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Weaver — convergence dashboard</title>
+<title>Weaver — outcome scoreboard</title>
 <style>${STYLE}</style>
 </head>
 <body>
 <main>
-<h1>Convergence dashboard</h1>
-<p class="subtitle">${stats.totals.workstreams} workstream(s) · generated ${esc(stats.generatedAt)} · the optimization target is human interventions per successful outcome, guarded by quality and the authority firewall</p>
+<h1>Does each outcome need you less often?</h1>
+<p class="subtitle">${stats.totals.workstreams} workstream(s) · generated ${esc(stats.generatedAt)} · target: fewer human interventions per successful outcome, without weaker work or wider authority · current curve: interventions per adopted work product</p>
 ${body}
 <footer>
 Generated by <code>weaver stats</code> from durable typed state — steering timestamps, gate approvals, adoption pins, pass records, and policy evidence; never from the bounded event tail, which would fabricate convergence as old events fall off. An intervention is a steer, an approval or rejection of a gated action or send, an attention resolution, or a human adoption override — one keypress counts once, whatever it also auto-resolves; ${
     stats.totals.undated
       ? `${stats.totals.undated} intervention(s) (budget/config edits) carry no durable timestamp and appear in totals only.`
       : `budget/config edits would appear in totals only.`
-  } Adoption ≠ completion: outcomes count only when a coordinator pinned a revision.
+  } Adoption ≠ completion: the current denominator is adopted work products, not successful Workstream conclusions.
 </footer>
 <script type="application/json" id="stats-data">${json}</script>
 <script>${SCRIPT}</script>

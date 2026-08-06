@@ -80,7 +80,7 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-const USAGE = `weaver — durable workstream harness (MVP)
+const USAGE = `weaver — manages outcomes across agent runs (MVP)
 
   weaver do ["<message>"] ["<done means>"]   start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied. Optional 2nd arg overrides the done-bar (e.g. "verified live on the web post-merge, read-only")
                                              NO ARGS = interactive: type/paste a multiline message, finish with Ctrl-D or a "." line — the safe path for long messages ($, quotes, newlines survive verbatim)
@@ -112,7 +112,7 @@ const USAGE = `weaver — durable workstream harness (MVP)
   weaver watch [--plain]                     dashboard + embedded runner in ONE command (starts the runner unless one is live)
                                              keys: ↑↓ select, a approve, x reject, d resolve, s steer, p pause, q quit
   weaver inspect [slug]                      knowledge inspector → self-contained HTML: decision lineage, policies, interventions, adoptions, action audit
-  weaver stats                               convergence dashboard → self-contained HTML: interventions per adopted outcome over time, autonomy ratio, policy promotions, per-workstream stats
+  weaver stats                               outcome scoreboard → self-contained HTML: interventions per adopted work product, approval split, policy evidence, per-workstream stats
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
@@ -631,8 +631,8 @@ async function main(): Promise<void> {
     }
 
     case 'stats': {
-      // Fleet convergence metrics from durable typed state (never the bounded
-      // event tail): interventions per adopted outcome, autonomy, policies.
+      // Fleet outcome metrics from durable typed state (never the bounded
+      // event tail): interventions per adopted work product, approvals, policies.
       const { runStats } = await import('./stats.js');
       const out = runStats();
       process.stdout.write(`${out}\n`);

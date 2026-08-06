@@ -250,6 +250,10 @@ test('undated interventions are reported, never hidden and never negative', () =
 test('renderStatsHtml: empty fleet renders honestly, never invents data', () => {
   const html = renderStatsHtml(computeStats([], [], new Date('2026-08-05T00:00:00.000Z')));
   assert.match(html, /No fleet activity yet/);
+  assert.match(html, /Does each outcome need you less often/);
+  assert.match(html, /current curve: interventions per adopted work product/);
+  assert.match(html, /Adoption ≠ completion/);
+  assert.doesNotMatch(html, /Convergence dashboard/);
   assert.doesNotMatch(html, /NaN/);
 });
 

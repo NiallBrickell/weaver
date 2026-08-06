@@ -64,6 +64,6 @@ The bookkeeping is deliberately shaped as a reinforcement-learning substrate so 
 
 - **Trajectory**: the episode — state (projection), action (proposed course), correction signal (intervention), outcome (evaluated results).
 - **Action space**: when to distill a policy, how to scope it, which matching policies to apply where.
-- **Reward**: human interventions per successful outcome — guarded by outcome quality and the authority firewall, because a policy that reduces interventions by weakening verification must score as a regression, not a win.
+- **Target**: human interventions per successful outcome. The desired direction is down only while outcome quality and verification hold and the authority boundary does not move. [The stats page](/stats) shows the current adopted-work-product indicator beside those signals; it does not pretend adoption is completion.
 
 The optimization order is fixed: episodes complete, attribution enforced, reward adversarially audited — only then is training against this data a well-posed problem rather than vibes with a database.
