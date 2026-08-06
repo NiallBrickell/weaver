@@ -193,6 +193,11 @@ test('overview renders all workstreams and the global policy store; empty sectio
   assert.match(html, /ws-one/);
   assert.match(html, /ws-two/);
   assert.ok(html.includes(pol.id));
+  assert.match(html, /href="printouts\/index\.html"[^>]*>Printouts/);
+  assert.match(html, /Browse fleet printouts/);
+  const printoutHub = path.join(weaverHome(), 'printouts', 'index.html');
+  assert.ok(fs.existsSync(printoutHub));
+  assert.match(fs.readFileSync(printoutHub, 'utf8'), /No printout has been opened yet/);
   // Per-workstream pages exist so overview links resolve.
   assert.ok(fs.existsSync(path.join(workstreamDir('ws-one'), 'inspect.html')));
   assert.ok(fs.existsSync(path.join(workstreamDir('ws-two'), 'inspect.html')));
@@ -201,6 +206,8 @@ test('overview renders all workstreams and the global policy store; empty sectio
   assert.match(wsHtml, /No decisions recorded yet/);
   assert.match(wsHtml, /No deliverables produced yet/);
   assert.match(wsHtml, /No real-world actions/);
+  assert.match(wsHtml, /href="\.\.\/printouts\/index\.html#ws-one"[^>]*>Printouts/);
+  assert.match(wsHtml, /Browse this workstream’s printouts/);
 
   // No workstreams at all is still an honest page.
   freshHome();
