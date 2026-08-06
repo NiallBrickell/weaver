@@ -1,0 +1,38 @@
+# Typecheck + the deterministic contract tests. No model calls, no API key:
+# model quality must never be able to make a durability test pass or fail
+# (CLAUDE.md), so this workflow needs no secrets. The postgres service exists
+# for the store contract suite, which runs against a real database whenever
+# WEAVER_TEST_PG_URL is set and skips those cases otherwise.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: weaver
+          POSTGRES_PASSWORD: weaver
+          POSTGRES_DB: weaver_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U weaver"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      WEAVER_TEST_PG_URL: postgres://weaver:weaver@localhost:5432/weaver_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: yarn install --immutable
+      - run: yarn typecheck
+      - run: yarn test
