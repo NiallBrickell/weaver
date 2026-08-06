@@ -415,7 +415,7 @@ export async function runCoordinatorPass(
 
       tool(
         'raise_attention',
-        'Put something on the human\'s needs-you queue. RESERVED for decisions and blockers only — something the workstream cannot proceed past without the human\'s judgment. Never use it for FYIs, non-blocking notes, or status ("worked fine, but..."): those belong in your finish_pass summary, where the human reads them on their own schedule. Every needless attention item trains the human to ignore the queue.',
+        'Put something on the human\'s needs-you queue. RESERVED for decisions and blockers only — something the workstream cannot proceed past without the human\'s judgment. Never use it for FYIs, non-blocking notes, or status ("worked fine, but..."): those belong in your finish_pass summary, where the human reads them on their own schedule. Every needless attention item trains the human to ignore the queue. ACCESS BLOCKERS have a required shape: when the blocker is unreachable data or a failing service, the operator\'s machine very often already holds an alternate path (a direct connection URI, a logged-in CLI, an MCP server) — so the card must ask for access BY NAME as its primary option ("if you have a direct URI for X, run: weaver secret set <NAME> --ws <slug> — the workstream takes it from there"), with chasing the external service as the fallback, not the lead. A card that sends the human off to a status page or support desk while a credential on their own machine would unblock the work is asking them to do YOUR remediation.',
         {
           kind: z.enum(['review', 'blocker']),
           summary: z.string(),
