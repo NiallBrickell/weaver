@@ -209,8 +209,8 @@ function viewOf(slug: string): WsView {
   return { slug, bucket, row, details };
 }
 
-function frame(): string {
-  const slugs = listWorkstreams();
+async function frame(): Promise<string> {
+  const slugs = await listWorkstreams();
   const views = slugs
     .map(viewOf)
     .sort((a, b) => a.bucket - b.bucket || a.slug.localeCompare(b.slug));
@@ -266,20 +266,26 @@ export async function runWatch(): Promise<void> {
     out.write('\x1b[?25h\x1b[?1049l');
   };
   let last = '';
-  const render = () => {
+  let rendering = false; // frames stay ordered even if a poll overlaps a resize
+  const render = async () => {
+    if (rendering) return;
+    rendering = true;
     let f: string;
     try {
-      f = frame();
+      f = await frame();
     } catch (e) {
       f = `${RED}watch render failed: ${e instanceof Error ? e.message : e}${R}\n`;
+    } finally {
+      rendering = false;
     }
     if (f === last) return; // content-hash suppression: quiet ≠ redraw
     last = f;
     out.write('\x1b[2J\x1b[H' + f);
   };
-  render();
-  const timer = setInterval(render, 2000);
-  process.stdout.on('resize', render);
+  void render();
+  const timer = setInterval(() => void render(), 2000);
+  const onResize = () => void render();
+  process.stdout.on('resize', onResize);
 
   await new Promise<void>((resolve) => {
     const stdin = process.stdin;

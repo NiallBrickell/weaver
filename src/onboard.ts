@@ -146,9 +146,9 @@ async function deriveWithModel(message: string, taken: Set<string>, done?: strin
 /** Create a workstream from one raw message (plus an optional explicit
  * statement of what done means). Returns what was decided. */
 export async function onboard(message: string, done?: string): Promise<Derived> {
-  const taken = new Set(listWorkstreams());
+  const taken = new Set(await listWorkstreams());
   const d = (await deriveWithModel(message, taken, done)) ?? deriveFallback(message, taken, done);
-  createWorkstream({
+  await createWorkstream({
     slug: d.slug,
     title: d.title,
     objective: d.objective,
@@ -158,7 +158,7 @@ export async function onboard(message: string, done?: string): Promise<Derived> 
     autonomy: { sendsRequireApproval: true },
     budget: { maxCoordinatorPasses: 500, maxCostUsd: 1000 },
   });
-  arrive(d.slug, (doc, event) => {
+  await arrive(d.slug, (doc, event) => {
     doc.wakes.push({
       id: newId('wake'),
       reason: 'workstream created — establish direction and dispatch initial work',

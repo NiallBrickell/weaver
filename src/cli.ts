@@ -181,7 +181,7 @@ async function main(): Promise<void> {
       const slug = opt(rest, 'slug') ?? fail('--slug required');
       const title = opt(rest, 'title') ?? fail('--title required');
       const objective = opt(rest, 'objective') ?? fail('--objective required');
-      const doc = createWorkstream({
+      const doc = await createWorkstream({
         slug,
         title,
         objective,
@@ -197,7 +197,7 @@ async function main(): Promise<void> {
         },
       });
       // The creation itself is the first wake: direction needs establishing.
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         d.wakes.push({
           id: newId('wake'),
           reason: 'workstream created — establish direction and dispatch initial work',
@@ -212,13 +212,13 @@ async function main(): Promise<void> {
     }
 
     case 'list': {
-      for (const s of listWorkstreams()) process.stdout.write(`${s}\n`);
+      for (const s of await listWorkstreams()) process.stdout.write(`${s}\n`);
       break;
     }
 
     case 'status': {
       const slug = rest[0] ?? fail('slug required');
-      process.stdout.write(renderStatus(load(slug)) + '\n');
+      process.stdout.write(renderStatus(await load(slug)) + '\n');
       break;
     }
 
@@ -227,7 +227,7 @@ async function main(): Promise<void> {
       if (subcommand !== 'retry') fail(`unknown capacity subcommand '${subcommand}' (expected retry)`);
       const slug = rest[1] ?? fail('usage: weaver capacity retry <slug> [--model <model>]');
       const model = opt(rest, 'model');
-      const current = load(slug);
+      const current = await load(slug);
       const available = Object.keys(current.capacity?.byModel ?? {});
       if (!available.length) fail(`${slug} has no provider capacity wait to retry`);
       if (model && !available.includes(model)) {
@@ -235,7 +235,7 @@ async function main(): Promise<void> {
       }
       const { retryCapacityNow } = await import('./capacity.js');
       let retried: string[] = [];
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         retried = retryCapacityNow(d, virtualNow().toISOString(), model);
         event(
           'capacity.retry_requested',
@@ -250,7 +250,7 @@ async function main(): Promise<void> {
 
     case 'log': {
       const slug = rest[0] ?? fail('slug required');
-      for (const e of load(slug).events) {
+      for (const e of (await load(slug)).events) {
         process.stdout.write(`[${e.atVirtual}] ${e.type}: ${e.summary}\n`);
       }
       break;
@@ -258,7 +258,7 @@ async function main(): Promise<void> {
 
     case 'tail': {
       const slug = rest[0] ?? fail('slug required');
-      load(slug); // unknown slug fails loudly instead of waiting on a file forever
+      await load(slug); // unknown slug fails loudly instead of waiting on a file forever
       const { runTail } = await import('./tail.js');
       await runTail(slug, { all: rest.includes('--all') });
       break;
@@ -267,9 +267,9 @@ async function main(): Promise<void> {
     case 'show': {
       const slug = rest[0] ?? fail('slug required');
       const delId = rest[1] ?? fail('deliverable id required');
-      const doc = load(slug);
+      const doc = await load(slug);
       const del = doc.deliverables.find((d) => d.id === delId) ?? fail(`no deliverable ${delId}`);
-      process.stdout.write(readArtifact(slug, del.path) + '\n');
+      process.stdout.write((await readArtifact(slug, del.path)) + '\n');
       break;
     }
 
@@ -277,7 +277,7 @@ async function main(): Promise<void> {
       const slug = rest[0] ?? fail('slug required');
       const body = rest.slice(1).join(' ') || fail('message required');
       const { addSteering } = await import('./humanActs.js');
-      addSteering(slug, body);
+      await addSteering(slug, body);
       process.stdout.write(`steering recorded — run: weaver tick ${slug}\n`);
       break;
     }
@@ -286,7 +286,7 @@ async function main(): Promise<void> {
       const slug = rest[0] ?? fail('slug required');
       const intId = rest[1] ?? fail('interaction id required');
       const { approveSend } = await import('./humanActs.js');
-      approveSend(slug, intId);
+      await approveSend(slug, intId);
       process.stdout.write(`approved — the harness will execute it on the next tick\n`);
       break;
     }
@@ -315,7 +315,7 @@ async function main(): Promise<void> {
         }
       }
       const asgId = newId('asg');
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         d.assignments.push({
           id: asgId,
           objective,
@@ -342,7 +342,7 @@ async function main(): Promise<void> {
       const slug = rest[0] ?? fail('slug required');
       const verb = rest[1] ?? fail('add or remove required');
       const text = rest.slice(2).join(' ') || fail('constraint text required');
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         if (verb === 'add') {
           d.workstream.constraints.push(text);
           event('constraint.added', `human added constraint: "${text}"`);
@@ -372,7 +372,7 @@ async function main(): Promise<void> {
       const asgId = rest[1] ?? fail('assignment id required');
       {
         const { approveAction } = await import('./humanActs.js');
-        approveAction(slug, asgId);
+        await approveAction(slug, asgId);
       }
       process.stdout.write(`approved — the action will run on the next tick and be confirmed by readback\n`);
       break;
@@ -383,7 +383,7 @@ async function main(): Promise<void> {
       const asgId = rest[1] ?? fail('assignment id required');
       const reason = rest.slice(2).join(' ') || 'rejected by human';
       const { rejectAction } = await import('./humanActs.js');
-      rejectAction(slug, asgId, reason);
+      await rejectAction(slug, asgId, reason);
       process.stdout.write(`rejected — the coordinator will reconcile on the next tick\n`);
       break;
     }
@@ -392,7 +392,7 @@ async function main(): Promise<void> {
       const slug = rest[0] ?? fail('slug required');
       const intId = rest[1] ?? fail('interaction id required');
       const { rejectSend } = await import('./humanActs.js');
-      rejectSend(slug, intId);
+      await rejectSend(slug, intId);
       process.stdout.write(`rejected — the coordinator will reconcile on the next tick\n`);
       break;
     }
@@ -404,13 +404,13 @@ async function main(): Promise<void> {
       const body = opt(rest, 'body') ?? fail('--body required');
       const ingressKey = opt(rest, 'key');
       if (ingressKey) {
-        const existing = load(slug).interactions.flatMap((i) => i.replies).find((r) => r.ingressKey === ingressKey);
+        const existing = (await load(slug)).interactions.flatMap((i) => i.replies).find((r) => r.ingressKey === ingressKey);
         if (existing) {
           process.stdout.write(`duplicate ingress key '${ingressKey}' — already recorded as ${existing.id}; no-op\n`);
           break;
         }
       }
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         const int = d.interactions.find((i) => i.id === intId) ?? fail(`no interaction ${intId}`);
         if (!['sent', 'confirmed'].includes(int.status)) {
           fail(`${intId} is ${int.status} — replies only arrive on sent/confirmed interactions`);
@@ -442,13 +442,13 @@ async function main(): Promise<void> {
       const summary = opt(rest, 'summary') ?? fail('--summary required');
       const obsKey = opt(rest, 'key');
       if (obsKey) {
-        const existing = load(slug).observations.find((o) => o.ingressKey === obsKey);
+        const existing = (await load(slug)).observations.find((o) => o.ingressKey === obsKey);
         if (existing) {
           process.stdout.write(`duplicate ingress key '${obsKey}' — already recorded as ${existing.id}; no-op\n`);
           break;
         }
       }
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         const id = newId('obs');
         d.observations.push({ id, ...(obsKey ? { ingressKey: obsKey } : {}), source, summary, atVirtual: virtualNow().toISOString() });
         d.wakes.push({
@@ -472,7 +472,7 @@ async function main(): Promise<void> {
       const asgId = rest[1] ?? fail('assignment id required');
       const reason = opt(rest, 'reason') ?? 'adopted by human';
       const { adoptSubmission } = await import('./humanActs.js');
-      adoptSubmission(slug, asgId, reason);
+      await adoptSubmission(slug, asgId, reason);
       process.stdout.write(`adopted ${asgId}\n`);
       break;
     }
@@ -484,7 +484,7 @@ async function main(): Promise<void> {
       const maxCost = opt(rest, 'max-cost');
       const maxPasses = opt(rest, 'max-passes');
       if (!maxCost && !maxPasses) fail('--max-cost and/or --max-passes required');
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         if (maxCost) d.workstream.budget.maxCostUsd = Number(maxCost);
         if (maxPasses) d.workstream.budget.maxCoordinatorPasses = Number(maxPasses);
         d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
@@ -501,7 +501,7 @@ async function main(): Promise<void> {
         const { userInfo } = await import('node:os');
         const author = opt(rest, 'author') ?? userInfo().username;
         const out = opt(rest, 'out') ?? `${process.cwd()}/state/seed-${author}.json`;
-        const seed = exportSeed(author);
+        const seed = await exportSeed(author);
         (await import('node:fs')).writeFileSync(out, JSON.stringify(seed, null, 2) + '\n');
         process.stdout.write(`exported ${seed.policies.length} shareable policies → ${out}\n(sanitized: statements + scope + effect only — no ids, evidence, or transcript quotes)\n`);
         break;
@@ -511,7 +511,7 @@ async function main(): Promise<void> {
         const { grantsAuthority } = await import('./backfill.js');
         const seed = JSON.parse((await import('node:fs')).readFileSync(file, 'utf8'));
         if (seed.weaverSeed !== 1) fail('not a weaver seed file');
-        const res = importSeed(seed, { refuseAuthority: grantsAuthority });
+        const res = await importSeed(seed, { refuseAuthority: grantsAuthority });
         process.stdout.write(
           `imported ${res.imported} policies from ${seed.author} — ALL land in shadow and earn active status through YOUR outcomes\n` +
           `${res.skippedDuplicate} duplicates skipped` +
@@ -519,7 +519,7 @@ async function main(): Promise<void> {
         );
         break;
       }
-      for (const p of loadPolicies().policies) {
+      for (const p of (await loadPolicies()).policies) {
         process.stdout.write(
           `${p.id} [${p.status}/${p.effect.kind}] tags=[${p.scope.tags.join(',')}] "${p.statement}"\n` +
           `    from ${policyOrigin(p)} (${p.provenance.interventionSummary.slice(0, 100)})\n` +
@@ -545,7 +545,7 @@ async function main(): Promise<void> {
       const limit = Number(opt(rest, 'limit') ?? 5);
       const { backfillRules, backfillSessions, renderBackfillReport } = await import('./backfill.js');
       if (rulePaths.length) {
-        process.stdout.write(`## rules files (deterministic)\n${renderBackfillReport(backfillRules(rulePaths, tags, dryRun), dryRun)}\n`);
+        process.stdout.write(`## rules files (deterministic)\n${renderBackfillReport(await backfillRules(rulePaths, tags, dryRun), dryRun)}\n`);
       }
       if (projectsDir) {
         const report = await backfillSessions(projectsDir, tags, { dryRun, limit });
@@ -606,7 +606,7 @@ async function main(): Promise<void> {
       const attId = rest[1] ?? fail('attention id required');
       const note = rest.slice(2).join(' ');
       const { resolveAttention } = await import('./humanActs.js');
-      resolveAttention(slug, attId, note);
+      await resolveAttention(slug, attId, note);
       process.stdout.write(`${attId} resolved\n`);
       break;
     }
@@ -615,12 +615,12 @@ async function main(): Promise<void> {
       const slug = rest[0] ?? fail('slug required');
       const verb = rest[1] ?? fail('add or remove required');
       const tag = rest[2] ?? fail('tag required');
-      arrive(slug, (d, event) => {
+      await arrive(slug, (d, event) => {
         if (verb === 'add' && !d.workstream.tags.includes(tag)) d.workstream.tags.push(tag);
         if (verb === 'remove') d.workstream.tags = d.workstream.tags.filter((t) => t !== tag);
         event('tags.changed', `config: ${(process.env.WEAVER_ACTOR ?? 'operator')} ${verb}ed tag '${tag}'`);
       });
-      process.stdout.write(`tags now: ${load(slug).workstream.tags.join(', ')}\n`);
+      process.stdout.write(`tags now: ${(await load(slug)).workstream.tags.join(', ')}\n`);
       break;
     }
 
@@ -628,7 +628,7 @@ async function main(): Promise<void> {
     case 'resume': {
       const slug = rest[0] ?? fail('slug required');
       const { setPaused } = await import('./humanActs.js');
-      setPaused(slug, cmd === 'pause');
+      await setPaused(slug, cmd === 'pause');
       process.stdout.write(`${slug} is now ${cmd === 'pause' ? 'paused' : 'active'}\n`);
       break;
     }
@@ -653,7 +653,7 @@ async function main(): Promise<void> {
       // learned policies, intervention density, adoption state, action audit
       // — rendered from typed state into one self-contained HTML file.
       const { runInspect } = await import('./inspect.js');
-      const out = runInspect(rest[0]);
+      const out = await runInspect(rest[0]);
       process.stdout.write(`${out}\n`);
       if (process.platform === 'darwin') {
         const { spawn } = await import('node:child_process');
@@ -667,7 +667,7 @@ async function main(): Promise<void> {
       const parsed = parsePrintoutArgs(rest);
       if (parsed.text) {
         const { deliverPrintout, preparePrintout } = await import('./printout.js');
-        await deliverPrintout(preparePrintout(parsed.slug));
+        await deliverPrintout(await preparePrintout(parsed.slug));
       } else {
         const { publishPrintoutHtml } = await import('./printoutHtml.js');
         const published = await publishPrintoutHtml(parsed.slug);
@@ -680,7 +680,7 @@ async function main(): Promise<void> {
       // Fleet outcome metrics from durable typed state (never the bounded
       // event tail): interventions per adopted work product, approvals, policies.
       const { runStats } = await import('./stats.js');
-      const out = runStats();
+      const out = await runStats();
       process.stdout.write(`${out}\n`);
       if (process.platform === 'darwin') {
         const { spawn } = await import('node:child_process');
