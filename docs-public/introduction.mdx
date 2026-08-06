@@ -1,13 +1,13 @@
 ---
 title: "Introduction"
-description: "A durable execution layer that gives real-world agent work what code always had: history, review, and verified outcomes"
+description: "A durable execution layer for agent work: direction, history, review, and verified outcomes that outlive every model run"
 ---
 
-Agent harnesses already run models for hours. Memory features already carry facts between sessions. Weaver is about the part nobody has: when an agent system works on something for weeks — a hiring pipeline, a growth experiment, a standing error-triage routine — where is the record of *why the current course exists*, *what was actually done to the world*, and *what made the system better than it was last month?*
+Agent harnesses already run models for hours. Memory features already carry facts between sessions. Weaver is about the durable execution around those runs: when an agent system works on an outcome for hours or weeks — fixing an upload bug across code and telemetry, running a standing error-triage routine, or progressing a hiring pipeline — where is the record of *why the current course exists*, *what was actually done to the world*, and *what made the system better than it was last month?*
 
-For code, that layer has existed for decades: git history holds accepted work, pull requests hold review, CI holds verified outcomes, and the repo outlives every editor session. For everything else agents do — outreach, operations, research, recurring business routines — there is nothing. Every "agent product" collapses into one immortal chat that degrades until someone starts over.
+Git already gives code artifacts a durable substrate: commits show what changed, pull requests review the diff, CI checks the build, and the repo outlives every editor session. But code work is larger than its diff. Git does not hold the objective, the evidence from logs and product telemetry, the approaches rejected before the accepted change, the authority behind external actions, what is waiting, or whether the outcome actually succeeded. Non-code work often lacks even Git's artifact history. Without a durable execution layer, both kinds of agent work collapse back into a conversation that degrades until someone starts over.
 
-Weaver is that missing layer, built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk):
+Weaver adds that organizational execution layer across code, operations, research, and external processes, built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk):
 
 > **A Workstream is the durable organizational execution — direction, work, deliverables, interactions, results. Coordinator runs and workers are disposable: they enter, advance bounded work, publish results, and leave.**
 
