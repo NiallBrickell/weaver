@@ -126,3 +126,16 @@ test('tailMessage summarizes tool calls, prose snippets, and the result — noth
   assert.equal(events[2]!.detail, 'Read /tmp/x.ts');
   assert.equal(events[3]!.detail, 'done in 7 turns ($0.123)');
 });
+
+test('ephemeral MCP credentials are redacted from the tail without entering the secret store', () => {
+  makeWs();
+  const transient = 'synthetic-mcp-header-value';
+  tailMessage(SLUG, 'worker', 'asg_mcp', {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: `unexpected echo ${transient}` }] },
+  } as never, { WEAVER_INTERNAL_MCP_HEADER_1: transient });
+
+  const raw = fs.readFileSync(tailPath(SLUG), 'utf8');
+  assert.doesNotMatch(raw, /synthetic-mcp-header-value/);
+  assert.match(raw, /«secret:WEAVER_INTERNAL_MCP_HEADER_1»/);
+});

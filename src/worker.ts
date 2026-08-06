@@ -26,6 +26,7 @@ import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, newId, readArtifact, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
 import type { InfrastructureWait, WorkstreamDoc } from './types.js';
+import { secureMcpHeaderCredentials, type SecuredMcpConfiguration } from './mcpConfig.js';
 
 export function workerModel(): string {
   return process.env.WEAVER_WORKER_MODEL ?? 'sonnet';
@@ -139,7 +140,7 @@ function readOnlyMcpSupervisor() {
  * Action workers get the full surface under live pilot supervision; read-only
  * workers get the same servers behind the deterministic read-only gate below.
  */
-export function operatorMcpServers(dirs: string[]): Record<string, unknown> {
+export function operatorMcpServers(dirs: string[]): SecuredMcpConfiguration {
   try {
     const cfg = JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8')) as {
       mcpServers?: Record<string, unknown>;
@@ -152,9 +153,9 @@ export function operatorMcpServers(dirs: string[]): Record<string, unknown> {
         Object.assign(merged, cfg.projects![p]!.mcpServers ?? {});
       }
     }
-    return merged;
+    return secureMcpHeaderCredentials(merged);
   } catch {
-    return {};
+    return { servers: {}, env: {} };
   }
 }
 
@@ -299,9 +300,13 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
 
   let submitted = false;
   const sections: string[] = [];
+  const readDirs = asg.readDirs ?? [];
+  const isAction = asg.kind === 'action';
+  const operatorMcp = operatorMcpServers(isAction && asg.exec ? [asg.exec.cwd, ...readDirs] : readDirs);
   // Action workers get secret VALUES as env vars only; every path back into
   // durable state is scrubbed so a value can never outlive the process.
-  const secrets = asg.kind === 'action' ? loadSecrets(slug) : {};
+  const secrets = isAction ? loadSecrets(slug) : {};
+  const redactionSecrets = { ...secrets, ...operatorMcp.env };
 
   const server = createSdkMcpServer({
     name: 'weaver',
@@ -344,8 +349,8 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
             };
           }
           submitted = true;
-          const cleanContent = redactSecrets(fullContent, secrets);
-          const cleanSummary = redactSecrets(a.summary, secrets);
+          const cleanContent = redactSecrets(fullContent, redactionSecrets);
+          const cleanSummary = redactSecrets(a.summary, redactionSecrets);
           const { relPath, hash } = writeArtifact(slug, a.artifact.file_name, cleanContent);
           arrive(slug, (d, event) => {
             const asg2 = d.assignments.find((x) => x.id === assignmentId)!;
@@ -412,8 +417,6 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
   const abort = new AbortController();
   const wall = armWall(abort, 40 * 60_000, 'worker');
   try {
-    const readDirs = asg.readDirs ?? [];
-    const isAction = asg.kind === 'action';
     if (isAction) {
       // Structural gate, independent of the engine's scheduling: an action
       // worker must never start without its recorded human approval.
@@ -428,14 +431,13 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
       : readDirs.length
         ? ['Read', 'Grep', 'Glob', 'Bash'] // Bash gated to read-only history commands below
         : [];
-    const operatorMcp = operatorMcpServers(isAction ? [asg.exec!.cwd, ...readDirs] : readDirs);
     for await (const message of query({
       prompt,
       options: {
         model: workerModel(),
         systemPrompt: isAction ? ACTION_SYSTEM : WORKER_SYSTEM,
         tools: baseTools,
-        env: sdkEnv(secrets),
+        env: sdkEnv({ ...secrets, ...operatorMcp.env }),
         ...(isAction
           ? {
               cwd: asg.exec!.cwd,
@@ -453,7 +455,7 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
           : readDirs.length
             ? { cwd: readDirs[0], additionalDirectories: readDirs }
             : {}),
-        mcpServers: { ...operatorMcp, weaver: server } as never,
+        mcpServers: { ...operatorMcp.servers, weaver: server } as never,
         // Action workers: ONLY the submit surface is auto-allowed — every
         // real tool call (Bash, edits, operator MCPs) routes through the live
         // pilot supervisor, judged at execution time exactly like the
@@ -467,12 +469,12 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
           : [...baseTools.filter((t) => t !== 'Bash'), 'mcp__weaver__*'],
         permissionMode: 'default',
         canUseTool: (isAction ? pilotSupervisor(asg.exec!.cwd, slug) : readOnlyMcpSupervisor()) as never,
-        maxTurns: isAction || readDirs.length || Object.keys(operatorMcp).length ? 80 : 30,
+        maxTurns: isAction || readDirs.length || Object.keys(operatorMcp.servers).length ? 80 : 30,
         persistSession: false,
         abortController: abort,
       },
     })) {
-      tailMessage(slug, 'worker', assignmentId, message);
+      tailMessage(slug, 'worker', assignmentId, message, operatorMcp.env);
       sdkFailure.observe(message);
       if (message.type === 'result') {
         sessionId = message.session_id;
