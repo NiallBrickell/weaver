@@ -21,7 +21,7 @@ import type { PolicyRecord } from './policies.js';
 import { loadPolicies } from './policies.js';
 import { writePrintoutIndex } from './printoutHtml.js';
 import { loadAllSecrets, redactSecrets } from './secrets.js';
-import { listWorkstreams, load, weaverHome, workstreamDir } from './store.js';
+import { listManagedBy, listWorkstreams, load, weaverHome, workstreamDir } from './store.js';
 import type { Assignment, Decision, Deliverable, EventRecord, WorkstreamDoc } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -526,8 +526,23 @@ function printoutSection(href: string, scope: string): string {
 </section>`;
 }
 
-export function renderWorkstreamHtml(doc: WorkstreamDoc, policies: PolicyRecord[]): string {
+/**
+ * `managed` is a fleet-wide `listManagedBy` scan the caller (runInspect)
+ * performs and passes in, so this stays a pure function of one doc for
+ * tests. Flat one-liner only, appended to the subtitle: this doc's own
+ * `managedBy` pointer and its own single-level `manages` count — never a
+ * resolved chain.
+ */
+export function renderWorkstreamHtml(
+  doc: WorkstreamDoc,
+  policies: PolicyRecord[],
+  managed: { slug: string; status: string }[] = [],
+): string {
   const ws = doc.workstream;
+  const managedBadge = [
+    ws.managedBy ? `managed by ${ws.managedBy.slug}` : '',
+    managed.length ? `manages ${managed.length} workstream${managed.length === 1 ? '' : 's'}` : '',
+  ].filter(Boolean).join(' · ');
   const body = [
     taskSection(doc),
     printoutSection(`../printouts/index.html#${encodeURIComponent(ws.slug)}`, 'this workstream’s'),
@@ -543,7 +558,7 @@ export function renderWorkstreamHtml(doc: WorkstreamDoc, policies: PolicyRecord[
   ].join('\n');
   return page(
     `${ws.title} — knowledge inspector`,
-    `${ws.slug} · ${ws.status} · revision ${doc.revision} · ${doc.spend.coordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}`,
+    `${ws.slug} · ${ws.status} · revision ${doc.revision} · ${doc.spend.coordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}${managedBadge ? ` · ${managedBadge}` : ''}`,
     body,
     // A workstream page is reachable directly (dashboard [i] on a selected
     // stream), so it always carries its own way back up to the fleet page.
@@ -563,6 +578,18 @@ export function renderOverviewHtml(
     const superseded = doc.decisions.length - standing;
     const adopted = doc.deliverables.filter((d) => d.adopted).length;
     const candidates = doc.deliverables.length - adopted;
+    // Flat, one level only: computed from the already-loaded fleet, so this
+    // needs no extra store scan — but still never resolved past direct
+    // children (a manager's manager is never shown here).
+    const directChildren = docs.filter((other) => other.workstream.managedBy?.slug === ws.slug).length;
+    const managedRow = ws.managedBy || directChildren
+      ? `<tr><th>Managed</th><td>${
+          [
+            ws.managedBy ? `by ${esc(ws.managedBy.slug)}` : '',
+            directChildren ? `manages ${directChildren}` : '',
+          ].filter(Boolean).join(' · ')
+        }</td></tr>`
+      : '';
     return `<article class="card">
 <header><a href="${esc(ws.slug)}/inspect.html"><strong>${esc(ws.title)}</strong></a> <span class="pill status-${ws.status === 'active' ? 'active' : 'shadow'}">${esc(ws.status)}</span></header>
 <p class="meta">${esc(ws.objective)}</p>
@@ -573,6 +600,7 @@ export function renderOverviewHtml(
 <tr><th>Interventions</th><td>${doc.spend.humanInterventions}</td></tr>
 <tr><th>Spend</th><td>${doc.spend.coordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}</td></tr>
 <tr><th>Tags</th><td>${ws.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(' ') || '(none)'}</td></tr>
+${managedRow}
 </tbody></table>
 </article>`;
   });
@@ -633,10 +661,10 @@ export async function runInspect(slug?: string): Promise<string> {
       continue;
     }
     docs.push(doc);
-    writeRedacted(path.join(workstreamDir(s), 'inspect.html'), renderWorkstreamHtml(doc, policies), allSecrets);
+    writeRedacted(path.join(workstreamDir(s), 'inspect.html'), renderWorkstreamHtml(doc, policies, await listManagedBy(s)), allSecrets);
   }
   const overview = path.join(weaverHome(), 'inspect.html');
   writeRedacted(overview, renderOverviewHtml(docs, policies, unreadable), allSecrets);
-  writePrintoutIndex();
+  await writePrintoutIndex();
   return slug ? path.join(workstreamDir(slug), 'inspect.html') : overview;
 }

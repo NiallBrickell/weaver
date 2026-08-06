@@ -93,7 +93,9 @@ function attemptFresh(a: Assignment): boolean {
   return !!t && !t.endedAt && Date.now() - new Date(t.startedAt).getTime() < STALE_ATTEMPT_MS;
 }
 
-async function viewOf(slug: string): Promise<WsView> {
+/** Exported for the managed-workstream flat-rendering test — otherwise an
+ * internal helper for the live frame loop below. */
+export async function viewOf(slug: string): Promise<WsView> {
   let doc: WorkstreamDoc;
   try {
     // Through the store (not a direct file read) so the dashboard reflects
@@ -198,12 +200,15 @@ async function viewOf(slug: string): Promise<WsView> {
             : 3;
 
   const paused = ws.status === 'paused' ? ` ${DIM}[paused]${R}` : '';
+  // Flat, one level only: this workstream's own `managedBy` pointer — never a
+  // manager's manager, and never an expansion of what it in turn manages.
+  const managedBy = ws.managedBy ? ` ${DIM}[managed by ${ws.managedBy.slug}]${R}` : '';
   const row =
     `${BUCKET[bucket].word}${' '.repeat(Math.max(1, 11 - BUCKET[bucket].plain.length))}` +
     `${bar(doc.spend.totalCostUsd, ws.budget.maxCostUsd)} ` +
     `${DIM}$${doc.spend.totalCostUsd.toFixed(2)}/$${ws.budget.maxCostUsd}${R} ` +
     `${DIM}· passes ${doc.spend.coordinatorPasses}/${ws.budget.maxCoordinatorPasses}` +
-    ` · you ${doc.spend.humanInterventions ?? 0}×${R}${paused}`;
+    ` · you ${doc.spend.humanInterventions ?? 0}×${R}${paused}${managedBy}`;
 
   return { slug, bucket, row, details };
 }

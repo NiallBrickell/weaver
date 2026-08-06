@@ -18,6 +18,12 @@ import { inVirtual, parseDuration, virtualNow } from './clock.js';
 import { conclusionEvidenceLabels } from './conclusion.js';
 import { buildProjection } from './projection.js';
 import { matchPolicies, proposePolicy, recordPolicyOutcome } from './policies.js';
+import {
+  ManagedWorkstreamError,
+  createManagedWorkstream,
+  directManagedWorkstream,
+  inspectManagedWorkstream,
+} from './managedWorkstreams.js';
 import { sdkEnv } from './secrets.js';
 import { tailMessage } from './tail.js';
 import { armWall } from './wall.js';
@@ -653,6 +659,80 @@ export async function runCoordinatorPass(
       ),
 
       tool(
+        'create_managed_workstream',
+        'Create a brand-new, independent Workstream that THIS workstream manages — flat, not a tree: the new stream cannot itself see or reach this one except through the pointer you just created, and you can never manage your own manager\'s manager. Passes only what you put in these fields — nothing else about this workstream (its decisions, events, projection, or any other internal state) reaches the new one; it starts exactly as fresh as `weaver create` would leave it. Its budget is fully independent of yours — it is never drawn from or capped by your own remaining budget. Use this to delegate a genuinely separate outcome, not to split one assignment into two.',
+        {
+          slug: z.string().describe('unique slug for the new workstream'),
+          title: z.string(),
+          objective: z.string(),
+          success_criteria: z.array(z.string()).default([]),
+          constraints: z.array(z.string()).default([]),
+          tags: z.array(z.string()).default([]),
+          max_coordinator_passes: z.number().optional().describe('defaults to 500 if omitted, same as weaver create'),
+          max_cost_usd: z.number().optional().describe('defaults to 1000 if omitted, same as weaver create'),
+          sends_require_approval: z.boolean().optional().describe('defaults to true if omitted, same as weaver create'),
+        },
+        async (a) => {
+          let managed;
+          try {
+            managed = await createManagedWorkstream(slug, {
+              slug: a.slug,
+              title: a.title,
+              objective: a.objective,
+              successCriteria: a.success_criteria,
+              constraints: a.constraints,
+              tags: a.tags,
+              ...(a.max_coordinator_passes !== undefined ? { maxCoordinatorPasses: a.max_coordinator_passes } : {}),
+              ...(a.max_cost_usd !== undefined ? { maxCostUsd: a.max_cost_usd } : {}),
+              ...(a.sends_require_approval !== undefined ? { sendsRequireApproval: a.sends_require_approval } : {}),
+            });
+          } catch (e) {
+            return err(e instanceof Error ? e.message : String(e));
+          }
+          // Caller-side audit only: a 409 here loses nothing — the managed
+          // doc already exists and stays discoverable via listManagedBy.
+          return change((d, event) => {
+            event('managed_workstream.created', `created managed workstream '${managed.workstream.slug}' "${managed.workstream.title}"`, []);
+            return `created managed workstream '${managed.workstream.slug}' — it will run independently; use inspect_managed_workstream to check on it`;
+          });
+        },
+      ),
+
+      tool(
+        'inspect_managed_workstream',
+        'Read a bounded, typed summary of a workstream you manage: title/objective/status/successCriteria/constraints/tags/budget+spend/open attention/conclusion/last 10 events/directions you sent it/its own recent notices. Refuses if you are not its recorded manager. Never returns its raw decision log or a rendered projection — only these declared facts. Never resolves further than this one workstream (flat, not a tree): its own notices may reference workstreams IT manages, but those are not expanded here.',
+        { slug: z.string() },
+        async (a) => {
+          try {
+            return ok(JSON.stringify(await inspectManagedWorkstream(slug, a.slug), null, 2));
+          } catch (e) {
+            return err(e instanceof ManagedWorkstreamError ? e.message : e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+
+      tool(
+        'direct_managed_workstream',
+        'Send durable, ADVISORY text to a workstream you manage — exactly like human Steering is advisory text to you. It cannot create assignments, adopt or reject anything, or change the target\'s budget/constraints/approvals; only the target\'s own next pass, under its own authority, decides whether and how to act on it. Refuses if you are not its recorded manager.',
+        { slug: z.string(), message: z.string() },
+        async (a) => {
+          let direction;
+          try {
+            direction = await directManagedWorkstream(slug, a.slug, a.message);
+          } catch (e) {
+            return err(e instanceof Error ? e.message : String(e));
+          }
+          // Target write already landed (arrive, additive). A conflict on this
+          // caller-side audit event leaves that direction standing — nothing
+          // to lose, only this workstream's own record of having sent it.
+          return change((d, event) => {
+            event('managed_workstream.directed', `sent direction ${direction.id} to '${a.slug}': ${a.message.slice(0, 160)}`, [direction.id]);
+            return `direction ${direction.id} delivered to '${a.slug}'`;
+          });
+        },
+      ),
+
+      tool(
         'finish_pass',
         'End this pass. Summarize faithfully what you did and why; the typed state you wrote, not this summary, remains the truth.',
         { summary: z.string(), acknowledged_steering: z.boolean().optional() },
@@ -667,6 +747,12 @@ export async function runCoordinatorPass(
             }
             for (const s of d.steering) {
               if (!s.consumedByPass) s.consumedByPass = passId;
+            }
+            // Directions are durable input, not steering, but they get the
+            // same "seen by a pass" bookkeeping so the projection stops
+            // re-surfacing one this pass already read.
+            for (const dir of d.managerDirections ?? []) {
+              if (!dir.consumedByPass) dir.consumedByPass = passId;
             }
             d.lease = null;
             event('pass.finished', `${passId}: ${a.summary}`, [passId]);
