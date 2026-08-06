@@ -49,6 +49,26 @@ export function coordinatorModel(): string {
   return process.env.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5';
 }
 
+export function coordinatorFallbackModel(): string {
+  return process.env.WEAVER_COORDINATOR_FALLBACK_MODEL ?? 'claude-opus-5';
+}
+
+/** Which model THIS pass runs on. Capacity limits are per-model pools, so a
+ * parked primary (Fable weekly limit) must not park the fleet: the evaluative
+ * seat degrades one step (Opus) and keeps reconciling, while the runner's
+ * per-model probe keeps testing the primary and restores it the moment its
+ * pool recovers. If both pools are limited, the primary is returned and the
+ * normal backoff machinery does its job. */
+export function pickCoordinatorModel(doc: WorkstreamDoc, nowIso: string): string {
+  const primary = coordinatorModel();
+  const fallback = coordinatorFallbackModel();
+  if (fallback === primary) return primary;
+  const primaryWait = doc.capacity?.byModel[primary]?.wait;
+  if (!primaryWait || primaryWait.retryAt <= nowIso) return primary;
+  const fallbackWait = doc.capacity?.byModel[fallback]?.wait;
+  return !fallbackWait || fallbackWait.retryAt <= nowIso ? fallback : primary;
+}
+
 /** Deterministic capacity-state half of pass finalization. Kept outside the
  * SDK loop so thresholds and deduplication are contract-testable. */
 export function recordCoordinatorCapacityBackoff(
@@ -111,6 +131,10 @@ export async function runCoordinatorPass(
   }
 
   const passId = newId('pass');
+  // Pinned for the whole pass: the record, the SDK call, failure
+  // classification, and capacity clearing must all speak about ONE model.
+  const passModel = pickCoordinatorModel(doc, virtualNow().toISOString());
+  const degraded = passModel !== coordinatorModel();
   doc = mutate(slug, doc.revision, (d, event) => {
     d.lease = {
       passId,
@@ -122,11 +146,11 @@ export async function runCoordinatorPass(
       startedAt: new Date().toISOString(),
       baseRevision: d.revision + 1,
       wakeReasons: wakeReasons.map((r) => (r.length > 300 ? `${r.slice(0, 297)}…` : r)),
-      model: coordinatorModel(),
+      model: passModel,
       changes: [],
       outcome: 'running',
     });
-    event('pass.started', `Coordinator pass ${passId} started (${wakeReasons.join('; ') || 'manual'})`);
+    event('pass.started', `Coordinator pass ${passId} started (${wakeReasons.join('; ') || 'manual'})${degraded ? ` — on fallback ${passModel} while ${coordinatorModel()} capacity recovers` : ''}`);
   });
 
   // The revision this pass writes against; advanced after each of its own writes.
@@ -657,7 +681,7 @@ export async function runCoordinatorPass(
     for await (const message of query({
       prompt,
       options: {
-        model: coordinatorModel(),
+        model: passModel,
         systemPrompt: SYSTEM_PROMPT,
         tools: [],
         mcpServers: { weaver: server },
@@ -697,7 +721,7 @@ export async function runCoordinatorPass(
   const infrastructure = sdkFailure.classify({
     source: 'coordinator',
     sourceId: passId,
-    model: coordinatorModel(),
+    model: passModel,
     now: virtualNow(),
     wallNow: new Date(),
     wallFired: wall.fired(),
@@ -724,7 +748,7 @@ export async function runCoordinatorPass(
     }
     if (d.lease?.passId === passId) d.lease = null;
     if (!infrastructure) {
-      clearCoordinatorCapacityBackoff(d, coordinatorModel());
+      clearCoordinatorCapacityBackoff(d, passModel);
     }
     // Provider waits are execution attempts, not logical coordinator passes:
     // a month-long credit outage must not consume the workstream's pass cap.
@@ -758,6 +782,24 @@ export async function runCoordinatorPass(
       });
       recordCoordinatorCapacityBackoff(d, infrastructure, wakeId);
       event('pass.backoff', `${passId} parked on ${infrastructure.kind} until ${infrastructure.retryAt}`, [passId, wakeId]);
+      // Degrade, don't park: if the PRIMARY model's pool is what failed and
+      // the fallback's isn't also limited, wake immediately — the next pass
+      // will pick the fallback (pickCoordinatorModel reads the capacity entry
+      // just recorded). The typed wake above stays: it is the primary pool's
+      // bookkeeping, and the runner's probe restores the primary via it.
+      const fb = coordinatorFallbackModel();
+      const fbWait = d.capacity?.byModel[fb]?.wait;
+      const fbAvailable = fb !== infrastructure.model && (!fbWait || fbWait.retryAt <= virtualNow().toISOString());
+      if (infrastructure.model === coordinatorModel() && fbAvailable) {
+        d.wakes.push({
+          id: newId('wake'),
+          reason: `continue on fallback model ${fb} while ${infrastructure.model} capacity recovers`,
+          condition: { type: 'immediate' },
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        event('pass.degraded', `${infrastructure.model} pool is limited — coordinator continues on ${fb} until the probe restores it`, [passId]);
+      }
     } else if (outcome !== 'completed') {
       const recent = d.passes.filter((p) => !p.infrastructure).slice(-3);
       const allFailing = recent.length === 3 && recent.every((p) => p.outcome !== 'completed');
