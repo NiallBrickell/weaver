@@ -19,15 +19,14 @@
  * pre-adapter store had.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { virtualNow } from '../clock.js';
 import type { PolicyStore } from '../policies.js';
-import type { EventRecord, WorkstreamCore, WorkstreamDoc } from '../types.js';
+import type { WorkstreamCore, WorkstreamDoc } from '../types.js';
+import { emptyPolicyStore, eventHelperFor, initialDoc, newId, sha256 } from './doc.js';
 import { RevisionConflictError, type Mutator, type StateStore } from './types.js';
 
-const EVENT_TAIL_LIMIT = 200;
+export { newId, sha256 };
 
 export function weaverHome(): string {
   return process.env.WEAVER_HOME ?? path.resolve(process.cwd(), 'state');
@@ -47,14 +46,6 @@ export function artifactsDir(slug: string): string {
 
 function policiesPath(): string {
   return path.join(weaverHome(), 'policies.json');
-}
-
-export function newId(prefix: string): string {
-  return `${prefix}_${randomUUID().slice(0, 8)}`;
-}
-
-export function sha256(content: string): string {
-  return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
 /** Atomic tmp+rename write. Secrets enforcement happens in src/store.ts BEFORE
@@ -97,35 +88,7 @@ export class FsStore implements StateStore {
       throw new Error(`workstream '${core.slug}' already exists`);
     }
     fs.mkdirSync(artifactsDir(core.slug), { recursive: true });
-    const doc: WorkstreamDoc = {
-      schemaVersion: 1,
-      revision: 0,
-      workstream: {
-        ...core,
-        id: newId('ws'),
-        status: 'active',
-        createdAt: new Date().toISOString(),
-      },
-      decisions: [],
-      assignments: [],
-      deliverables: [],
-      interactions: [],
-      observations: [],
-      wakes: [],
-      steering: [],
-      attention: [],
-      passes: [],
-      events: [
-        {
-          at: new Date().toISOString(),
-          atVirtual: virtualNow().toISOString(),
-          type: 'workstream.created',
-          summary: `Workstream '${core.title}' created`,
-        },
-      ],
-      spend: { coordinatorPasses: 0, totalCostUsd: 0, humanInterventions: 0 },
-      lease: null,
-    };
+    const doc = initialDoc(core);
     fs.mkdirSync(dir, { recursive: true });
     writeAtomic(core.slug, doc);
     return doc;
@@ -141,20 +104,7 @@ export class FsStore implements StateStore {
     if (doc.revision !== expectedRevision) {
       throw new RevisionConflictError(expectedRevision, doc.revision);
     }
-    const event = (type: string, summary: string, refs?: string[]) => {
-      const rec: EventRecord = {
-        at: new Date().toISOString(),
-        atVirtual: virtualNow().toISOString(),
-        type,
-        summary,
-        ...(refs ? { refs } : {}),
-      };
-      doc.events.push(rec);
-      if (doc.events.length > EVENT_TAIL_LIMIT) {
-        doc.events.splice(0, doc.events.length - EVENT_TAIL_LIMIT);
-      }
-    };
-    fn(doc, event);
+    fn(doc, eventHelperFor(doc));
     doc.revision += 1;
     writeAtomic(slug, doc);
     return doc;
@@ -172,15 +122,55 @@ export class FsStore implements StateStore {
     try {
       return JSON.parse(fs.readFileSync(policiesPath(), 'utf8')) as PolicyStore;
     } catch {
-      return { schemaVersion: 1, revision: 0, policies: [] };
+      return emptyPolicyStore();
     }
   }
 
-  async savePolicies(store: PolicyStore): Promise<void> {
-    fs.mkdirSync(path.dirname(policiesPath()), { recursive: true });
-    const tmp = `${policiesPath()}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(store, null, 2) + '\n');
-    fs.renameSync(tmp, policiesPath());
+  /**
+   * The policy store is GLOBAL (shared across workstreams), so two concurrent
+   * ticks can race the read-modify-write. A short mkdir lock serializes
+   * same-machine processes (10s stale-holder reclaim); inside the lock the
+   * read→mutate→write runs without yielding, so in-process writers cannot
+   * interleave either. A network backend serializes with its own CAS instead.
+   */
+  async mutatePolicies(fn: (store: PolicyStore) => void): Promise<PolicyStore> {
+    const dir = `${policiesPath()}.lock`;
+    // A missing home dir would make every mkdir below ENOENT — indistinguishable
+    // from contention, so the spin would run out the clock on a fresh install.
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      try {
+        fs.mkdirSync(dir);
+        break;
+      } catch {
+        try {
+          if (fs.statSync(dir).mtimeMs < Date.now() - 10_000) {
+            fs.rmSync(dir, { recursive: true, force: true });
+            continue;
+          }
+        } catch { /* raced with the holder's release — retry */ }
+        if (Date.now() > deadline) throw new Error('policy store lock timeout');
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+    try {
+      // Synchronous from read to rename: no yield between load and write.
+      let store: PolicyStore;
+      try {
+        store = JSON.parse(fs.readFileSync(policiesPath(), 'utf8')) as PolicyStore;
+      } catch {
+        store = emptyPolicyStore();
+      }
+      fn(store);
+      store.revision += 1;
+      const tmp = `${policiesPath()}.tmp-${process.pid}`;
+      fs.writeFileSync(tmp, JSON.stringify(store, null, 2) + '\n');
+      fs.renameSync(tmp, policiesPath());
+      return store;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   /**

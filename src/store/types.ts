@@ -18,6 +18,15 @@
  *  - `writeArtifactRaw` persists exactly the bytes given (redaction and
  *    hashing already happened in the shared layer — the relPath embeds the
  *    content hash, so the backend must not transform content).
+ *  - `mutatePolicies` is the ONLY write path for the global policy store, and
+ *    the backend must make its read-modify-write safe against concurrent
+ *    writers (the store is global, so two remote runners can race it): run the
+ *    SYNCHRONOUS mutator on current state, bump `store.revision` by exactly
+ *    one, persist atomically, and on a concurrent write re-run the mutator
+ *    against fresh state (bounded retry, same semantics as the shared layer's
+ *    arrive()) rather than clobbering. There is no savePolicies — an
+ *    unguarded whole-store write is exactly the lost-update hazard this
+ *    method exists to close.
  */
 
 // Type-only import: erased at compile time, so the runtime chain
@@ -51,9 +60,13 @@ export interface StateStore {
   writeArtifactRaw(slug: string, relPath: string, content: string): Promise<void>;
   readArtifact(slug: string, relPath: string): Promise<string>;
   loadPolicies(): Promise<PolicyStore>;
-  savePolicies(store: PolicyStore): Promise<void>;
+  /** Concurrency-safe read-modify-write of the global policy store; the
+   * mutator may be re-run against fresh state after a conflicting write. */
+  mutatePolicies(fn: (store: PolicyStore) => void): Promise<PolicyStore>;
   /** Cross-process tick exclusion; null when another live process holds it. */
   tryTickLock(slug: string): Promise<(() => Promise<void>) | null>;
+  /** Release held resources (connection pools). Optional: the fs backend has none. */
+  close?(): Promise<void>;
 }
 
 export type { EventRecord, WorkstreamCore, WorkstreamDoc };

@@ -24,8 +24,10 @@
 
 // Circular at module level (secrets.ts uses this file's path helpers), but
 // both sides only call functions at runtime, so ESM resolves it fine.
+import type { PolicyStore } from './policies.js';
 import { assertNoSecretValues, loadSecrets, redactSecrets } from './secrets.js';
 import { FsStore, artifactsDir, newId, sha256, weaverHome, workstreamDir } from './store/fs.js';
+import { PgStore } from './store/pg.js';
 import { RevisionConflictError, type Mutator, type StateStore } from './store/types.js';
 import type { WorkstreamCore, WorkstreamDoc } from './types.js';
 
@@ -35,9 +37,29 @@ export type { StateStore };
 
 let activeStore: StateStore | undefined;
 
-/** The active backend. PR 2 adds selection via WEAVER_STORE; fs is the reference. */
+/**
+ * The active backend, selected once per process: WEAVER_STORE=postgres://…
+ * (or postgresql://) → the hosted Postgres store; unset or anything else →
+ * the fs reference backend under WEAVER_HOME.
+ */
 export function getStore(): StateStore {
-  return (activeStore ??= new FsStore());
+  if (!activeStore) {
+    const url = process.env.WEAVER_STORE;
+    activeStore = url && /^postgres(ql)?:\/\//.test(url) ? new PgStore(url) : new FsStore();
+  }
+  return activeStore;
+}
+
+/**
+ * Release the active backend (close the Postgres pool so a finished process
+ * doesn't hang on open connections) and forget it, so the next getStore()
+ * re-reads WEAVER_STORE — which is also what lets tests run the same contract
+ * suite over both backends in one process.
+ */
+export async function closeStore(): Promise<void> {
+  const s = activeStore;
+  activeStore = undefined;
+  await s?.close?.();
 }
 
 export async function listWorkstreams(): Promise<string[]> {
@@ -61,19 +83,23 @@ export async function mutate(
   fn: Mutator,
 ): Promise<WorkstreamDoc> {
   return getStore().mutate(slug, expectedRevision, (doc, event) => {
-    // TS's void-leniency lets an ASYNC mutator satisfy the sync Mutator type;
-    // its late writes would land after the CAS write persisted — the same
-    // lost-update class the backend guards against, at the API boundary.
-    const r = fn(doc, event) as unknown;
-    if (r !== null && typeof r === 'object' && typeof (r as { then?: unknown }).then === 'function') {
-      throw new Error('mutator must be synchronous: an async mutator would apply changes after the revision-checked write');
-    }
+    refuseAsyncMutator(fn(doc, event) as unknown);
     // Backend-agnostic secrets enforcement: the mutator has fully applied its
     // change (events included); serialize and refuse BEFORE the backend
     // persists anything. Only the revision bump happens after this point, and
     // a bare integer cannot embed a secret value.
     assertNoSecretValues(JSON.stringify(doc, null, 2), loadSecrets(slug));
   });
+}
+
+/** TS's void-leniency lets an ASYNC mutator satisfy a sync mutator type; its
+ * late writes would land after the CAS write persisted — the same lost-update
+ * class the backends guard against, at the API boundary. Structural, so no
+ * backend can inherit the hazard. */
+function refuseAsyncMutator(r: unknown): void {
+  if (r !== null && typeof r === 'object' && typeof (r as { then?: unknown }).then === 'function') {
+    throw new Error('mutator must be synchronous: an async mutator would apply changes after the revision-checked write');
+  }
 }
 
 /**
@@ -151,4 +177,23 @@ export async function verifyArtifact(slug: string, relPath: string, hash: string
  */
 export async function tryTickLock(slug: string): Promise<(() => Promise<void>) | null> {
   return getStore().tryTickLock(slug);
+}
+
+/**
+ * The ONLY write path for the global policy store — a concurrency-safe
+ * read-modify-write the backend serializes (fs: process lock; pg: revision
+ * CAS with bounded retry, so the mutator may re-run against fresh state).
+ * The same two backend-agnostic guards as doc writes apply here: an async
+ * mutator is refused structurally, and the serialized store is refused if it
+ * embeds a known secret VALUE (policy statements quote human interventions —
+ * exactly where a pasted credential would otherwise fossilize; global secrets
+ * only, since the policy store is not scoped to a workstream).
+ */
+export async function mutatePolicies(fn: (store: PolicyStore) => void): Promise<PolicyStore> {
+  return getStore().mutatePolicies((store) => {
+    refuseAsyncMutator(fn(store) as unknown);
+    // Only the backend's revision bump happens after this point, and a bare
+    // integer cannot embed a secret value.
+    assertNoSecretValues(JSON.stringify(store, null, 2), loadSecrets());
+  });
 }

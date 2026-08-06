@@ -25,9 +25,7 @@
  * bookkeeping is trustworthy — never before.
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { getStore, newId, weaverHome } from './store.js';
+import { getStore, mutatePolicies, newId } from './store.js';
 import type { Id, Iso } from './types.js';
 
 export type PolicyEffectKind = 'add_verification' | 'narrow_authority' | 'advisory';
@@ -85,55 +83,16 @@ export interface PolicyStore {
   policies: PolicyRecord[];
 }
 
-/** Reads/writes go through the StateStore backend (src/store.ts). */
+/**
+ * Reads go straight to the StateStore backend; every WRITE goes through the
+ * shared layer's mutatePolicies (src/store.ts), which is concurrency-safe on
+ * every backend — fs serializes same-machine processes with a lock, Postgres
+ * runs a revision CAS with bounded retry so concurrent remote runners cannot
+ * lose each other's writes. The mutator may therefore re-run against fresh
+ * state after a conflict, like an arrive() mutator.
+ */
 export async function loadPolicies(): Promise<PolicyStore> {
   return getStore().loadPolicies();
-}
-
-/**
- * The policy store is GLOBAL (shared across workstreams), so with concurrent
- * ticks two processes can race the read-modify-write. A short mkdir lock
- * serializes them; a holder that died is reclaimed after 10s. The lock is
- * deliberately fs-local (like the runner pid lock, NOT part of the StateStore
- * interface): it guards same-machine process concurrency; a network backend
- * serializes its own writes (PR 2).
- */
-async function withPolicyLock<T>(fn: () => Promise<T>): Promise<T> {
-  const dir = path.join(weaverHome(), 'policies.json.lock');
-  // A missing home dir would make every mkdir below ENOENT — indistinguishable
-  // from contention, so the spin would run out the clock on a fresh install.
-  fs.mkdirSync(path.dirname(dir), { recursive: true });
-  const deadline = Date.now() + 10_000;
-  for (;;) {
-    try {
-      fs.mkdirSync(dir);
-      break;
-    } catch {
-      try {
-        if (fs.statSync(dir).mtimeMs < Date.now() - 10_000) {
-          fs.rmSync(dir, { recursive: true, force: true });
-          continue;
-        }
-      } catch { /* raced with the holder's release — retry */ }
-      if (Date.now() > deadline) throw new Error('policy store lock timeout');
-      await new Promise((r) => setTimeout(r, 25));
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-async function mutatePolicies(fn: (store: PolicyStore) => void): Promise<PolicyStore> {
-  return withPolicyLock(async () => {
-    const store = await loadPolicies();
-    fn(store);
-    store.revision += 1;
-    await getStore().savePolicies(store);
-    return store;
-  });
 }
 
 /** Add a scope tag to a set of policies (idempotent). Used to reclassify —
@@ -142,6 +101,7 @@ async function mutatePolicies(fn: (store: PolicyStore) => void): Promise<PolicyS
 export async function tagPolicies(ids: Id[], tag: string): Promise<number> {
   let n = 0;
   await mutatePolicies((store) => {
+    n = 0; // the mutator may re-run against fresh state after a CAS conflict
     for (const p of store.policies) {
       if (ids.includes(p.id) && !p.scope.tags.includes(tag)) {
         p.scope.tags.push(tag);
