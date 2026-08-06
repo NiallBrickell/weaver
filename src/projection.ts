@@ -84,7 +84,7 @@ export function buildProjection(
     return `${d.id} "${d.title}" (${d.kind}) — candidate, adoption=${adoption}, hash ${d.contentHash.slice(0, 8)}, from ${d.producedByAssignment ?? '?'}`;
   });
   const capacityLines = Object.values(doc.capacity?.byModel ?? {}).map(
-    (entry) => `${entry.wait.model} [${entry.wait.kind}, ${entry.consecutiveBackoffs} consecutive] — ${infrastructureWaitSummary(entry.wait)}`,
+    (entry) => `${entry.wait.model} [${entry.wait.kind}, ${entry.consecutiveBackoffs} consecutive] — ${infrastructureWaitSummary(entry.wait, doc.workstream.slug)}`,
   );
   const s3 = [
     `## 3. Current operating state`,

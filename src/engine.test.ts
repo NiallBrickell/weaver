@@ -10,7 +10,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { runnableAssignments, tick, verifyAction } from './engine.js';
+import {
+  coordinatorBackoffActive,
+  runnableAssignments,
+  tick,
+  verifyAction,
+} from './engine.js';
 import { arrive, createWorkstream, load, newId, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { Assignment } from './types.js';
@@ -176,7 +181,7 @@ test('a stale running attempt is recovered: crash recorded, assignment re-queued
   assert.ok(attempt.endedAt);
 });
 
-test('a typed provider wait parks every model assignment until recovery without parsing prose', () => {
+test('a typed worker-model wait parks assignments without parsing prose', () => {
   createWorkstream({
     slug: 'capacity-ws',
     title: 'Capacity test',
@@ -206,8 +211,8 @@ test('a typed provider wait parks every model assignment until recovery without 
       status: 'pending',
       createdAt: new Date().toISOString(),
       infrastructure: {
-        kind: 'sdk_credit_exhausted',
-        recovery: 'claim_sdk_credit_or_enable_usage_credits',
+        kind: 'usage_limit',
+        recovery: 'wait_or_enable_usage_credits',
         source: 'worker',
         sourceId: 'run_capacity',
         model: 'sonnet',
@@ -230,6 +235,26 @@ test('a typed provider wait parks every model assignment until recovery without 
 
   const doc = load('capacity-ws');
   assert.deepEqual(runnableAssignments(doc), []);
+  const workerEntry = doc.capacity!.byModel.sonnet!;
+  doc.capacity = {
+    state: 'backoff',
+    byModel: {
+      'claude-fable-5': {
+        ...workerEntry,
+        wait: { ...workerEntry.wait, source: 'coordinator', model: 'claude-fable-5' },
+      },
+    },
+  };
+  // The primary coordinator is limited, but its fallback remains available.
+  assert.equal(coordinatorBackoffActive(doc), false);
+  assert.deepEqual(runnableAssignments(doc), ['asg_first', 'asg_second']);
+  doc.capacity.byModel['claude-opus-5'] = {
+    ...workerEntry,
+    wait: { ...workerEntry.wait, source: 'coordinator', model: 'claude-opus-5' },
+  };
+  assert.equal(coordinatorBackoffActive(doc), true);
+  doc.capacity = { state: 'backoff', byModel: { sonnet: workerEntry } };
+  assert.equal(coordinatorBackoffActive(doc), false);
   doc.wakes[0]!.condition = { type: 'time', dueAtVirtual: virtualNow().toISOString() };
   doc.wakes[0]!.infrastructure!.retryAt = virtualNow().toISOString();
   doc.capacity!.byModel.sonnet!.wait.retryAt = virtualNow().toISOString();

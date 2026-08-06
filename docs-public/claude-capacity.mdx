@@ -1,39 +1,52 @@
 ---
 title: "Claude capacity & billing"
-description: "One Claude principal, the supported Agent SDK credit path, and durable recovery when capacity runs out"
+description: "How Weaver keeps durable work moving through Claude usage limits without changing billing or identity"
 ---
 
-Weaver uses exactly one ambient operator identity: the Claude Code login already active on the machine. It does not mint, extract, copy, store, pool, or rotate Claude authentication tokens, and it never cycles through accounts to get around a provider limit.
+The job is simple: give Weaver an outcome once, and do not lose the work or babysit retries when Claude temporarily has no capacity.
 
-## How Agent SDK plan usage works
+Weaver uses the one ambient operator identity already logged into Claude Code on the machine. It does not mint, extract, copy, store, pool, or rotate Claude authentication tokens. It also never enables paid usage or changes a provider spending limit.
 
-Since June 15, 2026, Agent SDK and `claude -p` usage no longer consumes the interactive usage allowance included with a paid Claude plan. Anthropic instead gives eligible Max 20 users a separate $200 monthly Agent SDK credit after a one-time claim. Anthropic defines that credit as per-user, not pooled or transferable. See Anthropic's current [Agent SDK with a Claude plan guide](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) for eligibility and the claim flow.
+## What “usage” means
 
-When the included Agent SDK credit is gone, the supported overflow is Anthropic **usage credits**. Open Claude Code and run `/usage-credits` to enable them and set the provider-side spend cap you are comfortable with. Anthropic documents the controls in [Manage usage credits for paid Claude plans](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans).
+Claude plans do not expose a transferable wallet of tokens for Weaver to divide up. Available usage depends on factors such as the model, conversation length, tools, and current provider limits. Claude remains the source of truth: use `/usage` in Claude Code and Claude **Settings > Usage** to inspect the account's current position.
+
+Anthropic announced a separate monthly Agent SDK allowance, then paused that change. Anthropic's current notice says Agent SDK, `claude -p`, and third-party usage continue to draw from the Claude plan's shared limits for now. Check the current [Agent SDK with a Claude plan guide](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) and [Claude Code plan guide](https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan) before making a billing decision.
+
+If a supported paid plan offers usage credits or a usage bundle, the operator can explicitly enable it and set a provider-side spending limit in Claude **Settings > Usage**. Anthropic documents those controls in [Manage usage credits for paid Claude plans](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans) and [Buy usage bundles](https://support.claude.com/en/articles/14246112-buy-usage-bundles).
 
 <Warning>
-  Enabling usage credits authorizes additional spend with Anthropic. Weaver never enables them for you. Weaver's dashboard dollar figure is an SDK-reported runaway estimate, not an Anthropic billing limit; set the real cap in Claude's usage-credit controls.
+  Enabling usage credits authorizes additional spend with Anthropic. Weaver never does this for you. Weaver's dollar figure is an SDK-reported estimate used as a runaway backstop, not an Anthropic billing control.
 </Warning>
 
-## What happens when capacity runs out
+## What Weaver does when capacity runs out
 
-A credit, rate-limit, overload, or authentication failure is infrastructure state, not evidence that the workstream failed:
+A usage, session, rate-limit, overload, or authentication failure is infrastructure state—not evidence that the workstream failed:
 
 1. Weaver closes the disposable model attempt without accepting any claimed work.
 2. The assignment and organizational position remain in durable typed state. No SDK session or model context stays alive.
-3. Weaver records a delayed infrastructure-backoff wake and updates `WorkstreamDoc.capacity`, the typed source of truth. Capacity entries are kept per model because coordinator and worker models can recover independently.
-4. The runner periodically probes each affected Claude model. A Claude credential-file metadata change also prompts a probe; Weaver never reads or copies the credential value.
-5. When a model's probe passes, Weaver pulls matching backed-off workstreams forward and fresh processes continue from their stored projections.
-6. Because capacity pools are per model, a limited **primary coordinator model degrades instead of parking**: while the primary's pool (e.g. a Fable weekly limit) is in backoff and the fallback's isn't, coordinator passes run on the fallback (`claude-opus-5` by default, `WEAVER_COORDINATOR_FALLBACK_MODEL` to override), each pass records which model it actually ran on, and the probe restores the primary the moment its pool recovers. Both pools limited means genuine parking — the fallback never cascades further down.
+3. Weaver records a typed backoff wake and model-indexed `WorkstreamDoc.capacity` entry. A coordinator-model limit does not block a worker model that can still run, and vice versa.
+4. A limited primary coordinator degrades to `claude-opus-5` (or `WEAVER_COORDINATOR_FALLBACK_MODEL`) while that fallback is available. Each pass records the model it actually used. Both coordinator models limited means genuine parking; fallback never cascades into account or credential rotation.
+5. Weaver retries the limited model at the earliest future reset reported by Claude. If Claude provides no usable reset, Weaver uses a bounded fallback delay.
+6. A fresh process continues from the stored projection when the wake becomes due. Another rejection parks it again; a successful real run clears the matching capacity state and restores the primary when it is available.
 
-This makes an outage cost waiting rather than duplicated model work or a retry storm. Killing and restarting Weaver during the wait changes nothing.
+There are no periodic model probes: polling a limited account would consume scarce capacity and amplify an outage. Weaver performs one bounded, model-specific probe when Claude credential-file metadata changes, without reading the credential. After changing usage or billing settings, make the stored wait due explicitly:
 
-Sustained capacity trouble becomes one deduplicated operator card instead of permanent silent waiting: Agent SDK credit and authentication failures surface after three consecutive backoffs; session and rate limits get twelve attempts to self-clear first. Recovery resolves the card automatically. The card can explain how to recover, but it cannot enable spend or change identity.
+```bash
+weaver capacity retry <slug>
+# or, when only one model changed:
+weaver capacity retry <slug> --model sonnet
+```
 
-## Recover explicitly
+This command does not claim recovery, change billing, or count as human steering. The next real coordinator or worker run proves whether capacity recovered.
 
-- **Included credit not claimed:** follow Anthropic's one-time claim flow in the [Agent SDK plan guide](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
-- **Included credit exhausted:** open Claude Code, run `/usage-credits`, and choose a spend cap. Weaver resumes after its next successful probe.
-- **Login expired or changed:** run `claude auth login` and reauthenticate manually. Weaver resumes after a successful periodic probe; when file-backed credential metadata changes, it probes immediately. It never handles the credential itself.
+The five-question status view shows the typed wait immediately. Authentication opens one needs-you card on the first clear failure because only the operator can log in. Usage, session, rate, and provider waits get twelve consecutive backoffs to self-clear before Weaver opens one deduplicated capacity card.
 
-There is deliberately no “add another Claude account” setting. [Anthropic's Consumer Terms](https://www.anthropic.com/legal/consumer-terms) prohibit sharing account credentials and bypassing protective measures, and Agent SDK credits are per-user and non-poolable. For shared or production automation, use Anthropic's supported Platform API-key path described in the [Agent SDK plan guide](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan), with an organizational billing and credential model designed for that deployment. Weaver's subscription mode remains single-operator.
+## Supported recovery paths
+
+- **Plan or session limit:** inspect `/usage`, then wait for Claude's reset. Weaver resumes from durable state.
+- **Explicit paid continuation:** enable usage credits or a usage bundle in Claude **Settings > Usage**, set the provider spending limit, then run `weaver capacity retry <slug>`.
+- **Login expired or changed:** run `claude auth login`. File-backed credential metadata triggers one recovery probe; `weaver capacity retry <slug>` is the fallback when credentials live elsewhere.
+- **Deliberate production billing:** use an Anthropic Platform account and API-key deployment designed for the organization. Weaver's local subscription mode never silently switches to an exported API credential.
+
+Multiple paid accounts are an uncommon operator situation, not the product model. Whatever entitlements an operator holds, Weaver does not aggregate them into a transferable balance or automate account cycling around limits. That keeps the ordinary recovery path legible and avoids building behavior that could bypass provider controls. Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) also require account credentials to remain private and prohibit bypassing protective measures.
