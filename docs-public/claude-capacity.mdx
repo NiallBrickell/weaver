@@ -24,6 +24,7 @@ A credit, rate-limit, overload, or authentication failure is infrastructure stat
 3. Weaver records a delayed infrastructure-backoff wake and updates `WorkstreamDoc.capacity`, the typed source of truth. Capacity entries are kept per model because coordinator and worker models can recover independently.
 4. The runner periodically probes each affected Claude model. A Claude credential-file metadata change also prompts a probe; Weaver never reads or copies the credential value.
 5. When a model's probe passes, Weaver pulls matching backed-off workstreams forward and fresh processes continue from their stored projections.
+6. Because capacity pools are per model, a limited **primary coordinator model degrades instead of parking**: while the primary's pool (e.g. a Fable weekly limit) is in backoff and the fallback's isn't, coordinator passes run on the fallback (`claude-opus-5` by default, `WEAVER_COORDINATOR_FALLBACK_MODEL` to override), each pass records which model it actually ran on, and the probe restores the primary the moment its pool recovers. Both pools limited means genuine parking — the fallback never cascades further down.
 
 This makes an outage cost waiting rather than duplicated model work or a retry storm. Killing and restarting Weaver during the wait changes nothing.
 

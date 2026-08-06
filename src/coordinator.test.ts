@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   clearCoordinatorCapacityBackoff,
+  pickCoordinatorModel,
   recordCoordinatorCapacityBackoff,
 } from './coordinator.js';
 import { arrive, createWorkstream, load } from './store.js';
@@ -88,4 +89,32 @@ test('a recovered coordinator model clears typed state and resolves its card', (
   assert.equal(doc.capacity, null);
   assert.equal(doc.attention[0]!.status, 'resolved');
   assert.equal(doc.attention[0]!.resolvedBy, 'coordinator');
+});
+
+test('a limited primary model degrades the pass to the fallback, and only then', () => {
+  const now = virtualNow().toISOString();
+  const future = new Date(virtualNow().getTime() + 60 * 60_000).toISOString();
+  const past = new Date(virtualNow().getTime() - 60_000).toISOString();
+  const wait = (model: string, retryAt: string): InfrastructureWait => ({
+    kind: 'rate_limit', recovery: 'automatic_retry', source: 'coordinator',
+    sourceId: 'pass_x', model, detectedAt: now, retryAt,
+  });
+  const doc = load('coordinator-capacity');
+
+  // No capacity state at all → primary.
+  assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5');
+
+  // Primary limited, fallback clear → fallback.
+  const capacity = { state: 'backoff' as const, byModel: { 'claude-fable-5': { wait: wait('claude-fable-5', future), consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now } } };
+  doc.capacity = capacity;
+  assert.equal(pickCoordinatorModel(doc, now), 'claude-opus-5');
+
+  // Primary limited but its retryAt has passed → primary again (probe/retry).
+  capacity.byModel['claude-fable-5']!.wait = wait('claude-fable-5', past);
+  assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5');
+
+  // Both pools limited → primary (normal backoff machinery owns it).
+  capacity.byModel['claude-fable-5']!.wait = wait('claude-fable-5', future);
+  (capacity.byModel as Record<string, unknown>)['claude-opus-5'] = { wait: wait('claude-opus-5', future), consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now };
+  assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5');
 });
