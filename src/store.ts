@@ -61,7 +61,13 @@ export async function mutate(
   fn: Mutator,
 ): Promise<WorkstreamDoc> {
   return getStore().mutate(slug, expectedRevision, (doc, event) => {
-    fn(doc, event);
+    // TS's void-leniency lets an ASYNC mutator satisfy the sync Mutator type;
+    // its late writes would land after the CAS write persisted — the same
+    // lost-update class the backend guards against, at the API boundary.
+    const r = fn(doc, event) as unknown;
+    if (r !== null && typeof r === 'object' && typeof (r as { then?: unknown }).then === 'function') {
+      throw new Error('mutator must be synchronous: an async mutator would apply changes after the revision-checked write');
+    }
     // Backend-agnostic secrets enforcement: the mutator has fully applied its
     // change (events included); serialize and refuse BEFORE the backend
     // persists anything. Only the revision bump happens after this point, and
