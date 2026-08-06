@@ -1,0 +1,44 @@
+---
+title: "Printouts"
+description: "A copyable account of what happened since you last checked"
+---
+
+A printout answers the practical catch-up question: what did Weaver investigate, produce, adopt, execute, verify, and leave unfinished since the last printout?
+
+## From the dashboard
+
+Press uppercase `P` in the default interactive `weaver watch`. It follows the cursor just like `i`:
+
+- With an attention item or workstream selected, the report covers that workstream.
+- Press `↑` past the first row to select the `W E A V E R` fleet header; `P` then covers every workstream and global policy activity.
+
+The report freezes full-screen, so activity arriving while you read cannot move it underneath you. Use `↑` / `↓` or `j` / `k` one line at a time, and `[` / `]` or `Page Up` / `Page Down` a page at a time. Uppercase `C` copies the complete unwrapped report, not only the visible lines. `Escape` returns to the dashboard. Lowercase `p` still pauses or resumes the selected workstream. On Linux, copying needs one of `wl-copy`, `xclip`, or `xsel`; a missing host copier is reported in the footer without closing the report.
+
+`weaver watch --plain` is the legacy read-only raw dashboard and has no modal keys; use `weaver printout [slug]` alongside it.
+
+The same report is available without Ink:
+
+```bash
+weaver printout fix-onboarding   # one workstream
+weaver printout                  # the fleet
+```
+
+## Since the last printout
+
+Each workstream keeps an append-only sidecar receipt for every organizational revision. A receipt carries the exact typed before/after values, so eventless changes and intermediate states such as a failed readback followed by a passing one both survive. Fleet reports use the same contract for global policy imports, tagging, promotion, and supersession.
+
+Preparing a report is read-only: it never bumps the Workstream revision or interrupts a coordinator. The delivered boundary is acknowledged outside organizational state only after the full-screen view has painted or CLI stdout has flushed. Anything arriving after the frozen revision remains for the next report; a delivery crash repeats data rather than losing it. A second delivered printout with no intervening work says so plainly.
+
+For workstreams created before printouts existed, the first report can reconstruct the current typed record and whatever remains in the bounded pre-upgrade activity tail. It labels that history gap instead of pretending the missing transitions are exact. Windows backed by complete revision sidecars are exact; a missing sidecar is likewise named in the report.
+
+## What counts as done
+
+The report separates activity from proof:
+
+- Assignment attempts, coordinator passes, adoption decisions, deliverables, interactions, and action results come from durable typed state.
+- A deliverable is authoritative only after adoption; a worker submission alone is reported as a proposal.
+- A pull request, merge, deploy, or production check counts as confirmed only when the action's deterministic readback verifies the external effect.
+- A workstream conclusion must cite IDs that resolve to adopted deliverables, readback-confirmed actions, or a standing closure decision. Its free-form coordinator account stays explicitly informational and never inherits proof from an unrelated citation; the action and adoption sections say what those typed facts actually establish.
+- Run-tail tool calls can show what a worker looked at. They are best-effort observations: rotation or a failed tail write can omit them, and worker prose saying “merged” or “tested in production” never proves either claim.
+
+This is the same authority boundary Weaver uses everywhere else: the printout makes the record readable, but cannot promote an observation or summary into truth.

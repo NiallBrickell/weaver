@@ -485,15 +485,23 @@ function taskSection(doc: WorkstreamDoc): string {
   const ws = doc.workstream;
   const latest = [...doc.decisions].reverse().find((d) => d.status === 'standing');
   const open = doc.attention.filter((a) => a.status === 'open');
-  const concluded =
+  const legacyConclusion =
     ws.status === 'done' ? [...doc.events].reverse().find((e) => e.type === 'workstream.concluded') : undefined;
+  const conclusion = ws.status === 'done' && ws.conclusion
+    ? `Typed completion evidence (validated at conclusion): ${ws.conclusion.evidenceIds.join(', ')}. Coordinator account (informational): ${ws.conclusion.summary}`
+    : undefined;
+  const legacyClaim = ws.status === 'done' && !ws.conclusion
+    ? legacyConclusion?.summary.replace(/^coordinator concluded the workstream:\s*/, '')
+    : undefined;
   return `<section>
 <h2>The task</h2>
 <p class="statement">${esc(ws.objective)}</p>
 ${ws.successCriteria.length ? `<h3>Done when</h3><ul>${ws.successCriteria.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}
 ${
-  concluded
-    ? `<h3>Outcome</h3><p>${esc(concluded.summary.replace(/^coordinator concluded the workstream:\s*/, ''))}</p>`
+  conclusion
+    ? `<h3>Outcome</h3><p>${esc(conclusion)}</p>`
+    : legacyClaim
+      ? `<h3>Legacy conclusion claim (evidence unvalidated)</h3><p>${esc(legacyClaim)}</p>`
     : latest
       ? `<h3>Current course</h3><p><strong>${esc(latest.title)}</strong> — ${esc(latest.rationale)}</p>`
       : ''
