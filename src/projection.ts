@@ -49,6 +49,14 @@ export function buildProjection(
     ``,
     `Hard constraints:`,
     fmtList(ws.constraints, 'none stated'),
+    ...(ws.conclusion
+      ? [
+          ``,
+          `Prior recorded conclusion (${ws.conclusion.atVirtual}, pass ${ws.conclusion.passId}): ${ws.conclusion.summary}`,
+          `Validated evidence ids: ${ws.conclusion.evidenceIds.join(', ')}`,
+          `This prose is context; the typed decisions, adoption pins, and action readbacks below remain the authority.`,
+        ]
+      : []),
   ].join('\n');
 
   // 2. Authority, autonomy, remaining budget

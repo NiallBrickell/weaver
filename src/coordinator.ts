@@ -15,6 +15,7 @@ import { isAbsolute } from 'node:path';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { inVirtual, parseDuration, virtualNow } from './clock.js';
+import { conclusionEvidenceLabels } from './conclusion.js';
 import { buildProjection } from './projection.js';
 import { matchPolicies, proposePolicy, recordPolicyOutcome } from './policies.js';
 import { sdkEnv } from './secrets.js';
@@ -484,8 +485,8 @@ export async function runCoordinatorPass(
         'conclude_workstream',
         'Mark this workstream DONE — its objective is met (cite the adopted evidence) or a standing decision has closed it (superseded, descoped away, human said stop). Refused while anything is live: unresolved assignments, open attention, or an unsent approved communication. Conclusion is reversible only by the human (weaver resume). ROUTINES are never concluded for finishing a cycle — schedule the next cycle instead; conclude one only when a decision retires the routine itself.',
         {
-          summary: z.string().describe('what was achieved, against the objective'),
-          evidence: z.string().describe('the adopted deliverable ids / readback-confirmed action ids / decision ids that prove it — a conclusion without evidence is a claim, not a fact'),
+          summary: z.string().describe('your informational account of why the objective is closed; it does not inherit authority from the cited ids'),
+          evidence_ids: z.array(z.string()).min(1).describe('adopted deliverable ids, readback-confirmed action ids, or standing decision ids; every id is resolved before conclusion'),
         },
         async (a) =>
           change((d, event) => {
@@ -495,9 +496,16 @@ export async function runCoordinatorPass(
             if (openAtt.length) throw new Error(`cannot conclude: open attention ${openAtt.map((x) => x.id).join(', ')} — the human's queue is never silently emptied by conclusion`);
             const pendingSends = d.interactions.filter((x) => x.status === 'awaiting_approval' || x.status === 'approved');
             if (pendingSends.length) throw new Error(`cannot conclude: interactions ${pendingSends.map((x) => x.id).join(', ')} not yet sent/resolved`);
+            const evidence = conclusionEvidenceLabels(d, a.evidence_ids);
             d.workstream.status = 'done';
+            d.workstream.conclusion = {
+              passId,
+              atVirtual: virtualNow().toISOString(),
+              summary: a.summary,
+              evidenceIds: [...a.evidence_ids],
+            };
             for (const w of d.wakes) if (w.status === 'pending') w.status = 'cancelled';
-            event('workstream.concluded', `coordinator concluded the workstream: ${a.summary.slice(0, 150)} (evidence: ${a.evidence.slice(0, 100)})`);
+            event('workstream.concluded', `coordinator concluded the workstream: ${a.summary.slice(0, 150)} (validated evidence: ${evidence.join('; ').slice(0, 200)})`, a.evidence_ids);
             return `workstream concluded`;
           }),
       ),

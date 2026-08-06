@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { advanceClock, virtualNow } from './clock.js';
-import { expediteBackoffWakes, infraBackoffSlugs } from './runner.js';
+import { expediteBackoffWakes, infraBackoffSlugs, runLoop } from './runner.js';
 import { arrive, createWorkstream, load } from './store.js';
 import type { InfrastructureWait } from './types.js';
 
@@ -142,4 +142,12 @@ test('a model probe expedites only waits for the model that actually recovered',
   assert.ok(fableWake!.condition.type === 'time' && fableWake!.condition.dueAtVirtual <= virtualNow().toISOString());
   assert.equal(sonnetWake!.condition.type === 'time' ? sonnetWake!.condition.dueAtVirtual : '', sonnet.retryAt);
   assert.equal(load('models').capacity!.byModel.sonnet!.wait.model, 'sonnet');
+});
+
+test('an embedded runner whose owner aborts returns instead of pinning the process', async () => {
+  const abort = new AbortController();
+  abort.abort();
+  await assert.doesNotReject(
+    runLoop({ intervalMs: 30_000, concurrency: 1, signal: abort.signal }),
+  );
 });

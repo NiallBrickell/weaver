@@ -28,7 +28,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { newId, weaverHome } from './store.js';
+import { diffPrintoutFields, writeJournalReceipt } from './printoutJournal.js';
 import type { Id, Iso } from './types.js';
+import type { PrintoutFieldDelta } from './types.js';
 
 export type PolicyEffectKind = 'add_verification' | 'narrow_authority' | 'advisory';
 
@@ -79,26 +81,40 @@ export interface PolicyRecord {
   createdAt: Iso;
 }
 
-interface PolicyStore {
+export interface PolicyStore {
   schemaVersion: 1;
   revision: number;
   policies: PolicyRecord[];
+}
+
+export interface PolicyMutationReceipt {
+  revision: number;
+  at: Iso;
+  changes: { id: Id; fields: PrintoutFieldDelta[] }[];
 }
 
 function storePath(): string {
   return path.join(weaverHome(), 'policies.json');
 }
 
+export function policyPrintoutJournalDir(): string {
+  return path.join(weaverHome(), '.printout', 'policies');
+}
+
 export function loadPolicies(): PolicyStore {
   try {
     return JSON.parse(fs.readFileSync(storePath(), 'utf8')) as PolicyStore;
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(`cannot read global policy store: ${error instanceof Error ? error.message : error}`);
+    }
     return { schemaVersion: 1, revision: 0, policies: [] };
   }
 }
 
-function writePolicies(store: PolicyStore): void {
+function writePolicies(store: PolicyStore, receipt: PolicyMutationReceipt): void {
   fs.mkdirSync(path.dirname(storePath()), { recursive: true });
+  writeJournalReceipt(policyPrintoutJournalDir(), receipt);
   const tmp = `${storePath()}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(store, null, 2) + '\n');
   fs.renameSync(tmp, storePath());
@@ -141,9 +157,19 @@ function withPolicyLock<T>(fn: () => T): T {
 function mutatePolicies(fn: (store: PolicyStore) => void): PolicyStore {
   return withPolicyLock(() => {
     const store = loadPolicies();
+    const before = new Map(store.policies.map((policy) => [policy.id, structuredClone(policy)]));
     fn(store);
     store.revision += 1;
-    writePolicies(store);
+    const after = new Map(store.policies.map((policy) => [policy.id, policy]));
+    const changes = [...new Set([...before.keys(), ...after.keys()])]
+      .sort()
+      .flatMap((id) => {
+        const prior = before.get(id);
+        const current = after.get(id);
+        if (JSON.stringify(prior) === JSON.stringify(current)) return [];
+        return [{ id, fields: diffPrintoutFields(prior, current) }];
+      });
+    writePolicies(store, { revision: store.revision, at: new Date().toISOString(), changes });
     return store;
   });
 }

@@ -17,6 +17,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, render, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { infrastructureWaitSummary } from './capacity.js';
+import { copyToClipboard } from './clipboard.js';
 import { virtualNow } from './clock.js';
 import {
   approveAction,
@@ -29,6 +30,8 @@ import {
 } from './humanActs.js';
 import { execFile } from 'node:child_process';
 import { runInspect } from './inspect.js';
+import { acknowledgePrintout, preparePrintout, type PrintoutReport } from './printout.js';
+import { printoutModalCommand, requestedPrintoutScope } from './printoutControls.js';
 import { acquireRunnerLock, liveRunnerPid, runLoop, runnerLoopHealthy } from './runner.js';
 import { listWorkstreams, workstreamDir, weaverHome } from './store.js';
 import type { WorkstreamDoc } from './types.js';
@@ -78,6 +81,17 @@ interface StreamRow {
 interface Snapshot {
   items: NeedsYouItem[];
   streams: StreamRow[];
+}
+
+interface PrintoutView {
+  report: PrintoutReport;
+  scope: string;
+  text: string;
+  through: string;
+  scroll: number;
+  message: string;
+  acknowledgement: 'pending' | 'flushing' | 'done' | 'failed';
+  copying: boolean;
 }
 
 function elapsed(iso: string): string {
@@ -341,10 +355,16 @@ function snapshot(): Snapshot {
     // the hard tallies (readback-confirmed acts, adopted artifacts).
     if (ws.status === 'done') {
       details.length = 0;
-      const concluded = [...doc.events].reverse().find((e) => e.type === 'workstream.concluded');
-      if (concluded) {
-        const text = concluded.summary.replace(/^coordinator concluded the workstream:\s*/, '');
-        details.push(`✓ ${text.slice(0, 105)}`);
+      const legacy = [...doc.events].reverse().find((e) => e.type === 'workstream.concluded');
+      const conclusion = ws.conclusion;
+      const text = conclusion?.summary ?? legacy?.summary.replace(/^coordinator concluded the workstream:\s*/, '');
+      if (conclusion) {
+        details.push(`✓ typed completion evidence: ${conclusion.evidenceIds.join(', ')}`);
+        details.push(`  coordinator account (informational): ${text!.slice(0, 105)}`);
+      } else if (text) {
+        details.push(`⚠ legacy conclusion, evidence unvalidated: ${text.slice(0, 105)}`);
+      }
+      if (text) {
         for (let off = 105; off < Math.min(text.length, 315); off += 105) {
           details.push(`  ${text.slice(off, off + 105)}`);
         }
@@ -431,7 +451,13 @@ function clearScreen(): void {
  * opens the fleet knowledge page instead of one workstream's. */
 const NO_SELECTION = -1;
 
-function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element {
+function App({
+  embeddedRunner,
+  waitUntilRenderFlush,
+}: {
+  embeddedRunner: boolean;
+  waitUntilRenderFlush: () => Promise<void>;
+}): React.JSX.Element {
   const { exit } = useApp();
   const [snap, setSnap] = useState<Snapshot>(() => snapshot());
   const lastSnapJson = React.useRef('');
@@ -442,7 +468,10 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [scroll, setScroll] = useState(0);
   const [steering, setSteering] = useState<{ slug: string; text: string; answersAttentionId?: string } | null>(null);
+  const [printout, setPrintout] = useState<PrintoutView | null>(null);
   const [toast, setToast] = useState('');
+  const clipboardAbort = React.useRef<AbortController | null>(null);
+  const activePrintout = React.useRef<PrintoutReport | null>(null);
 
   useEffect(() => {
     probePilot();
@@ -460,6 +489,31 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
     }, 2000);
     return () => { clearInterval(t); clearInterval(p); };
   }, [embeddedRunner]);
+
+  // Effects run after Ink commits the frame: only then is this frozen report
+  // considered delivered and safe to advance its non-organizational cursor.
+  useEffect(() => {
+    if (!printout || printout.acknowledgement !== 'pending') return;
+    setPrintout((view) => view?.report === printout.report ? { ...view, acknowledgement: 'flushing' } : view);
+    void waitUntilRenderFlush()
+      .then(() => {
+        if (activePrintout.current !== printout.report) return;
+        acknowledgePrintout(printout.report);
+        setPrintout((view) => view?.report === printout.report ? { ...view, acknowledgement: 'done' } : view);
+      })
+      .catch((error) => {
+        setPrintout((view) => view?.report === printout.report ? {
+          ...view,
+          acknowledgement: 'failed',
+          message: `checkpoint failed; next P will repeat: ${error instanceof Error ? error.message : error}`,
+        } : view);
+      });
+  }, [printout, waitUntilRenderFlush]);
+
+  useEffect(() => () => {
+    activePrintout.current = null;
+    clipboardAbort.current?.abort();
+  }, []);
 
   const refresh = (msg: string) => {
     clearScreen();
@@ -485,7 +539,56 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
 
   useInput((input, key) => {
     if (steering) return; // TextInput owns the keyboard
-    if (input === 'q') { exit(); return; }
+    if (input === 'q') {
+      activePrintout.current = null;
+      clipboardAbort.current?.abort();
+      exit();
+      return;
+    }
+    if (printout) {
+      const width = Math.max(20, (process.stdout.columns ?? 120) - 2);
+      const height = Math.max(1, (process.stdout.rows ?? 40) - 2);
+      const max = Math.max(0, wrapRows(printout.text, width).length - height);
+      const command = printoutModalCommand(input, key, printout.scroll, max, height);
+      if (command.kind === 'close') {
+        activePrintout.current = null;
+        clipboardAbort.current?.abort();
+        clearScreen();
+        setPrintout(null);
+        return;
+      }
+      if (command.kind === 'copy') {
+        if (printout.copying) return;
+        const frozen = printout.text;
+        const controller = new AbortController();
+        clipboardAbort.current = controller;
+        setPrintout((view) => view ? { ...view, copying: true, message: 'copying…' } : view);
+        void copyToClipboard(frozen, { signal: controller.signal })
+          .then((label) => {
+            setPrintout((view) => view?.text === frozen ? { ...view, copying: false, message: `copied via ${label}` } : view);
+          })
+          .catch((error) => {
+            setPrintout((view) => view?.text === frozen
+              ? { ...view, copying: false, message: `copy failed: ${error instanceof Error ? error.message : error}` }
+              : view);
+          });
+        return;
+      }
+      if (command.kind === 'scroll') setPrintout((view) => view ? { ...view, scroll: command.to, message: '' } : view);
+      return; // A printout is read-only: swallow every dashboard mutation key.
+    }
+    const printoutRequest = requestedPrintoutScope(input, selSlug);
+    if (printoutRequest.requested) {
+      try {
+        const report = preparePrintout(printoutRequest.slug);
+        activePrintout.current = report;
+        clearScreen();
+        setPrintout({ report, scope: report.scope, text: report.text, through: report.through, scroll: 0, message: '', acknowledgement: 'pending', copying: false });
+      } catch (error) {
+        setToast(`✗ ${error instanceof Error ? error.message : error}`);
+      }
+      return;
+    }
     if (input === 'i') {
       // i opens knowledge for whatever is selected: one workstream's own page,
       // or — with nothing selected, at the top — the fleet homepage with the
@@ -543,6 +646,25 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
       setToast(`✗ ${e instanceof Error ? e.message : e}`);
     }
   });
+
+  if (printout) {
+    const width = Math.max(20, (process.stdout.columns ?? 120) - 2);
+    const pane = Math.max(1, (process.stdout.rows ?? 40) - 2);
+    const lines = wrapRows(printout.text, width);
+    const from = Math.min(printout.scroll, Math.max(0, lines.length - pane));
+    const shown = lines.slice(from, from + pane);
+    while (shown.length < pane) shown.push(' ');
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Text bold inverse wrap="truncate-end"> PRINTOUT · {printout.scope === 'fleet' ? 'FLEET' : printout.scope} · through {printout.through} </Text>
+        {shown.map((line, index) => <Text key={index} wrap="truncate-end">{line || ' '}</Text>)}
+        <Text color="cyan" wrap="truncate-end">
+          ↑↓/jk line · [ ]/PgUp PgDn page · C copy · Esc close · {lines.length ? `${from + 1}–${Math.min(from + pane, lines.length)}/${lines.length}` : '0/0'}
+          {printout.message ? <Text color={printout.message.includes('failed') ? 'red' : 'green'}> · {printout.message}</Text> : null}
+        </Text>
+      </Box>
+    );
+  }
 
   const counts = [0, 0, 0, 0, 0, 0];
   for (const s of snap.streams) counts[s.bucket]! += 1;
@@ -605,7 +727,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
           only in the state that has one spare: nothing selected means no
           selection-detail pane below. */}
       {cursor === NO_SELECTION && (
-        <Text color="cyan" wrap="truncate-end"> [i] fleet knowledge — every workstream + the global policy store</Text>
+        <Text color="cyan" wrap="truncate-end"> [i] fleet knowledge · [P] fleet printout — workstreams + global policies</Text>
       )}
 
       {snap.items.length > 0 && (
@@ -715,7 +837,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                   {st.details.slice(0, 4).map((l, j) => (
                     <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
                   ))}
-                  <Text color="cyan" wrap="truncate-end">      [enter] {expanded.has(st.slug) ? 'close card' : 'what is this stream?'}  [p] {st.paused ? 'resume' : 'pause'}  [s] steer  [i] full knowledge</Text>
+                  <Text color="cyan" wrap="truncate-end">      [enter] {expanded.has(st.slug) ? 'close card' : 'what is this stream?'}  [p] {st.paused ? 'resume' : 'pause'}  [P] printout  [s] steer  [i] full knowledge</Text>
                 </>
               )}
             </Box>
@@ -753,7 +875,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         <Box marginTop={1}>
           {/* ONE line, always truncated — a wrapped footer desyncs Ink's repaint. */}
           <Text dimColor wrap="truncate-end">
-            ↑↓ · enter · [/] scroll · a approve · x reject · d resolve · s steer · p pause · i {selSlug ? 'knowledge' : 'fleet knowledge'} · q quit
+            ↑↓ · enter · [/] scroll · a approve · x reject · d resolve · s steer · p pause · P {selSlug ? 'printout' : 'fleet printout'} · i {selSlug ? 'knowledge' : 'fleet knowledge'} · q quit
             {toast ? <Text color="green">   {toast}</Text> : null}
           </Text>
         </Box>
@@ -767,38 +889,59 @@ export async function runTui(): Promise<void> {
   // elsewhere (headless `weaver run`, another watch). The singleton lock makes
   // extra dashboards harmless viewers.
   const release = acquireRunnerLock();
-  if (release) {
-    void runLoop({
-      intervalMs: 30_000,
-      concurrency: 10,
-      log: () => {},
-      logError: () => {},
-    });
-  }
+  const runnerAbort = new AbortController();
   // The embedded runner, its workers, and the SDK all write diagnostics to
   // stderr — every stray line printed into the alt screen shifts Ink's frame
   // and leaves ghost headers. While the dashboard owns the terminal, stderr
   // goes to a log file instead (state/runner.log — tail it for diagnostics).
   const logPath = path.join(weaverHome(), 'runner.log');
   const origStderrWrite = process.stderr.write.bind(process.stderr);
-  process.stderr.write = ((chunk: string | Uint8Array) => {
+  const redirectedStderr = ((chunk: string | Uint8Array) => {
     try {
       fs.appendFileSync(logPath, typeof chunk === 'string' ? chunk : Buffer.from(chunk));
     } catch { /* diagnostics must never crash the dashboard */ }
     return true;
   }) as typeof process.stderr.write;
-
-  process.stdout.write('\x1b[?1049h'); // alt screen
-  const instance = render(<App embeddedRunner={release !== null} />, { exitOnCtrlC: true });
-  // Terminal reflow leaves ghost frames above Ink's managed region — hard-clear
-  // and repaint whenever the window is resized.
+  let instance: ReturnType<typeof render> | undefined;
+  let ownsAltScreen = false;
+  let stderrRedirected = false;
+  const waitUntilRenderFlush = async () => {
+    // Let render() return its instance before the first passive effect calls us.
+    await Promise.resolve();
+    if (!instance) throw new Error('dashboard renderer is not available');
+    await instance.waitUntilRenderFlush();
+  };
   const onResize = () => {
     process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
-    instance.rerender(<App embeddedRunner={release !== null} />);
+    instance?.rerender(<App embeddedRunner={release !== null} waitUntilRenderFlush={waitUntilRenderFlush} />);
   };
-  process.stdout.on('resize', onResize);
-  await instance.waitUntilExit();
-  process.stdout.off('resize', onResize);
-  process.stderr.write = origStderrWrite;
-  process.stdout.write('\x1b[?1049l');
+  try {
+    process.stderr.write = redirectedStderr;
+    stderrRedirected = true;
+    process.stdout.write('\x1b[?1049h'); // alt screen
+    ownsAltScreen = true;
+    instance = render(
+      <App embeddedRunner={release !== null} waitUntilRenderFlush={waitUntilRenderFlush} />,
+      { exitOnCtrlC: true },
+    );
+    process.stdout.on('resize', onResize);
+    if (release) {
+      void runLoop({
+        intervalMs: 30_000,
+        concurrency: 10,
+        signal: runnerAbort.signal,
+        log: () => {},
+        logError: () => {},
+      });
+    }
+    await instance.waitUntilExit();
+  } finally {
+    process.stdout.off('resize', onResize);
+    runnerAbort.abort();
+    // Do not release the singleton while a detached tick may still be inside
+    // an SDK call. The CLI exits immediately next, and acquireRunnerLock's
+    // process-exit handler releases only when the disposable process is gone.
+    if (stderrRedirected) process.stderr.write = origStderrWrite;
+    if (ownsAltScreen) process.stdout.write('\x1b[?1049l');
+  }
 }
