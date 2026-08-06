@@ -11,9 +11,13 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import { coordinatorModel } from './coordinator.js';
 import { tick } from './engine.js';
-import { listWorkstreams, load, weaverHome } from './store.js';
+import { sdkEnv } from './secrets.js';
+import { arrive, listWorkstreams, load, weaverHome } from './store.js';
 
 function lockDir(): string {
   return path.join(weaverHome(), '.runner.lock');
@@ -47,6 +51,77 @@ export function acquireRunnerLock(): (() => void) | null {
   const release = () => fs.rmSync(lockDir(), { recursive: true, force: true });
   process.on('exit', release);
   return release;
+}
+
+/**
+ * Infra-backoff recovery. When passes fail on limits/credits/auth, streams
+ * park behind 15-minute backoff wakes — but the outage usually ends the
+ * moment the operator re-logs-in or buys credits, and nothing used to tell
+ * the streams the world had changed (the operator watched a healed fleet sit
+ * out its backoff). While any backoff wake is pending, the runner (a) watches
+ * the credential file and probes IMMEDIATELY when it changes, and (b) probes
+ * every few minutes regardless. A probe is one throwaway max-1-turn pass on
+ * the coordinator model — the only true test, since limits are per-model. On
+ * success every infra-backoff wake fleet-wide is expedited to now.
+ */
+const PROBE_EVERY_MS = 3 * 60_000;
+const BACKOFF_WAKE_RE = /retry after infrastructure failure/;
+
+function infraBackoffSlugs(): string[] {
+  const out: string[] = [];
+  for (const slug of listWorkstreams()) {
+    try {
+      const d = load(slug);
+      if (d.workstream.status !== 'active') continue;
+      if (d.wakes.some((w) => w.status === 'pending' && w.condition.type === 'time' && BACKOFF_WAKE_RE.test(w.reason))) {
+        out.push(slug);
+      }
+    } catch { /* unreadable stream — its own tick reports it */ }
+  }
+  return out;
+}
+
+function credentialsMtime(): number {
+  try {
+    return fs.statSync(path.join(os.homedir(), '.claude', '.credentials.json')).mtimeMs;
+  } catch {
+    return 0; // e.g. macOS keychain storage — the periodic probe still covers recovery
+  }
+}
+
+async function authProbe(): Promise<boolean> {
+  try {
+    for await (const m of query({
+      prompt: 'Reply with the single word: ok',
+      options: {
+        model: coordinatorModel(),
+        maxTurns: 1,
+        allowedTools: [],
+        persistSession: false,
+        env: sdkEnv(),
+      },
+    })) {
+      if (m.type === 'result') return m.subtype === 'success';
+    }
+  } catch { /* fall through */ }
+  return false;
+}
+
+function expediteBackoffWakes(slugs: string[], log: (l: string) => void): void {
+  const now = new Date().toISOString();
+  for (const slug of slugs) {
+    try {
+      arrive(slug, (d, event) => {
+        for (const w of d.wakes) {
+          if (w.status === 'pending' && w.condition.type === 'time' && BACKOFF_WAKE_RE.test(w.reason)) {
+            w.condition = { type: 'time', dueAtVirtual: now };
+            event('wake.expedited', `${w.id} pulled forward — auth/credit probe succeeded, the outage behind this backoff is over`, [w.id]);
+          }
+        }
+      });
+      log(`[run] ${slug}: infra-backoff wake expedited — credits/auth recovered`);
+    } catch { /* stream's own tick will retry on schedule */ }
+  }
 }
 
 export interface RunnerOptions {
@@ -92,11 +167,32 @@ export async function runLoop(opts: RunnerOptions): Promise<never> {
   // keeps moving. The stream's own tick lock still serializes it, and dead-pid
   // /stale-attempt recovery repairs whatever the hung call abandoned.
   const SLOT_TIMEOUT_MS = 45 * 60_000;
+  let lastProbeAt = 0;
+  let probing = false;
+  let lastCredMtime = credentialsMtime();
   for (;;) {
     try {
       try {
         fs.writeFileSync(heartbeatPath(), String(Date.now()));
       } catch { /* lock dir may be mid-recreate */ }
+      // Outage recovery: probe (never concurrently) while streams are parked
+      // behind infra-backoff wakes; a credential-file change probes at once.
+      const backedOff = probing ? [] : infraBackoffSlugs();
+      if (backedOff.length) {
+        const credMtime = credentialsMtime();
+        const credChanged = credMtime !== lastCredMtime;
+        if (credChanged || Date.now() - lastProbeAt >= PROBE_EVERY_MS) {
+          lastCredMtime = credMtime;
+          lastProbeAt = Date.now();
+          probing = true;
+          log(`[run] ${backedOff.length} stream(s) in infra-backoff — probing auth/credits${credChanged ? ' (credentials changed)' : ''}`);
+          void authProbe()
+            .then((ok) => { if (ok) expediteBackoffWakes(backedOff, log); })
+            .finally(() => { probing = false; });
+        }
+      } else {
+        lastCredMtime = credentialsMtime();
+      }
       const due = listWorkstreams()
         .filter((slug) => {
           if (inFlight.has(slug)) return false;
