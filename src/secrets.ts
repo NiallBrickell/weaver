@@ -54,6 +54,33 @@ export function loadSecrets(slug?: string): Record<string, string> {
   };
 }
 
+/**
+ * Every secret value across the fleet, retaining collisions where two
+ * workstreams use the same name for different values. Global-policy-bearing
+ * output can contain facts learned in any stream, so redacting only the page's
+ * selected stream is insufficient.
+ */
+export function loadAllSecrets(): Record<string, string> {
+  const all: Record<string, string> = { ...parseEnvFile(globalSecretsPath()) };
+  let slugs: string[] = [];
+  try { slugs = fs.readdirSync(weaverHome()); }
+  catch { return all; }
+  for (const slug of slugs.sort()) {
+    const local = parseEnvFile(workstreamSecretsPath(slug));
+    for (const [name, value] of Object.entries(local)) {
+      if (all[name] === undefined || all[name] === value) {
+        all[name] = value;
+        continue;
+      }
+      let label = `${slug}:${name}`;
+      let suffix = 2;
+      while (all[label] !== undefined && all[label] !== value) label = `${slug}:${name}:${suffix++}`;
+      all[label] = value;
+    }
+  }
+  return all;
+}
+
 /** The only secret-related fact models ever see. */
 export function secretNames(slug?: string): string[] {
   return Object.keys(loadSecrets(slug)).sort();
