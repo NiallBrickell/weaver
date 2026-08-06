@@ -12,22 +12,25 @@ Press uppercase `P` in the default interactive `weaver watch`. It follows the cu
 - With an attention item or workstream selected, the report covers that workstream.
 - Press `↑` past the first row to select the `W E A V E R` fleet header; `P` then covers every workstream and global policy activity.
 
-The report freezes full-screen, so activity arriving while you read cannot move it underneath you. Use `↑` / `↓` or `j` / `k` one line at a time, and `[` / `]` or `Page Up` / `Page Down` a page at a time. Uppercase `C` copies the complete unwrapped report, not only the visible lines. `Escape` returns to the dashboard. Lowercase `p` still pauses or resumes the selected workstream. On Linux, copying needs one of `wl-copy`, `xclip`, or `xsel`; a missing host copier is reported in the footer without closing the report.
+Weaver freezes the report into a unique self-contained HTML file and opens it in your browser without replacing the dashboard. Fleet pages start with a compact index; each workstream is collapsed until you open it, and the exact typed mutation timeline stays folded inside the workstream. Use **Copy plain-text report** or press uppercase `C` on the page to copy the complete underlying report. Lowercase `p` still pauses or resumes the selected workstream.
 
-`weaver watch --plain` is the legacy read-only raw dashboard and has no modal keys; use `weaver printout [slug]` alongside it.
+Every published window remains browseable from **Printouts** in the HTML knowledge inspector (`i`). The hub lives at `WEAVER_HOME/printouts/index.html`; its archives are immutable output artifacts and never become coordinator input or authority.
+
+`weaver watch --plain` is the legacy read-only raw dashboard and has no `P` hotkey; use `weaver printout [slug]` alongside it.
 
 The same report is available without Ink:
 
 ```bash
 weaver printout fix-onboarding   # one workstream
 weaver printout                  # the fleet
+weaver printout --text           # explicit raw terminal fallback
 ```
 
 ## Since the last printout
 
 Each workstream keeps an append-only sidecar receipt for every organizational revision. A receipt carries the exact typed before/after values, so eventless changes and intermediate states such as a failed readback followed by a passing one both survive. Fleet reports use the same contract for global policy imports, tagging, promotion, and supersession.
 
-Preparing a report is read-only: it never bumps the Workstream revision or interrupts a coordinator. The delivered boundary is acknowledged outside organizational state only after the full-screen view has painted or CLI stdout has flushed. Anything arriving after the frozen revision remains for the next report; a delivery crash repeats data rather than losing it. A second delivered printout with no intervening work says so plainly.
+Preparing a report is read-only: it never bumps the Workstream revision or interrupts a coordinator. Weaver atomically publishes a unique archive and refreshes the stable hub, asks the operating system to open that immutable page, and only after a successful browser handoff acknowledges the delivered boundary outside organizational state. A failed handoff leaves the activity window pending and names the saved path; the next `P` repeats rather than losing data. `--text` uses the equivalent stdout-flush boundary. Anything arriving after the frozen revision remains for the next report. A second delivered printout with no intervening work says so plainly.
 
 For workstreams created before printouts existed, the first report can reconstruct the current typed record and whatever remains in the bounded pre-upgrade activity tail. It labels that history gap instead of pretending the missing transitions are exact. Windows backed by complete revision sidecars are exact; a missing sidecar is likewise named in the report.
 

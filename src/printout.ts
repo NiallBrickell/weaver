@@ -2,8 +2,9 @@
  * Frozen operator printouts over exact typed revision sidecars.
  *
  * Preparing a report is read-only. Delivery is acknowledged separately, after
- * stdout has flushed or Ink has painted the modal. The journal is supporting
- * operator history only: current WorkstreamDoc facts remain authoritative.
+ * stdout flushes or an immutable HTML archive is handed to the browser. The
+ * journal is supporting operator history only: current WorkstreamDoc facts
+ * remain authoritative.
  */
 
 import * as fs from 'node:fs';
@@ -31,12 +32,14 @@ import {
   readLatestPrintoutCheckpoint,
   writePrintoutCheckpoint,
 } from './printoutJournal.js';
-import { loadSecrets, redactSecrets } from './secrets.js';
+import { loadAllSecrets, loadSecrets, redactSecrets } from './secrets.js';
 import { listWorkstreams, load, printoutJournalDir, workstreamDir } from './store.js';
 import type { TailEvent } from './tail.js';
 
 export interface WorkstreamPrintout {
   slug: string;
+  title: string;
+  status: WorkstreamDoc['workstream']['status'];
   text: string;
   since?: string;
   through: string;
@@ -324,6 +327,8 @@ function prepareOne(slug: string): WorkstreamPrintout {
   const observed = observedActivity(slug, previous?.through, through);
   return {
     slug,
+    title: doc.workstream.title,
+    status: doc.workstream.status,
     text: renderWorkstreamPrintout(doc, receipts, observed, through, previous, missing),
     ...(previous ? { since: previous.through } : {}),
     through,
@@ -401,7 +406,7 @@ export function preparePrintout(slug?: string): PrintoutReport {
         ...(policies ? ['', '---', '', policies.text] : ['', '## Unreadable global policy store', `- ${errors.find((error) => error.slug === 'global-policies')?.message ?? 'unknown error'}`]),
         ...(errors.some((error) => error.slug !== 'global-policies') ? ['', '## Unreadable workstreams', ...errors.filter((error) => error.slug !== 'global-policies').map((error) => `- ${error.slug}: ${error.message}`)] : []),
       ].join('\n');
-  return { scope, text: redactSecrets(text, loadSecrets()), through, workstreams: reports, ...(policies ? { policies } : {}), errors };
+  return { scope, text: redactSecrets(text, slug ? loadSecrets(slug) : loadAllSecrets()), through, workstreams: reports, ...(policies ? { policies } : {}), errors };
 }
 
 /** Acknowledge only after the frozen text has been delivered to the operator. */
