@@ -64,6 +64,11 @@ interface StreamRow {
   maxPasses: number;
   interventions: number;
   details: string[];
+  /** The task card ([enter] on the row): what this stream IS — its objective
+   * plus latest standing decision — so "what is this and what's it doing?"
+   * never requires the CLI or an external page. */
+  objective: string;
+  latestDecision?: string;
   error?: string;
 }
 
@@ -120,6 +125,38 @@ function probePilot(): void {
     .catch(() => {});
 }
 
+/**
+ * Word-wrap into EXACT single rows for the height-budgeted panes. Ink's own
+ * wrapping desyncs the frame (one wrapped line = ghost frames), and
+ * truncate-end silently amputates a long paragraph — "expanded" once showed
+ * only the first terminal-width of each line. Pre-wrapping keeps line math
+ * exact AND makes every character reachable via [ ] scrolling.
+ */
+function wrapRows(text: string, width: number): string[] {
+  const rows: string[] = [];
+  for (const para of text.split('\n')) {
+    if (!para.trim()) {
+      rows.push(' ');
+      continue;
+    }
+    let line = '';
+    for (const word of para.split(/\s+/)) {
+      if (line && line.length + 1 + word.length > width) {
+        rows.push(line);
+        line = word;
+      } else {
+        line = line ? `${line} ${word}` : word;
+      }
+      while (line.length > width) {
+        rows.push(line.slice(0, width));
+        line = line.slice(width);
+      }
+    }
+    if (line) rows.push(line);
+  }
+  return rows;
+}
+
 function snapshot(): Snapshot {
   const items: NeedsYouItem[] = [];
   const streams: StreamRow[] = [];
@@ -132,7 +169,7 @@ function snapshot(): Snapshot {
     } catch (e) {
       streams.push({
         slug, bucket: 4, queuedNow: false, routine: false, paused: false, spent: 0, maxCost: 0, passes: 0, maxPasses: 0,
-        interventions: 0, details: [], error: e instanceof Error ? e.message : String(e),
+        interventions: 0, details: [], objective: '', error: e instanceof Error ? e.message : String(e),
       });
       continue;
     }
@@ -303,6 +340,8 @@ function snapshot(): Snapshot {
       passes: doc.spend.coordinatorPasses, maxPasses: ws.budget.maxCoordinatorPasses,
       interventions: doc.spend.humanInterventions ?? 0,
       details,
+      objective: ws.objective,
+      latestDecision: [...doc.decisions].reverse().find((x) => x.status === 'standing')?.title,
     });
   }
   streams.sort((a, b) => a.bucket - b.bucket || a.slug.localeCompare(b.slug));
@@ -477,12 +516,20 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const streamCount = snap.streams.length;
   const selPane = (() => {
     const isExpandedSel = sel?.type === 'item' && expanded.has(sel.item.key);
+    // Expanded reading OUTRANKS fleet rows: reserve a 3-stream floor and give
+    // the pane the rest. Clamping the pane to leftover space instead once made
+    // [enter] compute the same 4 lines as collapsed on a busy fleet — a
+    // keypress that visibly did nothing.
+    const roomExpanded = Math.max(6, termRows - chrome - snap.items.length - selDetailLines - 3 - 2);
     const fixed = chrome + snap.items.length + streamCount + selDetailLines;
-    const room = Math.max(4, termRows - fixed - 2);
-    return isExpandedSel ? Math.min(18, room) : Math.min(4, room);
+    const roomCollapsed = Math.max(4, termRows - fixed - 2);
+    return isExpandedSel ? Math.min(18, roomExpanded) : Math.min(4, roomCollapsed);
   })();
-  // If even collapsed content overflows, trim the visible stream lists.
-  const overflow = Math.max(0, chrome + snap.items.length + selPane + 2 + selDetailLines + streamCount - termRows);
+  // The stream task card ([enter] on a workstream row) also claims lines.
+  const streamCardOpen = sel?.type === 'stream' && expanded.has(sel.stream.slug);
+  const streamCardLines = streamCardOpen ? 7 : 0;
+  // If content overflows, trim the visible stream lists (3-row floor).
+  const overflow = Math.max(0, chrome + snap.items.length + selPane + 2 + selDetailLines + streamCardLines + streamCount - termRows);
   const streamsVisible = Math.max(3, streamCount - overflow);
 
   return (
@@ -534,7 +581,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                   // Single-row lines only (truncate-end): the height budget
                   // depends on exact line math, and long lines get the full
                   // text via [ / ] scrolling rather than wrapping.
-                  const all = it.body.split('\n');
+                  const all = wrapRows(it.body, Math.max(40, (process.stdout.columns ?? 120) - 8));
                   const isExpanded = expanded.has(it.key);
                   const pane = selPane;
                   const from = Math.min(scroll, Math.max(0, all.length - pane));
@@ -603,10 +650,29 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
               </Text>
               {isSel && (
                 <>
+                  {expanded.has(st.slug) && (() => {
+                    // Task card: WHAT this stream is (objective, single-row
+                    // slices) + latest standing decision. Exactly 7 lines —
+                    // the height budget's streamCardLines must match.
+                    const width = Math.max(40, (process.stdout.columns ?? 120) - 10);
+                    const wrapped = wrapRows(st.objective, width);
+                    const objLines = wrapped.slice(0, 5);
+                    while (objLines.length < 5) objLines.push(' ');
+                    const truncated = wrapped.length > 5;
+                    return (
+                      <>
+                        <Text wrap="truncate-end">      <Text bold dimColor>objective</Text>{truncated ? <Text dimColor> (start — [i] for all of it)</Text> : null}</Text>
+                        {objLines.map((l, j) => (
+                          <Text key={`o${j}`} dimColor wrap="truncate-end">      {l}</Text>
+                        ))}
+                        <Text wrap="truncate-end">      <Text bold dimColor>latest decision</Text><Text dimColor>  {st.latestDecision ?? '(none yet)'}</Text></Text>
+                      </>
+                    );
+                  })()}
                   {st.details.slice(0, 4).map((l, j) => (
                     <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
                   ))}
-                  <Text color="cyan" wrap="truncate-end">      [p] {st.paused ? 'resume' : 'pause (stops new work; state kept)'}  [s] steer  [i] this stream's knowledge</Text>
+                  <Text color="cyan" wrap="truncate-end">      [enter] {expanded.has(st.slug) ? 'close card' : 'what is this stream?'}  [p] {st.paused ? 'resume' : 'pause'}  [s] steer  [i] full knowledge</Text>
                 </>
               )}
             </Box>
