@@ -1,10 +1,10 @@
 # Weaver
 
-**A durable execution layer that gives real-world agent work what code always had: history, review, and verified outcomes.**
+**A durable execution layer for agent work: direction, history, review, and verified outcomes that outlive every model run.**
 
-Agent harnesses already run models for hours. Memory features already carry facts between sessions. Weaver is about the part nobody has: when an agent system works on something for weeks — a hiring pipeline, a growth experiment, a standing Sentry-triage routine — *where is the record of why the current course exists, what was actually done to the world, and what made the system better than it was last month?*
+Agent harnesses already run models for hours. Memory features already carry facts between sessions. Weaver is about the durable execution around those runs: when an agent system works on an outcome for hours or weeks — fixing an upload bug across code and telemetry, running a standing Sentry-triage routine, or progressing a hiring pipeline — *where is the record of why the current course exists, what was actually done to the world, and what made the system better than it was last month?*
 
-For code, that layer has existed for decades: git history holds accepted work, PRs hold review, CI holds verified outcomes, and the repo outlives every editor session. For everything else agents do — outreach, operations, research, recurring business routines — there is nothing. Every "agent product" collapses into one immortal chat that degrades until someone starts over.
+Git already gives code artifacts a durable substrate: commits show what changed, pull requests review the diff, CI checks the build, and the repo outlives every editor session. But code work is larger than its diff. Git does not hold the objective, the evidence from logs and product telemetry, the approaches rejected before the accepted change, the authority behind external actions, what is waiting, or whether the outcome actually succeeded. Non-code work often lacks even Git's artifact history. Without a durable execution layer, both kinds of agent work collapse back into a conversation that degrades until someone starts over.
 
 > ### ⚡ Quick start — one sentence is the whole interface
 >
@@ -25,7 +25,7 @@ For code, that layer has existed for decades: git history holds accepted work, P
 >
 > For anything longer than a sentence, run `weaver do` with **no arguments** and type or paste a multiline message (finish with Ctrl-D) — raw stdin, so `$`, quotes, and newlines survive exactly as written, with a progress spinner while the brief is derived.
 
-Weaver is that missing layer, built standalone on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk):
+Weaver adds that organizational execution layer across code, operations, research, and external processes, built standalone on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk):
 
 > **A Workstream is the durable organizational execution — direction, work, deliverables, interactions, results. Coordinator runs and workers are disposable: they enter, advance bounded work, publish results, and leave.**
 
@@ -33,9 +33,9 @@ Weaver is that missing layer, built standalone on the [Claude Agent SDK](https:/
 
 Not the agent loop (the SDK provides it), not scheduling, not "long-running agents". Three things:
 
-### 1. A decision log with lineage — git history for work that doesn't live in git
+### 1. Decision lineage — why the course exists, not just what changed
 
-Every course change is a typed **decision**: what became authoritative, why, superseding what. A fresh coordinator — days later, possibly a different model — receives standing decisions from state and *cannot silently reverse one*; supersession is explicit and keeps both sides. The returning human reads **now / since-you-left / needs-me / next / why** without opening a transcript, and "why" is a real lineage, not a summary's guess. (It turns out this helps even for work that *does* live in git: the code shows what changed; the decision log shows why the tenth approach was chosen over the nine that were corrected away.)
+Every course change is a typed **decision**: what became authoritative, why, superseding what. A fresh coordinator — days later, possibly a different model — receives standing decisions from state and *cannot silently reverse one*; supersession is explicit and keeps both sides. The returning human reads **now / since-you-left / needs-me / next / why** without opening a transcript, and "why" is a real lineage, not a summary's guess. For code work, the diff shows what changed; the decision log shows why the tenth approach was chosen over the nine that were corrected away, which external evidence supported it, and what remains before the objective is actually done.
 
 ### 2. Verified outcomes — the system cannot grade its own homework
 
