@@ -14,8 +14,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { EventRecord, WorkstreamCore, WorkstreamDoc } from './types.js';
+import type {
+  EventRecord,
+  PrintoutChange,
+  PrintoutMutationReceipt,
+  WorkstreamCore,
+  WorkstreamDoc,
+} from './types.js';
 import { virtualNow } from './clock.js';
+import { diffPrintoutFields, writeJournalReceipt } from './printoutJournal.js';
 // Circular at module level (secrets.ts uses this file's path helpers), but
 // both sides only call functions at runtime, so ESM resolves it fine.
 import { assertNoSecretValues, loadSecrets, redactSecrets } from './secrets.js';
@@ -32,6 +39,14 @@ export function workstreamDir(slug: string): string {
 
 function docPath(slug: string): string {
   return path.join(workstreamDir(slug), 'workstream.json');
+}
+
+function writeLockDir(slug: string): string {
+  return path.join(workstreamDir(slug), '.write.lock');
+}
+
+export function printoutJournalDir(slug: string): string {
+  return path.join(workstreamDir(slug), 'printout');
 }
 
 export function artifactsDir(slug: string): string {
@@ -59,6 +74,46 @@ export class RevisionConflictError extends Error {
   }
 }
 
+/** Serialize the actual read/check/write region across local processes. */
+function withWriteLock<T>(slug: string, fn: () => T): T {
+  const dir = writeLockDir(slug);
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, 'pid'), String(process.pid));
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') throw error;
+      let live = true;
+      try {
+        const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8'));
+        if (Number.isInteger(pid) && pid > 0) {
+          try { process.kill(pid, 0); }
+          catch { live = false; }
+        } else {
+          // The holder may be between mkdir and completing its pid write.
+          live = fs.statSync(dir).mtimeMs >= Date.now() - 10_000;
+        }
+      } catch {
+        try {
+          live = fs.statSync(dir).mtimeMs >= Date.now() - 10_000;
+        } catch { live = false; }
+      }
+      if (!live) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        continue;
+      }
+      if (Date.now() > deadline) throw new Error(`workstream '${slug}' write lock timeout`);
+      const until = Date.now() + 10;
+      while (Date.now() < until) { /* writes are synchronous and normally sub-ms */ }
+    }
+  }
+  try { return fn(); }
+  finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
 export function listWorkstreams(): string[] {
   const home = weaverHome();
   if (!fs.existsSync(home)) return [];
@@ -76,14 +131,22 @@ export function load(slug: string): WorkstreamDoc {
   return JSON.parse(fs.readFileSync(p, 'utf8')) as WorkstreamDoc;
 }
 
-function writeAtomic(slug: string, doc: WorkstreamDoc): void {
-  const p = docPath(slug);
+function serializeChecked(slug: string, doc: WorkstreamDoc): string {
   const json = JSON.stringify(doc, null, 2) + '\n';
+  assertNoSecretValues(json, loadSecrets(slug));
+  return json;
+}
+
+function writeAtomic(slug: string, doc: WorkstreamDoc, receipt?: PrintoutMutationReceipt): void {
+  const p = docPath(slug);
   // THE structural enforcement point for secrets-in-state: every doc write in
   // the codebase funnels here, so no ingress path (steer, reply, observe,
   // constraint, coordinator tool, TUI) can persist a secret VALUE — the write
   // is refused with the $NAME advice regardless of which caller forgot.
-  assertNoSecretValues(json, loadSecrets(slug));
+  const json = serializeChecked(slug, doc);
+  // Receipt first: an interrupted commit may leave an ignored future receipt,
+  // but can never expose a committed head whose exact transition is missing.
+  if (receipt) writeJournalReceipt(printoutJournalDir(slug), receipt);
   const tmp = `${p}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, json);
   fs.renameSync(tmp, p);
@@ -101,10 +164,20 @@ export function mutate(
   expectedRevision: number,
   fn: (doc: WorkstreamDoc, event: (type: string, summary: string, refs?: string[]) => void) => void,
 ): WorkstreamDoc {
+  return withWriteLock(slug, () => mutateUnlocked(slug, expectedRevision, fn));
+}
+
+function mutateUnlocked(
+  slug: string,
+  expectedRevision: number | undefined,
+  fn: (doc: WorkstreamDoc, event: (type: string, summary: string, refs?: string[]) => void) => void,
+): WorkstreamDoc {
   const doc = load(slug);
-  if (doc.revision !== expectedRevision) {
+  if (expectedRevision !== undefined && doc.revision !== expectedRevision) {
     throw new RevisionConflictError(expectedRevision, doc.revision);
   }
+  const before = structuredClone(doc);
+  const emitted: EventRecord[] = [];
   const event = (type: string, summary: string, refs?: string[]) => {
     const rec: EventRecord = {
       at: new Date().toISOString(),
@@ -113,6 +186,7 @@ export function mutate(
       summary,
       ...(refs ? { refs } : {}),
     };
+    emitted.push(rec);
     doc.events.push(rec);
     if (doc.events.length > EVENT_TAIL_LIMIT) {
       doc.events.splice(0, doc.events.length - EVENT_TAIL_LIMIT);
@@ -120,8 +194,61 @@ export function mutate(
   };
   fn(doc, event);
   doc.revision += 1;
-  writeAtomic(slug, doc);
+  const receipt: PrintoutMutationReceipt = {
+    revision: doc.revision,
+    at: new Date().toISOString(),
+    atVirtual: virtualNow().toISOString(),
+    changes: printoutChanges(before, doc),
+    events: emitted,
+  };
+  writeAtomic(slug, doc, receipt);
   return doc;
+}
+
+function changedEntities<T extends { id: string }>(
+  kind: PrintoutChange['kind'],
+  before: T[],
+  after: T[],
+): PrintoutChange[] {
+  const old = new Map(before.map((value) => [value.id, value]));
+  const next = new Map(after.map((value) => [value.id, value]));
+  return [...new Set([...old.keys(), ...next.keys()])]
+    .sort()
+    .flatMap((id) => {
+      const prior = old.get(id);
+      const current = next.get(id);
+      if (JSON.stringify(prior) === JSON.stringify(current)) return [];
+      return [{ kind, id, fields: diffPrintoutFields(prior, current) }];
+    });
+}
+
+/** Central exact diff: eventless writers and intermediate values survive. */
+function printoutChanges(before: WorkstreamDoc, after: WorkstreamDoc): PrintoutChange[] {
+  const changes: PrintoutChange[] = [];
+  if (JSON.stringify(before.workstream) !== JSON.stringify(after.workstream)) {
+    changes.push({ kind: 'workstream', fields: diffPrintoutFields(before.workstream, after.workstream) });
+  }
+  changes.push(
+    ...changedEntities('decision', before.decisions, after.decisions),
+    ...changedEntities('assignment', before.assignments, after.assignments),
+    ...changedEntities('deliverable', before.deliverables, after.deliverables),
+    ...changedEntities('interaction', before.interactions, after.interactions),
+    ...changedEntities('observation', before.observations, after.observations),
+    ...changedEntities('wake', before.wakes, after.wakes),
+    ...changedEntities('steering', before.steering, after.steering),
+    ...changedEntities('attention', before.attention, after.attention),
+    ...changedEntities('pass', before.passes, after.passes),
+  );
+  if (JSON.stringify(before.spend) !== JSON.stringify(after.spend)) {
+    changes.push({ kind: 'spend', fields: diffPrintoutFields(before.spend, after.spend) });
+  }
+  if (JSON.stringify(before.capacity) !== JSON.stringify(after.capacity)) {
+    changes.push({ kind: 'capacity', fields: diffPrintoutFields(before.capacity, after.capacity) });
+  }
+  if (JSON.stringify(before.lease) !== JSON.stringify(after.lease)) {
+    changes.push({ kind: 'lease', fields: diffPrintoutFields(before.lease, after.lease) });
+  }
+  return changes;
 }
 
 /**
@@ -134,49 +261,62 @@ export function arrive(
   slug: string,
   fn: (doc: WorkstreamDoc, event: (type: string, summary: string, refs?: string[]) => void) => void,
 ): WorkstreamDoc {
-  const current = load(slug).revision;
-  return mutate(slug, current, fn);
+  return withWriteLock(slug, () => mutateUnlocked(slug, undefined, fn));
 }
 
 export function createWorkstream(core: Omit<WorkstreamCore, 'id' | 'createdAt' | 'status'>): WorkstreamDoc {
   const dir = workstreamDir(core.slug);
-  if (fs.existsSync(docPath(core.slug))) {
-    throw new Error(`workstream '${core.slug}' already exists`);
-  }
-  fs.mkdirSync(artifactsDir(core.slug), { recursive: true });
-  const doc: WorkstreamDoc = {
-    schemaVersion: 1,
-    revision: 0,
-    workstream: {
-      ...core,
-      id: newId('ws'),
-      status: 'active',
-      createdAt: new Date().toISOString(),
-    },
-    decisions: [],
-    assignments: [],
-    deliverables: [],
-    interactions: [],
-    observations: [],
-    wakes: [],
-    steering: [],
-    attention: [],
-    passes: [],
-    events: [
-      {
-        at: new Date().toISOString(),
-        atVirtual: virtualNow().toISOString(),
-        type: 'workstream.created',
-        summary: `Workstream '${core.title}' created`,
-      },
-    ],
-    spend: { coordinatorPasses: 0, totalCostUsd: 0, humanInterventions: 0 },
-    capacity: null,
-    lease: null,
-  };
   fs.mkdirSync(dir, { recursive: true });
-  writeAtomic(core.slug, doc);
-  return doc;
+  return withWriteLock(core.slug, () => {
+    if (fs.existsSync(docPath(core.slug))) {
+      throw new Error(`workstream '${core.slug}' already exists`);
+    }
+    fs.mkdirSync(artifactsDir(core.slug), { recursive: true });
+    const doc: WorkstreamDoc = {
+      schemaVersion: 1,
+      revision: 0,
+      workstream: {
+        ...core,
+        id: newId('ws'),
+        status: 'active',
+        createdAt: new Date().toISOString(),
+      },
+      decisions: [],
+      assignments: [],
+      deliverables: [],
+      interactions: [],
+      observations: [],
+      wakes: [],
+      steering: [],
+      attention: [],
+      passes: [],
+      events: [],
+      spend: { coordinatorPasses: 0, totalCostUsd: 0, humanInterventions: 0 },
+      capacity: null,
+      lease: null,
+    };
+    const created: EventRecord = {
+      at: new Date().toISOString(),
+      atVirtual: virtualNow().toISOString(),
+      type: 'workstream.created',
+      summary: `Workstream '${core.title}' created`,
+    };
+    doc.events.push(created);
+    const receipt: PrintoutMutationReceipt = {
+      revision: 0,
+      at: created.at,
+      atVirtual: created.atVirtual,
+      changes: [
+        { kind: 'workstream', fields: diffPrintoutFields(undefined, doc.workstream) },
+        { kind: 'spend', fields: diffPrintoutFields(undefined, doc.spend) },
+        { kind: 'capacity', fields: diffPrintoutFields(undefined, doc.capacity) },
+        { kind: 'lease', fields: diffPrintoutFields(undefined, doc.lease) },
+      ],
+      events: [created],
+    };
+    writeAtomic(core.slug, doc, receipt);
+    return doc;
+  });
 }
 
 /**

@@ -25,7 +25,13 @@ Below the queue: every workstream with a colored status dot — red `NEEDS YOU`,
 
 `you N×` is this workstream's local score: how many recorded human interventions it needed. [`weaver stats`](/stats) compares that across work and keeps rejections and approval boundaries beside the trend, so a quieter system cannot claim success merely by lowering the bar.
 
-A `DONE` row answers "so what did it actually do?" in place: select it and its detail lines are the coordinator's conclusion — with the evidence it cites — plus the hard tallies (readback-verified actions, adopted deliverables, passes, interventions), with `i` for the full record. Outcomes live where you already are, not behind a CLI.
+A `DONE` row answers "so what did it actually do?" in place: select it and its detail lines show the coordinator's informational account, its separately validated typed evidence IDs, and the hard tallies (readback-verified actions, adopted deliverables, passes, interventions), with `i` for the full record. The account cannot make an outcome true; the cited typed facts do that. Outcomes live where you already are, not behind a CLI.
+
+## Catch up with a printout
+
+Press uppercase `P` for a frozen, full-screen report of everything recorded since the last printout. Like `i`, it follows the cursor: an attention item or workstream selects that workstream; move above the first row to the highlighted `W E A V E R` header for every workstream plus global policy activity.
+
+Scroll one line with `↑` / `↓` or `j` / `k`, and one page with `[` / `]` or `Page Up` / `Page Down`. Uppercase `C` copies the complete unwrapped report; `Escape` closes it. Lowercase `p` remains pause/resume. See [Printouts](/printouts) for the checkpoint and truth contract, or run `weaver printout [slug]` outside the dashboard. (`weaver watch --plain` has no modal keys.)
 
 ## Knowledge, scoped to the selection
 
@@ -39,4 +45,4 @@ Everything rendered is a projection of typed state. No transcript parsing, no id
 
 The dashboard shows the outcome spanning many agent runs. Sometimes you want to inspect one of those disposable runs while it happens: `weaver tail <slug>` prints the recent feed and then follows it live — every tool call a worker makes (the command, the file), snippets of what it's saying, and the run's result line. `--all` adds coordinator passes to the feed.
 
-The feed is observability, never truth: it's an append-only file next to the workstream's state, redacted against known secrets before anything touches disk, and nothing in the harness reads it back. Adoption, attention, and the five questions still live entirely in typed state — and session ids remain recorded per attempt as provenance, so `claude --resume <sessionId>` replay is unaffected. If the dashboard is where you spend judgment, `tail` is where you watch the work get done.
+The feed is observability, never truth: it's an append-only file next to the workstream's state, redacted against known secrets before anything touches disk, and nothing in the harness reads it back as authority. Printouts may include these best-effort tool observations to show what a worker looked at, but only typed adoption and deterministic readback can claim that a PR, merge, deploy, or production check actually happened. Session ids remain recorded per attempt as provenance, so `claude --resume <sessionId>` replay is unaffected.

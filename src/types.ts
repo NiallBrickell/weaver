@@ -324,6 +324,39 @@ export interface EventRecord {
   refs?: Id[];
 }
 
+/**
+ * Exact before/after values written beside each organizational revision.
+ * This journal is operator history, never coordinator input or authority.
+ * Keeping the values (rather than only entity ids) preserves intermediate
+ * facts such as a failed readback that is later replaced by a successful one.
+ */
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+export interface PrintoutFieldDelta {
+  /** JSON Pointer within the typed entity; '/' means the whole entity. */
+  path: string;
+  before?: JsonValue;
+  after?: JsonValue;
+}
+
+export interface PrintoutChange {
+  kind: 'workstream' | 'decision' | 'assignment' | 'deliverable' | 'interaction' |
+    'observation' | 'wake' | 'steering' | 'attention' | 'pass' | 'spend' | 'capacity' | 'lease';
+  /** Absent only for singleton workstream/spend/capacity/lease values. */
+  id?: Id;
+  /** Exact leaf deltas; growing arrays append one indexed value, not a full copy. */
+  fields: PrintoutFieldDelta[];
+}
+
+export interface PrintoutMutationReceipt {
+  revision: number;
+  at: Iso;
+  atVirtual: Iso;
+  changes: PrintoutChange[];
+  /** Supporting chronology only; the typed values above remain truth. */
+  events: EventRecord[];
+}
+
 // ---------------------------------------------------------------------------
 // The document
 
@@ -345,6 +378,16 @@ export interface WorkstreamCore {
     maxCostUsd: number;
   };
   status: 'active' | 'paused' | 'done';
+  /** Durable outcome claim and its cited typed evidence. The referenced facts
+   * remain the authority; this prose cannot make an unverified act real. */
+  conclusion?: {
+    passId: Id;
+    atVirtual: Iso;
+    /** Coordinator account, informational; cited typed facts remain authority. */
+    summary: string;
+    /** Resolved at conclusion time to adopted/verified/standing typed facts. */
+    evidenceIds: Id[];
+  };
   createdAt: Iso;
 }
 
@@ -364,16 +407,20 @@ export interface WorkstreamDoc {
   passes: PassRecord[];
   /** Bounded narrative tail — projection section 8. Never authoritative. */
   events: EventRecord[];
-  spend: {
+  spend: WorkstreamSpend;
+  /** Typed source of truth for current Agent SDK capacity constraints. Old
+   * documents may omit this additive field and are treated as recovered. */
+  capacity?: CapacityState | null;
+  /** Single-flight reconciliation lease. */
+  lease: WorkstreamLease;
+}
+
+export interface WorkstreamSpend {
     coordinatorPasses: number;
     totalCostUsd: number;
     /** Human acts (steer/approve/adopt/reject/budget) — the numerator of the
      * interventions-per-successful-outcome metric the learning loop optimizes. */
     humanInterventions: number;
-  };
-  /** Typed source of truth for current Agent SDK capacity constraints. Old
-   * documents may omit this additive field and are treated as recovered. */
-  capacity?: CapacityState | null;
-  /** Single-flight reconciliation lease. */
-  lease: { passId: Id; acquiredAt: Iso; expiresAt: Iso } | null;
 }
+
+export type WorkstreamLease = { passId: Id; acquiredAt: Iso; expiresAt: Iso } | null;

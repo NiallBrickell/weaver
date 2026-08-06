@@ -178,6 +178,9 @@ export function expediteBackoffWakes(
 export interface RunnerOptions {
   intervalMs: number;
   concurrency: number;
+  /** Stops the poll loop owned by an interactive dashboard on exit. In-flight
+   * ticks remain crash-recoverable work; the loop itself must not pin Node. */
+  signal?: AbortSignal;
   /** Progress lines (a tick that did something). Default: stdout. */
   log?: (line: string) => void;
   /** Errors. Default: stderr. */
@@ -202,8 +205,21 @@ export function runnerLoopHealthy(): boolean {
   }
 }
 
-/** The poll loop. Never returns; run it detached (`void runLoop(...)`) to embed. */
-export async function runLoop(opts: RunnerOptions): Promise<never> {
+function waitForNextIteration(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
+/** The poll loop. Headless runners omit `signal`; embedded dashboards own one. */
+export async function runLoop(opts: RunnerOptions): Promise<void> {
   const log = opts.log ?? ((l: string) => process.stdout.write(l + '\n'));
   const logError = opts.logError ?? ((l: string) => process.stderr.write(l + '\n'));
   const inFlight = new Set<string>();
@@ -221,7 +237,7 @@ export async function runLoop(opts: RunnerOptions): Promise<never> {
   let lastProbeAt = 0;
   let probing = false;
   let lastCredMtime = credentialsMtime();
-  for (;;) {
+  while (!opts.signal?.aborted) {
     try {
       try {
         fs.writeFileSync(heartbeatPath(), String(Date.now()));
@@ -292,6 +308,6 @@ export async function runLoop(opts: RunnerOptions): Promise<never> {
       // listWorkstreams once killed it silently while the pid lived on).
       logError(`[run] loop iteration failed: ${e instanceof Error ? e.message : e}`);
     }
-    await new Promise((r) => setTimeout(r, opts.intervalMs));
+    await waitForNextIteration(opts.intervalMs, opts.signal);
   }
 }

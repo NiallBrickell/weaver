@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 import {
   RevisionConflictError,
@@ -78,6 +80,47 @@ test('an external arrival between read and write conflicts an in-flight coordina
     () => mutate('test-ws', coordinatorRead, (d) => (d.workstream.title = 'stale winner')),
     RevisionConflictError,
   );
+});
+
+test('simultaneous cross-process arrivals serialize without losing a revision', async () => {
+  makeWorkstream();
+  const home = process.env.WEAVER_HOME!;
+  const gate = path.join(home, 'arrival-gate');
+  const storeUrl = pathToFileURL(path.resolve('src/store.ts')).href;
+  const count = 8;
+  const children = Array.from({ length: count }, (_, index) => {
+    const ready = path.join(home, `ready-${index}`);
+    const code = `
+      import fs from 'node:fs';
+      const { arrive } = await import(${JSON.stringify(storeUrl)});
+      fs.writeFileSync(${JSON.stringify(ready)}, 'ready');
+      const wait = new Int32Array(new SharedArrayBuffer(4));
+      while (!fs.existsSync(${JSON.stringify(gate)})) Atomics.wait(wait, 0, 0, 5);
+      arrive('test-ws', (doc) => doc.workstream.constraints.push(${JSON.stringify(`arrival-${index}`)}));
+    `;
+    return new Promise<{ code: number | null; stderr: string }>((resolve) => {
+      const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', code], {
+        cwd: process.cwd(),
+        env: { ...process.env, WEAVER_HOME: home },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+      child.on('close', (exitCode) => resolve({ code: exitCode, stderr }));
+    });
+  });
+  const deadline = Date.now() + 10_000;
+  while (fs.readdirSync(home).filter((name) => name.startsWith('ready-')).length < count) {
+    if (Date.now() > deadline) throw new Error('child arrival barrier timed out');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  fs.writeFileSync(gate, 'go');
+  const results = await Promise.all(children);
+  assert.deepEqual(results, Array.from({ length: count }, () => ({ code: 0, stderr: '' })));
+  const doc = load('test-ws');
+  assert.equal(doc.revision, count);
+  assert.deepEqual([...doc.workstream.constraints].sort(), Array.from({ length: count }, (_, index) => `arrival-${index}`));
+  assert.equal(fs.readdirSync(path.join(home, 'test-ws', 'printout', 'revisions')).length, count + 1);
 });
 
 test('adoption pins the exact content hash and integrity verification catches tampering', () => {

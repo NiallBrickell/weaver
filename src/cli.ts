@@ -109,8 +109,9 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver secret set <NAME> [--ws slug]       store a secret (value read from stdin, never argv); global unless --ws
   weaver secret list [--ws slug]             list secret NAMES (values are never printed)
   weaver secret rm <NAME> [--ws slug]        remove a secret
-  weaver watch [--plain]                     dashboard + embedded runner in ONE command (starts the runner unless one is live)
-                                             keys: ↑↓ select, a approve, x reject, d resolve, s steer, p pause, q quit
+  weaver watch                               interactive dashboard + embedded runner; keys: ↑↓, a/x/d/s, p pause, P printout, q quit
+  weaver watch --plain                       legacy read-only raw dashboard; q quits (use 'weaver printout [slug]' to catch up)
+  weaver printout [slug]                     frozen account since the last printout; omit slug for every workstream
   weaver inspect [slug]                      knowledge inspector → self-contained HTML: decision lineage, policies, interventions, adoptions, action audit
   weaver stats                               outcome scoreboard → self-contained HTML: interventions per adopted work product, approval split, policy evidence, per-workstream stats
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
@@ -612,6 +613,10 @@ async function main(): Promise<void> {
       } else {
         const { runTui } = await import('./tui.js');
         await runTui();
+        // A disposable SDK/command process may still be inside a non-abortable
+        // call. The durable engine reconciles its typed state on the next run;
+        // q must return terminal ownership immediately.
+        process.exit(0);
       }
       break;
     }
@@ -627,6 +632,13 @@ async function main(): Promise<void> {
         const { spawn } = await import('node:child_process');
         spawn('open', [out], { detached: true, stdio: 'ignore' }).unref();
       }
+      break;
+    }
+
+    case 'printout': {
+      const { deliverPrintout, preparePrintout } = await import('./printout.js');
+      const report = preparePrintout(rest[0]);
+      await deliverPrintout(report);
       break;
     }
 
