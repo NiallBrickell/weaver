@@ -20,6 +20,7 @@ import { matchPolicies, proposePolicy, recordPolicyOutcome } from './policies.js
 import { sdkEnv } from './secrets.js';
 import { tailMessage } from './tail.js';
 import { armWall } from './wall.js';
+import { infrastructureWaitSummary, SdkFailureTracker } from './capacity.js';
 import {
   RevisionConflictError,
   load,
@@ -613,6 +614,7 @@ export async function runCoordinatorPass(
   let sessionId: string | undefined;
   let hadError = false;
   let errorText = '';
+  const sdkFailure = new SdkFailureTracker();
 
   // Hard wall: an SDK call that never returns (seen during session-limit
   // outages) must not hold a runner slot hostage. Abort → backoff, never a
@@ -637,17 +639,19 @@ export async function runCoordinatorPass(
       },
     })) {
       tailMessage(slug, 'coordinator', passId, message);
+      sdkFailure.observe(message);
       if (message.type === 'result') {
         sessionId = message.session_id;
         costUsd = 'total_cost_usd' in message ? message.total_cost_usd : 0;
         if (message.is_error) {
           hadError = true;
-          errorText = 'result' in message && typeof message.result === 'string' ? message.result : 'model result error';
+          errorText = sdkFailure.diagnostic();
         }
       }
     }
   } catch (e) {
     hadError = true;
+    sdkFailure.capture(e);
     errorText = e instanceof Error ? e.message : String(e);
     process.stderr.write(`coordinator pass error: ${errorText}\n`);
   } finally {
@@ -659,10 +663,18 @@ export async function runCoordinatorPass(
   // by user") is NOT a workstream problem: durable state makes waiting free,
   // so back off and retry instead of burning failure strikes or paging the
   // human.
-  const isInfraFailure =
-    hadError &&
-    (wall.fired() ||
-      /process aborted|session limit|rate.?limit|usage limit|overloaded|429|529|401|unauthoriz|authentication|log ?in|credit|quota|exceeded your/i.test(errorText));
+  const infrastructure = sdkFailure.classify({
+    source: 'coordinator',
+    sourceId: passId,
+    model: coordinatorModel(),
+    now: virtualNow(),
+    wallNow: new Date(),
+    wallFired: wall.fired(),
+  });
+  if (infrastructure) {
+    hadError = true;
+    errorText = sdkFailure.diagnostic();
+  }
 
   // Finalize provenance regardless of how the model behaved. This is an
   // arrival-style write: the pass is over, whatever revision we're at.
@@ -676,10 +688,13 @@ export async function runCoordinatorPass(
       rec.endedAt = rec.endedAt ?? new Date().toISOString();
       rec.costUsd = costUsd;
       if (sessionId) rec.sessionId = sessionId;
+      if (infrastructure) rec.infrastructure = infrastructure;
       summary = rec.summary;
     }
     if (d.lease?.passId === passId) d.lease = null;
-    d.spend.coordinatorPasses += 1;
+    // Provider waits are execution attempts, not logical coordinator passes:
+    // a month-long credit outage must not consume the workstream's pass cap.
+    if (!infrastructure) d.spend.coordinatorPasses += 1;
     d.spend.totalCostUsd += costUsd;
     if (outcome === 'no_finish') {
       event('pass.no_finish', `${passId} ended without finish_pass — state writes stand, summary missing`, [passId]);
@@ -691,20 +706,43 @@ export async function runCoordinatorPass(
     // (bounded): three failed passes in a row is a real problem for a human —
     // EXCEPT infrastructure outages (session/rate limit), which back off with
     // a delayed wake and never count as strikes: waiting is free.
-    if (isInfraFailure) {
+    if (infrastructure) {
       const rec2 = d.passes.find((p) => p.id === passId);
-      if (rec2) rec2.summary = `backoff: ${errorText.slice(0, 140)}`;
+      const explanation = infrastructureWaitSummary(infrastructure);
+      if (rec2) {
+        rec2.summary = `backoff: ${infrastructure.kind} — ${explanation}`;
+        summary = rec2.summary;
+      }
+      const wakeId = newId('wake');
       d.wakes.push({
-        id: newId('wake'),
-        reason: `retry after infrastructure failure (${errorText.slice(0, 80)}) — backing off, no strikes`,
-        condition: { type: 'time', dueAtVirtual: new Date(virtualNow().getTime() + 15 * 60_000).toISOString() },
+        id: wakeId,
+        reason: explanation,
+        condition: { type: 'time', dueAtVirtual: infrastructure.retryAt },
         status: 'pending',
         createdAt: new Date().toISOString(),
+        infrastructure,
       });
-      event('pass.backoff', `${passId} hit an infrastructure limit — retrying in ~15m`, [passId]);
+      if (infrastructure.recovery === 'reauthenticate') {
+        const existing = d.attention.find(
+          (item) => item.status === 'open' && item.summary.startsWith('Claude authentication needs attention'),
+        );
+        if (existing) {
+          existing.refId = wakeId;
+        } else {
+          d.attention.push({
+            id: newId('att'),
+            kind: 'blocker',
+            summary: explanation,
+            refId: wakeId,
+            status: 'open',
+            createdAt: new Date().toISOString(),
+          });
+        }
+      }
+      event('pass.backoff', `${passId} parked on ${infrastructure.kind} until ${infrastructure.retryAt}`, [passId, wakeId]);
     } else if (outcome !== 'completed') {
-      const recent = d.passes.slice(-3);
-      const allFailing = recent.length === 3 && recent.every((p) => p.outcome !== 'completed' && !p.summary?.startsWith('backoff:'));
+      const recent = d.passes.filter((p) => !p.infrastructure).slice(-3);
+      const allFailing = recent.length === 3 && recent.every((p) => p.outcome !== 'completed');
       if (allFailing) {
         // One card per outage, however many strike-triples accumulate before
         // a human looks: pre-scheduled time wakes keep firing passes after

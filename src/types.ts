@@ -54,6 +54,9 @@ export interface Attempt {
   endedAt?: Iso;
   costUsd?: number;
   terminalReason?: string;
+  /** Provider-side outage/limit that ended this disposable attempt. The
+   * assignment remains intended work and is retried after the typed wait. */
+  infrastructure?: InfrastructureWait;
 }
 
 export interface Assignment {
@@ -213,6 +216,32 @@ export interface Observation {
 // ---------------------------------------------------------------------------
 // Waits & inputs
 
+export type InfrastructureKind =
+  | 'agent_sdk_credits_exhausted'
+  | 'usage_limit'
+  | 'authentication'
+  | 'provider_unavailable'
+  | 'timeout';
+
+/** Closed on purpose: recovering capacity can never mean selecting, pooling,
+ * or rotating accounts. Credentials stay in Claude Code, outside Weaver. */
+export type InfrastructureRecovery =
+  | 'claim_sdk_credit_or_enable_usage_credits'
+  | 'reauthenticate'
+  | 'automatic_retry';
+
+export interface InfrastructureWait {
+  kind: InfrastructureKind;
+  recovery: InfrastructureRecovery;
+  source: 'coordinator' | 'worker';
+  sourceId: Id;
+  model: string;
+  detectedAt: Iso;
+  retryAt: Iso;
+  resetAt?: Iso;
+  rateLimitType?: string;
+}
+
 export type WakeCondition =
   | { type: 'time'; dueAtVirtual: Iso }
   | { type: 'immediate' };
@@ -224,6 +253,9 @@ export interface Wake {
   status: 'pending' | 'fired' | 'cancelled';
   createdAt: Iso;
   firedInPass?: Id;
+  /** Typed provider wait. Human-readable `reason` is presentation only and
+   * must never be parsed to decide recovery behavior. */
+  infrastructure?: InfrastructureWait;
 }
 
 export interface Steering {
@@ -266,6 +298,7 @@ export interface PassRecord {
   summary?: string;
   changes: string[];
   outcome: 'completed' | 'error' | 'no_finish' | 'running';
+  infrastructure?: InfrastructureWait;
 }
 
 export interface EventRecord {

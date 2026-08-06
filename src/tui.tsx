@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, render, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
+import { infrastructureWaitSummary } from './capacity.js';
 import { virtualNow } from './clock.js';
 import {
   approveAction,
@@ -57,6 +58,8 @@ interface StreamRow {
   nextRun?: string;
   /** That wake's reason — WHAT the stream is waiting for, shown inline. */
   nextReason?: string;
+  /** Safe typed infrastructure position; raw provider errors never render. */
+  infrastructureWait?: string;
   paused: boolean;
   spent: number;
   maxCost: number;
@@ -107,6 +110,22 @@ function waitLabel(reason: string): string {
     .trim();
   const clause = flat.split(/[.;(]/)[0]!.trim();
   return (clause.length > 12 ? clause : flat).slice(0, 64);
+}
+
+function wrapDetail(text: string, columns: number): string[] {
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let line = '';
+  for (const word of words) {
+    if (line && line.length + word.length + 1 > columns) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = line ? `${line} ${word}` : word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
 }
 
 /**
@@ -280,6 +299,11 @@ function snapshot(): Snapshot {
     if (queued) details.push(`… ${queued} assignment(s) queued/awaiting review`);
     const nowV = virtualNow().toISOString();
     const pending = doc.wakes.filter((w) => w.status === 'pending');
+    const infrastructure = [...new Set(
+      pending
+        .filter((w) => w.infrastructure)
+        .map((w) => infrastructureWaitSummary(w.infrastructure!)),
+    )];
     const dueNow = pending.filter((w) => w.condition.type === 'immediate' || w.condition.dueAtVirtual <= nowV).length;
     if (dueNow && !working) details.push(`○ ${dueNow} wake(s) due — in line for the runner`);
     const last = doc.events[doc.events.length - 1];
@@ -300,6 +324,17 @@ function snapshot(): Snapshot {
     }
     // Pilot-pending actions live in the stream details (visible, not yours).
     details.unshift(...pendingPilot);
+    // Capacity is a WAIT, not a judgment card. Render only the safe typed
+    // summary: a raw SDK/provider error may contain unstable or private data.
+    // Wrap it into the selected row's fixed-height detail pane so the recovery
+    // action is visible instead of being truncated off the first line.
+    const detailWidth = Math.max(40, (process.stdout.columns ?? 120) - 20);
+    const infrastructureDetails = infrastructure.flatMap((summary) =>
+      wrapDetail(summary, detailWidth).map((line, index) =>
+        index === 0 ? `○ WAITING — ${line}` : `  ${line}`,
+      ),
+    );
+    details.unshift(...infrastructureDetails);
 
     // A DONE stream's details ARE its outcome — the dashboard is the only
     // surface the operator uses, so "what did it actually do" must live here,
@@ -320,14 +355,22 @@ function snapshot(): Snapshot {
       details.push(`  ${verifiedActs} verified action(s) · ${adopted} adopted deliverable(s) · ${doc.spend.coordinatorPasses} passes · you ${doc.spend.humanInterventions ?? 0}× — [i] full record`);
     }
 
-    const nextWake = pending
-      .filter((w) => w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
+    const nextInfrastructureWake = pending
+      .filter((w) => w.infrastructure && w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
       .sort((a, b) =>
         (a.condition as { dueAtVirtual: string }).dueAtVirtual.localeCompare(
           (b.condition as { dueAtVirtual: string }).dueAtVirtual,
         ),
       )[0];
-    const nextRun = nextWake ? (nextWake.condition as { dueAtVirtual: string }).dueAtVirtual : undefined;
+    const nextWake = pending
+      .filter((w) => !w.infrastructure && w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
+      .sort((a, b) =>
+        (a.condition as { dueAtVirtual: string }).dueAtVirtual.localeCompare(
+          (b.condition as { dueAtVirtual: string }).dueAtVirtual,
+        ),
+      )[0];
+    const displayedWake = nextInfrastructureWake ?? nextWake;
+    const nextRun = displayedWake ? (displayedWake.condition as { dueAtVirtual: string }).dueAtVirtual : undefined;
     streams.push({
       slug,
       bucket: ws.status === 'done' ? 5 : bucket,
@@ -335,6 +378,7 @@ function snapshot(): Snapshot {
       routine: ws.tags.includes('routine'),
       nextRun,
       nextReason: nextWake?.reason,
+      infrastructureWait: infrastructure[0],
       paused: ws.status === 'paused',
       spent: doc.spend.totalCostUsd, maxCost: ws.budget.maxCostUsd,
       passes: doc.spend.coordinatorPasses, maxPasses: ws.budget.maxCoordinatorPasses,
@@ -643,7 +687,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                     <Bar spent={st.spent} max={st.maxCost} />
                     <Text dimColor> ~${st.spent.toFixed(2)} est · passes {st.passes} · you {st.interventions}×{st.paused ? ' [paused]' : ''}</Text>
                     {st.bucket === 2 && !st.queuedNow && st.nextRun ? (
-                      <Text color="blue"> · in {until(st.nextRun)}{st.nextReason ? `: ${waitLabel(st.nextReason)}` : ''}</Text>
+                      <Text color="blue"> · in {until(st.nextRun)}{st.infrastructureWait ? `: ${st.infrastructureWait}` : st.nextReason ? `: ${waitLabel(st.nextReason)}` : ''}</Text>
                     ) : null}
                   </>
                 )}

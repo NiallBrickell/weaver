@@ -405,9 +405,25 @@ function recoverCrashedAttempts(slug: string): number {
   return recovered;
 }
 
-function runnableAssignments(doc: WorkstreamDoc): string[] {
+export function runnableAssignments(doc: WorkstreamDoc): string[] {
+  const now = virtualNow().toISOString();
+  const providerWait = doc.wakes.some(
+    (wake) =>
+      wake.status === 'pending' &&
+      wake.infrastructure &&
+      wake.condition.type === 'time' &&
+      wake.condition.dueAtVirtual > now,
+  );
+  if (providerWait) return [];
   return doc.assignments
     .filter((a) => a.state === 'queued')
+    // A provider outage never erases intended work, but it must defer the
+    // next disposable attempt. Without this typed guard, one credit failure
+    // becomes a tight worker retry loop before its wake is due.
+    .filter((a) => {
+      const wait = a.attempts.at(-1)?.infrastructure;
+      return !wait || wait.retryAt <= now;
+    })
     // exec.run actions belong to the engine, never to a model worker
     .filter((a) => !a.exec?.run)
     .filter((a) =>
@@ -520,20 +536,47 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
         });
       }
     } else {
-    const runnable = runnableAssignments(load(slug));
-    for (const id of runnable) {
-      process.stderr.write(`[tick] running worker for ${id}…\n`);
-      await runWorker(slug, id);
-      report.workersRun.push(id);
-      // Action assignments: the worker's claim settles nothing — run the
-      // deterministic readback now so the reviewing pass sees verified truth.
-      const after = load(slug).assignments.find((a) => a.id === id);
-      if (after?.kind === 'action' && after.exec) {
-        const ok = verifyAction(slug, id);
-        process.stderr.write(`[tick] action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
+      const runnable = runnableAssignments(load(slug));
+      for (const id of runnable) {
+        process.stderr.write(`[tick] running worker for ${id}…\n`);
+        await runWorker(slug, id);
+        report.workersRun.push(id);
+        // Action assignments: the worker's claim settles nothing — run the
+        // deterministic readback now so the reviewing pass sees verified truth.
+        const after = load(slug).assignments.find((a) => a.id === id);
+        if (after?.kind === 'action' && after.exec) {
+          const ok = verifyAction(slug, id);
+          process.stderr.write(`[tick] action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
+          const latest = load(slug).assignments.find((a) => a.id === id);
+          const wait = latest?.attempts.at(-1)?.infrastructure;
+          // An action worker can lose model capacity after touching the world.
+          // Passing readback means the effect landed: stop before any retry and
+          // submit the verified fact for adoption. Failed readback leaves the
+          // approved idempotent act deferred until the typed retry boundary.
+          if (ok && wait && latest?.state === 'queued') {
+            arrive(slug, (d, event) => {
+              const a2 = d.assignments.find((a) => a.id === id)!;
+              a2.state = 'awaiting_review';
+              a2.submission = {
+                summary: 'The worker lost Claude capacity after execution; deterministic readback confirmed the external effect landed.',
+              };
+              a2.adoption = { state: 'proposed' };
+              d.wakes.push({
+                id: newId('wake'),
+                reason: `action ${id} readback confirmed its effect after worker infrastructure backoff`,
+                condition: { type: 'immediate' },
+                status: 'pending',
+                createdAt: new Date().toISOString(),
+              });
+              event('action.recovered_by_readback', `${id} effect confirmed after ${wait.kind}; no retry`, [id]);
+            });
+          }
+        }
+        progressed = true;
+        // The account/model failure is fleet capacity, not an assignment
+        // failure. Do not launch the rest of this precomputed batch into it.
+        if (after?.attempts.at(-1)?.infrastructure) break;
       }
-      progressed = true;
-    }
     }
 
     // Pass-crash recovery: an EXPIRED lease whose pass record never reached a
