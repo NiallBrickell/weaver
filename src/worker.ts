@@ -10,9 +10,9 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
-import { z } from 'zod';
 import { virtualNow } from './clock.js';
+import { LocalSdkExecutor } from './executor/localSdk.js';
+import type { SubmitReply, SubmitSurface, WorkerExecutor } from './executor/types.js';
 import { armWall } from './wall.js';
 import {
   clearCapacityBackoff,
@@ -30,6 +30,19 @@ import { secureMcpHeaderCredentials, type SecuredMcpConfiguration } from './mcpC
 
 export function workerModel(): string {
   return process.env.WEAVER_WORKER_MODEL ?? 'sonnet';
+}
+
+/**
+ * Which substrate runs the worker's model loop. The seam exists so remote
+ * executors can slot in later; the authority model does not change with the
+ * substrate — every executor gets the same harness-owned supervision and
+ * submit callbacks. Unknown values fail hard: silently falling back to local
+ * execution would make a misconfigured remote fleet look healthy.
+ */
+export function selectExecutor(): WorkerExecutor {
+  const name = process.env.WEAVER_EXECUTOR ?? 'local-sdk';
+  if (name === 'local-sdk') return new LocalSdkExecutor();
+  throw new Error(`unknown WEAVER_EXECUTOR '${name}' — supported: local-sdk`);
 }
 
 /**
@@ -265,6 +278,8 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg) throw new Error(`no assignment ${assignmentId}`);
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
+  // A misconfigured WEAVER_EXECUTOR fails here, before any state moves.
+  const executor = selectExecutor();
 
   // Declared inputs: ADOPTED deliverables of dependency assignments only — a
   // rejected candidate never becomes another worker's input.
@@ -306,83 +321,61 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
   // Action workers get secret VALUES as env vars only; every path back into
   // durable state is scrubbed so a value can never outlive the process.
   const secrets = isAction ? loadSecrets(slug) : {};
+  // Ephemeral MCP header credentials join the redaction set: they ride the
+  // executor's env, never durable state — whatever substrate ran the loop.
   const redactionSecrets = { ...secrets, ...operatorMcp.env };
 
-  const server = createSdkMcpServer({
-    name: 'weaver',
-    version: '0.1.0',
-    tools: [
-      tool(
-        'append_section',
-        'Append one section of a long artifact, in order. Use for any deliverable longer than ~150 lines, then finish with submit_result (whose content may be empty — appended sections are included automatically).',
-        { content: z.string().min(1) },
-        async (a) => {
-          if (submitted) {
-            return { content: [{ type: 'text' as const, text: 'already submitted — stop' }], isError: true };
-          }
-          sections.push(a.content);
-          return { content: [{ type: 'text' as const, text: `section ${sections.length} appended (${a.content.length} chars, total ${sections.reduce((n, s) => n + s.length, 0)})` }] };
-        },
-      ),
+  // The worker's entire write surface, kept in the harness: whatever substrate
+  // runs the model loop, these closures are the only path into durable state.
+  const submit: SubmitSurface = {
+    async appendSection(content): Promise<SubmitReply> {
+      if (submitted) return { text: 'already submitted — stop', isError: true };
+      sections.push(content);
+      return { text: `section ${sections.length} appended (${content.length} chars, total ${sections.reduce((n, s) => n + s.length, 0)})` };
+    },
 
-      tool(
-        'submit_result',
-        'Finalize your submission. If you used append_section, the appended sections form the artifact body and content may be empty. Call exactly once.',
-        {
-          summary: z.string().describe('2-3 sentence faithful summary of what the artifact contains'),
-          artifact: z.object({
-            title: z.string(),
-            kind: z.string().describe('e.g. report, job_description, outreach_email'),
-            file_name: z.string(),
-            content: z.string().describe('full content, or closing content / empty when sections were appended'),
-          }),
-        },
-        async (a) => {
-          if (submitted) {
-            return { content: [{ type: 'text' as const, text: 'already submitted — stop' }], isError: true };
-          }
-          const fullContent = [...sections, a.artifact.content].filter(Boolean).join('\n\n');
-          if (fullContent.trim().length < 200) {
-            return {
-              content: [{ type: 'text' as const, text: `REFUSED: artifact content is ${fullContent.trim().length} chars — that is a stub, not a deliverable. Build the real artifact with append_section calls, then submit_result again.` }],
-              isError: true,
-            };
-          }
-          submitted = true;
-          const cleanContent = redactSecrets(fullContent, redactionSecrets);
-          const cleanSummary = redactSecrets(a.summary, redactionSecrets);
-          const { relPath, hash } = await writeArtifact(slug, a.artifact.file_name, cleanContent);
-          await arrive(slug, (d, event) => {
-            const asg2 = d.assignments.find((x) => x.id === assignmentId)!;
-            const delId = newId('del');
-            d.deliverables.push({
-              id: delId,
-              title: a.artifact.title,
-              kind: a.artifact.kind,
-              path: relPath,
-              contentHash: hash,
-              producedByAssignment: assignmentId,
-              createdAtVirtual: virtualNow().toISOString(),
-            });
-            asg2.submission = { summary: cleanSummary, deliverableId: delId };
-            asg2.state = 'awaiting_review';
-            asg2.adoption = { state: 'proposed' };
-            const attempt = asg2.attempts.find((t) => t.runId === runId);
-            if (attempt) attempt.endedAt = new Date().toISOString();
-            d.wakes.push({
-              id: newId('wake'),
-              reason: `assignment ${assignmentId} submitted a result for review`,
-              condition: { type: 'immediate' },
-              status: 'pending',
-              createdAt: new Date().toISOString(),
-            });
-            event('worker.submitted', `${assignmentId} → ${delId} "${a.artifact.title}" (${hash.slice(0, 8)})`, [assignmentId, delId]);
-          });
-          return { content: [{ type: 'text' as const, text: 'submitted — you are done' }] };
-        },
-      ),
-    ],
-  });
+    async submitResult(a): Promise<SubmitReply> {
+      if (submitted) return { text: 'already submitted — stop', isError: true };
+      const fullContent = [...sections, a.artifact.content].filter(Boolean).join('\n\n');
+      if (fullContent.trim().length < 200) {
+        return {
+          text: `REFUSED: artifact content is ${fullContent.trim().length} chars — that is a stub, not a deliverable. Build the real artifact with append_section calls, then submit_result again.`,
+          isError: true,
+        };
+      }
+      submitted = true;
+      const cleanContent = redactSecrets(fullContent, redactionSecrets);
+      const cleanSummary = redactSecrets(a.summary, redactionSecrets);
+      const { relPath, hash } = await writeArtifact(slug, a.artifact.file_name, cleanContent);
+      await arrive(slug, (d, event) => {
+        const asg2 = d.assignments.find((x) => x.id === assignmentId)!;
+        const delId = newId('del');
+        d.deliverables.push({
+          id: delId,
+          title: a.artifact.title,
+          kind: a.artifact.kind,
+          path: relPath,
+          contentHash: hash,
+          producedByAssignment: assignmentId,
+          createdAtVirtual: virtualNow().toISOString(),
+        });
+        asg2.submission = { summary: cleanSummary, deliverableId: delId };
+        asg2.state = 'awaiting_review';
+        asg2.adoption = { state: 'proposed' };
+        const attempt = asg2.attempts.find((t) => t.runId === runId);
+        if (attempt) attempt.endedAt = new Date().toISOString();
+        d.wakes.push({
+          id: newId('wake'),
+          reason: `assignment ${assignmentId} submitted a result for review`,
+          condition: { type: 'immediate' },
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        event('worker.submitted', `${assignmentId} → ${delId} "${a.artifact.title}" (${hash.slice(0, 8)})`, [assignmentId, delId]);
+      });
+      return { text: 'submitted — you are done' };
+    },
+  };
 
   const prompt = [
     `# Assignment ${asg.id} (${asg.kind})`,
@@ -431,74 +424,70 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
       : readDirs.length
         ? ['Read', 'Grep', 'Glob', 'Bash'] // Bash gated to read-only history commands below
         : [];
-    for await (const message of query({
+    const outcome = await executor.execute({
+      workstreamSlug: slug,
+      assignmentId,
       prompt,
-      options: {
-        model: workerModel(),
-        systemPrompt: isAction ? ACTION_SYSTEM : WORKER_SYSTEM,
-        tools: baseTools,
-        env: sdkEnv({ ...secrets, ...operatorMcp.env }),
-        ...(isAction
-          ? {
-              cwd: asg.exec!.cwd,
-              additionalDirectories: readDirs,
-              // Confine the action's Bash to its approved cwd: without this,
-              // a misbriefed or injected worker could write anywhere the OS
-              // user can — including forging its own workstream state. If the
-              // sandbox blocks something the act genuinely needs, the failure
-              // is LOUD (the act fails, readback fails, attention is raised);
-              // WEAVER_NO_SANDBOX=1 is the explicit, human-owned override.
-              // The sandbox's ONE invariant here is the write boundary (an
-              // action cannot mutate outside its approved cwd — that is what
-              // stops a misbriefed worker forging workstream state). Two
-              // carve-outs keep that invariant while keeping Bash usable:
-              // session-env is Claude Code's own per-session Bash bootstrap
-              // dir (its 2.1.223 update made the mkdir happen at Bash init —
-              // EPERM there killed EVERY command, even `echo`), and network
-              // egress is deliberately open because command-level judgment is
-              // pilot's job, made per call with the full command visible —
-              // a domain allowlist would re-gate what pilot already judged.
-              ...(process.env.WEAVER_NO_SANDBOX
-                ? {}
-                : {
-                    sandbox: {
-                      enabled: true,
-                      autoAllowBashIfSandboxed: true,
-                      failIfUnavailable: false,
-                      filesystem: { allowWrite: [join(homedir(), '.claude', 'session-env')] },
-                      network: { allowedDomains: ['*'] },
-                    },
-                  }),
-            }
-          : readDirs.length
-            ? { cwd: readDirs[0], additionalDirectories: readDirs }
-            : {}),
-        mcpServers: { ...operatorMcp.servers, weaver: server } as never,
-        // Action workers: ONLY the submit surface is auto-allowed — every
-        // real tool call (Bash, edits, operator MCPs) routes through the live
-        // pilot supervisor, judged at execution time exactly like the
-        // operator's own sessions. Read-only workers auto-allow their file
-        // tools + submit surface; operator MCP calls fall through to the
-        // deterministic read-only gate.
-        // Bash is NOT auto-allowed for read-only workers — it must fall
-        // through to the supervisor's command allowlist.
-        allowedTools: isAction
-          ? ['mcp__weaver__*']
-          : [...baseTools.filter((t) => t !== 'Bash'), 'mcp__weaver__*'],
-        permissionMode: 'default',
-        canUseTool: (isAction ? pilotSupervisor(asg.exec!.cwd, slug) : readOnlyMcpSupervisor()) as never,
-        maxTurns: isAction || readDirs.length || Object.keys(operatorMcp.servers).length ? 80 : 30,
-        persistSession: false,
-        abortController: abort,
+      systemPrompt: isAction ? ACTION_SYSTEM : WORKER_SYSTEM,
+      model: workerModel(),
+      tools: baseTools,
+      // Ephemeral MCP header credentials ride the subprocess env with the
+      // action secrets — never SDK process arguments, never durable state.
+      env: sdkEnv({ ...secrets, ...operatorMcp.env }),
+      ...(isAction
+        ? {
+            cwd: asg.exec!.cwd,
+            additionalDirectories: readDirs,
+            // Confine the action's Bash to its approved cwd: without this,
+            // a misbriefed or injected worker could write anywhere the OS
+            // user can — including forging its own workstream state. If the
+            // sandbox blocks something the act genuinely needs, the failure
+            // is LOUD (the act fails, readback fails, attention is raised);
+            // WEAVER_NO_SANDBOX=1 is the explicit, human-owned override.
+            // The substrate applies the boundary's carve-outs (session-env
+            // bootstrap dir, open network egress — see localSdk.ts): the ONE
+            // invariant is the write boundary, and it is the harness's call.
+            sandbox: !process.env.WEAVER_NO_SANDBOX,
+          }
+        : {
+            ...(readDirs.length ? { cwd: readDirs[0] } : {}),
+            additionalDirectories: readDirs,
+            sandbox: false,
+          }),
+      // The SECURED server map: header credentials already moved into env
+      // placeholders by the harness (secureMcpHeaderCredentials).
+      operatorMcpServers: operatorMcp.servers,
+      // Action workers: ONLY the submit surface is auto-allowed — every
+      // real tool call (Bash, edits, operator MCPs) routes through the live
+      // pilot supervisor, judged at execution time exactly like the
+      // operator's own sessions. Read-only workers auto-allow their file
+      // tools + submit surface; operator MCP calls fall through to the
+      // deterministic read-only gate.
+      // Bash is NOT auto-allowed for read-only workers — it must fall
+      // through to the supervisor's command allowlist.
+      allowedTools: isAction
+        ? ['mcp__weaver__*']
+        : [...baseTools.filter((t) => t !== 'Bash'), 'mcp__weaver__*'],
+      supervise: isAction ? pilotSupervisor(asg.exec!.cwd, slug) : readOnlyMcpSupervisor(),
+      submit,
+      maxTurns: isAction || readDirs.length || Object.keys(operatorMcp.servers).length ? 80 : 30,
+      abort,
+      onMessage: (message) => {
+        tailMessage(slug, 'worker', assignmentId, message, operatorMcp.env);
+        sdkFailure.observe(message);
+        if (message.type === 'result') {
+          if (message.subtype !== 'success') resultSubtype = message.subtype;
+        }
       },
-    })) {
-      tailMessage(slug, 'worker', assignmentId, message, operatorMcp.env);
-      sdkFailure.observe(message);
-      if (message.type === 'result') {
-        sessionId = message.session_id;
-        costUsd = 'total_cost_usd' in message ? message.total_cost_usd : 0;
-        if (message.subtype !== 'success') resultSubtype = message.subtype;
-      }
+    });
+    costUsd = outcome.costUsd;
+    sessionId = outcome.sessionId;
+    if (outcome.error) {
+      // The loop failed inside the substrate: same classification path as a
+      // local throw — capture for the capacity tracker, keep the message.
+      sdkFailure.capture(new Error(outcome.error));
+      process.stderr.write(`worker ${runId} error: ${outcome.error}\n`);
+      resultSubtype = resultSubtype ?? `exception: ${outcome.error.slice(0, 80)}`;
     }
   } catch (e) {
     sdkFailure.capture(e);

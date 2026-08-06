@@ -3,15 +3,42 @@ import { describe, it, test } from 'node:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { LocalSdkExecutor } from './executor/localSdk.js';
 import {
   consumeDueWorkerInfrastructureWakes,
   finalizeWorkerRun,
   isReadOnlyMcpTool,
   isReadOnlyShellCommand,
+  selectExecutor,
 } from './worker.js';
 import { arrive, createWorkstream, load } from './store.js';
 import { virtualNow } from './clock.js';
 import type { InfrastructureWait } from './types.js';
+
+describe('executor selection', () => {
+  const withEnv = (value: string | undefined, fn: () => void) => {
+    const prev = process.env.WEAVER_EXECUTOR;
+    if (value === undefined) delete process.env.WEAVER_EXECUTOR;
+    else process.env.WEAVER_EXECUTOR = value;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env.WEAVER_EXECUTOR;
+      else process.env.WEAVER_EXECUTOR = prev;
+    }
+  };
+
+  it('unset and local-sdk both resolve to the local SDK reference executor', () => {
+    withEnv(undefined, () => assert.ok(selectExecutor() instanceof LocalSdkExecutor));
+    withEnv('local-sdk', () => assert.ok(selectExecutor() instanceof LocalSdkExecutor));
+  });
+
+  it('an unknown executor fails hard, naming the variable — never a silent local fallback', () => {
+    withEnv('managed-agents', () =>
+      assert.throws(() => selectExecutor(), /WEAVER_EXECUTOR 'managed-agents'/),
+    );
+  });
+});
 
 describe('read-only MCP gate', () => {
   it('allows retrieval methods across naming styles', () => {
