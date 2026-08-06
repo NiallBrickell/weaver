@@ -15,7 +15,7 @@ Weaver authenticates through your machine's Claude Code login — no API key. An
 ## Create a workstream
 
 ```bash
-yarn weaver create --slug fix-onboarding \
+weaver create --slug fix-onboarding \
   --title "Fix the onboarding drop-off" \
   --objective "Find why signups stall at step 3, fix it, open a PR with evidence." \
   --constraint "Research first; repo mutations only via gated actions in a fresh worktree" \
@@ -27,7 +27,7 @@ Constraints are hard rules the coordinator must respect; they're yours alone to 
 ## Steer it
 
 ```bash
-yarn weaver steer fix-onboarding "Repo is at ~/work/myapp. The funnel dashboard is in Metabase. Done = a merged-ready PR plus before/after numbers."
+weaver steer fix-onboarding "Repo is at ~/work/myapp. The funnel dashboard is in Metabase. Done = a merged-ready PR plus before/after numbers."
 ```
 
 Steering is durable human input: it wakes the workstream, the coordinator must acknowledge and act on it, and — if it *corrects* a course rather than supplying facts — it becomes a candidate policy future workstreams inherit.
@@ -35,8 +35,8 @@ Steering is durable human input: it wakes the workstream, the coordinator must a
 ## Run everything
 
 ```bash
-yarn weaver run     # resident runner: ticks all active workstreams, 10 in parallel
-yarn weaver watch   # interactive dashboard in a second terminal
+weaver run     # resident runner: ticks all active workstreams, 10 in parallel
+weaver watch   # interactive dashboard in a second terminal
 ```
 
 The runner holds no state — kill it, restart it, nothing is lost. Workstreams advance through **ticks**: readbacks → approved sends → approved actions → workers → coordinator passes, until quiescent.

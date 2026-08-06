@@ -3,7 +3,7 @@ title: "The dashboard"
 description: "The needs-you queue: every judgment call is one keypress; everything mechanical stays out of it"
 ---
 
-`yarn weaver watch` opens the interactive terminal dashboard. Its design center is a single idea: **the only turns a human should spend on a workstream are judgment calls**, so those are the first thing on screen and every one is answerable with a single keypress.
+`weaver watch` opens the interactive terminal dashboard. Its design center is a single idea: **the only turns a human should spend on a workstream are judgment calls**, so those are the first thing on screen and every one is answerable with a single keypress.
 
 ## ⚡ NEEDS YOU
 
@@ -19,9 +19,11 @@ Worker failures never appear here. A worker that flakes goes back to the coordin
 
 ## The fleet
 
-Below the queue: every workstream with a colored status dot — red `NEEDS YOU`, green `WORKING`, cyan `QUEUED` (in line for the runner), blue `WAITING` (scheduled later), dim `IDLE` — plus a spend-estimate bar, pass count, and `you N×`: how many times you've intervened. [Routines](/routines) render in their own `↻ ROUTINES` section with next-run times.
+Below the queue: every workstream with a colored status dot — red `NEEDS YOU`, cyan `WORKING`, bright-blue `QUEUED` (in line for the runner), blue `WAITING` (scheduled later), dim `IDLE`, green reserved for `DONE ✓` alone — plus a spend-estimate bar, pass count, and `you N×`: how many times you've intervened. [Routines](/routines) render in their own `↻ ROUTINES` section with next-run times.
 
 That `you N×` number is the product's scoreboard. The system is optimizing interventions-per-outcome downward — the dashboard should get *quieter per outcome* over time, and when it doesn't, that's a real signal.
+
+A `DONE` row answers "so what did it actually do?" in place: select it and its detail lines are the coordinator's conclusion — with the evidence it cites — plus the hard tallies (readback-verified actions, adopted deliverables, passes, interventions), with `i` for the full record. Outcomes live where you already are, not behind a CLI.
 
 ## Knowledge, scoped to the selection
 

@@ -17,6 +17,8 @@ The durable layer is a single typed document per workstream plus content-address
 | Replies are untrusted input | An inbound reply can wake the workstream and supply evidence; it cannot grant authority, complete work, or supersede direction by itself |
 | Summaries cannot mutate truth | A pass's summary is stored as provenance; nothing reads it back into state — the projection is rebuilt from typed collections every pass |
 | Wakes are stored data | No process sleeps; the runner discovers what became due. Kill everything, restart, nothing is lost |
+| Infrastructure outages cost waiting, not strikes | A pass failing on limits/credits/auth parks the stream behind a backoff wake and never counts toward failure escalation — and the runner notices recovery, probing the moment credentials change (every few minutes otherwise) and expediting every backed-off stream fleet-wide the instant the world heals |
+| Read access is not authority | Research workers see the operator's MCP servers behind a deterministic read-only gate and a shell limited to history-reading commands (`git log`, `gh pr view`); anything that would mutate is denied at the tool boundary and needs a gated, pilot-supervised action |
 
 ## The projection
 
