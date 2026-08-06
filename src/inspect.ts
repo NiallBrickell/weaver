@@ -478,9 +478,34 @@ export function policiesForWorkstream(policies: PolicyRecord[], doc: WorkstreamD
   );
 }
 
+/** The task card: what this stream IS, before any knowledge detail — the
+ * first question a returning human asks ("what is approvals-cleanup?") must
+ * be the first thing the page answers. */
+function taskSection(doc: WorkstreamDoc): string {
+  const ws = doc.workstream;
+  const latest = [...doc.decisions].reverse().find((d) => d.status === 'standing');
+  const open = doc.attention.filter((a) => a.status === 'open');
+  const concluded =
+    ws.status === 'done' ? [...doc.events].reverse().find((e) => e.type === 'workstream.concluded') : undefined;
+  return `<section>
+<h2>The task</h2>
+<p class="statement">${esc(ws.objective)}</p>
+${ws.successCriteria.length ? `<h3>Done when</h3><ul>${ws.successCriteria.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}
+${
+  concluded
+    ? `<h3>Outcome</h3><p>${esc(concluded.summary.replace(/^coordinator concluded the workstream:\s*/, ''))}</p>`
+    : latest
+      ? `<h3>Current course</h3><p><strong>${esc(latest.title)}</strong> — ${esc(latest.rationale)}</p>`
+      : ''
+}
+${open.length ? `<h3>Waiting on the human</h3><ul>${open.map((a) => `<li>${esc(a.summary.slice(0, 400))}</li>`).join('')}</ul>` : ''}
+</section>`;
+}
+
 export function renderWorkstreamHtml(doc: WorkstreamDoc, policies: PolicyRecord[]): string {
   const ws = doc.workstream;
   const body = [
+    taskSection(doc),
     decisionSection(doc),
     policySection(
       policiesForWorkstream(policies, doc),
@@ -493,7 +518,7 @@ export function renderWorkstreamHtml(doc: WorkstreamDoc, policies: PolicyRecord[
   ].join('\n');
   return page(
     `${ws.title} — knowledge inspector`,
-    `${ws.slug} · ${ws.status} · revision ${doc.revision} · ${doc.spend.coordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)} · objective: ${ws.objective}`,
+    `${ws.slug} · ${ws.status} · revision ${doc.revision} · ${doc.spend.coordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}`,
     body,
     // A workstream page is reachable directly (dashboard [i] on a selected
     // stream), so it always carries its own way back up to the fleet page.
