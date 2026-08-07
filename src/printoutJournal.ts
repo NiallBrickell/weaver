@@ -61,11 +61,12 @@ export function writeJournalReceipt<T extends { revision: number }>(dir: string,
   atomicWrite(path.join(dir, 'revisions', revisionName(receipt.revision)), JSON.stringify(receipt, null, 2) + '\n');
 }
 
-function changedEntities<T extends { id: string }>(
-  kind: PrintoutChange['kind'],
+/** Per-entity exact deltas, keyed by id — shared by doc receipts (below) and
+ * the backends' policy-store receipts. */
+export function changedById<T extends { id: string }>(
   before: T[],
   after: T[],
-): PrintoutChange[] {
+): { id: string; fields: PrintoutFieldDelta[] }[] {
   const old = new Map(before.map((value) => [value.id, value]));
   const next = new Map(after.map((value) => [value.id, value]));
   return [...new Set([...old.keys(), ...next.keys()])]
@@ -74,8 +75,16 @@ function changedEntities<T extends { id: string }>(
       const prior = old.get(id);
       const current = next.get(id);
       if (JSON.stringify(prior) === JSON.stringify(current)) return [];
-      return [{ kind, id, fields: diffPrintoutFields(prior, current) }];
+      return [{ id, fields: diffPrintoutFields(prior, current) }];
     });
+}
+
+function changedEntities<T extends { id: string }>(
+  kind: PrintoutChange['kind'],
+  before: T[],
+  after: T[],
+): PrintoutChange[] {
+  return changedById(before, after).map((change) => ({ kind, ...change }));
 }
 
 /**
