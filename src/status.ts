@@ -43,8 +43,17 @@ function infrastructureWaits(doc: WorkstreamDoc): {
   const nextBySummary = new Map<string, string>();
   for (const entry of Object.values(doc.capacity?.byModel ?? {})) {
     const summary = infrastructureWaitSummary(entry.wait, doc.workstream.slug);
-    summaries.add(summary);
-    const candidate = entry.wait.retryAt <= virtualNow().toISOString()
+    const due = entry.wait.retryAt <= virtualNow().toISOString();
+    // A wait whose retry has come due is no longer a current block, and saying
+    // "work is safely parked" once it has is a lie NOW must not tell: a stored
+    // wait only clears when that same model runs again (or a credential probe
+    // confirms recovery), so a wait for a model the workstream has since
+    // stopped using never clears and would claim the workstream is parked
+    // forever — while its workers run normally on another model. What remains
+    // true is stated where it belongs: NEXT carries the due reconciliation,
+    // and anything needing a human is already an open NEEDS YOU item.
+    if (!due) summaries.add(summary);
+    const candidate = due
       ? 'infrastructure retry is due now'
       : `infrastructure retry scheduled at ${entry.wait.retryAt.slice(0, 16)}`;
     const current = nextBySummary.get(summary);
