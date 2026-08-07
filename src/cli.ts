@@ -116,6 +116,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver inspect [slug]                      knowledge inspector → self-contained HTML: decision lineage, policies, interventions, adoptions, action audit
   weaver stats                               outcome scoreboard → self-contained HTML: interventions per adopted work product, approval split, policy evidence, per-workstream stats
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
+  weaver linear sweep [--label <name>]       intake sweep: 'weaver'-labeled Linear issues become workstreams, new comments become observations (deterministic; needs LINEAR_API_KEY secret)
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
   weaver run [--interval N]                  resident runner: tick every active workstream every N seconds (default 30)
@@ -461,6 +462,23 @@ async function main(): Promise<void> {
         event('observation.arrived', `${id} [${source}] ${summary}`, [id]);
       });
       process.stdout.write(`observation recorded — run: weaver tick ${slug}\n`);
+      break;
+    }
+
+    case 'linear': {
+      const sub = rest[0] ?? fail('linear subcommand required (sweep)');
+      if (sub !== 'sweep') fail(`unknown linear subcommand '${sub}' (expected sweep)`);
+      const { runLinearSweep } = await import('./linear.js');
+      const label = opt(rest, 'label');
+      const r = await runLinearSweep(label);
+      for (const c of r.created) process.stdout.write(`▶ ${c.slug} — mirrored from ${c.identifier}\n`);
+      for (const o of r.observations) process.stdout.write(`+ ${o.slug} — ${o.count} new observation(s)\n`);
+      for (const s of r.skipped) process.stdout.write(`- ${s.identifier} skipped (${s.reason})\n`);
+      if (!r.created.length && !r.observations.length && !r.skipped.length) {
+        process.stdout.write('nothing new\n');
+      } else if (r.created.length || r.observations.length) {
+        process.stdout.write(`run: weaver tick <slug> (or let the runner/routine pick them up)\n`);
+      }
       break;
     }
 

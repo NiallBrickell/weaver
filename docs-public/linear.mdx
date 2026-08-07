@@ -1,0 +1,41 @@
+---
+title: "Linear"
+description: "Label an issue `weaver` and it becomes a workstream; progress and the outcome flow back to the issue"
+---
+
+Weaver can work your Linear backlog. Put a `weaver` label on an issue and the next sweep turns it into a workstream — the issue body becomes the objective, teammates' comments arrive as evidence, and Weaver posts progress and the final outcome back to the issue before moving it to Done.
+
+## Setup
+
+Once, globally:
+
+```bash
+# a personal API key from linear.app/settings/api, value via stdin
+weaver secret set LINEAR_API_KEY
+```
+
+Then sweep on whatever cadence you like — by hand, or from the same scheduler that drives your ticks:
+
+```bash
+weaver linear sweep
+```
+
+The sweep is deterministic and cheap: no model call, one API request when nothing changed, and safe to run twice — duplicate delivery is a no-op by construction.
+
+## What syncs
+
+| Linear | Weaver |
+|---|---|
+| Issue labeled `weaver` | New workstream (issue body → objective) |
+| New comment on a mirrored issue | Observation + immediate wake |
+| Issue moved to Done/Canceled by a human | Observation asking the stream to conclude or pause |
+| Weaver's progress / questions / outcome | Comment on the issue, posted via a gated action |
+| Objective met | Issue moved to Done, confirmed by readback |
+
+Comments Weaver posts carry a `[weaver …]` marker: the sweep uses it to ignore its own posts, and readback uses it to confirm a post landed after an ambiguous result — Weaver never double-posts.
+
+## The contract underneath
+
+A mirrored issue is a normal workstream: sends and real-world acts stay behind the approval gate, every posted comment is confirmed by readback, and a teammate's comment is evidence that wakes the stream — it can steer nothing and approve nothing by itself. Closing the issue in Linear asks the workstream to reconcile; it never silently kills work in flight.
+
+Issues already Done or Canceled when labeled are skipped. To choose a different label, pass `--label <name>` or set `WEAVER_LINEAR_LABEL`.

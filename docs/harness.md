@@ -10,7 +10,7 @@ The **disposable layer** is the Claude Agent SDK. A coordinator pass ([`src/coor
 
 ## Actions: touching the real world
 
-There is no channel/adapter layer. A kind-`action` assignment is the single way anything real happens: the worker gets Bash (sandboxed to its approved `cwd`), the operator's real CLIs, and — because an approved action acts *as the operator* — the MCP servers the operator registered for the directories the action touches (`operatorMcpServers` in [`src/worker.ts`](../src/worker.ts), same stored auth as their own sessions).
+There is no outbound channel/adapter layer — intake has adapters ([Linear](./linear.md) polls issues into workstreams and observations), but a kind-`action` assignment remains the single way anything real happens: the worker gets Bash (sandboxed to its approved `cwd`), the operator's real CLIs, and — because an approved action acts *as the operator* — the MCP servers the operator registered for the directories the action touches (`operatorMcpServers` in [`src/worker.ts`](../src/worker.ts), same stored auth as their own sessions).
 
 The lifecycle enforces "the system cannot grade its own homework":
 

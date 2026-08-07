@@ -100,6 +100,7 @@ Weaver-specific — each one is a way to quietly fail the acceptance proof:
 - [`src/worker.ts`](./src/worker.ts) — fresh `query()` per assignment; `submit_result` is the worker's entire write surface.
 - [`src/engine.ts`](./src/engine.ts) — `tick`: readbacks → egress-checked sends → workers → coalesced wakes → coordinator; loops until quiescent, bounded. Sends execute here, deterministically — never inside a model run.
 - [`src/world.ts`](./src/world.ts) — the simulated provider (outbox as foreign source of truth; `WEAVER_SEND_UNKNOWN=1` chaos hook).
+- [`src/linear.ts`](./src/linear.ts) — Linear intake sweep: `weaver`-labeled issues → workstreams, comments → observations, deterministic and idempotent; outbound stays on gated actions. See [docs/linear.md](./docs/linear.md).
 - [`src/policies.ts`](./src/policies.ts) — the learning layer: global policy store scoped by workstream tags; see [docs/learning.md](./docs/learning.md).
 - [`src/clock.ts`](./src/clock.ts), [`src/status.ts`](./src/status.ts), [`src/cli.ts`](./src/cli.ts) — virtual clock (a scheduler feature, not a continuity shortcut), the five-questions view, the CLI.
 - [`demo/hiring-demo.sh`](./demo/hiring-demo.sh) — the acceptance-proof walkthrough. This script is the definition of done for harness changes.
