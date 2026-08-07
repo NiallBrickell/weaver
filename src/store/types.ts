@@ -1,6 +1,6 @@
 /**
- * The StateStore contract — the durable layer behind an async interface, so a
- * second backend (Postgres, PR 2) can implement the same semantics the fs
+ * The StateStore contract — the durable layer behind an async interface, so
+ * every backend (fs, sqlite, postgres) implements the same semantics the fs
  * store proves. Everything backend-AGNOSTIC (secrets assertion, artifact
  * redaction + hashing, arrive's bounded retry) lives in src/store.ts, NOT in a
  * backend: a backend persists bytes and enforces the revision CAS; it never
@@ -13,8 +13,9 @@
  *    by exactly one, persist atomically. The `event` helper appends to the
  *    bounded narrative tail (cap 200). `expectedRevision: undefined` is an
  *    ARRIVAL: no revision check, but the backend must serialize the whole
- *    read-modify-write region (fs: per-workstream write lock; pg: a row lock
- *    inside the writing transaction), so simultaneous arrivals all land.
+ *    read-modify-write region (fs: per-workstream write lock; sqlite: the
+ *    BEGIN IMMEDIATE database write lock; pg: a row lock inside the writing
+ *    transaction), so simultaneous arrivals all land.
  *  - Every committed head carries its exact transition: the backend persists
  *    a printout mutation receipt (revision, changed fields, emitted events)
  *    to this machine's printout journal BEFORE the head write, so an
