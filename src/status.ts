@@ -7,6 +7,8 @@ import type { WorkstreamDoc } from './types.js';
 import { virtualNow } from './clock.js';
 import { infrastructureWaitSummary } from './capacity.js';
 
+const MANAGES_SHOWN_MAX = 5;
+
 const LINE_MAX = 300;
 
 function clip(s: string): string {
@@ -64,7 +66,15 @@ function infrastructureWaits(doc: WorkstreamDoc): {
   return { summaries: [...summaries], next: [...nextBySummary.values()] };
 }
 
-export function renderStatus(doc: WorkstreamDoc): string {
+/**
+ * `manages` is computed by the caller (a fleet-wide `listManagedBy` scan;
+ * see store.ts) and passed in so this render stays a pure function of one
+ * doc, testable without a WEAVER_HOME fleet. Flat one-liners only, never a
+ * tree: this workstream's own `managedBy` pointer, and its own single-level
+ * `manages` list — never a manager's manager, never a managed stream's own
+ * managed streams.
+ */
+export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status: string }[] = []): string {
   const ws = doc.workstream;
   const out: string[] = [];
   out.push(`# ${ws.title} (${ws.slug}) — ${ws.status}`);
@@ -73,6 +83,14 @@ export function renderStatus(doc: WorkstreamDoc): string {
     `Virtual now: ${virtualNow().toISOString()} · revision ${doc.revision} · ` +
       `${doc.spend.coordinatorPasses}/${ws.budget.maxCoordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}/$${ws.budget.maxCostUsd.toFixed(2)} · ${doc.spend.humanInterventions ?? 0} human interventions`,
   );
+  if (ws.managedBy) {
+    out.push(`Managed by: ${ws.managedBy.slug} (since ${ws.managedBy.sinceVirtual.slice(0, 16)})`);
+  }
+  if (manages.length) {
+    const shown = manages.slice(0, MANAGES_SHOWN_MAX).map((m) => `${m.slug} (${m.status})`).join(', ');
+    const more = manages.length > MANAGES_SHOWN_MAX ? ` +${manages.length - MANAGES_SHOWN_MAX} more` : '';
+    out.push(`Manages: ${manages.length} workstream(s): ${shown}${more}`);
+  }
   out.push('');
 
   // NOW

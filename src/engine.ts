@@ -114,6 +114,90 @@ async function resolveUnknownSends(slug: string): Promise<number> {
 }
 
 /**
+ * Deliver notices to this workstream's manager (if any), unconditionally,
+ * every tick cycle — never gated on this workstream's own status, so a
+ * conclude that flips status to 'done' still gets its 'finished' notice
+ * delivered within the SAME tick. Candidates are re-derived from durable
+ * facts (conclusion, open blocker/budget attention) on every call rather than
+ * consumed from a queue, so a crash between conclude and delivery is repaired
+ * by any later tick — the same shape as `recoverCrashedAttempts` and the
+ * coordinator's quiescence backstop, reused rather than reinvented.
+ *
+ * 'review'/'approval'/'capacity' attention is excluded on purpose: those are
+ * the managed stream's own gate (or self-resolving), not the manager's
+ * business — including them would wake-storm the manager on routine noise.
+ *
+ * A missing or unreadable manager doc is a no-op that never blocks the
+ * managed stream: management is a one-way pointer, not a dependency.
+ */
+export async function deliverManagerNotices(slug: string): Promise<number> {
+  const doc = await load(slug);
+  const managedBy = doc.workstream.managedBy;
+  if (!managedBy) return 0;
+  let managerDoc: WorkstreamDoc;
+  try {
+    managerDoc = await load(managedBy.slug);
+  } catch {
+    return 0;
+  }
+  const existingKeys = new Set((managerDoc.managerNotices ?? []).map((n) => n.dedupKey));
+  const candidates: { dedupKey: string; kind: 'finished' | 'needs_attention'; summary: string; refId?: string }[] = [];
+  if (doc.workstream.conclusion) {
+    const dedupKey = `finished:${doc.workstream.conclusion.passId}`;
+    if (!existingKeys.has(dedupKey)) {
+      candidates.push({
+        dedupKey,
+        kind: 'finished',
+        summary: `${slug} concluded: ${doc.workstream.conclusion.summary.slice(0, 200)}`,
+        refId: doc.workstream.conclusion.passId,
+      });
+    }
+  }
+  for (const att of doc.attention) {
+    if (att.status !== 'open' || (att.kind !== 'blocker' && att.kind !== 'budget')) continue;
+    const dedupKey = `attention:${att.id}`;
+    if (existingKeys.has(dedupKey)) continue;
+    candidates.push({
+      dedupKey,
+      kind: 'needs_attention',
+      summary: `${slug} needs attention [${att.kind}]: ${att.summary.slice(0, 200)}`,
+      refId: att.id,
+    });
+  }
+  if (!candidates.length) return 0;
+  let delivered = 0;
+  await arrive(managedBy.slug, (d, event) => {
+    d.managerNotices = d.managerNotices ?? [];
+    // Re-check under the write lock: a concurrent delivery (or a repeat call
+    // within the same bounded tick loop) must not double-insert.
+    const already = new Set(d.managerNotices.map((n) => n.dedupKey));
+    for (const c of candidates) {
+      if (already.has(c.dedupKey)) continue;
+      d.managerNotices.push({
+        id: newId('note'),
+        dedupKey: c.dedupKey,
+        kind: c.kind,
+        fromWorkstreamSlug: slug,
+        summary: c.summary,
+        ...(c.refId ? { refId: c.refId } : {}),
+        receivedAtVirtual: virtualNow().toISOString(),
+      });
+      delivered++;
+    }
+    if (!delivered) return;
+    d.wakes.push({
+      id: newId('wake'),
+      reason: `notice(s) received from managed workstream ${slug}`,
+      condition: { type: 'immediate' },
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+    event('manager.notice_received', `${delivered} notice(s) from ${slug}`, []);
+  });
+  return delivered;
+}
+
+/**
  * Route gated actions through the operator's PILOT daemon — their existing,
  * human-owned approval policy engine (settings replay → deterministic rules →
  * small-model evaluator). Every command the action declares (exec.run, or the
@@ -519,6 +603,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
 
     if ((await recoverCrashedAttempts(slug)) > 0) progressed = true;
     if ((await pilotApproveGatedActions(slug)) > 0) progressed = true;
+    if ((await deliverManagerNotices(slug)) > 0) progressed = true;
     report.unknownsResolved += await resolveUnknownSends(slug);
     const sent = await executeApprovedSends(slug);
     report.sendsExecuted += sent;
