@@ -31,10 +31,15 @@ function lastPassEnd(doc: WorkstreamDoc): string | undefined {
   return undefined;
 }
 
+/** Live status of the workstreams this one manages — one level, never a tree.
+ * Derived by the caller (listManagedBy) so the builder stays pure over the doc. */
+export type ManagedChild = { slug: string; status: WorkstreamDoc['workstream']['status'] };
+
 export function buildProjection(
   doc: WorkstreamDoc,
   wakeReasons: string[],
   policies: PolicyRecord[] = [],
+  managed: ManagedChild[] = [],
 ): string {
   const ws = doc.workstream;
   const now = virtualNow().toISOString();
@@ -158,6 +163,7 @@ export function buildProjection(
       : '';
     return `${i.id} [${i.status}] ${i.kind} to ${i.to} "${i.subject}" draft=${i.deliverableId}${i.pinnedHash ? ` pinned=${i.pinnedHash.slice(0, 8)}` : ''}${replies}`;
   });
+  const managedActive = managed.filter((m) => m.status === 'active');
   const unconsumedDirections = (doc.managerDirections ?? []).filter((d) => !d.consumedByPass);
   const unacknowledgedNotices = [...(doc.managerNotices ?? [])].slice(-15);
   const s6 = [
@@ -176,6 +182,14 @@ export function buildProjection(
       unacknowledgedNotices.map((n) => `${n.id} [${n.kind}] from ${n.fromWorkstreamSlug}: ${n.summary}`),
       'none',
     ),
+    ``,
+    // Notices above are a TAIL of things that happened; this is the current
+    // position. A manager deciding how much more to take on must read that
+    // count from typed state, never reconstruct it from the notice history or
+    // from what it believes it started — the same rule that keeps a summary
+    // from becoming truth. One level only: children of children never appear.
+    `Workstreams you manage (${managedActive.length} of ${managed.length} still running — this count is authoritative, do not infer it from the notices above):`,
+    fmtList(managed.map((m) => `${m.slug} [${m.status}]`), 'none'),
     ``,
     `Interactions:`,
     fmtList(intLines, 'none'),
