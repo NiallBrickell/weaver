@@ -32,7 +32,7 @@ export const HOUSE_CONSTRAINTS = [
  * ~/work/erdo with a regular worker, but a named repo skips that pass.
  * Maintained by hand; keep entries to what a task message might mean.
  */
-export const REPO_MAP = `Known repos under /Users/niall/work/erdo (grant read access to the parent dir to search across them):
+export const REPO_MAP = `Known repos under /Users/niall/work/erdo (supply the parent dir as worker context to search across them):
 - erdo — the main product: Encore Go backend (backend/), Next.js frontend (frontend/), e2e tests, evals. Default guess for product features, uploads, threads, approvals, integrations, accounts.
 - maurice — leads/growth engine: lead capture, enrichment, brand-style skills, growth experiments, landing pages.
 - devbot — the PR-review bot (deployed on Railway, api devbot.erdo.ai).
