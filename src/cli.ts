@@ -10,6 +10,7 @@ import {
   arrive,
   closeStore,
   createWorkstream,
+  findBySourceKey,
   listManagedBy,
   listWorkstreams,
   load,
@@ -87,7 +88,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver do ["<message>"] ["<done means>"]   start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied. Optional 2nd arg overrides the done-bar (e.g. "verified live on the web post-merge, read-only")
                                              NO ARGS = interactive: type/paste a multiline message, finish with Ctrl-D or a "." line — the safe path for long messages ($, quotes, newlines survive verbatim)
   weaver ask "<question>"                    interrogate the fleet's history: "did anything pick up X?", "what happened with Y?", "why wasn't Z done?" — answers cite decisions/events/deliverables from recorded state (read-only)
-  weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--max-passes N] [--max-cost USD]
+  weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--source-key <k>] [--max-passes N] [--max-cost USD]
   weaver list
   weaver status <slug>
   weaver capacity retry <slug> [--model <model>]   make a parked provider wait due after you change Claude-side usage/auth settings; does not change billing or identity
@@ -184,10 +185,19 @@ async function main(): Promise<void> {
       const slug = opt(rest, 'slug') ?? fail('--slug required');
       const title = opt(rest, 'title') ?? fail('--title required');
       const objective = opt(rest, 'objective') ?? fail('--objective required');
+      // A stream created by hand for something that also exists in a tracker
+      // carries the same key an intake stream would spawn it under, so the
+      // two can never both create it.
+      const sourceKey = opt(rest, 'source-key');
+      if (sourceKey) {
+        const existing = await findBySourceKey(sourceKey);
+        if (existing) fail(`'${existing}' already stands for ${sourceKey}`);
+      }
       const doc = await createWorkstream({
         slug,
         title,
         objective,
+        ...(sourceKey ? { sourceKey } : {}),
         tags: optAll(rest, 'tag'),
         successCriteria: optAll(rest, 'success'),
         constraints: optAll(rest, 'constraint'),

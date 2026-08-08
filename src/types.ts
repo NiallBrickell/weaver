@@ -417,6 +417,11 @@ export interface WorkstreamCore {
   objective: string;
   /** Scope tags — learned policies match workstreams sharing at least one. */
   tags: string[];
+  /** Stable identity of the external thing this workstream exists for, e.g.
+   * `linear:<issue-uuid>`. It is the idempotency key for spawning: intake is
+   * at-least-once by nature, so "has this already become a workstream?" must
+   * be answerable from typed state rather than from a model's recollection. */
+  sourceKey?: string;
   successCriteria: string[];
   constraints: string[];
   autonomy: {
@@ -428,7 +433,7 @@ export interface WorkstreamCore {
     maxCostUsd: number;
   };
   status: 'active' | 'paused' | 'done';
-  /** Set only by create_managed_workstream; absent means unmanaged. */
+  /** Set only by create_workstream; absent means unmanaged. */
   managedBy?: ManagedBy;
   /** Durable outcome claim and its cited typed evidence. The referenced facts
    * remain the authority; this prose cannot make an unverified act real. */

@@ -3,7 +3,7 @@
  * no network, no SDK run anywhere in this file (testing discipline ported
  * from the relay experiment — model quality must never decide whether a
  * durability test passes). The coordinator's three MCP tools
- * (create/inspect/direct_managed_workstream) are thin wrappers over the pure
+ * (create/inspect/direct_workstream) are thin wrappers over the pure
  * functions in managedWorkstreams.ts tested directly here, the same pattern
  * as conclusion.ts's `conclusionEvidenceLabels` (see printout.test.ts).
  */
@@ -75,7 +75,7 @@ beforeEach(() => {
 
 // ---------------------------------------------------------------------------
 
-test('create_managed_workstream builds the new doc only from explicit tool args', async () => {
+test('create_workstream builds the new doc only from explicit tool args', async () => {
   await makeWorkstream('mgr-a');
   // Give the manager doc decisions/events so leakage would be detectable.
   await arrive('mgr-a', (d, event) => {
@@ -257,7 +257,7 @@ test('notice delivery survives a crash between conclude and delivery', async () 
   assert.equal(notices[0]!.dedupKey, 'finished:pass_crash');
 });
 
-test('direct_managed_workstream never increments humanInterventions on either doc', async () => {
+test('direct_workstream never increments humanInterventions on either doc', async () => {
   await makeWorkstream('dir-mgr');
   await makeManaged('dir-mgr', 'dir-child');
 
@@ -275,7 +275,7 @@ test('direct_managed_workstream never increments humanInterventions on either do
   assert.equal(after.child, 0);
 });
 
-test('direct_managed_workstream refuses a slug the caller does not manage', async () => {
+test('direct_workstream refuses a slug the caller does not manage', async () => {
   await makeWorkstream('unrel-a');
   await makeWorkstream('unrel-b'); // independent — NOT managed by unrel-a
 
