@@ -143,6 +143,15 @@ export async function resolveAttention(slug: string, attId: string, note = ''): 
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
     const ids = twins.map((t) => t.id);
     event('attention.resolved', `${actor()} resolved ${ids.join(', ')}${note ? `: ${note}` : ''}`, ids);
+    // For blocker/budget cards the resolution IS the unblock signal, and it
+    // may be the stream's only remaining lifeline: a strike-tripled stream has
+    // no pending wakes, and its open card suppresses the quiescence backstop —
+    // resolving without waking would strand it forever. Approval/review/
+    // capacity cards are settled by acts that already wake (approve, reject,
+    // steer, capacity retry), so they stay wake-free here.
+    if (att.kind === 'blocker' || att.kind === 'budget') {
+      wake(d, `${att.kind} ${attId} resolved by ${actor()}${note ? `: ${note.slice(0, 120)}` : ''} — reconcile`);
+    }
   });
 }
 
