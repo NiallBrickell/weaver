@@ -1,6 +1,6 @@
 /**
  * The WorkerExecutor seam: where a worker's model loop runs is a substrate
- * choice; what it is allowed to do never is.
+ * choice; its durable Workstream contract does not change with the substrate.
  *
  * The executor owns the DISPOSABLE part of a worker run — the model loop and
  * normal coding-agent tool plumbing. The harness keeps the DURABLE part: it
@@ -47,9 +47,9 @@ export interface SubmitResultArgs {
 }
 
 /**
- * The worker's ENTIRE write surface, implemented by the harness. Section
+ * The worker's Weaver submission API, implemented by the harness. Section
  * accumulation, the stub refusal, secret redaction, artifact persistence, the
- * submission record, and the completion wake all live behind these two calls —
+ * submission record, and the completion wake all live behind these two calls;
  * the executor only relays arguments in and replies out.
  */
 export interface SubmitSurface {
@@ -115,7 +115,7 @@ export interface WorkerExecutionRequest {
  * What the harness records from a run — exactly the facts worker.ts has always
  * kept on the attempt. Whether a submission happened is NOT reported here: the
  * harness knows that from its own `submit` closure, so an executor cannot
- * claim a submission that never went through the write surface.
+ * claim a submission that never went through the harness submission API.
  */
 export interface WorkerExecutionOutcome {
   costUsd: number;

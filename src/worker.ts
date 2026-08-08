@@ -278,8 +278,9 @@ export async function runWorker(
   // executor's env, never durable state — whatever substrate ran the loop.
   const redactionSecrets = { ...secrets, ...operatorMcp.env };
 
-  // The worker's entire write surface, kept in the harness: whatever substrate
-  // runs the model loop, these closures are the only path into durable state.
+  // The Weaver submission surface stays in the harness: whatever substrate
+  // runs the model loop, only these closures can propose a submission through
+  // Weaver's API. Process containment itself belongs to that substrate.
   const submit: SubmitSurface = {
     async appendSection(content): Promise<SubmitReply> {
       if (submitted) return { text: 'already submitted — stop', isError: true };
