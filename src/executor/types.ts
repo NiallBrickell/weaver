@@ -1,31 +1,25 @@
 /**
  * The WorkerExecutor seam: where a worker's model loop runs is a substrate
- * choice; what it is allowed to do never is.
+ * choice; its durable Workstream contract does not change with the substrate.
  *
- * The executor owns the DISPOSABLE part of a worker run — the model loop, the
- * tool plumbing, the sandbox it executes in. The harness keeps the DURABLE
- * part and ALL authority: it builds the brief, decides the tool ceilings,
- * loads the secrets, records the attempt, and — critically — supplies the two
- * callbacks below. An executor cannot widen a worker's write surface because
- * the write surface is not something it constructs: `submit` is the ONLY path
- * into durable state, `supervise` is the ONLY authority over live tool calls,
- * and both are closures owned by the harness. An executor that ignores
- * `supervise` can at worst run tools the substrate itself exposes — it still
- * cannot touch a workstream except through `submit`.
+ * The executor owns the DISPOSABLE part of a worker run — the model loop and
+ * normal coding-agent tool plumbing. The harness keeps the DURABLE part: it
+ * builds the brief, loads action secrets, records the attempt, and supplies
+ * the submit callback. `submit` is the only harness API a worker receives for
+ * proposing Workstream state through the harness. The launch substrate, not
+ * Weaver, owns process containment for ordinary workers in this MVP.
  */
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
-/** Harness verdict on one live tool call. Deterministic or pilot-judged, always fail-closed. */
+/** Harness verdict on one live tool call for an explicitly declared action. */
 export type ToolDecision =
   | { behavior: 'allow'; updatedInput: Record<string, unknown> }
   | { behavior: 'deny'; message: string };
 
 /**
- * Live per-call supervision, provided BY the harness: the pilot daemon for
- * action workers, the deterministic read-only gate for research workers. The
- * executor must route every non-auto-allowed tool call through this before
- * executing it, with the same inputs the model supplied.
+ * Live per-call supervision supplied by the harness for action workers. An
+ * ordinary worker uses the host's normal Claude Code permissions instead.
  */
 export type ToolSupervisor = (
   toolName: string,
@@ -53,9 +47,9 @@ export interface SubmitResultArgs {
 }
 
 /**
- * The worker's ENTIRE write surface, implemented by the harness. Section
+ * The worker's Weaver submission API, implemented by the harness. Section
  * accumulation, the stub refusal, secret redaction, artifact persistence, the
- * submission record, and the completion wake all live behind these two calls —
+ * submission record, and the completion wake all live behind these two calls;
  * the executor only relays arguments in and replies out.
  */
 export interface SubmitSurface {
@@ -66,31 +60,38 @@ export interface SubmitSurface {
 }
 
 /**
- * One fully-specified worker run. Every field that carries authority (tool
- * ceilings, auto-allow list, cwd confinement, sandbox, env, the callbacks) is
- * computed by the harness before the executor ever sees the request — the
- * executor's job is to run exactly this, not to decide any of it.
+ * One fully-specified worker run. The executor's job is to run this request,
+ * not reinterpret the assignment or manufacture durable state.
  */
 export interface WorkerExecutionRequest {
   workstreamSlug: string;
   assignmentId: string;
   /** The complete brief: objective, briefing, acceptance criteria, secret NAMES, declared inputs. */
   prompt: string;
-  /** The worker behavior contract — identical across substrates. */
-  systemPrompt: string;
+  /** Normal Claude Code behavior plus Weaver's bounded-assignment contract. */
+  systemPrompt: {
+    type: 'preset';
+    preset: 'claude_code';
+    append: string;
+  };
   model: string;
-  /** Base tool ceiling for the loop (e.g. Bash/Read/Grep/Glob/Write/Edit, or none). */
-  tools: string[];
-  /** Tools that bypass live supervision (the submit surface; read-only file
-   * tools for research workers). Everything else must hit `supervise`. */
+  /** Ordinary workers use the complete Claude Code tool preset. */
+  tools: { type: 'preset'; preset: 'claude_code' };
+  /** Harness tools that never need a permission round trip. */
   allowedTools: string[];
+  /** Ordinary workers run as normal unattended Code sessions; declared
+   * actions retain Pilot's per-call supervision. */
+  permissionMode: 'bypassPermissions' | 'default';
+  /** Filesystem settings loaded by the SDK. Ordinary workers inherit Code's
+   * normal settings; actions use only the explicitly supplied MCP surface so
+   * a local allow rule cannot skip Pilot. */
+  settingSources: Array<'user' | 'project' | 'local'>;
+  strictMcpConfig: boolean;
   maxTurns: number;
-  /** Working directory (action cwd, or first read dir); unset for dir-less research. */
+  /** Working directory (action cwd, first declared source, or process cwd). */
   cwd?: string;
-  /** Additional readable directories; meaningful only when cwd is set. */
+  /** Additional source/working directories; meaningful only when cwd is set. */
   additionalDirectories: string[];
-  /** Confine the loop's shell to cwd at the OS level (action workers unless overridden). */
-  sandbox: boolean;
   /** Subprocess environment, already secret-injected and API-key-stripped by
    * the harness — including the ephemeral env placeholders that carry MCP
    * header credentials (secureMcpHeaderCredentials keeps the values out of
@@ -101,7 +102,8 @@ export interface WorkerExecutionRequest {
    * header credential values are already replaced with env expansions whose
    * values ride `env` above. */
   operatorMcpServers: Record<string, unknown>;
-  supervise: ToolSupervisor;
+  /** Present only for declared actions; every non-auto-allowed call hits Pilot. */
+  supervise?: ToolSupervisor;
   submit: SubmitSurface;
   /** Harness-armed kill switch (the sleep-aware wall). */
   abort: AbortController;
@@ -113,7 +115,7 @@ export interface WorkerExecutionRequest {
  * What the harness records from a run — exactly the facts worker.ts has always
  * kept on the attempt. Whether a submission happened is NOT reported here: the
  * harness knows that from its own `submit` closure, so an executor cannot
- * claim a submission that never went through the write surface.
+ * claim a submission that never went through the harness submission API.
  */
 export interface WorkerExecutionOutcome {
   costUsd: number;

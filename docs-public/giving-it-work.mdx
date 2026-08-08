@@ -31,7 +31,7 @@ A feature, a migration, a redesign — work whose deliverable is a diff. The obj
 weaver create --slug lead-follow-up \
   --title "Follow up with new leads by email" \
   --objective "When a lead submits the form, send a follow-up email with a scheduling link. Design it, build it, open a PR with before/after evidence." \
-  --constraint "Repo mutations only via gated actions in a fresh worktree" \
+  --constraint "Repository work happens in a fresh worktree; opening, merging, and deploying remain gated actions" \
   --constraint "Open pull requests only — merging is the founder's act"
 ```
 
@@ -53,9 +53,9 @@ A hiring pipeline, a growth experiment, an outreach sequence — work where the 
 
 Whatever the shape, Weaver keeps responsibility while the outcome moves through the same stages:
 
-1. **Understand the next piece** (`WORKING`). A fresh worker researches without changing the world and submits what it found.
+1. **Understand the next piece** (`WORKING`). A fresh regular Code worker investigates the bounded assignment and submits what it found.
 2. **Do and review it.** The coordinator checks the submission against its acceptance criteria, accepts or rejects it, records the chosen course, and dispatches the next bounded assignment. One worker finishing does not hand the outcome back to you.
-3. **Change the world through Pilot.** A worktree, pull request, send, or API call is a separate action. [Pilot](https://github.com/NiallBrickell/pilot) approves routine-safe commands inside the live run; anything with real blast radius arrives on your [needs-you queue](/dashboard). Your constraints remain hard ceilings.
+3. **Change the world through Pilot.** Opening or merging a pull request, deploying, sending, or mutating a remote service is a separate action. [Pilot](https://github.com/NiallBrickell/pilot) approves routine-safe commands inside the live run; anything with real blast radius arrives on your [needs-you queue](/dashboard). Your constraints remain hard ceilings.
 4. **Confirm the effect.** A deterministic check, run with no model in the loop, verifies what actually happened outside Weaver. A model saying "done" is not evidence. See [Actions](/actions).
 5. **Wait and resume** (`WAITING`). The workstream records what it is waiting for — a reply, a scheduled wake, your verdict — and everything exits. A fresh coordinator resumes from that position when the wake condition arrives.
 6. **Finish only at the done-bar.** Weaver closes the workstream when the whole outcome is evidenced, not when an agent produced the first plausible work product.

@@ -7,13 +7,13 @@ import { LocalSdkExecutor } from './executor/localSdk.js';
 import {
   consumeDueWorkerInfrastructureWakes,
   finalizeWorkerRun,
-  isReadOnlyMcpTool,
-  isReadOnlyShellCommand,
+  runWorker,
   selectExecutor,
 } from './worker.js';
 import { arrive, createWorkstream, load } from './store.js';
 import { virtualNow } from './clock.js';
 import type { InfrastructureWait } from './types.js';
+import type { WorkerExecutionRequest, WorkerExecutor } from './executor/types.js';
 
 describe('executor selection', () => {
   const withEnv = (value: string | undefined, fn: () => void) => {
@@ -40,86 +40,146 @@ describe('executor selection', () => {
   });
 });
 
-describe('read-only MCP gate', () => {
-  it('allows retrieval methods across naming styles', () => {
-    for (const name of [
-      'mcp__axiom__queryDataset',
-      'mcp__axiom__getDatasetFields',
-      'mcp__axiom__listDashboards',
-      'mcp__axiom__checkMonitors',
-      'mcp__axiom__exportDashboard',
-      'mcp__sentry__search_issues',
-      'mcp__sentry__find_organizations',
-      'mcp__sentry__get_sentry_resource',
-      'mcp__posthog__query', // bare verb, no suffix
-      'mcp__claude_ai_Gmail__search_emails', // server name containing underscores
-    ]) {
-      assert.equal(isReadOnlyMcpTool(name), true, name);
-    }
-  });
+test('a research assignment runs as a regular full-capability Code worker', async () => {
+  const home = workerHome();
+  const readDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-research-source-'));
+  let request: WorkerExecutionRequest | undefined;
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      request = req;
+      const reply = await req.submit.submitResult({
+        summary: 'Grounded evidence gathered with the regular coding-agent surface.',
+        artifact: {
+          title: 'Research evidence',
+          kind: 'report',
+          file_name: 'research-evidence.md',
+          content: `# Research evidence\n\n${'Verified evidence from the declared source directory. '.repeat(6)}`,
+        },
+      });
+      assert.equal(reply.isError, undefined);
+      return { costUsd: 0.25, sessionId: 'fake-research-session' };
+    },
+  };
 
-  it('denies mutating and ambiguous methods', () => {
-    for (const name of [
-      'mcp__axiom__createMonitor',
-      'mcp__axiom__updateDashboard',
-      'mcp__axiom__deleteNotifier',
-      'mcp__sentry__update_issue',
-      'mcp__sentry__execute_sentry_tool', // dispatcher that can reach writes
-      'mcp__claude_ai_Gmail__send_email',
-      'mcp__claude_ai_Attio__authenticate',
-      'mcp__anything__gettysburg_address', // read verb as a mere prefix
-    ]) {
-      assert.equal(isReadOnlyMcpTool(name), false, name);
-    }
-  });
+  try {
+    await createWorkstream({
+      slug: 'worker-research-surface',
+      title: 'worker-research-surface',
+      objective: 'test the complete research worker request',
+      tags: [],
+      successCriteria: [],
+      constraints: [],
+      autonomy: { sendsRequireApproval: true },
+      budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+    });
+    await arrive('worker-research-surface', (d) => d.assignments.push({
+      id: 'asg_research',
+      objective: 'inspect recorded engineering decisions',
+      briefing: 'Read the declared repository and report grounded evidence.',
+      kind: 'research',
+      readDirs: [readDir],
+      acceptanceCriteria: ['cite the source'],
+      dependsOn: [],
+      state: 'queued',
+      attempts: [],
+      adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
 
-  it('denies non-MCP tool names outright', () => {
-    assert.equal(isReadOnlyMcpTool('Bash'), false);
-    assert.equal(isReadOnlyMcpTool('Write'), false);
-    assert.equal(isReadOnlyMcpTool('mcp__broken'), false);
-  });
+    await runWorker('worker-research-surface', 'asg_research', executor);
+
+    assert.ok(request);
+    assert.deepEqual(request.tools, { type: 'preset', preset: 'claude_code' });
+    assert.deepEqual(request.systemPrompt.type, 'preset');
+    assert.match(request.systemPrompt.append, /normal coding tools/);
+    assert.match(request.systemPrompt.append, /Bash, file editing, web access/);
+    assert.equal(request.cwd, readDir);
+    assert.deepEqual(request.additionalDirectories, [readDir]);
+    assert.ok(request.prompt.includes(`- ${readDir}`));
+    assert.equal(request.permissionMode, 'bypassPermissions');
+    assert.deepEqual(request.settingSources, ['user', 'project', 'local']);
+    assert.equal(request.strictMcpConfig, false);
+    assert.equal(request.supervise, undefined);
+
+    const doc = await load('worker-research-surface');
+    const assignment = doc.assignments[0]!;
+    assert.equal(assignment.state, 'awaiting_review');
+    assert.equal(assignment.adoption.state, 'proposed');
+    assert.equal(assignment.attempts[0]!.costUsd, 0.25);
+    assert.equal(assignment.attempts[0]!.sessionId, 'fake-research-session');
+    assert.equal(doc.deliverables.length, 1);
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(readDir, { recursive: true, force: true });
+  }
 });
 
-describe('read-only shell gate', () => {
-  it('allows plain history-reading commands', () => {
-    for (const cmd of [
-      'git log --oneline -20',
-      'git log -S chain_0 -- backend/middleware/',
-      'git -C /Users/niall/work/projects/acme show 439519e1b',
-      'git --no-pager diff HEAD~3 -- docs/',
-      'git blame backend/middleware/middleware.go -L 100,140',
-      'git grep -n handleError',
-      'gh pr view 1683 --comments',
-      'gh pr list --state merged --search axiom',
-      'gh issue view 42',
-      'gh search prs error chain --repo NiallBrickell/acme',
-      'gh run view 123456',
-    ]) {
-      assert.equal(isReadOnlyShellCommand(cmd), true, cmd);
-    }
-  });
+test('a declared action uses the same Code surface with Pilot supervision', async () => {
+  const home = workerHome();
+  const actionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-action-worker-'));
+  let request: WorkerExecutionRequest | undefined;
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      request = req;
+      const reply = await req.submit.submitResult({
+        summary: 'The approved action was attempted and is ready for deterministic readback.',
+        artifact: {
+          title: 'Action report',
+          kind: 'report',
+          file_name: 'action-report.md',
+          content: `# Action report\n\n${'Exact action execution evidence for the engine readback. '.repeat(6)}`,
+        },
+      });
+      assert.equal(reply.isError, undefined);
+      return { costUsd: 0.1, sessionId: 'fake-action-session' };
+    },
+  };
 
-  it('denies mutation, chaining, redirection, and output flags', () => {
-    for (const cmd of [
-      'git push origin main',
-      'git commit -m x',
-      'git checkout -b evil',
-      'gh pr merge 5 --squash',
-      'gh pr create --title x',
-      'gh api -X POST /repos/x/y/issues',
-      'git log; rm -rf /',
-      'git log && git push',
-      'git log | tee /tmp/x',
-      'git log > /tmp/x',
-      'git log $(whoami)',
-      'git log `whoami`',
-      'git format-patch --output=/tmp/x HEAD~1',
-      'rm -rf /',
-      'curl https://example.com',
-    ]) {
-      assert.equal(isReadOnlyShellCommand(cmd), false, cmd);
-    }
-  });
+  try {
+    await createWorkstream({
+      slug: 'worker-action-surface',
+      title: 'worker-action-surface',
+      objective: 'test the declared action request',
+      tags: [],
+      successCriteria: [],
+      constraints: [],
+      autonomy: { sendsRequireApproval: true },
+      budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+    });
+    await arrive('worker-action-surface', (d) => d.assignments.push({
+      id: 'asg_action',
+      objective: 'perform one approved external action',
+      briefing: 'Perform only the approved act and report its exact result.',
+      kind: 'action',
+      acceptanceCriteria: ['report exact evidence'],
+      dependsOn: [],
+      state: 'queued',
+      attempts: [],
+      adoption: { state: 'none' },
+      exec: {
+        cwd: actionDir,
+        verify: 'true',
+        approval: { by: 'human', at: new Date().toISOString() },
+      },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await runWorker('worker-action-surface', 'asg_action', executor);
+
+    assert.ok(request);
+    assert.deepEqual(request.tools, { type: 'preset', preset: 'claude_code' });
+    assert.equal(request.permissionMode, 'default');
+    assert.deepEqual(request.settingSources, []);
+    assert.equal(request.strictMcpConfig, true);
+    assert.equal(typeof request.supervise, 'function');
+    assert.equal(request.cwd, actionDir);
+    assert.match(request.systemPrompt.append, /human-approved real-world ACTION/);
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(actionDir, { recursive: true, force: true });
+  }
 });
 
 function workerHome(): string {

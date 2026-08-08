@@ -16,7 +16,7 @@ import { workerModel } from './worker.js';
 
 /** Standing rules applied to every stream this entry point creates. */
 export const HOUSE_CONSTRAINTS = [
-  'Research first with side-effect-free workers; any repo mutation happens only via a gated action inside a fresh git worktree under /Users/niall/work/projects/workspace (branch from origin/main) — never in the user\'s checkouts',
+  'Research first; every worker has the normal Claude Code toolset. Repository investigation and implementation happen in a fresh git worktree under /Users/niall/work/projects/workspace (branch from origin/main) — never in the user\'s checkouts. Opening or merging a PR, deploying, sending, or mutating a remote service remains a gated action',
   'Heavy commands (encore test, go build ./..., yarn build:check) must run through /Users/niall/work/projects/acme-development/scripts/with-heavy-lock.sh; prefer targeted package tests over full sweeps',
   'PR lifecycle on acme org repos: open the PR, never ask the human to review it — DevBot reviews via COMMENTS (it never submits GitHub approvals). Poll via gh on scheduled wakes; address every concrete issue. When DevBot\'s latest completed review reports zero concrete issues AND CI is green, merge yourself via exec_run (gh pr merge N --squash --repo NiallBrickell/<repo>), readback-confirmed',
   'Database access goes through the encore CLI — never paste connection strings into prompts, state, or artifacts; reference credentials as $NAME (the engine injects values)',
@@ -29,10 +29,10 @@ export const HOUSE_CONSTRAINTS = [
  * The machine's repo map, injected into derivation so a one-liner that only
  * implies its repo ("the leads UI", "the upload composer") still expands to
  * an objective that NAMES it. Coordinators can always fall back to scouting
- * ~/work/acme with a read-only worker, but a named repo skips that pass.
+ * ~/work/acme with a regular worker, but a named repo skips that pass.
  * Maintained by hand; keep entries to what a task message might mean.
  */
-export const REPO_MAP = `Known repos under /Users/niall/work/projects (grant read access to the parent dir to search across them):
+export const REPO_MAP = `Known repos under /Users/niall/work/projects (supply the parent dir as worker context to search across them):
 - acme — the main product: Encore Go backend (backend/), Next.js frontend (frontend/), e2e tests, evals. Default guess for product features, uploads, threads, approvals, integrations, accounts.
 - maurice — leads/growth engine: lead capture, enrichment, brand-style skills, growth experiments, landing pages.
 - devbot — the PR-review bot (deployed on Railway, api devbot.example.com).
@@ -130,6 +130,8 @@ async function deriveWithModel(message: string, taken: Set<string>, done?: strin
         tools: [],
         allowedTools: [],
         permissionMode: 'dontAsk',
+        settingSources: [],
+        strictMcpConfig: true,
         maxTurns: 1,
         persistSession: false,
         env: sdkEnv(),

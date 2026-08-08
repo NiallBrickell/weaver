@@ -1,9 +1,9 @@
 ---
 title: "Actions"
-description: "The one way anything real happens: gated, executed with real tools, confirmed only by deterministic readback"
+description: "How intentional external effects are gated, executed with normal tools, and confirmed by deterministic readback"
 ---
 
-Weaver has no channel adapters, no integration layer, no per-service plumbing. A kind-`action` assignment is the single way a workstream touches the world: the worker gets real Bash in an approved working directory and uses real CLIs and MCP servers directly — open the PR with `gh`, query Sentry through the operator's MCP, call the API with `curl`. Weaver's contribution is the gate before and the readback after.
+Weaver has no channel adapters, no integration layer, no per-service plumbing. Every assignment is a regular Claude Code worker with real tools. A kind-`action` assignment is how a workstream directs and accounts for an intentional external effect: open the PR with `gh`, update Sentry through the operator's MCP, call the API with `curl`. Weaver's contribution is the gate before and the readback after; merely having a capable tool does not grant authority or make the worker's claim true.
 
 ## Where Pilot fits
 
@@ -16,7 +16,7 @@ Weaver has no channel adapters, no integration layer, no per-service plumbing. A
     Every action is created gated with a mandatory plain-language approval card — what approving allows, why the workstream wants it, the blast radius. The operator's pilot reviews the exact commands first: routine-safe ones auto-approve (recorded as `by:pilot`, so the audit trail names who let it run), and anything with real blast radius fails closed to the human. Either way the gate is checked structurally in both the scheduler and the worker — nothing runs unapproved.
   </Step>
   <Step title="Executed">
-    The approved worker performs exactly the briefed act, sandboxed to its working directory, with the workstream's secrets in its environment. When a human authored the exact command, the engine executes it verbatim instead — no model in the loop: models judge, humans decide, code executes.
+    The approved worker performs exactly the briefed act with the same normal Code surface as other workers, plus the workstream's action-only secrets and live Pilot supervision. The local MVP relies on its launching environment for containment rather than adding a second sandbox. When a human authored the exact command, the engine executes it verbatim instead — no model in the loop: models judge, humans decide, code executes.
   </Step>
   <Step title="Read back">
     The assignment carries a `verify` command — a deterministic shell check the engine runs (`gh pr view --json state`, `test -f evidence.md`, ...). Its exit status is the only thing that can call the effect real. The worker's own report of success settles nothing.
