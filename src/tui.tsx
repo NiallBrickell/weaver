@@ -452,6 +452,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [scroll, setScroll] = useState(0);
   const [steering, setSteering] = useState<{ slug: string; text: string; answersAttentionId?: string } | null>(null);
+  const [resolving, setResolving] = useState<{ slug: string; attId: string; note: string } | null>(null);
   const [toast, setToast] = useState('');
   const printoutAbort = React.useRef<AbortController | null>(null);
   const printoutOpening = React.useRef(false);
@@ -516,7 +517,11 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const selSlug = sel ? (sel.type === 'item' ? sel.item.slug : sel.stream.slug) : undefined;
 
   useInput((input, key) => {
-    if (steering) return; // TextInput owns the keyboard
+    if (steering || resolving) {
+      // TextInput owns the keyboard; esc backs out without acting.
+      if (key.escape) { setSteering(null); setResolving(null); }
+      return;
+    }
     if (input === 'q') {
       printoutAbort.current?.abort();
       exit();
@@ -570,7 +575,9 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         if (it.kind === 'action') act(() => rejectAction(it.slug, it.refId), `rejected ${it.refId}`);
         else if (it.kind === 'send') act(() => rejectSend(it.slug, it.refId), `rejected ${it.refId}`);
       } else if (input === 'd' && it.kind === 'attention') {
-        act(() => resolveAttention(it.slug, it.refId), `resolved ${it.refId}`);
+        // A bare dismiss is ambiguous to the next coordinator pass ("seen" vs
+        // "declined"), so d asks for an optional one-line answer first.
+        setResolving({ slug: it.slug, attId: it.refId, note: '' });
       } else if (input === 's') {
         setSteering({ slug: it.slug, text: '', ...(it.kind === 'attention' ? { answersAttentionId: it.refId } : {}) });
       } else if (key.return) {
@@ -781,7 +788,23 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         );
       })()}
 
-      {steering ? (
+      {resolving ? (
+        <Box marginTop={1}>
+          {/* Kept short: a wrapped prompt line desyncs Ink like the footer would. */}
+          <Text color="cyan">resolve {resolving.attId} — note? (enter dismiss · esc cancel) ▸ </Text>
+          <TextInput
+            value={resolving.note}
+            onChange={(t: string) => setResolving({ ...resolving, note: t })}
+            onSubmit={(t: string) => {
+              setResolving(null);
+              act(
+                () => resolveAttention(resolving.slug, resolving.attId, t.trim()),
+                t.trim() ? `resolved ${resolving.attId} — note recorded` : `resolved ${resolving.attId}`,
+              );
+            }}
+          />
+        </Box>
+      ) : steering ? (
         <Box marginTop={1}>
           <Text color="cyan">steer {steering.slug} ▸ </Text>
           <TextInput
