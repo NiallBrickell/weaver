@@ -7,7 +7,8 @@
 
 import { userInfo } from 'node:os';
 import { virtualNow } from './clock.js';
-import { arrive, newId } from './store.js';
+import { arrive, listWorkstreams, load, mutate, newId, RevisionConflictError } from './store.js';
+import type { WorkstreamCore } from './types.js';
 
 /**
  * Who is performing this human act. Defaults to the OS user (the founder at
@@ -178,9 +179,101 @@ export async function adoptSubmission(slug: string, asgId: string, reason = 'ado
   });
 }
 
-export async function setPaused(slug: string, paused: boolean): Promise<void> {
-  await arrive(slug, (d, event) => {
-    d.workstream.status = paused ? 'paused' : 'active';
-    event(paused ? 'workstream.paused' : 'workstream.resumed', `${actor()} ${paused ? 'paused' : 'resumed'} the workstream`);
-  });
+type WorkstreamStatus = WorkstreamCore['status'];
+
+export interface SetPausedResult {
+  slug: string;
+  requestedStatus: 'active' | 'paused';
+  previousStatus: WorkstreamStatus;
+  status: WorkstreamStatus;
+  changed: boolean;
+  outcome: 'paused' | 'resumed' | 'already-paused' | 'already-active' | 'done';
+}
+
+export interface PauseWorkstreamFailure {
+  slug: string;
+  error: string;
+}
+
+export interface PauseAllWorkstreamsResult {
+  paused: string[];
+  alreadyPaused: string[];
+  done: string[];
+  failures: PauseWorkstreamFailure[];
+}
+
+/**
+ * Revision-checked human pause/resume transition. A repeated request is a
+ * read-only no-op, and a concluded workstream stays concluded: resuming work
+ * never silently erases its durable outcome claim.
+ */
+export async function setPaused(slug: string, paused: boolean): Promise<SetPausedResult> {
+  const requestedStatus = paused ? 'paused' : 'active';
+  const attempts = 3;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    // Re-read after every conflict: a concurrent conclusion must be preserved,
+    // while an unrelated arrival should not make a human pause disappear.
+    const current = await load(slug);
+    const previousStatus = current.workstream.status;
+
+    if (previousStatus === 'done') {
+      return { slug, requestedStatus, previousStatus, status: 'done', changed: false, outcome: 'done' };
+    }
+    if (previousStatus === requestedStatus) {
+      return {
+        slug,
+        requestedStatus,
+        previousStatus,
+        status: previousStatus,
+        changed: false,
+        outcome: paused ? 'already-paused' : 'already-active',
+      };
+    }
+
+    try {
+      const updated = await mutate(slug, current.revision, (d, event) => {
+        d.workstream.status = requestedStatus;
+        event(paused ? 'workstream.paused' : 'workstream.resumed', `${actor()} ${paused ? 'paused' : 'resumed'} the workstream`);
+      });
+      return {
+        slug,
+        requestedStatus,
+        previousStatus,
+        status: updated.workstream.status,
+        changed: true,
+        outcome: paused ? 'paused' : 'resumed',
+      };
+    } catch (error) {
+      if (!(error instanceof RevisionConflictError) || attempt === attempts) throw error;
+    }
+  }
+  throw new Error(`failed to ${paused ? 'pause' : 'resume'} '${slug}' after ${attempts} revision conflicts`);
+}
+
+/** Pause every readable active workstream while reporting every other slug. */
+export async function pauseAllWorkstreams(): Promise<PauseAllWorkstreamsResult> {
+  const result: PauseAllWorkstreamsResult = {
+    paused: [],
+    alreadyPaused: [],
+    done: [],
+    failures: [],
+  };
+
+  for (const slug of (await listWorkstreams()).sort()) {
+    try {
+      const transition = await setPaused(slug, true);
+      if (transition.outcome === 'paused') result.paused.push(slug);
+      else if (transition.outcome === 'already-paused') result.alreadyPaused.push(slug);
+      else if (transition.outcome === 'done') result.done.push(slug);
+      else throw new Error(`unexpected pause outcome '${transition.outcome}'`);
+    } catch (error) {
+      result.failures.push({ slug, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  result.paused.sort();
+  result.alreadyPaused.sort();
+  result.done.sort();
+  result.failures.sort((a, b) => a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0);
+  return result;
 }

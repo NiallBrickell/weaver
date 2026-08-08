@@ -44,7 +44,7 @@
           },
           {
             "group": "Using Weaver",
-            "pages": ["quickstart", "giving-it-work", "dashboard", "printouts", "stats", "routines", "secrets-and-access", "claude-capacity", "team-seeds", "hosted-state"]
+            "pages": ["quickstart", "giving-it-work", "dashboard", "printouts", "stats", "routines", "pausing", "secrets-and-access", "claude-capacity", "team-seeds", "hosted-state"]
           },
           {
             "group": "Under the hood",

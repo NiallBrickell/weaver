@@ -26,4 +26,4 @@ Run #30 inherits the decisions and corrections from runs 1–29, then continues 
 
 - Wakes are stored data, not sleeping processes — the resident runner discovers what's due. Kill the runner for a week; the routine picks up exactly where it stopped.
 - The dashboard shows routines in their own `↻ ROUTINES` section with the next-run time.
-- `weaver pause <slug>` stops a routine (state kept); `weaver resume <slug>` restarts it. `weaver tag <slug> add routine` converts an existing workstream.
+- `weaver pause <slug>` stops a routine with its state and scheduled wakes intact; `weaver resume <slug>` restarts it. Run `weaver pause` with no slug to pause every currently active workstream. [Pausing work](/pausing) explains the fleet boundary. `weaver tag <slug> add routine` converts an existing workstream.

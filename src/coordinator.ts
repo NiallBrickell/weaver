@@ -117,6 +117,11 @@ export async function runCoordinatorPass(
   let doc = await load(slug);
   const ws = doc.workstream;
 
+  // The engine normally filters paused streams, but the pass claim is the
+  // final revision-checked boundary: a manual/direct caller cannot advance a
+  // paused outcome, and a concurrent pause conflicts before a lease is born.
+  if (ws.status !== 'active') throw new Error(`workstream '${slug}' is ${ws.status}`);
+
   // Budget is a hard ceiling.
   if (doc.spend.coordinatorPasses >= ws.budget.maxCoordinatorPasses) {
     throw new Error(`budget exhausted: ${doc.spend.coordinatorPasses} passes used`);

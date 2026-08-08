@@ -44,6 +44,8 @@ weaver stats   # outcome scoreboard: human interventions, quality signals, autho
 
 The runner holds no state — kill it, restart it, nothing is lost. It starts fresh agents for the next piece of work, confirms outside-world changes, handles failures, and resumes scheduled or event-driven waits without handing the outcome back to you.
 
+Need work to stop without losing its position? `weaver pause <slug>` pauses one workstream, while `weaver pause` pauses every workstream active at that moment. Resume one with `weaver resume <slug>`. Assignments and wakes remain durable, and workstreams created later start active. See [Pausing work](/pausing) for the in-flight boundary and fleet semantics.
+
 From here, the dashboard's [needs-you queue](/dashboard) contains only judgment, authority, and blockers that genuinely need you. Finishing one assignment, failing a check, or moving from research to implementation is Weaver's job.
 
 Once you have repeated, comparable work, run `weaver stats`. It shows whether that work is needing you less often, alongside rejections and the Pilot-versus-human approval split that keep the trend honest. The [stats guide](/stats) explains exactly what the current chart does and does not measure.
