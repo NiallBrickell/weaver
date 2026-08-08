@@ -1,6 +1,9 @@
 state/
 world/
-node_modules/
+# No trailing slash: with one, this pattern matches only a real directory, and a
+# SYMLINK named node_modules sails past it into a commit — which then breaks CI
+# with a bare ENOTDIR from yarn, nowhere near the cause.
+node_modules
 dist/
 .yarn/
 secrets.env
