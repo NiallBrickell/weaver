@@ -12,9 +12,12 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@openai/codex-sdk": "0.147.0",
+    "@opencode-ai/sdk": "1.18.15",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.4",
     "@types/react": "^19.2.18",
+    "opencode-ai": "1.18.15",
     "tsx": "^4.23.5",
     "typescript": "^5.9.0"
   },
@@ -24,6 +27,7 @@
   "license": "UNLICENSED",
   "bin": "./bin/weaver.mjs",
   "scripts": {
+    "eval:harness": "node --import tsx src/evals/cli.ts",
     "typecheck": "tsc --noEmit",
     "weaver": "tsx src/cli.ts",
     "test": "tsx --test 'src/**/*.test.ts'"

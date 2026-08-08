@@ -12,6 +12,13 @@ The **disposable layer** is the Claude Agent SDK. A coordinator pass ([`src/coor
 
 Where the worker's loop *runs* is a substrate choice behind the `WorkerExecutor` seam ([`src/executor/types.ts`](../src/executor/types.ts), selected by `WEAVER_EXECUTOR`; the reference is the local SDK `query()` in [`src/executor/localSdk.ts`](../src/executor/localSdk.ts)). The seam moves only the disposable part: the harness supplies the briefing, environment, submit callback, and — for a declared action — live Pilot supervision. The executor can use its substrate's normal tools, while the harness accepts a submission only through its own callback. Preventing a process from bypassing that API is the host substrate's containment responsibility in this MVP. An unknown `WEAVER_EXECUTOR` fails hard before the attempt starts — a silent local fallback would make a misconfigured remote fleet look healthy.
 
+Alternative substrates are evaluated before they enter that production selector. The harness
+bakeoff ([`docs/harness-evals.md`](./harness-evals.md)) runs the Claude baseline, Codex SDK,
+OpenCode, and OpenHands through the real `runWorker` and adoption boundary, with deterministic
+quality graders and non-negotiable durability gates. Those adapters are eval-only. Local
+host-process or Agent Server results do not prove production containment, and candidates without
+live Pilot supervision reject action assignments before launch.
+
 ## Actions: touching the real world
 
 There is no channel/adapter layer. A kind-`action` assignment is the single way Weaver directs, authorizes, and verifies an intentional external effect. Its worker has the same normal Code surface as any other worker; the difference is durable lifecycle: approval before execution, Pilot supervision while it runs, action-only secret values, and deterministic readback afterwards. Normal workers inherit the operator's Code configuration; actions receive an explicit secured copy of the applicable MCP servers so filesystem allow rules cannot bypass Pilot.
@@ -82,6 +89,13 @@ Real erdo owns these properly; Weaver simplifies without faking the invariant:
 - **Evaluators are the coordinator itself** (`evaluate_reply` / `evaluate_observation`) rather than declared evaluator runs.
 
 ## Surprises worth knowing
+
+- **An injectable executor is not automatically a neutral executor contract.** The current
+  `WorkerExecutionRequest` still carries Claude-originated prompt/settings types. The eval adapters
+  can honor the narrow briefing, environment, abort, and submission surface, but production
+  promotion requires Weaver-owned configuration shapes and action-supervision conformance. Calling
+  every candidate a “Claude Code worker” in the shared prompt also biased the comparison; the
+  worker contract is now substrate-neutral while the production adapter retains its Code preset.
 
 - **Agent SDK `mcpServers` are serialized into the child process's `--mcp-config` argument.** Passing literal HTTP/SSE Authorization headers therefore exposes them to same-user process listings. Hoist static header values into generated environment variables before calling `query()`; Claude Code officially expands `$VAR` / `${VAR}` in MCP headers. Diagnostics must match process names only and never print arguments.
 - **The Agent SDK works with the machine's Claude Code login** — no `ANTHROPIC_API_KEY` is required when the CLI is authenticated. Anthropic announced a separate paid-plan SDK allowance, then paused the change; SDK calls still draw from shared plan limits for now. Capacity rejection can arrive as an SDK error result instead of a thrown exception, so both result and exception paths must enter the same durable backoff. `SDKRateLimitInfo` may carry both plan and overage resets; the earliest future reset is the next legitimate retry, not the later timestamp. Weaver's local subscription mode deliberately remains one ambient operator principal; shared CI or production automation belongs on the Platform API path.

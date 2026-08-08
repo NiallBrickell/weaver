@@ -8,3 +8,4 @@ dist/
 .yarn/
 secrets.env
 *.env
+eval-results/

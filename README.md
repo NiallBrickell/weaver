@@ -27,7 +27,7 @@ That promise has a simple test: over comparable completed outcomes, does Weaver 
 >
 > For anything longer than a sentence, run `weaver do` with **no arguments** and type or paste a multiline message (finish with Ctrl-D) — raw stdin, so `$`, quotes, and newlines survive exactly as written, with a progress spinner while the brief is derived.
 
-Weaver is built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk), which supplies the agents that enter the work, advance it, and leave:
+Weaver currently runs production workers on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk), which supplies the agents that enter the work, advance it, and leave. Codex SDK, OpenCode, and OpenHands are being compared at the same disposable-worker seam before any production switch:
 
 > **A Workstream is the outcome and everything required to finish it: direction, work, decisions, evidence, interactions, and results. Individual agent runs come and go; the Workstream keeps going.**
 
@@ -68,6 +68,7 @@ Every shape follows the same arc: understand the next piece → do and review it
 
 ```bash
 yarn install
+yarn eval:harness --list   # inspect the eval-only runtime bakeoff
 weaver create --slug my-stream --title "..." --objective "..." [--tag routine]
 weaver steer my-stream "context, repo paths, what done looks like"
 weaver run                # resident runner: ticks every active workstream (10 in parallel)
@@ -83,12 +84,13 @@ weaver printout [slug]    # catch up on one stream, or omit slug for the fleet
 - **Routines**: tag a workstream `routine` and have it schedule its own next wake — a standing loop (Sentry sweep, evals health, usage reports) that, unlike cron'd prompts, wakes with its decision log, constraints, and learned policies intact. Run #30 inherits the decisions and corrections from runs 1–29.
 - **Pausing**: `weaver pause <slug>` preserves one workstream's typed position while runner polls skip it; omit the slug to pause every stream active at that invocation. New workstreams still start active, and `weaver resume <slug>` resumes one. See [docs-public/pausing.mdx](./docs-public/pausing.mdx).
 - **Secrets**: `echo VALUE | weaver secret set NAME [--ws slug]`. Models only ever see *names*; the engine injects values into approved action shells and scrubs them from everything captured back. The store refuses any write that embeds a known secret value.
-- **Operator access**: every assignment is a regular Claude Code worker with Bash, file editing, web tools, and the operator's configured MCP servers. `research`, `evidence`, and `work_product` describe bounded responsibilities, not different capability classes. Weaver deliberately does not add a second shell parser or sandbox in this MVP; the environment that launches the worker owns containment. Capability still is not authority: pushing, opening or merging a PR, deploying, sending, or mutating a remote service is directed through a typed action whose calls are Pilot-supervised and whose effect is accepted only after deterministic readback.
+- **Operator access**: every production assignment is currently a regular Claude Code worker with Bash, file editing, web tools, and the operator's configured MCP servers. `research`, `evidence`, and `work_product` describe bounded responsibilities, not different capability classes. Weaver deliberately does not add a second shell parser or sandbox in this MVP; the environment that launches the worker owns containment. Capability still is not authority: pushing, opening or merging a PR, deploying, sending, or mutating a remote service is directed through a typed action whose calls are Pilot-supervised and whose effect is accepted only after deterministic readback. The [harness bakeoff](./docs-public/harness-evals.mdx) measures alternative disposable runtimes without wiring them into production or treating a local container as a production sandbox.
 - Auth rides one ambient operator principal from the local Claude Code login; exported API credentials and long-lived OAuth tokens are stripped from every spawned Agent SDK process, and Weaver never stores tokens, pools credentials, or cycles accounts. Capacity failures park only the affected model; the coordinator uses its configured fallback when available, and limited models retry at Claude's reset or after explicit `weaver capacity retry`. Weaver never changes billing, and cost figures are SDK-reported estimates used only as a runaway backstop. See [Claude capacity & billing](./docs-public/claude-capacity.mdx).
 
 ## Docs
 
 - [docs/harness.md](./docs/harness.md) — where each kernel invariant lives in code
+- [docs/harness-evals.md](./docs/harness-evals.md) — the eval contract, candidate runtimes, and promotion gates
 - [docs/learning.md](./docs/learning.md) — the learning loop, and why it's deliberately shaped as an RL substrate
 - [docs-public/stats.mdx](./docs-public/stats.mdx) — the outcome scoreboard and the limits of what it currently measures
 - [CLAUDE.md](./CLAUDE.md) — the kernel rules and working agreements
