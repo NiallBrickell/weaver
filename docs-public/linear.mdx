@@ -45,12 +45,11 @@ issue. Each spawned workstream reads its **own** issue directly on every pass �
 so a teammate's comment is picked up without anything relaying it — and posts
 back through the normal approval gate.
 
-A coordinator pass can only look. Retrieval calls work; anything that would
-change Linear is refused outright, because a coordinator is the seat that
-*decides*, and a change it made itself would be a change nobody approved.
-Posting a comment or moving an issue to Done is therefore a real-world action:
-it waits for your approval, a worker performs it, and it counts as done only
-once Weaver reads Linear back and confirms it landed.
+Reading Linear is ordinary work: a workstream dispatches a worker that reads the
+issue — including opening any screenshots on it — and reports back. Changing
+anything in Linear is not. Posting a comment or moving an issue to Done is a
+real-world action: it waits for your approval, a worker performs it, and it
+counts as done only once Weaver reads Linear back and confirms it landed.
 
 ## It cannot open the same work twice
 
