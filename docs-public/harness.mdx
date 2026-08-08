@@ -11,14 +11,14 @@ The durable layer is a single typed document per workstream plus content-address
 | Writes are revision-checked | Every mutation verifies the revision it read; a conflicting arrival (steering, completion, reply) fails the write and forces reconciliation from newer state |
 | Single-flight coordination | A stored lease means one coordinator pass at a time; a pid lockfile makes ticks cross-process exclusive, so a resident runner plus a manual tick can never double-dispatch a real-world act |
 | Adoption ≠ completion | A worker finishing yields a proposal; only coordinator (or human) adoption makes it authoritative, pinning an immutable content hash — and for actions, adoption structurally requires a passing readback |
-| Side-effect-free workers by default | A research worker's entire write surface is one submission tool; drafting and sending are separate facts with separate lifecycles |
+| Capability is not authority | Every assignment has the normal Code toolset. `submit_result` is the only way a worker proposes Workstream state; intentional external effects still use a separate action lifecycle |
 | Authority revalidated at egress | Sends execute in the engine, never inside a model run — approval, pinned-hash match, and artifact integrity are re-checked immediately before egress |
 | Unknown result → readback, never re-send | A crash after egress leaves `unknown`; the next tick asks the provider what actually happened. Exactly-once effects via at-least-once delivery plus idempotent design |
 | Replies are untrusted input | An inbound reply can wake the workstream and supply evidence; it cannot grant authority, complete work, or supersede direction by itself |
 | Summaries cannot mutate truth | A pass's summary is stored as provenance; nothing reads it back into state — the projection is rebuilt from typed collections every pass |
 | Wakes are stored data | No process sleeps; the runner discovers what became due. Kill everything, restart, nothing is lost |
 | Infrastructure outages cost waiting, not strikes | A coordinator or worker hitting plan/session/rate limits, overload, or auth failure writes model-indexed `WorkstreamDoc.capacity` state and parks only that model behind a typed backoff wake; workers keep moving and the coordinator uses one configured fallback while available. Auth surfaces one recovery card immediately; other capacity failures get 12 backoffs to self-clear. Weaver retries at the provider reset, probes once on credential-metadata change, or makes the wait due after explicit `weaver capacity retry`. [Recovery stays single-principal](/claude-capacity): Weaver never changes billing, handles tokens, or cycles accounts |
-| Read access is not authority | Research workers see the operator's MCP servers behind a deterministic read-only gate and a shell limited to history-reading commands (`git log`, `gh pr view`); anything that would mutate is denied at the tool boundary and needs a gated, pilot-supervised action |
+| Action authority is explicit | `research`, `evidence`, and `work_product` are assignment labels, not weaker runtimes. Pushing, opening or merging a PR, deploying, sending, or mutating a remote service is directed through a gated, Pilot-supervised action and becomes fact only after deterministic readback |
 
 ## The projection
 
