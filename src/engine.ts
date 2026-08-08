@@ -18,6 +18,7 @@ import { runWorker, workerModel } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
+import { pidIsLive } from './processLock.js';
 import type { WorkstreamDoc } from './types.js';
 
 function dueWakes(doc: WorkstreamDoc): typeof doc.wakes {
@@ -456,11 +457,7 @@ async function recoverCrashedAttempts(slug: string): Promise<number> {
     // to wait out the horizon (the silent-fleet failure mode after restarts).
     let driverDead = false;
     if (attempt.runnerPid && attempt.runnerPid !== process.pid) {
-      try {
-        process.kill(attempt.runnerPid, 0);
-      } catch {
-        driverDead = true;
-      }
+      driverDead = !pidIsLive(attempt.runnerPid);
     }
     if (!driverDead && Date.now() - new Date(attempt.startedAt).getTime() < staleMs) continue;
     const isAction = asg.kind === 'action';
@@ -576,9 +573,10 @@ export async function tick(
     workersRun: [],
     passes: [],
   };
-  // Cross-process tick exclusion lives behind the store (fs impl: mkdir lock,
-  // dead holders reclaimed) — the doc's revision check guards logical
-  // conflicts, not two OS processes dispatching the same act in one instant.
+  // Cross-process tick exclusion lives behind the store (fs: ownership-marked
+  // process lock; Postgres: session advisory lock) — the doc's revision check
+  // guards logical conflicts, not two OS processes dispatching the same act
+  // in one instant.
   const releaseTick = await tryTickLock(slug);
   if (!releaseTick) return { ...report, skipped: 'another process is ticking this workstream' };
   try {
