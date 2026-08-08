@@ -74,13 +74,20 @@ interface StreamRow {
    * never requires the CLI or an external page. */
   objective: string;
   latestDecision?: string;
+  /** When the stream concluded (virtual clock) — drives leaving the board. */
+  concludedAtVirtual?: string;
   error?: string;
 }
 
 interface Snapshot {
   items: NeedsYouItem[];
   streams: StreamRow[];
+  /** DONE streams past their linger window — off the board, still on record. */
+  archivedDone: number;
 }
+
+/** How long a finished workstream stays on the board before leaving it. */
+const DONE_LINGER_MS = 3 * 86_400_000;
 
 function elapsed(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -378,9 +385,16 @@ async function snapshot(): Promise<Snapshot> {
       )[0];
     const displayedWake = nextInfrastructureWake ?? nextWake;
     const nextRun = displayedWake ? (displayedWake.condition as { dueAtVirtual: string }).dueAtVirtual : undefined;
+    const concludedAtVirtual = ws.status === 'done'
+      ? ws.conclusion?.atVirtual
+        ?? [...doc.events].reverse().find((e) => e.type === 'workstream.concluded')?.at
+        ?? last?.at
+        ?? ws.createdAt
+      : undefined;
     streams.push({
       slug,
       bucket: ws.status === 'done' ? 5 : bucket,
+      concludedAtVirtual,
       queuedNow: dueNow > 0 || pendingSteers > 0,
       routine: ws.tags.includes('routine'),
       nextRun,
@@ -397,7 +411,15 @@ async function snapshot(): Promise<Snapshot> {
   }
   streams.sort((a, b) => a.bucket - b.bucket || a.slug.localeCompare(b.slug));
   items.sort((a, b) => a.slug.localeCompare(b.slug));
-  return { items, streams };
+  // Finished work earns a few days on the board, then leaves it: the dashboard
+  // is for what's moving or needs someone, and a wall of green rows buries
+  // that. The record never leaves — [i], printouts, and the CLI read the same
+  // typed state; nothing here mutates or deletes a workstream.
+  const cutoff = virtualNow().getTime() - DONE_LINGER_MS;
+  const visible = streams.filter(
+    (s) => !s.concludedAtVirtual || new Date(s.concludedAtVirtual).getTime() > cutoff,
+  );
+  return { items, streams: visible, archivedDone: streams.length - visible.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -443,7 +465,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const { exit } = useApp();
   // The store is async, so the first snapshot arrives via the mount effect —
   // render paths never await; state loads in effects/callbacks only.
-  const [snap, setSnap] = useState<Snapshot>({ items: [], streams: [] });
+  const [snap, setSnap] = useState<Snapshot>({ items: [], streams: [], archivedDone: 0 });
   const lastSnapJson = React.useRef('');
   const [runnerState, setRunnerState] = useState<'embedded' | 'external' | 'stalled' | 'none'>(
     embeddedRunner ? 'embedded' : liveRunnerPid() !== null ? 'external' : 'none',
@@ -606,6 +628,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
 
   const counts = [0, 0, 0, 0, 0, 0];
   for (const s of snap.streams) counts[s.bucket]! += 1;
+  counts[5]! += snap.archivedDone; // the header's done tally never shrinks as rows age off the board
   const now = new Date();
   const vNow = virtualNow();
   const drift = Math.abs(vNow.getTime() - now.getTime()) > 60_000;
@@ -616,7 +639,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const termRows = process.stdout.rows ?? 40;
   const chrome = 7; // header (1) + section titles/margins (~5) + footer (1)
   const selDetailLines = 5; // selected stream: details (4) + key hint
-  const streamCount = snap.streams.length;
+  const streamCount = snap.streams.length + (snap.archivedDone ? 1 : 0); // +1: the archived-summary line
   const selPane = (() => {
     const isExpandedSel = sel?.type === 'item' && expanded.has(sel.item.key);
     // Expanded reading OUTRANKS fleet rows: reserve a 3-stream floor and give
@@ -784,6 +807,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
       </Box>
             ))}
             {hidden > 0 && <Text dimColor> … {hidden} more workstream(s) — ↑↓ scrolls the window</Text>}
+            {snap.archivedDone > 0 && <Text dimColor> ✓ {snap.archivedDone} finished earlier and left the board — [i] fleet knowledge keeps every record</Text>}
           </>
         );
       })()}
