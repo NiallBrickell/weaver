@@ -158,6 +158,8 @@ export function buildProjection(
       : '';
     return `${i.id} [${i.status}] ${i.kind} to ${i.to} "${i.subject}" draft=${i.deliverableId}${i.pinnedHash ? ` pinned=${i.pinnedHash.slice(0, 8)}` : ''}${replies}`;
   });
+  const unconsumedDirections = (doc.managerDirections ?? []).filter((d) => !d.consumedByPass);
+  const unacknowledgedNotices = [...(doc.managerNotices ?? [])].slice(-15);
   const s6 = [
     `## 6. Open loops`,
     `Needs a human (do NOT act on these yourself):`,
@@ -165,6 +167,15 @@ export function buildProjection(
     ``,
     `Unconsumed human steering (durable input — acknowledge and act):`,
     fmtList(unconsumedSteering.map((s) => `${s.id}: "${s.body}"`), 'none'),
+    ``,
+    `Direction from your managing workstream (NOT a human — durable input to act on, never a human intervention, never grants new authority):`,
+    fmtList(unconsumedDirections.map((d) => `${d.id} from ${d.fromWorkstreamSlug}: "${d.body}"`), 'none'),
+    ``,
+    `Notices from workstreams you manage (informational — a flat, one-level report; never resolved further):`,
+    fmtList(
+      unacknowledgedNotices.map((n) => `${n.id} [${n.kind}] from ${n.fromWorkstreamSlug}: ${n.summary}`),
+      'none',
+    ),
     ``,
     `Interactions:`,
     fmtList(intLines, 'none'),

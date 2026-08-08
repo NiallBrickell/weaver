@@ -107,6 +107,8 @@ export function printoutChanges(before: WorkstreamDoc, after: WorkstreamDoc): Pr
     ...changedEntities('steering', before.steering, after.steering),
     ...changedEntities('attention', before.attention, after.attention),
     ...changedEntities('pass', before.passes, after.passes),
+    ...changedEntities('manager_direction', before.managerDirections ?? [], after.managerDirections ?? []),
+    ...changedEntities('manager_notice', before.managerNotices ?? [], after.managerNotices ?? []),
   );
   if (JSON.stringify(before.spend) !== JSON.stringify(after.spend)) {
     changes.push({ kind: 'spend', fields: diffPrintoutFields(before.spend, after.spend) });

@@ -10,6 +10,7 @@ import {
   arrive,
   closeStore,
   createWorkstream,
+  listManagedBy,
   listWorkstreams,
   load,
   newId,
@@ -220,7 +221,7 @@ async function main(): Promise<void> {
 
     case 'status': {
       const slug = rest[0] ?? fail('slug required');
-      process.stdout.write(renderStatus(await load(slug)) + '\n');
+      process.stdout.write(renderStatus(await load(slug), await listManagedBy(slug)) + '\n');
       break;
     }
 
