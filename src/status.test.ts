@@ -154,6 +154,43 @@ test('duplicate infrastructure wakes collapse and raw provider/account values ne
   assert.doesNotMatch(status, /secret-token-value|other@example\.com|RAW PROVIDER ERROR/);
 });
 
+test('an overdue capacity wait stops claiming the workstream is parked while work runs', () => {
+  // A stored wait only clears when that model runs again, so a workstream that
+  // has since moved to another model keeps the old entry forever. NOW answering
+  // "parked" while a worker is running is the five-question contract lying.
+  const stale = infrastructure('other', 'automatic_retry', {
+    model: 'claude-opus-5',
+    retryAt: '2026-08-06T12:00:00.000Z',
+  });
+  const parked = doc([infrastructureWake('wake_stale', stale)]);
+  parked.assignments.push({
+    id: 'asg_live',
+    objective: 'Census the eight repos',
+    briefing: 'read-only',
+    kind: 'research',
+    acceptanceCriteria: [],
+    dependsOn: [],
+    state: 'running',
+    attempts: [],
+    adoption: { state: 'none' },
+    createdAtVirtual: NOW,
+  });
+  const status = renderStatus(parked);
+
+  assert.doesNotMatch(status, /WAITING —/);
+  assert.doesNotMatch(status, /work is safely parked/);
+  assert.match(status, /working: asg_live "Census the eight repos"/);
+  assert.match(status, /infrastructure retry is due now/);
+});
+
+test('a wait whose retry is still ahead is reported as a live block', () => {
+  const rate = infrastructure('rate_limit', 'automatic_retry', { retryAt: FUTURE_1 });
+  const status = renderStatus(doc([infrastructureWake('wake_rate', rate)]));
+
+  assert.match(status, /WAITING — Claude is rate limited; work is safely parked/);
+  assert.match(status, /infrastructure retry scheduled at/);
+});
+
 test('a successful probe exposes its due reconciliation after clearing capacity state', () => {
   const credit = infrastructure(
     'sdk_credit_exhausted',
