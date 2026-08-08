@@ -102,6 +102,24 @@ export async function listManagedBy(managerSlug: string): Promise<{ slug: string
 }
 
 /**
+ * The slug of the workstream already standing for an external thing, if one
+ * exists. Intake is at-least-once — a repeated pass, a redelivered webhook, a
+ * coordinator that simply looks again — so spawning is keyed on this rather
+ * than on anyone remembering what they already created.
+ */
+export async function findBySourceKey(sourceKey: string): Promise<string | null> {
+  for (const slug of await listWorkstreams()) {
+    try {
+      if ((await load(slug)).workstream.sourceKey === sourceKey) return slug;
+    } catch {
+      // A single unreadable document must not make an existing workstream
+      // invisible to the dedupe — but it must not wedge intake either.
+      continue;
+    }
+  }
+  return null;}
+
+/**
  * Apply a revision-checked mutation. `expectedRevision` must equal the stored
  * revision or the write fails with RevisionConflictError. Returns the new doc.
  *
