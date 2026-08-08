@@ -1,0 +1,29 @@
+---
+title: "Pausing work"
+description: "Stop one workstream or the active fleet without losing its durable position"
+---
+
+Pause one workstream when its outcome should stay intact but no new work should start:
+
+```bash
+weaver pause fix-onboarding
+weaver resume fix-onboarding
+```
+
+Pause every workstream that is active when you run the command by omitting the slug:
+
+```bash
+weaver pause
+```
+
+Already paused and done workstreams are left as they are. A workstream created after the fleet pause starts active; there is no ambient global pause mode. Resume paused workstreams individually with `weaver resume <slug>`.
+
+## What pause preserves
+
+Pause changes the workstream's durable lifecycle state. It does not cancel or discard its assignments, submissions, decisions, waits, due wakes, or needs-you items. On resume, the runner reads that typed position and continues from it with fresh coordinator and worker runs. No model context, Agent SDK session, or sleeping process is retained to bridge the pause.
+
+The fleet command applies that same revision-checked transition to each workstream that was active at invocation. It is deliberately not one cross-fleet transaction or a flag outside the workstreams: each outcome remains independently durable and inspectable. The command names every changed and unchanged stream; if one record is unreadable, healthy streams still pause and the command exits non-zero with the failed slug instead of silently omitting it.
+
+## The in-flight boundary
+
+Pause prevents subsequent runner polls and manual ticks from advancing the workstream. The engine re-reads lifecycle state at worker, coordinator, and egress boundaries, so once pause is recorded an in-flight tick starts no next worker, pass, send, or action. A disposable step that was already running may finish and record its result; pausing does not abruptly kill a model call or leave a half-recorded transition. `weaver resume <slug>` makes the stream active again.

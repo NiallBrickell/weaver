@@ -23,7 +23,7 @@ import {
   SdkFailureTracker,
 } from './capacity.js';
 import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
-import { arrive, load, newId, readArtifact, writeArtifact } from './store.js';
+import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
 import type { InfrastructureWait, WorkstreamDoc } from './types.js';
 import { secureMcpHeaderCredentials, type SecuredMcpConfiguration } from './mcpConfig.js';
@@ -273,8 +273,9 @@ export function consumeDueWorkerInfrastructureWakes(
   }
 }
 
-export async function runWorker(slug: string, assignmentId: string): Promise<void> {
+export async function runWorker(slug: string, assignmentId: string): Promise<boolean> {
   const doc = await load(slug);
+  if (doc.workstream.status !== 'active') return false;
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg) throw new Error(`no assignment ${assignmentId}`);
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
@@ -296,22 +297,31 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
   }
 
   const runId = newId('run');
-  await arrive(slug, (d, event) => {
-    const a = d.assignments.find((x) => x.id === assignmentId)!;
-    const now = virtualNow().toISOString();
-    // A due infrastructure wake is a retry permit, not separate intended
-    // work. This fresh attempt consumes matching permits; success creates its
-    // submission wake, while another outage creates one new future permit.
-    consumeDueWorkerInfrastructureWakes(d, workerModel(), now);
-    a.state = 'running';
-    a.attempts.push({
-      runId,
-      model: workerModel(),
-      runnerPid: process.pid,
-      startedAt: new Date().toISOString(),
+  const current = await load(slug);
+  if (current.workstream.status !== 'active') return false;
+  const currentAssignment = current.assignments.find((a) => a.id === assignmentId);
+  if (currentAssignment?.state !== 'queued') return false;
+  try {
+    await mutate(slug, current.revision, (d, event) => {
+      const a = d.assignments.find((x) => x.id === assignmentId)!;
+      const now = virtualNow().toISOString();
+      // A due infrastructure wake is a retry permit, not separate intended
+      // work. This fresh attempt consumes matching permits; success creates its
+      // submission wake, while another outage creates one new future permit.
+      consumeDueWorkerInfrastructureWakes(d, workerModel(), now);
+      a.state = 'running';
+      a.attempts.push({
+        runId,
+        model: workerModel(),
+        runnerPid: process.pid,
+        startedAt: new Date().toISOString(),
+      });
+      event('worker.started', `${assignmentId} attempt ${runId}`, [assignmentId]);
     });
-    event('worker.started', `${assignmentId} attempt ${runId}`, [assignmentId]);
-  });
+  } catch (error) {
+    if (error instanceof RevisionConflictError) return false;
+    throw error;
+  }
 
   let submitted = false;
   const sections: string[] = [];
@@ -513,4 +523,5 @@ export async function runWorker(slug: string, assignmentId: string): Promise<voi
     infrastructure,
     ...(resultSubtype ? { terminalReason: resultSubtype } : {}),
   });
+  return true;
 }
