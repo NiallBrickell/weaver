@@ -13,7 +13,7 @@
  */
 
 import type { ManagerDirection, WorkstreamCore, WorkstreamDoc } from './types.js';
-import { arrive, createWorkstream, load, newId } from './store.js';
+import { arrive, createWorkstream, findBySourceKey, load, newId } from './store.js';
 import { virtualNow } from './clock.js';
 
 export class ManagedWorkstreamError extends Error {}
@@ -28,6 +28,8 @@ export interface CreateManagedWorkstreamArgs {
   maxCoordinatorPasses?: number;
   maxCostUsd?: number;
   sendsRequireApproval?: boolean;
+  /** Stable identity of the external thing the new workstream stands for. */
+  sourceKey?: string;
 }
 
 /**
@@ -41,6 +43,16 @@ export async function createManagedWorkstream(callingSlug: string, args: CreateM
   if (args.slug === callingSlug) {
     throw new ManagedWorkstreamError('a workstream cannot manage itself');
   }
+  // Structural backstop for at-least-once intake: a coordinator that looks at
+  // the same tracker on every pass must not be able to open the same work
+  // twice, whatever it believes it has already done. Checked here rather than
+  // only in the tool so no caller can bypass it.
+  if (args.sourceKey) {
+    const existing = await findBySourceKey(args.sourceKey);
+    if (existing) {
+      throw new ManagedWorkstreamError(`'${existing}' already stands for ${args.sourceKey}`);
+    }
+  }
   const core: Omit<WorkstreamCore, 'id' | 'createdAt' | 'status'> = {
     slug: args.slug,
     title: args.title,
@@ -48,6 +60,7 @@ export async function createManagedWorkstream(callingSlug: string, args: CreateM
     tags: args.tags,
     successCriteria: args.successCriteria,
     constraints: args.constraints,
+    ...(args.sourceKey ? { sourceKey: args.sourceKey } : {}),
     autonomy: { sendsRequireApproval: args.sendsRequireApproval ?? true },
     budget: {
       maxCoordinatorPasses: args.maxCoordinatorPasses ?? 500,
