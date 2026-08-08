@@ -3,11 +3,12 @@
  * no SDK run. (Testing discipline ported from the relay experiment: model
  * quality must never be able to make a durability test pass or fail.)
  *
- * The suite is PARAMETERIZED over backends: the fs reference backend always
- * runs; the Postgres backend runs when WEAVER_TEST_PG_URL points at a
- * database (a throwaway `docker run postgres:16` is enough) and is skipped
- * with a message otherwise. Same tests, same assertions — the contract is the
- * contract on every backend.
+ * The suite is PARAMETERIZED over backends: the fs reference backend and the
+ * sqlite backend (a temp-file database — no service, no env var) always run;
+ * the Postgres backend runs when WEAVER_TEST_PG_URL points at a database (a
+ * throwaway `docker run postgres:16` is enough) and is skipped with a message
+ * otherwise. Same tests, same assertions — the contract is the contract on
+ * every backend.
  */
 
 import { after, beforeEach, describe, test } from 'node:test';
@@ -97,6 +98,30 @@ const fsBackend: Backend = {
   },
   async tamper(slug, relPath, content) {
     fs.writeFileSync(path.join(artifactsDir(slug), relPath), content);
+  },
+};
+
+/** Set by sqliteBackend.reset() so tamper() can open the same database file. */
+let sqliteDbPath = '';
+
+const sqliteBackend: Backend = {
+  async reset() {
+    await closeStore();
+    const home = freshHome(); // secrets and machine-local sidecars still live under WEAVER_HOME
+    sqliteDbPath = path.join(home, 'weaver.db');
+    process.env.WEAVER_STORE = `sqlite:${sqliteDbPath}`;
+  },
+  async tamper(slug, relPath, content) {
+    // A second connection to the same file — genuinely behind the store's back.
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+    const db = new DatabaseSync(sqliteDbPath);
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.prepare('UPDATE artifacts SET content = ? WHERE slug = ? AND rel_path = ?')
+        .run(content, slug, relPath);
+    } finally {
+      db.close();
+    }
   },
 };
 
@@ -233,7 +258,17 @@ function contractSuite(backend: Backend): void {
     }
     fs.writeFileSync(gate, 'go');
     const results = await Promise.all(children);
-    assert.deepEqual(results, Array.from({ length: count }, () => ({ code: 0, stderr: '' })));
+    // node:sqlite prints an ExperimentalWarning on load (Node 22–25), so a
+    // child on the sqlite backend has known-benign stderr noise; anything
+    // else on stderr is still a failure.
+    const cleaned = results.map(({ code, stderr }) => ({
+      code,
+      stderr: stderr
+        .split('\n')
+        .filter((line) => line && !/ExperimentalWarning: SQLite|Use `node --trace-warnings/.test(line))
+        .join('\n'),
+    }));
+    assert.deepEqual(cleaned, Array.from({ length: count }, () => ({ code: 0, stderr: '' })));
     const doc = await load('test-ws');
     assert.equal(doc.revision, count);
     assert.deepEqual([...doc.workstream.constraints].sort(), Array.from({ length: count }, (_, index) => `arrival-${index}`));
@@ -315,6 +350,68 @@ function contractSuite(backend: Backend): void {
 
 describe('store contract — fs backend', () => {
   contractSuite(fsBackend);
+});
+
+describe('store contract — sqlite backend', () => {
+  contractSuite(sqliteBackend);
+
+  test('a cross-process mutate race on one expected revision: exactly one wins the CAS', async () => {
+    // Both writers target the same expectedRevision from separate OS
+    // processes on the same database file. BEGIN IMMEDIATE serializes the
+    // whole read→check→write region across processes: whichever transaction
+    // runs second reads the bumped revision and must conflict — never a lost
+    // update, never both landing. (Any interleaving satisfies the assertion,
+    // and the gate makes genuine contention overwhelmingly likely.)
+    await makeWorkstream();
+    const rev = (await load('test-ws')).revision;
+    const home = process.env.WEAVER_HOME!;
+    const gate = path.join(home, 'mutate-gate');
+    const ready = path.join(home, 'mutate-ready');
+    const storeUrl = pathToFileURL(path.resolve('src/store.ts')).href;
+    const code = `
+      import fs from 'node:fs';
+      const { mutate, closeStore } = await import(${JSON.stringify(storeUrl)});
+      fs.writeFileSync(${JSON.stringify(ready)}, 'ready');
+      const wait = new Int32Array(new SharedArrayBuffer(4));
+      while (!fs.existsSync(${JSON.stringify(gate)})) Atomics.wait(wait, 0, 0, 5);
+      try {
+        await mutate('test-ws', ${rev}, (doc, event) => event('race.child', 'child'));
+        console.log('won');
+      } catch (error) {
+        console.log(error?.name === 'RevisionConflictError' ? 'conflict' : 'error: ' + error);
+      }
+      await closeStore();
+    `;
+    const child = new Promise<string>((resolve, reject) => {
+      const proc = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', code], {
+        cwd: process.cwd(),
+        env: { ...process.env, WEAVER_HOME: home },
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      let stdout = '';
+      proc.stdout.on('data', (chunk) => { stdout += String(chunk); });
+      proc.on('close', (exitCode) =>
+        exitCode === 0 ? resolve(stdout.trim()) : reject(new Error(`child exited ${exitCode}: ${stdout}`)));
+    });
+    const deadline = Date.now() + 10_000;
+    while (!fs.existsSync(ready)) {
+      if (Date.now() > deadline) throw new Error('child mutate barrier timed out');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    fs.writeFileSync(gate, 'go');
+    const parent = mutate('test-ws', rev, (doc, event) => event('race.parent', 'parent'))
+      .then(() => 'won')
+      .catch((error) => {
+        if (error instanceof RevisionConflictError) return 'conflict';
+        throw error;
+      });
+    const outcomes = (await Promise.all([parent, child])).sort();
+    assert.deepEqual(outcomes, ['conflict', 'won']);
+    const doc = await load('test-ws');
+    assert.equal(doc.revision, rev + 1); // exactly one write landed
+    const raceEvents = doc.events.filter((e) => e.type === 'race.parent' || e.type === 'race.child');
+    assert.equal(raceEvents.length, 1); // the loser's mutation left no trace
+  });
 });
 
 describe(
