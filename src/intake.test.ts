@@ -6,9 +6,12 @@
  *   1. Looking is at-least-once — the same issue is seen on every pass — so
  *      "does this already have a workstream?" is answered from typed state
  *      (sourceKey), never from a coordinator's recollection.
- *   2. Looking is read-only. The same deterministic gate that gives workers
- *      the operator's MCP servers gives them to the coordinator, and it
- *      refuses every write verb without consulting a model.
+ *   2. A manager's capacity to take on more is read from its children's live
+ *      status in the projection, never reconstructed from a notice tail or
+ *      from what a pass believes it started.
+ *
+ * The looking itself is ordinary worker work — the coordinator has no tools
+ * onto the outside world and needs none.
  */
 
 import { afterEach, beforeEach, test } from 'node:test';
@@ -17,8 +20,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { closeStore, createWorkstream, findBySourceKey, listWorkstreams, workstreamDir } from './store.js';
-import { readOnlyMcpSupervisor } from './coordinator.js';
+import { closeStore, createWorkstream, findBySourceKey, listManagedBy, listWorkstreams, load, workstreamDir } from './store.js';
+import { createManagedWorkstream } from './managedWorkstreams.js';
+import { buildProjection } from './projection.js';
 
 let home: string;
 
@@ -111,37 +115,34 @@ test('creating a managed workstream twice for one external thing is refused at t
   assert.deepEqual((await listWorkstreams()).sort(), ['erdo-425-connectivity', 'linear-intake']);
 });
 
-test("the coordinator's read-only gate allows retrieval and refuses every write verb", async () => {
-  const gate = readOnlyMcpSupervisor();
-  for (const name of [
-    'mcp__linear__list_issues',
-    'mcp__linear__get_issue',
-    'mcp__linear__list_comments',
-    'mcp__linear__search_documentation',
-  ]) {
-    assert.equal((await gate(name, {})).behavior, 'allow', name);
-  }
-  for (const name of [
-    'mcp__linear__save_issue',
-    'mcp__linear__save_comment',
-    'mcp__linear__create_issue_label',
-    'mcp__linear__delete_comment',
-    'mcp__linear__merge_diff',
-  ]) {
-    assert.equal((await gate(name, {})).behavior, 'deny', name);
-  }
+test('a manager reads its live child count from the projection, not from notices', async () => {
+  await make('intake');
+  const doc = await load('intake');
+
+  // No children yet: the section is present and says so, so a pass can never
+  // read absence as "I have not looked".
+  assert.match(buildProjection(doc, [], [], []), /Workstreams you manage \(0 of 0 still running/);
+
+  // Two running, one concluded — the count that governs "how many more may I
+  // take on?" must be the ACTIVE one, not the total ever created.
+  const p = buildProjection(doc, [], [], [
+    { slug: 'erdo-410', status: 'active' },
+    { slug: 'erdo-411', status: 'active' },
+    { slug: 'erdo-412', status: 'done' },
+  ]);
+  assert.match(p, /Workstreams you manage \(2 of 3 still running/);
+  assert.match(p, /- erdo-410 \[active\]/);
+  assert.match(p, /- erdo-412 \[done\]/);
 });
 
-test('the gate is deny-by-default: nothing but a read reaches the world', async () => {
-  const gate = readOnlyMcpSupervisor();
-  // The coordinator runs with tools: [], so a non-MCP tool arriving here would
-  // already be a bug — deny-by-default is what makes it a harmless one. The
-  // write path an intake stream would most like to cheat past is a shell that
-  // forges workstream state directly.
-  assert.equal((await gate('Bash', { command: 'weaver create --slug x' })).behavior, 'deny');
-  assert.equal((await gate('Bash', { command: 'git log -5' })).behavior, 'deny');
-  assert.equal((await gate('Write', { file_path: '/x', content: 'y' })).behavior, 'deny');
-  // A read verb that is only a prefix of a longer word is not a read verb.
-  assert.equal((await gate('mcp__x__gettysburg', {})).behavior, 'deny');
-  assert.equal((await gate('mcp__x__getAddress', {})).behavior, 'allow');
+test('listManagedBy gives the projection exactly the children it manages, one level deep', async () => {
+  await make('intake');
+  await createManagedWorkstream('intake', { slug: 'child-a', title: 'a', objective: 'o', successCriteria: [], constraints: [], tags: [] });
+  await createManagedWorkstream('intake', { slug: 'child-b', title: 'b', objective: 'o', successCriteria: [], constraints: [], tags: [] });
+  // A grandchild must never reach the manager's own count.
+  await createManagedWorkstream('child-a', { slug: 'grandchild', title: 'g', objective: 'o', successCriteria: [], constraints: [], tags: [] });
+
+  const managed = await listManagedBy('intake');
+  assert.deepEqual(managed.map((m) => m.slug).sort(), ['child-a', 'child-b']);
+  assert.match(buildProjection(await load('intake'), [], [], managed), /you manage \(2 of 2 still running/);
 });
