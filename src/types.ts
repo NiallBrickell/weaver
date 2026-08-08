@@ -346,7 +346,8 @@ export interface PrintoutFieldDelta {
 
 export interface PrintoutChange {
   kind: 'workstream' | 'decision' | 'assignment' | 'deliverable' | 'interaction' |
-    'observation' | 'wake' | 'steering' | 'attention' | 'pass' | 'spend' | 'capacity' | 'lease';
+    'observation' | 'wake' | 'steering' | 'attention' | 'pass' | 'manager_direction' |
+    'manager_notice' | 'spend' | 'capacity' | 'lease';
   /** Absent only for singleton workstream/spend/capacity/lease values. */
   id?: Id;
   /** Exact leaf deltas; growing arrays append one indexed value, not a full copy. */
