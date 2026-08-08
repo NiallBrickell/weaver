@@ -120,7 +120,8 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
   weaver run [--interval N]                  resident runner: tick every active workstream every N seconds (default 30)
-  weaver pause <slug> | resume <slug>        stop/restart a workstream being ticked (state is kept)
+  weaver pause [slug]                        pause every active workstream, or one named workstream (state is kept)
+  weaver resume <slug>                       restart one paused workstream (state is kept)
   weaver resolve <slug> <attentionId> [note] mark an attention item handled (human act)
 `;
 
@@ -625,12 +626,39 @@ async function main(): Promise<void> {
       break;
     }
 
-    case 'pause':
+    case 'pause': {
+      const { pauseAllWorkstreams, setPaused } = await import('./humanActs.js');
+      const slug = rest[0];
+      if (slug) {
+        const result = await setPaused(slug, true);
+        if (result.outcome === 'done') process.stdout.write(`${slug} is done; status unchanged\n`);
+        else if (result.outcome === 'already-paused') process.stdout.write(`${slug} is already paused; status unchanged\n`);
+        else process.stdout.write(`${slug} is now paused\n`);
+        break;
+      }
+
+      const result = await pauseAllWorkstreams();
+      process.stdout.write(
+        `paused ${result.paused.length} active workstream(s)${result.paused.length ? `: ${result.paused.join(', ')}` : ''}\n` +
+        `unchanged: ${result.alreadyPaused.length} already paused${result.alreadyPaused.length ? ` (${result.alreadyPaused.join(', ')})` : ''}; ` +
+        `${result.done.length} done${result.done.length ? ` (${result.done.join(', ')})` : ''}\n`,
+      );
+      if (result.failures.length) {
+        throw new Error(
+          `failed to pause ${result.failures.length} workstream(s): ` +
+          result.failures.map((failure) => `${failure.slug}: ${failure.error}`).join('; '),
+        );
+      }
+      break;
+    }
+
     case 'resume': {
       const slug = rest[0] ?? fail('slug required');
       const { setPaused } = await import('./humanActs.js');
-      await setPaused(slug, cmd === 'pause');
-      process.stdout.write(`${slug} is now ${cmd === 'pause' ? 'paused' : 'active'}\n`);
+      const result = await setPaused(slug, false);
+      if (result.outcome === 'done') process.stdout.write(`${slug} is done; status unchanged\n`);
+      else if (result.outcome === 'already-active') process.stdout.write(`${slug} is already active; status unchanged\n`);
+      else process.stdout.write(`${slug} is now active\n`);
       break;
     }
 
