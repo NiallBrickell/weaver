@@ -101,8 +101,12 @@ async function capacityProbe(model: string): Promise<boolean> {
       prompt: 'Reply with the single word: ok',
       options: {
         model,
+        tools: [],
         maxTurns: 1,
         allowedTools: [],
+        permissionMode: 'dontAsk',
+        settingSources: [],
+        strictMcpConfig: true,
         persistSession: false,
         env: sdkEnv(),
       },

@@ -77,6 +77,8 @@ export async function ask(question: string): Promise<string> {
       cwd: home,
       additionalDirectories: [home],
       permissionMode: 'dontAsk',
+      settingSources: [],
+      strictMcpConfig: true,
       maxTurns: 25,
       persistSession: false,
       env: sdkEnv(),

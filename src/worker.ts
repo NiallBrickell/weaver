@@ -1,10 +1,11 @@
 /**
- * The worker runner: one fresh, side-effect-free Agent SDK run per assignment.
+ * The worker runner: one fresh, full-capability Agent SDK run per assignment.
  *
  * A worker sees ONLY its briefing plus the declared inputs (deliverables of
  * its dependency assignments) — never the coordinator's reasoning, never the
- * projection, never a transcript. Its only write path is the submit tool,
- * which produces an artifact + submission record. Completion stores a wake.
+ * projection, never a transcript. Its only Weaver state API is the submit
+ * tool, which produces an artifact + submission record. Completion stores a
+ * wake. Its ordinary coding tools are supplied by the execution substrate.
  */
 
 import { mkdirSync, readFileSync } from 'node:fs';
@@ -81,77 +82,10 @@ function pilotSupervisor(cwd: string, slug: string) {
 }
 
 /**
- * The read-only gate for non-action workers' MCP access. MCP servers are not
- * inherently read-only (Sentry can update issues, Axiom can delete monitors),
- * but retrieval IS research — so instead of withholding the servers entirely,
- * the harness allows methods whose name states a read intent and denies
- * everything else. Deliberately deterministic and fail-closed: an unmatched
- * verb is denied, and no model (worker or pilot) is consulted — the
- * side-effect-free guarantee for research workers stays structural.
- */
-const MCP_READ_VERBS = ['describe', 'search', 'status', 'export', 'fetch', 'query', 'check', 'count', 'watch', 'list', 'find', 'show', 'read', 'get'];
-
-export function isReadOnlyMcpTool(toolName: string): boolean {
-  const parts = toolName.split('__');
-  if (parts[0] !== 'mcp' || parts.length < 3) return false;
-  const method = parts.slice(2).join('__');
-  const lower = method.toLowerCase();
-  // The verb must be the whole method or be followed by a case/underscore
-  // boundary: `getIssue`/`get_issue`/`get` pass, `gettysburg` does not.
-  return MCP_READ_VERBS.some(
-    (v) => lower === v || (lower.startsWith(v) && /[^a-z]/.test(method.charAt(v.length))),
-  );
-}
-
-/**
- * Read-only shell commands for non-action workers: the operator's recorded
- * thinking lives in git history and PR discussions ("I went back and forth on
- * this in the PR"), and Read/Grep cannot open either. So read-only workers get
- * Bash gated to an exact allowlist of history-reading git/gh forms — plain
- * single commands only: any shell metacharacter (chaining, redirection,
- * substitution) or output-writing flag fails the gate. Fail-closed like the
- * MCP gate: unmatched means denied, no model consulted.
- */
-const READ_SHELL_FORMS = [
-  /^git(\s+(-C\s+\S+|--no-pager))*\s+(log|show|diff|blame|shortlog|describe|status|grep|ls-files|rev-parse)\b/,
-  /^gh\s+(pr\s+(list|view|diff|checks|status)|issue\s+(list|view|status)|release\s+(list|view)|run\s+(list|view)|search\s+(prs|issues|commits|code))\b/,
-];
-const SHELL_META = /[;&|<>`$\\]/;
-
-export function isReadOnlyShellCommand(command: string): boolean {
-  const c = command.trim();
-  if (SHELL_META.test(c) || c.includes('\n') || c.includes('--output')) return false;
-  return READ_SHELL_FORMS.some((r) => r.test(c));
-}
-
-function readOnlyMcpSupervisor() {
-  return async (toolName: string, input: Record<string, unknown>): Promise<
-    { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }
-  > => {
-    if (toolName === 'Bash') {
-      const command = typeof input.command === 'string' ? input.command : '';
-      if (isReadOnlyShellCommand(command)) return { behavior: 'allow', updatedInput: input };
-      return {
-        behavior: 'deny',
-        message: `read-only workers may only run plain history-reading commands (git log/show/diff/blame/status/grep, gh pr|issue list/view, gh search) with no pipes, chaining, or redirection. Rephrase as one such command, or state the need in your submission.`,
-      };
-    }
-    if (isReadOnlyMcpTool(toolName)) return { behavior: 'allow', updatedInput: input };
-    return {
-      behavior: 'deny',
-      message: `${toolName} is not a read operation and you are a read-only worker. Do not look for another way to perform this act. If the assignment genuinely needs it, state that in your submission so the coordinator can dispatch a supervised action.`,
-    };
-  };
-}
-
-/**
- * MCP servers the OPERATOR already registered for the directories an action
- * touches (global + every ~/.claude.json project entry that is an ancestor of
- * the action's dirs, closest last so it wins). Workers act as the operator on
- * this machine, so they get the operator's MCPs — same servers, same stored
- * auth — instead of asking the human to re-plumb access that already exists.
- * Action workers get the full surface under live pilot supervision; read-only
- * workers get the same servers behind the deterministic read-only gate below.
+ * MCP servers the operator already registered for directories an approved
+ * action touches. Ordinary workers load the same access through Claude Code's
+ * normal settings. Actions use this explicit secured copy with filesystem
+ * settings disabled so every live call still reaches Pilot.
  */
 export function operatorMcpServers(dirs: string[]): SecuredMcpConfiguration {
   try {
@@ -179,10 +113,10 @@ Rules:
 3. For anything longer than ~150 lines, build the artifact incrementally: call append_section repeatedly (each call adds one section, in order), then call submit_result ONCE with an empty or short closing content — the appended sections are prepended automatically. Never submit a placeholder: an empty or stub artifact is worse than no submission, and the coordinator will reject it.
 4. Call submit_result exactly once. Do not end without submitting.`;
 
-const WORKER_SYSTEM = `You are an isolated worker executing ONE bounded assignment inside a larger workstream you cannot see. You have no memory of anything outside this brief and no ability to affect the world: your single output channel is the submit_result tool. If the assignment declares read-only directories, you may Read/Grep/Glob within them to ground your work in the real source — cite real file paths and line numbers, never invented ones. You may also have the operator's MCP tools (error trackers, log stores, …) available in READ-ONLY mode: retrieval calls (get/list/search/query/…) work, anything that would mutate external state is denied by the harness — if the assignment needs such a mutation, say so in your submission rather than working around the denial. When investigating a system, MINE THE RECORDED THINKING before forming your own theory: Bash is available for plain history-reading commands only (git log/show/diff/blame/grep, gh pr|issue list/view, gh search) — the operator's commit messages, PR bodies and review discussions, and in-repo docs often contain the exact rationale, prior attempts, and constraints your assignment is about to rediscover. Cite what you find by commit/PR number.
+const WORKER_SYSTEM = `You are one regular Claude Code worker executing ONE bounded assignment inside a larger workstream you cannot see. You have normal coding tools — including Bash, file editing, web access, and the operator's configured MCP servers — and may use them as needed to complete the assignment. The directories in the brief are working context, not a reduced read-only tool mode. Follow their repository instructions and use a fresh worktree for repository changes. Your only authoritative output to Weaver is submit_result: files or external state you inspect or change do not become accepted Workstream truth merely because you report them. A non-action assignment is not authorization for an intentional external effect such as pushing, merging, deploying, sending, or changing a remote service; if the requested outcome needs one, report the exact required act so the coordinator can dispatch it through the action lifecycle. MINE THE RECORDED THINKING before forming your own theory: inspect git history, PR bodies and review threads, and in-repo docs, then cite what you find by commit/PR number.
 ${SHARED_RULES}`;
 
-const ACTION_SYSTEM = `You are an isolated worker executing ONE human-approved real-world ACTION inside a larger workstream you cannot see. You have Bash in your working directory and real CLIs. Perform EXACTLY the act the briefing describes — nothing beyond it, nothing on targets the briefing does not name, and every "do not" the briefing states is absolute. If a step fails, report the failure honestly via submit_result; never improvise a different action to "make it work". If the briefing lists credential environment variables, use them via the shell (\`$NAME\`) — never echo, print, or persist their values anywhere. Your submission is a report of what you did with exact references (identifiers, URLs, command output) — the harness will independently verify the effect, so precision matters and embellishment will be caught.
+const ACTION_SYSTEM = `You are a fresh worker executing ONE human-approved real-world ACTION inside a larger workstream you cannot see. You have Bash in your working directory and real CLIs. Perform EXACTLY the act the briefing describes — nothing beyond it, nothing on targets the briefing does not name, and every "do not" the briefing states is absolute. If a step fails, report the failure honestly via submit_result; never improvise a different action to "make it work". If the briefing lists credential environment variables, use them via the shell (\`$NAME\`) — never echo, print, or persist their values anywhere. Your submission is a report of what you did with exact references (identifiers, URLs, command output) — the harness will independently verify the effect, so precision matters and embellishment will be caught.
 ${SHARED_RULES}`;
 
 export async function finalizeWorkerRun(
@@ -273,14 +207,18 @@ export function consumeDueWorkerInfrastructureWakes(
   }
 }
 
-export async function runWorker(slug: string, assignmentId: string): Promise<boolean> {
+export async function runWorker(
+  slug: string,
+  assignmentId: string,
+  providedExecutor?: WorkerExecutor,
+): Promise<boolean> {
   const doc = await load(slug);
   if (doc.workstream.status !== 'active') return false;
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg) throw new Error(`no assignment ${assignmentId}`);
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
   // A misconfigured WEAVER_EXECUTOR fails here, before any state moves.
-  const executor = selectExecutor();
+  const executor = providedExecutor ?? selectExecutor();
 
   // Declared inputs: ADOPTED deliverables of dependency assignments only — a
   // rejected candidate never becomes another worker's input.
@@ -327,7 +265,12 @@ export async function runWorker(slug: string, assignmentId: string): Promise<boo
   const sections: string[] = [];
   const readDirs = asg.readDirs ?? [];
   const isAction = asg.kind === 'action';
-  const operatorMcp = operatorMcpServers(isAction && asg.exec ? [asg.exec.cwd, ...readDirs] : readDirs);
+  // Ordinary workers inherit the operator's normal Claude Code settings.
+  // Actions get an explicit secured MCP map while filesystem settings are
+  // disabled, keeping their tool calls behind Pilot.
+  const operatorMcp = isAction && asg.exec
+    ? operatorMcpServers([asg.exec.cwd, ...readDirs])
+    : { servers: {}, env: {} };
   // Action workers get secret VALUES as env vars only; every path back into
   // durable state is scrubbed so a value can never outlive the process.
   const secrets = isAction ? loadSecrets(slug) : {};
@@ -397,6 +340,16 @@ export async function runWorker(slug: string, assignmentId: string): Promise<boo
     ``,
     `## Acceptance criteria (you will be judged against these literally)`,
     ...asg.acceptanceCriteria.map((c) => `- ${c}`),
+    ...(readDirs.length
+      ? [
+          ``,
+          isAction ? `## Additional source directories` : `## Working/source directories`,
+          isAction
+            ? `These are additional project context; your action working directory is ${asg.exec!.cwd}:`
+            : `The first directory is your working directory; the others are additional project context:`,
+          ...readDirs.map((dir) => `- ${dir}`),
+        ]
+      : []),
     ...(Object.keys(secrets).length
       ? [
           ``,
@@ -426,21 +379,17 @@ export async function runWorker(slug: string, assignmentId: string): Promise<boo
       if (!asg.exec?.approval) throw new Error(`${assignmentId} is an action without human approval — refusing to run`);
       mkdirSync(asg.exec.cwd, { recursive: true });
     }
-    // Actions get real Bash inside their approved cwd — the model drives real
-    // CLIs (git, gh, ...) directly; there is no per-channel adapter layer.
-    // Everything else stays side-effect-free.
-    const baseTools = isAction
-      ? ['Bash', 'Read', 'Grep', 'Glob', 'Write', 'Edit']
-      : readDirs.length
-        ? ['Read', 'Grep', 'Glob', 'Bash'] // Bash gated to read-only history commands below
-        : [];
     const outcome = await executor.execute({
       workstreamSlug: slug,
       assignmentId,
       prompt,
-      systemPrompt: isAction ? ACTION_SYSTEM : WORKER_SYSTEM,
+      systemPrompt: {
+        type: 'preset',
+        preset: 'claude_code',
+        append: isAction ? ACTION_SYSTEM : WORKER_SYSTEM,
+      },
       model: workerModel(),
-      tools: baseTools,
+      tools: { type: 'preset', preset: 'claude_code' },
       // Ephemeral MCP header credentials ride the subprocess env with the
       // action secrets — never SDK process arguments, never durable state.
       env: sdkEnv({ ...secrets, ...operatorMcp.env }),
@@ -448,39 +397,25 @@ export async function runWorker(slug: string, assignmentId: string): Promise<boo
         ? {
             cwd: asg.exec!.cwd,
             additionalDirectories: readDirs,
-            // Confine the action's Bash to its approved cwd: without this,
-            // a misbriefed or injected worker could write anywhere the OS
-            // user can — including forging its own workstream state. If the
-            // sandbox blocks something the act genuinely needs, the failure
-            // is LOUD (the act fails, readback fails, attention is raised);
-            // WEAVER_NO_SANDBOX=1 is the explicit, human-owned override.
-            // The substrate applies the boundary's carve-outs (session-env
-            // bootstrap dir, open network egress — see localSdk.ts): the ONE
-            // invariant is the write boundary, and it is the harness's call.
-            sandbox: !process.env.WEAVER_NO_SANDBOX,
           }
         : {
             ...(readDirs.length ? { cwd: readDirs[0] } : {}),
             additionalDirectories: readDirs,
-            sandbox: false,
           }),
       // The SECURED server map: header credentials already moved into env
-      // placeholders by the harness (secureMcpHeaderCredentials).
+      // placeholders by the harness for action workers. Ordinary workers load
+      // their normal on-disk Code configuration instead.
       operatorMcpServers: operatorMcp.servers,
-      // Action workers: ONLY the submit surface is auto-allowed — every
-      // real tool call (Bash, edits, operator MCPs) routes through the live
-      // pilot supervisor, judged at execution time exactly like the
-      // operator's own sessions. Read-only workers auto-allow their file
-      // tools + submit surface; operator MCP calls fall through to the
-      // deterministic read-only gate.
-      // Bash is NOT auto-allowed for read-only workers — it must fall
-      // through to the supervisor's command allowlist.
-      allowedTools: isAction
-        ? ['mcp__weaver__*']
-        : [...baseTools.filter((t) => t !== 'Bash'), 'mcp__weaver__*'],
-      supervise: isAction ? pilotSupervisor(asg.exec!.cwd, slug) : readOnlyMcpSupervisor(),
+      // Every worker is a normal Code worker. A declared action remains
+      // special only because Pilot supervises its calls and the engine reads
+      // the external effect back before Weaver can adopt it as fact.
+      allowedTools: ['mcp__weaver__*'],
+      permissionMode: isAction ? 'default' : 'bypassPermissions',
+      settingSources: isAction ? [] : ['user', 'project', 'local'],
+      strictMcpConfig: isAction,
+      ...(isAction ? { supervise: pilotSupervisor(asg.exec!.cwd, slug) } : {}),
       submit,
-      maxTurns: isAction || readDirs.length || Object.keys(operatorMcp.servers).length ? 80 : 30,
+      maxTurns: 80,
       abort,
       onMessage: (message) => {
         tailMessage(slug, 'worker', assignmentId, message, operatorMcp.env);

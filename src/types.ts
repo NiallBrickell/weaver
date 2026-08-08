@@ -65,14 +65,13 @@ export interface Assignment {
   /** Full brief handed to the worker — declared inputs, never a parent transcript. */
   briefing: string;
   kind: AssignmentKind;
-  /** Read-only resource handles: directories the worker may Read/Grep/Glob.
-   * Workers stay side-effect-free — these grant sight, never mutation. */
+  /** Project/source directories supplied as worker context. The first is the
+   * cwd; the legacy field name is retained for stored-state compatibility. */
   readDirs?: string[];
-  /** Present only on kind 'action': the one place a worker touches the real
-   * world. There is no channel adapter layer — the worker uses real CLIs
-   * (git, gh, txb) via Bash inside cwd; Weaver's job is the gate before and
-   * the readback after. `verify` is a shell command the ENGINE runs
-   * deterministically (no model) whose exit status confirms the effect. */
+  /** Present only on kind 'action': the durable lifecycle for an intentional
+   * external effect. The worker uses normal CLIs and MCPs; Weaver supplies the
+   * gate before and readback after. `verify` is a shell command the ENGINE
+   * runs deterministically (no model) whose exit status confirms the effect. */
   exec?: {
     cwd: string;
     verify: string;

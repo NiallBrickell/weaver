@@ -355,6 +355,8 @@ export async function backfillSessions(
       mcpServers: { backfill: server } as never,
       allowedTools: ['mcp__backfill__*'],
       permissionMode: 'dontAsk',
+      settingSources: [],
+      strictMcpConfig: true,
       maxTurns: 4,
       persistSession: false,
       env: sdkEnv(),
