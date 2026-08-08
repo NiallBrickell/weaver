@@ -16,7 +16,7 @@ import { pickCoordinatorModel, runCoordinatorPass } from './coordinator.js';
 import { loadSecrets, redactSecrets } from './secrets.js';
 import { runWorker, workerModel } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
-import { arrive, load, newId, readArtifact, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
+import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { WorkstreamDoc } from './types.js';
 
@@ -29,9 +29,17 @@ function dueWakes(doc: WorkstreamDoc): typeof doc.wakes {
   );
 }
 
+/** Pause is typed lifecycle state, not merely a runner filter. Every
+ * dispatch/egress boundary re-reads it so a tick that was already in flight
+ * cannot start another bounded step after the operator pauses the stream. */
+async function workstreamStatus(slug: string): Promise<WorkstreamDoc['workstream']['status']> {
+  return (await load(slug)).workstream.status;
+}
+
 /** Step 1a: execute approved sends. Authority is revalidated here, at egress. */
 async function executeApprovedSends(slug: string): Promise<number> {
   const doc = await load(slug);
+  if (doc.workstream.status !== 'active') return 0;
   let executed = 0;
   for (const int of doc.interactions.filter((i) => i.status === 'approved')) {
     // Revalidate at egress: approval present, pinned content intact, budget alive.
@@ -53,6 +61,9 @@ async function executeApprovedSends(slug: string): Promise<number> {
       continue;
     }
     const body = await readArtifact(slug, del.path);
+    // Revalidate pause immediately before egress. The tick may have started
+    // while active and received a human pause during artifact verification.
+    if ((await workstreamStatus(slug)) !== 'active') break;
     try {
       const rec = providerSend(slug, int.id, { to: int.to, subject: int.subject, body });
       await arrive(slug, (d, event) => {
@@ -115,6 +126,7 @@ async function resolveUnknownSends(slug: string): Promise<number> {
 async function pilotApproveGatedActions(slug: string): Promise<number> {
   const base = process.env.WEAVER_PILOT_URL ?? 'http://127.0.0.1:9721';
   const doc = await load(slug);
+  if (doc.workstream.status !== 'active') return 0;
   let approved = 0;
   const gated = doc.assignments.filter(
     (a) => a.kind === 'action' && a.state === 'gated' && a.exec && !a.exec.approval && !a.exec.pilotVerdict,
@@ -162,25 +174,32 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
       continue;
     }
     if (!verdict) continue;
-    await arrive(slug, (d, event) => {
-      const a2 = d.assignments.find((x) => x.id === asg.id)!;
-      if (!a2.exec || a2.state !== 'gated') return;
-      a2.exec.pilotVerdict = { ...verdict!, at: new Date().toISOString() };
-      if (verdict!.decision === 'approve') {
-        a2.state = 'queued';
-        a2.exec.approval = { by: 'pilot', at: new Date().toISOString(), note: verdict!.reason };
-        for (const att of d.attention) {
-          if (att.refId === asg.id && att.status === 'open') {
-            att.status = 'resolved';
-            att.resolvedAt = new Date().toISOString();
-            att.resolvedBy = 'pilot'; // system actor — never a human intervention
+    const current = await load(slug);
+    if (current.workstream.status !== 'active') break;
+    try {
+      await mutate(slug, current.revision, (d, event) => {
+        const a2 = d.assignments.find((x) => x.id === asg.id);
+        if (!a2?.exec || a2.state !== 'gated' || a2.exec.approval || a2.exec.pilotVerdict) return;
+        a2.exec.pilotVerdict = { ...verdict!, at: new Date().toISOString() };
+        if (verdict!.decision === 'approve') {
+          a2.state = 'queued';
+          a2.exec.approval = { by: 'pilot', at: new Date().toISOString(), note: verdict!.reason };
+          for (const att of d.attention) {
+            if (att.refId === asg.id && att.status === 'open') {
+              att.status = 'resolved';
+              att.resolvedAt = new Date().toISOString();
+              att.resolvedBy = 'pilot'; // system actor — never a human intervention
+            }
           }
+          event('action.auto_approved', `${asg.id} auto-approved via pilot — ${verdict!.reason}`, [asg.id]);
+        } else {
+          event('action.pilot_escalated', `${asg.id} stays gated for the human — pilot said ${verdict!.decision}: ${verdict!.reason.slice(0, 120)}`, [asg.id]);
         }
-        event('action.auto_approved', `${asg.id} auto-approved via pilot — ${verdict!.reason}`, [asg.id]);
-      } else {
-        event('action.pilot_escalated', `${asg.id} stays gated for the human — pilot said ${verdict!.decision}: ${verdict!.reason.slice(0, 120)}`, [asg.id]);
-      }
-    });
+      });
+    } catch (error) {
+      if (error instanceof RevisionConflictError) continue;
+      throw error;
+    }
     if (verdict.decision === 'approve') approved++;
   }
   return approved;
@@ -237,18 +256,31 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
  */
 async function executeHumanActions(slug: string): Promise<number> {
   const doc = await load(slug);
+  if (doc.workstream.status !== 'active') return 0;
   let executed = 0;
   const due = doc.assignments.filter(
     (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.exec.approval,
   );
   for (const asg of due) {
+    // The command is an external act. Pause is re-read at the last async
+    // boundary before execution, not trusted from the tick's initial load.
+    const current = await load(slug);
+    if (current.workstream.status !== 'active') break;
     const runId = newId('run');
-    await arrive(slug, (d, event) => {
-      const a2 = d.assignments.find((x) => x.id === asg.id)!;
-      a2.state = 'running';
-      a2.attempts.push({ runId, model: 'engine', runnerPid: process.pid, startedAt: new Date().toISOString() });
-      event('action.engine_started', `${asg.id} engine executing human-authored command`, [asg.id]);
-    });
+    try {
+      await mutate(slug, current.revision, (d, event) => {
+        const a2 = d.assignments.find((x) => x.id === asg.id);
+        if (!a2 || a2.state !== 'queued' || !a2.exec?.run || !a2.exec.approval) {
+          throw new Error(`${asg.id} is no longer an approved queued engine action`);
+        }
+        a2.state = 'running';
+        a2.attempts.push({ runId, model: 'engine', runnerPid: process.pid, startedAt: new Date().toISOString() });
+        event('action.engine_started', `${asg.id} engine executing human-authored command`, [asg.id]);
+      });
+    } catch (error) {
+      if (error instanceof RevisionConflictError) break;
+      throw error;
+    }
     mkdirSync(asg.exec!.cwd, { recursive: true });
     const secrets = loadSecrets(slug);
     let ok = false;
@@ -405,6 +437,7 @@ async function recoverCrashedAttempts(slug: string): Promise<number> {
 }
 
 export function runnableAssignments(doc: WorkstreamDoc): string[] {
+  if (doc.workstream.status !== 'active') return [];
   const now = virtualNow().toISOString();
   const model = workerModel();
   const workerRetryAt = doc.capacity?.byModel[model]?.wait.retryAt;
@@ -465,6 +498,8 @@ export async function tick(
   const releaseTick = await tryTickLock(slug);
   if (!releaseTick) return { ...report, skipped: 'another process is ticking this workstream' };
   try {
+    const status = (await load(slug)).workstream.status;
+    if (status !== 'active') return { ...report, skipped: `workstream is ${status}` };
     return await tickLocked(slug, maxPasses, report);
   } finally {
     await releaseTick();
@@ -473,7 +508,12 @@ export async function tick(
 
 async function tickLocked(slug: string, maxPasses: number, report: TickReport): Promise<TickReport> {
 
-  for (let cycle = 0; cycle < 12; cycle++) {
+  cycles: for (let cycle = 0; cycle < 12; cycle++) {
+    const cycleStatus = await workstreamStatus(slug);
+    if (cycleStatus !== 'active') {
+      if (cycleStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+      break;
+    }
     report.cycles = cycle + 1;
     let progressed = false;
 
@@ -484,16 +524,29 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     report.sendsExecuted += sent;
     if (sent > 0) progressed = true;
 
+    const afterEgressStatus = await workstreamStatus(slug);
+    if (afterEgressStatus !== 'active') {
+      if (afterEgressStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+      break;
+    }
+
     // Human-authored commands: engine executes, then readback judges.
     const engineActs = (await load(slug)).assignments
       .filter((a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.exec.approval)
       .map((a) => a.id);
-    if ((await executeHumanActions(slug)) > 0) {
-      for (const id of engineActs) {
+    const engineActCount = await executeHumanActions(slug);
+    if (engineActCount > 0) {
+      for (const id of engineActs.slice(0, engineActCount)) {
         const ok = await verifyAction(slug, id);
         process.stderr.write(`[tick] engine action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
       }
       progressed = true;
+    }
+
+    const afterEngineActionStatus = await workstreamStatus(slug);
+    if (afterEngineActionStatus !== 'active') {
+      if (afterEngineActionStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+      break;
     }
 
     // Budget gates WORKERS, not just coordinator passes — a long research run
@@ -517,8 +570,14 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     } else {
       const runnable = runnableAssignments(await load(slug));
       for (const id of runnable) {
+        const beforeWorkerStatus = await workstreamStatus(slug);
+        if (beforeWorkerStatus !== 'active') {
+          if (beforeWorkerStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+          break cycles;
+        }
         process.stderr.write(`[tick] running worker for ${id}…\n`);
-        await runWorker(slug, id);
+        const started = await runWorker(slug, id);
+        if (!started) break cycles;
         report.workersRun.push(id);
         // Action assignments: the worker's claim settles nothing — run the
         // deterministic readback now so the reviewing pass sees verified truth.
@@ -555,7 +614,18 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
         // The account/model failure is fleet capacity, not an assignment
         // failure. Do not launch the rest of this precomputed batch into it.
         if (after?.attempts.at(-1)?.infrastructure) break;
+        const afterWorkerStatus = await workstreamStatus(slug);
+        if (afterWorkerStatus !== 'active') {
+          if (afterWorkerStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+          break cycles;
+        }
       }
+    }
+
+    const beforeCoordinatorStatus = await workstreamStatus(slug);
+    if (beforeCoordinatorStatus !== 'active') {
+      if (beforeCoordinatorStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+      break;
     }
 
     // Pass-crash recovery: an EXPIRED lease whose pass record never reached a
@@ -594,6 +664,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     // next tick rather than burning them against a pass that cannot run.
     const leaseLive = preDoc.lease && new Date(preDoc.lease.expiresAt).getTime() > Date.now();
     if (
+      preDoc.workstream.status === 'active' &&
       due.length > 0 &&
       !coordinatorBackoffActive(preDoc) &&
       !leaseLive &&
@@ -627,6 +698,11 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
           }
           event('wakes.restored', `pass could not start (${e instanceof Error ? e.message.slice(0, 120) : e}); ${due.length} wake(s) restored to pending`);
         });
+        const stoppedStatus = await workstreamStatus(slug);
+        if (stoppedStatus !== 'active') {
+          if (stoppedStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+          break cycles;
+        }
         throw e;
       }
       progressed = true;

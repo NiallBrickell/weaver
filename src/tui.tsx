@@ -497,7 +497,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
 
   /** Run an async human act; toast success (via refresh) or failure. The
    * useInput handler itself must stay synchronous. */
-  const act = (fn: () => Promise<void>, done: string) => {
+  const act = (fn: () => Promise<unknown>, done: string) => {
     void fn().then(() => refresh(done)).catch((e) => setToast(`✗ ${e instanceof Error ? e.message : e}`));
   };
 
@@ -583,7 +583,10 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
     } else {
       const st = sel.stream;
       if (input === 's') setSteering({ slug: st.slug, text: '' });
-      else if (input === 'p') act(() => setPaused(st.slug, !st.paused), `${st.slug} ${st.paused ? 'resumed' : 'paused'}`);
+      else if (input === 'p') {
+        if (st.bucket === 5) setToast(`${st.slug} is done; status unchanged`);
+        else act(() => setPaused(st.slug, !st.paused), `${st.slug} ${st.paused ? 'resumed' : 'paused'}`);
+      }
       else if (key.return) {
         setExpanded((e) => {
           const n = new Set(e);
@@ -765,7 +768,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                   {st.details.slice(0, 4).map((l, j) => (
                     <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
                   ))}
-                  <Text color="cyan" wrap="truncate-end">      [enter] {expanded.has(st.slug) ? 'close card' : 'what is this stream?'}  [p] {st.paused ? 'resume' : 'pause'}  [P] open printout  [s] steer  [i] full knowledge</Text>
+                  <Text color="cyan" wrap="truncate-end">      [enter] {expanded.has(st.slug) ? 'close card' : 'what is this stream?'}{st.bucket === 5 ? null : <>  [p] {st.paused ? 'resume' : 'pause'}</>}  [P] open printout  [s] steer  [i] full knowledge</Text>
                 </>
               )}
             </Box>

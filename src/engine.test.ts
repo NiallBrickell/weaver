@@ -16,7 +16,9 @@ import {
   tick,
   verifyAction,
 } from './engine.js';
+import { runCoordinatorPass } from './coordinator.js';
 import { arrive, createWorkstream, load, newId, writeArtifact } from './store.js';
+import { runWorker } from './worker.js';
 import { virtualNow } from './clock.js';
 import type { Assignment } from './types.js';
 
@@ -122,6 +124,59 @@ test('a send whose pinned content drifted is refused at egress, not sent', async
   const int = (await load(SLUG)).interactions.find((i) => i.id === intId)!;
   assert.equal(int.status, 'rejected');
   assert.equal(fs.existsSync(outboxDir(SLUG)), false);
+});
+
+test('a paused workstream cannot be advanced by a manual tick or execute approved egress', async () => {
+  const intId = await makeApprovedSend();
+  await arrive(SLUG, (d, event) => {
+    d.workstream.status = 'paused';
+    event('workstream.paused', 'test paused the workstream');
+  });
+  const paused = await load(SLUG);
+
+  const report = await tick(SLUG, { maxPasses: 0 });
+
+  assert.equal(report.cycles, 0);
+  assert.match(report.skipped ?? '', /paused/);
+  assert.equal((await load(SLUG)).revision, paused.revision);
+  assert.equal((await load(SLUG)).interactions.find((i) => i.id === intId)!.status, 'approved');
+  assert.equal(fs.existsSync(outboxDir(SLUG)), false);
+});
+
+test('worker and coordinator entry points independently refuse paused work', async () => {
+  await createWorkstream({
+    slug: 'paused-entry',
+    title: 'Paused entry guards',
+    objective: 'remain stopped',
+    tags: [],
+    successCriteria: [],
+    constraints: [],
+    autonomy: { sendsRequireApproval: true },
+    budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+  });
+  await arrive('paused-entry', (d) => {
+    d.workstream.status = 'paused';
+    d.assignments.push({
+      id: 'asg_paused',
+      objective: 'must not start',
+      briefing: 'n/a',
+      kind: 'research',
+      acceptanceCriteria: ['n/a'],
+      dependsOn: [],
+      state: 'queued',
+      attempts: [],
+      adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    });
+  });
+  const paused = await load('paused-entry');
+
+  assert.equal(await runWorker('paused-entry', 'asg_paused'), false);
+  await assert.rejects(runCoordinatorPass('paused-entry', ['manual']), /is paused/);
+  const unchanged = await load('paused-entry');
+  assert.equal(unchanged.revision, paused.revision);
+  assert.equal(unchanged.assignments[0]!.state, 'queued');
+  assert.deepEqual(unchanged.assignments[0]!.attempts, []);
 });
 
 test('a stale running attempt is recovered: crash recorded, assignment re-queued', async () => {
