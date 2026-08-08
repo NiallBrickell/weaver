@@ -34,7 +34,7 @@ async function delivered(slug?: string): Promise<void> {
   acknowledgePrintout(await preparePrintout(slug));
 }
 
-test('HTML is semantic, self-contained, escaped, collapsible, and copyable', async () => {
+test('HTML is a continuous engineering document, self-contained, escaped, and copyable', async () => {
   await make('semantic', '<img src=x onerror=alert(1)> & semantic');
   await arrive('semantic', (doc, event) => {
     doc.assignments.push({
@@ -47,9 +47,15 @@ test('HTML is semantic, self-contained, escaped, collapsible, and copyable', asy
   });
 
   const html = renderPrintoutHtml(await preparePrintout('semantic'));
-  assert.match(html, /class="hero"/);
-  assert.match(html, /<details class="report" id="semantic" open>/);
-  assert.match(html, /<details class="technical"><summary>Exact typed mutation timeline/);
+  assert.match(html, /<article class="edition">/);
+  assert.match(html, /<section class="workstream" id="workstream-semantic">/);
+  assert.match(html, /<section class="report-section technical">/);
+  assert.match(html, /--paper:#f7f9f8/);
+  assert.match(html, /font-family:Charter/);
+  assert.match(html, /max-width:46rem/);
+  assert.doesNotMatch(html, /<details\b|scope-card|\bpill\b/);
+  assert.match(html, /href="\.\.\/\.\.\/index\.html"/);
+  assert.match(html, /href="\.\.\/\.\.\/\.\.\/semantic\/inspect\.html"/);
   assert.match(html, /Copy plain-text report/);
   assert.match(html, /event\.key === 'C'/);
   assert.match(html, /VERIFIED EXTERNAL EFFECT/);
@@ -57,6 +63,20 @@ test('HTML is semantic, self-contained, escaped, collapsible, and copyable', asy
   assert.doesNotMatch(html, /<script>alert\(2\)<\/script>/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; &amp; semantic/);
   assert.doesNotMatch(html, /<link\b|<script\b[^>]*\bsrc=|@import\s|url\(https?:/);
+});
+
+test('fleet HTML places every source in one visible document flow', async () => {
+  await make('alpha', 'Alpha stream');
+  await make('beta', 'Beta stream');
+
+  const html = renderPrintoutHtml(await preparePrintout());
+  const alpha = html.indexOf('<section class="workstream" id="workstream-alpha">');
+  const beta = html.indexOf('<section class="workstream" id="workstream-beta">');
+  const policies = html.indexOf('<section class="policy-report" id="global-learning">');
+  assert.ok(alpha >= 0 && beta > alpha && policies > beta);
+  assert.match(html, /href="#workstream-alpha">Alpha stream<\/a>/);
+  assert.match(html, /href="#workstream-beta">Beta stream<\/a>/);
+  assert.doesNotMatch(html, /<details\b|scope-grid|scope-card|\bpill\b/);
 });
 
 test('browser handoff gates the exact frozen checkpoint and preserves concurrent arrivals', async () => {
