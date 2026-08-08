@@ -151,3 +151,32 @@ test('an embedded runner whose owner aborts returns instead of pinning the proce
     runLoop({ intervalMs: 30_000, concurrency: 1, signal: abort.signal }),
   );
 });
+
+test('a stale lock left by a heartbeating dead runner is reclaimed, not wedged', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { acquireRunnerLock, liveRunnerPid } = await import('./runner.js');
+  const lock = path.join(home, '.runner.lock');
+  fs.mkdirSync(lock, { recursive: true });
+  // The exact wedge from production: a legacy pid-file owner that died, plus
+  // the heartbeat old runners wrote inside the lock dir. Two files made the
+  // snapshot malformed, so the dead owner was never reclaimed.
+  const dead = spawnSync(process.execPath, ['-e', '']).pid!;
+  fs.writeFileSync(path.join(lock, 'pid'), String(dead));
+  fs.writeFileSync(path.join(lock, 'heartbeat'), String(Date.now()));
+
+  assert.equal(liveRunnerPid(), null);
+  const release = acquireRunnerLock();
+  assert.notEqual(release, null, 'the dead runner lock must be reclaimable');
+  release!();
+});
+
+test('the loop heartbeat lives beside the lock dir, never inside it', async () => {
+  const { runLoop } = await import('./runner.js');
+  const abort = new AbortController();
+  const loop = runLoop({ intervalMs: 10, concurrency: 1, signal: abort.signal, log: () => {}, logError: () => {} });
+  await new Promise((r) => setTimeout(r, 60));
+  abort.abort();
+  await loop;
+  assert.ok(fs.existsSync(path.join(home, '.runner.heartbeat')));
+  assert.ok(!fs.existsSync(path.join(home, '.runner.lock', 'heartbeat')));
+});
