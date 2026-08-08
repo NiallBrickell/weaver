@@ -1,8 +1,8 @@
 /**
- * The workstream store: typed state with revision-checked writes, now behind
- * the async StateStore interface (src/store/types.ts). The fs implementation
- * (src/store/fs.ts) is the reference backend; PR 2 adds selection of a second
- * backend via WEAVER_STORE.
+ * The workstream store: typed state with revision-checked writes, behind the
+ * async StateStore interface (src/store/types.ts). Three backends, selected
+ * via WEAVER_STORE (see getStore()): fs (the reference, zero setup), sqlite
+ * (single local file), postgres (shared fleet).
  *
  * This module is the BACKEND-AGNOSTIC layer — policy every backend inherits:
  *  - `assertNoSecretValues` runs on the serialized state BEFORE any backend
@@ -30,6 +30,7 @@ import type { PolicyStore } from './policies.js';
 import { assertNoSecretValues, loadSecrets, redactSecrets } from './secrets.js';
 import { FsStore, artifactsDir, newId, printoutJournalDir, sha256, weaverHome, workstreamDir } from './store/fs.js';
 import { PgStore } from './store/pg.js';
+import { SqliteStore } from './store/sqlite.js';
 import { RevisionConflictError, type Mutator, type StateStore } from './store/types.js';
 import type { WorkstreamCore, WorkstreamDoc } from './types.js';
 
@@ -40,23 +41,28 @@ export type { StateStore };
 let activeStore: StateStore | undefined;
 
 /**
- * The active backend, selected once per process: WEAVER_STORE=postgres://…
- * (or postgresql://) → the hosted Postgres store; unset or anything else →
- * the fs reference backend under WEAVER_HOME.
+ * The active backend, selected once per process by WEAVER_STORE:
+ *   unset            → fs reference backend under WEAVER_HOME (zero setup)
+ *   sqlite:<path>    → single-file local SQLite (real transactions, `~` ok)
+ *   postgres(ql)://… → hosted Postgres (shared fleet)
+ * Anything else falls back to fs.
  */
 export function getStore(): StateStore {
   if (!activeStore) {
     const url = process.env.WEAVER_STORE;
-    activeStore = url && /^postgres(ql)?:\/\//.test(url) ? new PgStore(url) : new FsStore();
+    activeStore =
+      url && /^postgres(ql)?:\/\//.test(url) ? new PgStore(url)
+      : url?.startsWith('sqlite:') ? new SqliteStore(url.slice('sqlite:'.length))
+      : new FsStore();
   }
   return activeStore;
 }
 
 /**
- * Release the active backend (close the Postgres pool so a finished process
- * doesn't hang on open connections) and forget it, so the next getStore()
+ * Release the active backend (close the Postgres pool / SQLite handle so a
+ * finished process doesn't hang) and forget it, so the next getStore()
  * re-reads WEAVER_STORE — which is also what lets tests run the same contract
- * suite over both backends in one process.
+ * suite over every backend in one process.
  */
 export async function closeStore(): Promise<void> {
   const s = activeStore;
