@@ -23,6 +23,7 @@ import {
   resolveCapacityAttention,
   retryCapacityNow,
 } from './capacity.js';
+import { acquireProcessLock, liveProcessLockPid } from './processLock.js';
 
 function lockDir(): string {
   return path.join(weaverHome(), '.runner.lock');
@@ -30,31 +31,21 @@ function lockDir(): string {
 
 /** The pid of a live runner, or null. Reclaims a dead holder's lock. */
 export function liveRunnerPid(): number | null {
-  try {
-    const pid = Number(fs.readFileSync(path.join(lockDir(), 'pid'), 'utf8'));
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    fs.rmSync(lockDir(), { recursive: true, force: true });
-    return null;
-  }
+  return liveProcessLockPid(lockDir());
 }
 
 /** Acquire the singleton runner lock; null when a live runner already holds it. */
 export function acquireRunnerLock(): (() => void) | null {
-  try {
-    fs.mkdirSync(lockDir(), { recursive: false });
-  } catch {
-    if (liveRunnerPid() !== null) return null;
-    try {
-      fs.mkdirSync(lockDir(), { recursive: false });
-    } catch {
-      return null; // raced another starter; exactly one wins
-    }
-  }
-  fs.writeFileSync(path.join(lockDir(), 'pid'), String(process.pid));
-  const release = () => fs.rmSync(lockDir(), { recursive: true, force: true });
-  process.on('exit', release);
+  const releaseLock = acquireProcessLock(lockDir());
+  if (!releaseLock) return null;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    process.off('exit', release);
+    releaseLock();
+  };
+  process.once('exit', release);
   return release;
 }
 

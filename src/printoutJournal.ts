@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { acquireProcessLock } from './processLock.js';
 import type { JsonValue, PrintoutChange, PrintoutFieldDelta, WorkstreamDoc } from './types.js';
 
 export interface PrintoutCheckpoint {
@@ -168,28 +169,10 @@ export function missingJournalRevisions(
 function withCheckpointLock<T>(dir: string, fn: () => T): T {
   fs.mkdirSync(dir, { recursive: true });
   const lock = path.join(dir, '.checkpoint.lock');
-  const deadline = Date.now() + 5_000;
-  for (;;) {
-    try {
-      fs.mkdirSync(lock);
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      try {
-        if (fs.statSync(lock).mtimeMs < Date.now() - 5_000) {
-          const stale = `${lock}.stale-${randomUUID()}`;
-          try { fs.renameSync(lock, stale); fs.rmSync(stale, { recursive: true, force: true }); }
-          catch { /* another acknowledger recovered it */ }
-          continue;
-        }
-      } catch { continue; }
-      if (Date.now() > deadline) throw new Error('printout checkpoint lock timeout');
-      const until = Date.now() + 5;
-      while (Date.now() < until) { /* acknowledgement writes are sub-ms */ }
-    }
-  }
+  const release = acquireProcessLock(lock, { timeoutMs: 5_000, pollMs: 5 });
+  if (!release) throw new Error('printout checkpoint lock timeout');
   try { return fn(); }
-  finally { fs.rmSync(lock, { recursive: true, force: true }); }
+  finally { release(); }
 }
 
 /** Monotonic, bounded delivery cursor; same-revision races can only advance time. */
