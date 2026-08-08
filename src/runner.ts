@@ -29,13 +29,28 @@ function lockDir(): string {
   return path.join(weaverHome(), '.runner.lock');
 }
 
+/**
+ * Runners used to write the loop heartbeat INSIDE the lock dir. A second file
+ * there makes the lock snapshot malformed — fail-closed — so a dead runner's
+ * lock could never be reclaimed until a human deleted it by hand. The
+ * heartbeat carries no ownership, so clearing a legacy one is always safe: a
+ * still-live old runner rewrites it on its next iteration.
+ */
+function clearLegacyHeartbeat(): void {
+  try {
+    fs.unlinkSync(path.join(lockDir(), 'heartbeat'));
+  } catch { /* absent — the normal case */ }
+}
+
 /** The pid of a live runner, or null. Reclaims a dead holder's lock. */
 export function liveRunnerPid(): number | null {
+  clearLegacyHeartbeat();
   return liveProcessLockPid(lockDir());
 }
 
 /** Acquire the singleton runner lock; null when a live runner already holds it. */
 export function acquireRunnerLock(): (() => void) | null {
+  clearLegacyHeartbeat();
   const releaseLock = acquireProcessLock(lockDir());
   if (!releaseLock) return null;
   let released = false;
@@ -172,7 +187,9 @@ export interface RunnerOptions {
 }
 
 function heartbeatPath(): string {
-  return path.join(lockDir(), 'heartbeat');
+  // BESIDE the lock dir, never inside it: the process lock treats any second
+  // file in its dir as a malformed lock and fails closed (see processLock.ts).
+  return path.join(weaverHome(), '.runner.heartbeat');
 }
 
 /**
