@@ -327,3 +327,20 @@ test('pilot passthrough — the operator settings allow — is an allow, never a
     server.close();
   }
 });
+
+test('action prompts carry the target repo agent instructions from the cwd git root', async () => {
+  const os = await import('node:os');
+  const { repoConventions } = await import('./worker.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-conventions-'));
+  fs.mkdirSync(path.join(root, '.git'));
+  fs.mkdirSync(path.join(root, 'backend', 'svc'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'CLAUDE.md'), 'Label PRs that need e2e.');
+  try {
+    const fromSubdir = repoConventions(path.join(root, 'backend', 'svc')).join('\n');
+    assert.match(fromSubdir, /Label PRs that need e2e\./);
+    assert.match(fromSubdir, /bind you like the briefing/);
+    assert.equal(repoConventions(fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-noconv-'))).length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

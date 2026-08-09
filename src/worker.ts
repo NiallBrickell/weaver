@@ -8,9 +8,9 @@
  * wake. Its ordinary coding tools are supplied by the execution substrate.
  */
 
-import { mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { virtualNow } from './clock.js';
 import { LocalSdkExecutor } from './executor/localSdk.js';
 import type { SubmitReply, SubmitSurface, WorkerExecutor } from './executor/types.js';
@@ -124,6 +124,32 @@ Rules:
 
 const WORKER_SYSTEM = `You are one regular coding-agent worker executing ONE bounded assignment inside a larger workstream you cannot see. You have normal coding tools — including Bash, file editing, web access, and the runtime's configured MCP servers — and may use them as needed to complete the assignment. The directories in the brief are working context, not a reduced read-only tool mode. Follow their repository instructions and use a fresh worktree for repository changes unless those instructions explicitly say the directory is already an isolated disposable worktree. Your only authoritative output to Weaver is submit_result: files or external state you inspect or change do not become accepted Workstream truth merely because you report them. A non-action assignment is not authorization for an intentional external effect such as pushing, merging, deploying, sending, or changing a remote service; if the requested outcome needs one, report the exact required act so the coordinator can dispatch it through the action lifecycle. MINE THE RECORDED THINKING before forming your own theory: inspect git history, PR bodies and review threads, and in-repo docs, then cite what you find by commit/PR number. When a source your brief names has IMAGES — a screenshot on a ticket, a diagram in a doc, a rendered page — open and look at them rather than reading around them; people put the specifics in the picture, and MCP servers expose them (Linear: extract_images on the description or comment body). If you could not see an image the work depends on, say so in your submission instead of guessing what it showed.
 ${SHARED_RULES}`;
+
+/**
+ * The target repo's standing agent instructions, for injection into ACTION
+ * worker prompts (their settingSources: [] skips the SDK's own CLAUDE.md
+ * loading). Walks from the action cwd up to the enclosing git root so a
+ * worktree subdirectory still finds the repo-level file. Bounded per file:
+ * these are conventions, not the briefing.
+ */
+export function repoConventions(cwd: string): string[] {
+  const out: string[] = [];
+  let dir = cwd;
+  for (let i = 0; i < 8; i += 1) {
+    for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+      const file = join(dir, name);
+      try {
+        const text = readFileSync(file, 'utf8').slice(0, 30_000);
+        out.push(``, `## Target repository instructions (${file}) — these bind you like the briefing`, text);
+      } catch { /* not present at this level */ }
+    }
+    if (out.length || existsSync(join(dir, '.git'))) break;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return out;
+}
 
 const ACTION_SYSTEM = `You are a fresh worker executing ONE human-approved real-world ACTION inside a larger workstream you cannot see. You have Bash in your working directory and real CLIs. Perform EXACTLY the act the briefing describes — nothing beyond it, nothing on targets the briefing does not name, and every "do not" the briefing states is absolute. If a step fails, report the failure honestly via submit_result; never improvise a different action to "make it work". If the briefing lists credential environment variables, use them via the shell (\`$NAME\`) — never echo, print, or persist their values anywhere. Your submission is a report of what you did with exact references (identifiers, URLs, command output) — the harness will independently verify the effect, so precision matters and embellishment will be caught.
 ${SHARED_RULES}`;
@@ -371,6 +397,12 @@ export async function runWorker(
         ]
       : []),
     ...(inputs.length ? [``, `## Declared inputs`, ...inputs] : []),
+    // Action workers run with settingSources: [] so filesystem allow-rules can
+    // never shadow the pilot supervisor — but that also strips the SDK's
+    // CLAUDE.md loading, so the target repo's own conventions (PR labels,
+    // commit style, test requirements) silently vanished from exactly the
+    // workers that open PRs. Inject them deterministically instead.
+    ...(isAction ? repoConventions(asg.exec!.cwd) : []),
   ].join('\n');
 
   let costUsd = 0;
