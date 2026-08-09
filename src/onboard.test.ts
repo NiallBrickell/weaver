@@ -11,7 +11,7 @@ test('sanitizeSlug: kebabs, bounds, and dodges collisions', () => {
 });
 
 test('deriveFallback: the message survives verbatim as the objective', () => {
-  const msg = 'a user hit an upload issue yesterday, no progress bar, check PostHog';
+  const msg = 'A user hit an upload issue yesterday, no progress bar, check PostHog';
   const d = deriveFallback(msg, new Set());
   assert.equal(d.objective, msg);
   assert.equal(d.routine, false);

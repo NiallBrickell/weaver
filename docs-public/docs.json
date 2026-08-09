@@ -15,14 +15,6 @@
       "icon": "github"
     }
   ],
-  "navbar": {
-    "links": [
-      {
-        "label": "acme",
-        "href": "https://example.com"
-      }
-    ]
-  },
   "footer": {
     "socials": {
       "github": "https://github.com/NiallBrickell"

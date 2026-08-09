@@ -11,7 +11,7 @@ That promise has a simple test: over comparable completed outcomes, does Weaver 
 > ### ⚡ Quick start — one sentence is the whole interface
 >
 > ```bash
-> weaver do "a user hit an upload bug yesterday — no progress bar, composer stuck on 'waiting for upload'. Dig in, check PostHog and Axiom, fix it."
+> weaver do "A user hit an upload bug yesterday — no progress bar, composer stuck on 'waiting for upload'. Dig in, check PostHog and Axiom, fix it."
 > ```
 >
 > That's it. You named the outcome, not a prompt for one agent. Weaver derives the slug, title, brief, and success criteria (recurring phrasing like "every week…" makes it a routine automatically), then keeps crossing the boundaries between research, implementation, review, verification, and waiting until the done-bar is met. The house constraints — isolated worktrees, review loop, self-merge bar, credential discipline — are applied without being asked for. Workers set up their own environments; nothing about worktrees, branches, or env files is yours to think about. Watch it on the dashboard (`weaver watch`), press uppercase `P` for a copyable account of everything since your last printout, redirect it anytime (`weaver steer <slug> "…"`), and it only interrupts you for genuine judgment calls. `weaver create` remains for when you want to hand-set every field.
@@ -95,4 +95,4 @@ weaver printout [slug]    # catch up on one stream, or omit slug for the fleet
 
 ## Provenance
 
-Weaver began as the fast falsification vehicle for the Workstream thesis being built properly inside [acme](https://example.com) (the workstream plan), and the longitudinal acceptance proof has passed with real model runs (see [demo/TRANSCRIPT.md](./demo/TRANSCRIPT.md)). It is now a working harness in its own right: the knowledge layer can live in any plain Postgres so one fleet spans machines, and execution is growing the same pluggable seam. What has not changed: Weaver holds none of acme's internals, and the plan stays shared truth — when Weaver proves a contract wrong, the fix ships as a plan change on NiallBrickell/acme. Durability and authority rails are covered by a deterministic test suite (`yarn test`, no model calls) — model quality can never make a durability test pass.
+Weaver began as a fast falsification vehicle for the Workstream thesis, and the longitudinal acceptance proof has passed with real model runs (see [demo/TRANSCRIPT.md](./demo/TRANSCRIPT.md)). It is now a working harness in its own right: the knowledge layer can live in any plain Postgres so one fleet spans machines, and execution is growing the same pluggable seam. Durability and authority rails are covered by a deterministic test suite (`yarn test`, no model calls) — model quality can never make a durability test pass.

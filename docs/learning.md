@@ -46,7 +46,7 @@ The optimization order is fixed: the bookkeeping must be trustworthy before anyt
 ## What's deliberately not here yet
 
 - Automatic intervention classification (correction vs. fact-supply vs. approval) — the coordinator judges this today; a classifier is future work and its errors must be inspectable.
-- Confidence scores — evidence counts are stored raw; scorecard math belongs with acme's decision-lineage scorecard design, not improvised here.
+- Confidence scores — evidence counts are stored raw; scorecard math belongs with a proper decision-lineage scorecard design, not improvised here.
 - Cross-tag generalization — a policy applies where its tags say, never further; broadening scope is a human or explicitly-superseding act.
 
 ## Team seeds
