@@ -344,3 +344,14 @@ test('action prompts carry the target repo agent instructions from the cwd git r
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a worker with no declared directories gets a neutral per-stream workspace, never the runner cwd', async () => {
+  const os = await import('node:os');
+  const { neutralWorkspace } = await import('./worker.js');
+  const dir = neutralWorkspace('cwd-test-stream');
+  assert.ok(fs.existsSync(dir));
+  assert.match(dir, /\.weaver\/workspaces\/cwd-test-stream$/);
+  assert.notEqual(dir, process.cwd());
+  assert.equal(neutralWorkspace('cwd-test-stream'), dir);
+  fs.rmSync(path.join(os.homedir(), '.weaver', 'workspaces', 'cwd-test-stream'), { recursive: true, force: true });
+});

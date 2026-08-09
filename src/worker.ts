@@ -132,6 +132,14 @@ ${SHARED_RULES}`;
  * worktree subdirectory still finds the repo-level file. Bounded per file:
  * these are conventions, not the briefing.
  */
+/** A stable, repo-context-free cwd for workers with no declared directories.
+ * Persistent per stream, so clones made there survive across assignments. */
+export function neutralWorkspace(slug: string): string {
+  const dir = join(homedir(), '.weaver', 'workspaces', slug);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 export function repoConventions(cwd: string): string[] {
   const out: string[] = [];
   let dir = cwd;
@@ -441,7 +449,11 @@ export async function runWorker(
             additionalDirectories: readDirs,
           }
         : {
-            ...(readDirs.length ? { cwd: readDirs[0] } : {}),
+            // The first declared directory decides which repo's instructions,
+            // settings, and MCPs shape the session. With none declared, a
+            // NEUTRAL per-stream workspace — never the runner's own checkout,
+            // whose CLAUDE.md and settings would leak into unrelated work.
+            cwd: readDirs[0] ?? neutralWorkspace(slug),
             additionalDirectories: readDirs,
           }),
       // The SECURED server map: header credentials already moved into env
