@@ -10,7 +10,7 @@ The queue at the top holds exactly three kinds of item:
 
 - **Gated actions** — a workstream wants to touch the real world, and [Pilot](https://github.com/NiallBrickell/pilot) judged it beyond routine-safe. The card is written in plain language (what approving allows, why, blast radius), with the actual commands extracted and shown before anything else. `a` approves, `x` rejects. Routine-safe commands are approved by Pilot itself, on the record as `by:pilot` — what reaches this queue is only what genuinely needs your judgment.
 - **Sends** — an outbound message awaits approval. `a` / `x`.
-- **Attention** — a verdict, a blocker only you can unblock, or a question. `d` resolves it; `enter` expands the full text (scroll with `[` and `]`).
+- **Attention** — a verdict, a blocker only you can unblock, or a question. `d` opens a one-line prompt for an optional answer: enter with text resolves the card **with your note** (the coordinator reads it as the actual answer on its next pass), enter on an empty field is a plain dismiss, and esc backs out without touching the card. Resolving a blocker or budget card also wakes the stream immediately — your resolution is the unblock signal, so the work resumes without waiting for a scheduled check. `enter` expands the full text (scroll with `[` and `]`).
 
 One decision renders as exactly one row — coordinator commentary about an approvable item folds into the item. Pressing `s` on anything opens a steering prompt: type a sentence, and it becomes durable direction the workstream acts on next tick.
 
@@ -21,6 +21,8 @@ Pilot keeps routine tool decisions from interrupting a live agent run. Weaver ke
 ## The fleet
 
 Below the queue: every workstream with a colored status dot — red `NEEDS YOU`, cyan `WORKING`, bright-blue `QUEUED` (in line for the runner), blue `WAITING` (scheduled later), dim `IDLE`, green reserved for `DONE ✓` alone — plus a spend-estimate bar, pass count, and `you N×`: how many times you've intervened. [Routines](./routines.md) render in their own `↻ ROUTINES` section with next-run times.
+
+Finished work earns three days on the board, then leaves it: a concluded workstream lingers long enough for you to see the outcome land, then drops off the list, replaced by one dim tally line. Nothing is deleted — knowledge pages, printouts, and `weaver status` read the same typed state — and the header's done count keeps the full total.
 
 `you N×` is this workstream's local score: how many recorded human interventions it needed. [`weaver stats`](./stats.md) compares that across work and keeps rejections and approval boundaries beside the trend, so a quieter system cannot claim success merely by lowering the bar.
 

@@ -46,6 +46,8 @@ weaver create --slug lead-follow-up \
 
 The coordinator researches the current code first, records the chosen design, then keeps the feature moving through implementation, review and revision, merge when authorized, the required tests, and any agreed post-change check. It concludes only when the done-bar is met. Weeks later, "why is it built this way?" still has an answer rather than a guess.
 
+Orchestration is sized to the ask. A feature like the one above earns phases; a small, scoped job — fix the review comments on one PR, bump a dependency, one clear bug with a known site — runs as a single worker briefed end-to-end: investigate, change, and test in the same run, with the push as its gated follow-up. A separate research pass has to be justified by unknowns that would change what gets dispatched, so quick jobs stay quick while the record they leave behind is the same.
+
 ### Keep something healthy
 
 Standing loops: an error-triage sweep, an evals-health check, a weekly usage report. Tag the workstream `routine` and it schedules its own next wake after each cycle — waking with its decision log, constraints, and learned policies intact, so run #30 surfaces only what run #30 genuinely can't settle alone. See [Routines](./routines.md).
