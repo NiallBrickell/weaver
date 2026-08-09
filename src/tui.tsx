@@ -86,8 +86,10 @@ interface Snapshot {
   archivedDone: number;
 }
 
-/** How long a finished workstream stays on the board before leaving it. */
-const DONE_LINGER_MS = 3 * 86_400_000;
+/** How long a finished workstream stays on the board before leaving it.
+ * Half a day: long enough to see an outcome land the same working day,
+ * short enough that a busy fleet's board stays about live work. */
+const DONE_LINGER_MS = Number(process.env.WEAVER_DONE_LINGER_HOURS ?? 12) * 3_600_000;
 
 function elapsed(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
