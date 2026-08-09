@@ -1,7 +1,6 @@
----
-title: "Pausing work"
-description: "Stop one workstream or the active fleet without losing its durable position"
----
+# Pausing work
+
+*Stop one workstream or the active fleet without losing its durable position*
 
 Pause one workstream when its outcome should stay intact but no new work should start:
 

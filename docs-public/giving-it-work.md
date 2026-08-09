@@ -1,7 +1,6 @@
----
-title: "Giving it work"
-description: "The shapes of work a workstream can hold, and the arc every workstream follows from objective to verified effect"
----
+# Giving it work
+
+*The shapes of work a workstream can hold, and the arc every workstream follows from objective to verified effect*
 
 A workstream is any bounded outcome you would otherwise have to supervise: something with a nameable "done", a reason to exist for longer than one sitting, and judgment calls along the way that are worth recording. If you can say what done looks like and what must stay under your control, Weaver can carry it.
 
@@ -49,7 +48,7 @@ The coordinator researches the current code first, records the chosen design, th
 
 ### Keep something healthy
 
-Standing loops: an error-triage sweep, an evals-health check, a weekly usage report. Tag the workstream `routine` and it schedules its own next wake after each cycle — waking with its decision log, constraints, and learned policies intact, so run #30 surfaces only what run #30 genuinely can't settle alone. See [Routines](/routines).
+Standing loops: an error-triage sweep, an evals-health check, a weekly usage report. Tag the workstream `routine` and it schedules its own next wake after each cycle — waking with its decision log, constraints, and learned policies intact, so run #30 surfaces only what run #30 genuinely can't settle alone. See [Routines](./routines.md).
 
 ### Find something out
 
@@ -65,8 +64,8 @@ Whatever the shape, Weaver keeps responsibility while the outcome moves through 
 
 1. **Understand the next piece** (`WORKING`). A fresh regular Code worker investigates the bounded assignment and submits what it found.
 2. **Do and review it.** The coordinator checks the submission against its acceptance criteria, accepts or rejects it, records the chosen course, and dispatches the next bounded assignment. One worker finishing does not hand the outcome back to you.
-3. **Change the world through Pilot.** Opening or merging a pull request, deploying, sending, or mutating a remote service is a separate action. [Pilot](https://github.com/NiallBrickell/pilot) approves routine-safe commands inside the live run; anything with real blast radius arrives on your [needs-you queue](/dashboard). Your constraints remain hard ceilings.
-4. **Confirm the effect.** A deterministic check, run with no model in the loop, verifies what actually happened outside Weaver. A model saying "done" is not evidence. See [Actions](/actions).
+3. **Change the world through Pilot.** Opening or merging a pull request, deploying, sending, or mutating a remote service is a separate action. [Pilot](https://github.com/NiallBrickell/pilot) approves routine-safe commands inside the live run; anything with real blast radius arrives on your [needs-you queue](./dashboard.md). Your constraints remain hard ceilings.
+4. **Confirm the effect.** A deterministic check, run with no model in the loop, verifies what actually happened outside Weaver. A model saying "done" is not evidence. See [Actions](./actions.md).
 5. **Wait and resume** (`WAITING`). The workstream records what it is waiting for — a reply, a scheduled wake, your verdict — and everything exits. A fresh coordinator resumes from that position when the wake condition arrives.
 6. **Finish only at the done-bar.** Weaver closes the workstream when the whole outcome is evidenced, not when an agent produced the first plausible work product.
 
@@ -78,4 +77,4 @@ The `create` command is the contract, and steering supplies the context:
 
 - **Objective**: the outcome and its evidence, not the steps. "Find why signups stall at step 3, fix it, open a PR with before/after numbers" — not a task list.
 - **Constraints**: the ceilings that are yours alone — what may never happen without you (merges, sends, spend), which paths are read-only, which tests must pass.
-- **Steering**: the local knowledge a fresh coordinator needs — repo paths, where the dashboards live, what done looks like in your world. Steering is durable: it wakes the workstream, must be acknowledged, and a steering that *corrects* course becomes a candidate [policy](/learning) every future matching workstream inherits.
+- **Steering**: the local knowledge a fresh coordinator needs — repo paths, where the dashboards live, what done looks like in your world. Steering is durable: it wakes the workstream, must be acknowledged, and a steering that *corrects* course becomes a candidate [policy](./learning.md) every future matching workstream inherits.

@@ -1,7 +1,6 @@
----
-title: "Introduction"
-description: "Agents can do a task. Weaver manages the outcome until it is actually done."
----
+# Introduction
+
+*Agents can do a task. Weaver manages the outcome until it is actually done.*
 
 Agents are already very good at individual pieces of work: investigate a bug, write a patch, draft a job description, analyse an incident. The trouble starts between those pieces. Research has to become a change; the change has to survive review, get merged, and be tested; a failed check needs another attempt; a candidate needs following up next week. The agent stops, the work comes back to you, and you become the person who remembers what happened and starts the next session.
 
@@ -21,12 +20,12 @@ Weaver is built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-
 
 ## How you know it is working
 
-Over repeated, comparable outcomes, Weaver should need you less often. That counts as improvement only if the work remains good and the authority boundary stays put. [The stats page](/stats) shows the recorded human interventions alongside quality signals such as rejections and the split between Pilot and human approval of real-world actions.
+Over repeated, comparable outcomes, Weaver should need you less often. That counts as improvement only if the work remains good and the authority boundary stays put. [The stats page](./stats.md) shows the recorded human interventions alongside quality signals such as rejections and the split between Pilot and human approval of real-world actions.
 
 ## Where to go next
 
-- [What's actually new](/whats-new) — decision lineage, verified outcomes, auditable improvement
-- [Quickstart](/quickstart) — running your first workstream
-- [Giving it work](/giving-it-work) — the shapes of work a workstream can hold, and the arc from objective to verified effect
-- [Does each outcome need you less often?](/stats) — the scoreboard and its guardrails
-- [The harness](/harness) — where each invariant lives
+- [What's actually new](./whats-new.md) — decision lineage, verified outcomes, auditable improvement
+- [Quickstart](./quickstart.md) — running your first workstream
+- [Giving it work](./giving-it-work.md) — the shapes of work a workstream can hold, and the arc from objective to verified effect
+- [Does each outcome need you less often?](./stats.md) — the scoreboard and its guardrails
+- [The harness](./harness.md) — where each invariant lives

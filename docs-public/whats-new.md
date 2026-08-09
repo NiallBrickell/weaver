@@ -1,7 +1,6 @@
----
-title: "What's actually new"
-description: "Agents do individual work; Weaver keeps the whole outcome moving until it is done"
----
+# What's actually new
+
+*Agents do individual work; Weaver keeps the whole outcome moving until it is done*
 
 An agent can produce an excellent patch, report, or draft. That still leaves someone responsible for turning it into an outcome: decide what happens next, carry context into the next piece of work, notice failures, wait for the outside world, chase review, and verify that done really happened. Usually that someone is you.
 
@@ -29,7 +28,7 @@ Self-reported success is structurally worthless here — which is exactly what m
 
 - A human correction is distilled into a **policy**: plain language, typed scope, full provenance back to the correction that created it.
 - New policies run in **shadow**. Promotion to **active** is earned — a later matching workstream applied the policy and needed no correction on the same point. Wrong policies are superseded with lineage.
-- Weaver's target is **human interventions per successful outcome**: how often a person had to step in for the same kind of completed result. Fewer interventions count as improvement only while verification remains strong and learning never widens authority. [See the evidence and its current limits](/stats).
+- Weaver's target is **human interventions per successful outcome**: how often a person had to step in for the same kind of completed result. Fewer interventions count as improvement only while verification remains strong and learning never widens authority. [See the evidence and its current limits](./stats.md).
 - A closed effect vocabulary means a policy can add verification or narrow authority, but can never spend, send, merge, or widen access — however confident it becomes. Learning recommends; it never permits.
 
-See [The learning loop](/learning) for the full mechanism and why it's deliberately shaped as an RL substrate.
+See [The learning loop](./learning.md) for the full mechanism and why it's deliberately shaped as an RL substrate.

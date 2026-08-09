@@ -1,7 +1,6 @@
----
-title: "Watching a tracker"
-description: "Point a workstream at Linear, Jira or anything else with an MCP server, and labeled issues become real work"
----
+# Watching a tracker
+
+*Point a workstream at Linear, Jira or anything else with an MCP server, and labeled issues become real work*
 
 Weaver has no Linear integration. It has something better: a workstream can read
 the outside world through the MCP servers you already use, and open new

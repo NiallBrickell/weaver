@@ -1,7 +1,6 @@
----
-title: "Team seeds"
-description: "Share your guardrails with your team — never your trust, never your transcripts"
----
+# Team seeds
+
+*Share your guardrails with your team — never your trust, never your transcripts*
 
 Once Weaver has learned how you work — backfilled from your rules files and session corrections, refined by live steering — that practice is exportable. A **seed** is the shareable form of your accumulated taste: a teammate imports it and their Weaver starts from your guardrails on day one, instead of learning the same lessons from zero.
 

@@ -1,7 +1,6 @@
----
-title: "The harness"
-description: "Where each continuity invariant lives — durable typed state, disposable model runs"
----
+# The harness
+
+*Where each continuity invariant lives — durable typed state, disposable model runs*
 
 The durable layer is a single typed document per workstream plus content-addressed artifacts. The disposable layer is the Claude Agent SDK: every coordinator pass and worker run is a fresh session that exits. These invariants are the kernel — code that blurs them is wrong even when it works:
 
@@ -17,7 +16,7 @@ The durable layer is a single typed document per workstream plus content-address
 | Replies are untrusted input | An inbound reply can wake the workstream and supply evidence; it cannot grant authority, complete work, or supersede direction by itself |
 | Summaries cannot mutate truth | A pass's summary is stored as provenance; nothing reads it back into state — the projection is rebuilt from typed collections every pass |
 | Wakes are stored data | No process sleeps; the runner discovers what became due. Kill everything, restart, nothing is lost |
-| Infrastructure outages cost waiting, not strikes | A coordinator or worker hitting plan/session/rate limits, overload, or auth failure writes model-indexed `WorkstreamDoc.capacity` state and parks only that model behind a typed backoff wake; workers keep moving and the coordinator uses one configured fallback while available. Auth surfaces one recovery card immediately; other capacity failures get 12 backoffs to self-clear. Weaver retries at the provider reset, probes once on credential-metadata change, or makes the wait due after explicit `weaver capacity retry`. [Recovery stays single-principal](/claude-capacity): Weaver never changes billing, handles tokens, or cycles accounts |
+| Infrastructure outages cost waiting, not strikes | A coordinator or worker hitting plan/session/rate limits, overload, or auth failure writes model-indexed `WorkstreamDoc.capacity` state and parks only that model behind a typed backoff wake; workers keep moving and the coordinator uses one configured fallback while available. Auth surfaces one recovery card immediately; other capacity failures get 12 backoffs to self-clear. Weaver retries at the provider reset, probes once on credential-metadata change, or makes the wait due after explicit `weaver capacity retry`. [Recovery stays single-principal](./claude-capacity.md): Weaver never changes billing, handles tokens, or cycles accounts |
 | Action authority is explicit | `research`, `evidence`, and `work_product` are assignment labels, not weaker runtimes. Pushing, opening or merging a PR, deploying, sending, or mutating a remote service is directed through a gated, Pilot-supervised action and becomes fact only after deterministic readback |
 
 ## The projection

@@ -1,7 +1,6 @@
----
-title: "Hosted state"
-description: "Point WEAVER_STORE at a SQLite file or plain Postgres and the durable layer — workstreams, artifacts, learned policies — lives in one database instead of loose files"
----
+# Hosted state
+
+*Point WEAVER_STORE at a SQLite file or plain Postgres and the durable layer — workstreams, artifacts, learned policies — lives in one database instead of loose files*
 
 By default Weaver keeps its typed state on the local filesystem (`WEAVER_HOME`, default `./state`). Set one variable and the same state lives in a database instead:
 

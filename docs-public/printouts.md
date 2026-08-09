@@ -1,7 +1,6 @@
----
-title: "Printouts"
-description: "A copyable account of what happened since you last checked"
----
+# Printouts
+
+*A copyable account of what happened since you last checked*
 
 A printout answers the practical catch-up question: what did Weaver investigate, produce, adopt, execute, verify, and leave unfinished since the last printout?
 
