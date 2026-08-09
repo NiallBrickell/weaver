@@ -20,7 +20,7 @@ Pilot keeps routine tool decisions from interrupting a live agent run. Weaver ke
 
 ## The fleet
 
-Below the queue: every workstream with a colored status dot — red `NEEDS YOU`, cyan `WORKING`, bright-blue `QUEUED` (in line for the runner), blue `WAITING` (scheduled later), dim `IDLE`, green reserved for `DONE ✓` alone — plus a spend-estimate bar, pass count, and `you N×`: how many times you've intervened. [Routines](./routines.md) render in their own `↻ ROUTINES` section with next-run times.
+Below the queue: every workstream with a colored status dot — red `NEEDS YOU`, cyan `WORKING`, bright-blue `QUEUED` (in line for the runner), blue `WAITING` (scheduled later), dim `IDLE`, green reserved for `DONE ✓` alone — plus a spend-estimate bar, pass count, and `you N×`: how many times you've intervened. [Routines](./routines.md) render in their own `↻ ROUTINES` section with next-run times. Workstreams spawned by another workstream (`create_workstream` lineage) render nested under their manager with a `↳`, in the manager's section — a routine's fix-children sit visibly under the routine that opened them.
 
 Finished work earns 12 hours on the board (`WEAVER_DONE_LINGER_HOURS` overrides), then leaves it: a concluded workstream lingers long enough for you to see the outcome land, then drops off the list, replaced by one dim tally line. Nothing is deleted — knowledge pages, printouts, and `weaver status` read the same typed state — and the header's done count keeps the full total.
 

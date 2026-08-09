@@ -76,7 +76,42 @@ interface StreamRow {
   latestDecision?: string;
   /** When the stream concluded (virtual clock) — drives leaving the board. */
   concludedAtVirtual?: string;
+  /** Manager stream slug (create_workstream lineage), when managed. */
+  managedBy?: string;
+  /** Nesting depth under its manager in the rendered board (0 = root). */
+  depth: number;
   error?: string;
+}
+
+/**
+ * Children render directly under their manager, indented — the managedBy
+ * lineage a flat board hid. A child inherits its manager's SECTION (routine
+ * or not): a one-shot fix stream spawned by a routine belongs visually with
+ * the routine that owns it. Cycle or dangling-manager rows fall back to root.
+ */
+export function nestUnderManagers(streams: StreamRow[]): StreamRow[] {
+  const bySlug = new Map(streams.map((s) => [s.slug, s]));
+  const kids = new Map<string, StreamRow[]>();
+  const roots: StreamRow[] = [];
+  for (const s of streams) {
+    const mgr = s.managedBy ? bySlug.get(s.managedBy) : undefined;
+    if (mgr && mgr !== s) {
+      const list = kids.get(mgr.slug) ?? [];
+      list.push(s);
+      kids.set(mgr.slug, list);
+    } else roots.push(s);
+  }
+  const nested: StreamRow[] = [];
+  const place = (s: StreamRow, depth: number, routine: boolean): void => {
+    if (nested.includes(s)) return;
+    s.depth = depth;
+    s.routine = routine;
+    nested.push(s);
+    if (depth < 3) for (const k of kids.get(s.slug) ?? []) place(k, depth + 1, routine);
+  };
+  for (const r of roots) place(r, 0, r.routine);
+  for (const s of streams) if (!nested.includes(s)) { s.depth = 0; nested.push(s); }
+  return nested;
 }
 
 interface Snapshot {
@@ -198,7 +233,7 @@ async function snapshot(): Promise<Snapshot> {
       doc = await load(slug);
     } catch (e) {
       streams.push({
-        slug, bucket: 4, queuedNow: false, routine: false, paused: false, spent: 0, maxCost: 0, passes: 0, maxPasses: 0,
+        slug, bucket: 4, queuedNow: false, routine: false, paused: false, depth: 0, spent: 0, maxCost: 0, passes: 0, maxPasses: 0,
         interventions: 0, details: [], objective: '', error: e instanceof Error ? e.message : String(e),
       });
       continue;
@@ -399,6 +434,8 @@ async function snapshot(): Promise<Snapshot> {
       concludedAtVirtual,
       queuedNow: dueNow > 0 || pendingSteers > 0,
       routine: ws.tags.includes('routine'),
+      managedBy: ws.managedBy?.slug,
+      depth: 0,
       nextRun,
       nextReason: nextWake?.reason,
       infrastructureWait: infrastructure[0],
@@ -413,15 +450,16 @@ async function snapshot(): Promise<Snapshot> {
   }
   streams.sort((a, b) => a.bucket - b.bucket || a.slug.localeCompare(b.slug));
   items.sort((a, b) => a.slug.localeCompare(b.slug));
+  const nested = nestUnderManagers(streams);
   // Finished work earns a few days on the board, then leaves it: the dashboard
   // is for what's moving or needs someone, and a wall of green rows buries
   // that. The record never leaves — [i], printouts, and the CLI read the same
   // typed state; nothing here mutates or deletes a workstream.
   const cutoff = virtualNow().getTime() - DONE_LINGER_MS;
-  const visible = streams.filter(
+  const visible = nested.filter(
     (s) => !s.concludedAtVirtual || new Date(s.concludedAtVirtual).getTime() > cutoff,
   );
-  return { items, streams: visible, archivedDone: streams.length - visible.length };
+  return { items, streams: visible, archivedDone: nested.length - visible.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -762,7 +800,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
             <Box key={st.slug} flexDirection="column">
               <Text inverse={isSel} wrap="truncate-end">
                 <Text color={d.color}> {d.glyph} </Text>
-                <Text bold>{st.slug.padEnd(30)}</Text>
+                <Text bold>{`${st.depth ? `${'  '.repeat(st.depth - 1)}↳ ` : ''}${st.slug}`.padEnd(30)}</Text>
                 <Text color={d.color}>{d.word.padEnd(11)}</Text>
                 {st.error ? (
                   <Text color="red">{st.error}</Text>
