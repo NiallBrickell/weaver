@@ -14,7 +14,7 @@
 
 Agents are already very good at individual pieces of work: investigate a bug, write a patch, draft a job description, analyse an incident. The trouble starts between those pieces. Research has to become a change; the change has to survive review, get merged, and be tested; a failed check needs another attempt; a candidate needs following up next week. The agent stops, the work comes back to you, and you become the person who remembers what happened and starts the next session.
 
-[Pilot](https://github.com/NiallBrickell/pilot) stops a live agent session coming back to you for routine approvals or because it gave up too early. Weaver handles what happens after and between those sessions. You give it the outcome; it keeps the work moving across fresh agents, reviews, failures, approvals, and waits, and comes back only for judgment or authority that genuinely needs you. A feature is not done because an agent wrote code. It is done when the change is reviewed, merged, tested, and shown to work — and Weaver stays with it until then.
+Weaver handles what happens after and between those sessions. You give it the outcome; it keeps the work moving across fresh agents, reviews, failures, approvals, and waits, and comes back only for judgment or authority that genuinely needs you. A feature is not done because an agent wrote code. It is done when the change is reviewed, merged, tested, and shown to work — and Weaver stays with it until then. Weaver runs standalone; [Pilot](https://github.com/NiallBrickell/pilot) is an optional companion that auto-approves routine tool calls *inside* a live session so fewer of them interrupt you — without it, those approvals simply wait in your queue.
 
 That promise has a simple test: over comparable completed outcomes, does Weaver need you less often without the work getting worse or its authority growing? [`weaver stats`](./docs-public/stats.mdx) shows the human touches, rejections, approvals, and learned policies behind that trend. The target is not more agent activity; it is good outcomes that need less supervision.
 
@@ -106,6 +106,10 @@ weaver printout [slug]    # catch up on one stream, or omit slug for the fleet
 ## Provenance
 
 Weaver grew from a question about horizontal, longitudinal work: agents are good at one bounded task, so what carries an *outcome* across sessions, workers, failures, and weeks of waiting? The durable layer is the answer this repo defends, and the longitudinal acceptance proof has passed with real model runs (see [demo/TRANSCRIPT.md](./demo/TRANSCRIPT.md)). It is a working harness, not a thought experiment: the knowledge layer can live in any plain Postgres so one fleet spans machines, and execution is growing the same pluggable seam. Durability and authority rails are covered by a deterministic test suite (`yarn test`, no model calls) — model quality can never make a durability test pass.
+
+## Related
+
+- **[Pilot](https://github.com/NiallBrickell/pilot)** — an optional companion for the *inside* of a live agent session: auto-approves routine tool calls under your standing rules and escalates the rest, so a running session interrupts you less. Weaver works without it (gated actions just wait for you); together, Pilot narrows what reaches your queue mid-session and Weaver manages the outcome across sessions.
 
 ## License
 
