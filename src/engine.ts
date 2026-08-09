@@ -239,11 +239,17 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
           });
           if (!res.ok) throw new Error(`pilot HTTP ${res.status}`);
           const body = (await res.json()) as { decision?: string; reason?: string; source?: string };
-          if (body.decision !== 'approve') {
+          // 'passthrough' is pilot reporting the operator's own Claude Code
+          // settings ALLOW this exact command (settings deny/ask arrive as
+          // 'deny'). Same authority source as a pilot rule — the operator
+          // wrote it — so it approves here exactly as it does in the worker
+          // supervisor; escalating it sent settings-allowed read-only
+          // readbacks to the human queue.
+          if (body.decision !== 'approve' && body.decision !== 'passthrough') {
             verdict = { decision: body.decision ?? 'unknown', reason: `${body.reason ?? ''} (${command.slice(0, 60)})` };
             break;
           }
-          verdict = { decision: 'approve', reason: body.source ?? '' };
+          verdict = { decision: 'approve', reason: body.decision === 'passthrough' ? 'operator Claude Code settings allow' : body.source ?? '' };
         }
       } else {
         // Worker action: the worker's EVERY tool call is judged live by pilot
