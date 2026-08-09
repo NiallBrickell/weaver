@@ -6,6 +6,8 @@ This is an implementation handoff from a read-only audit of Weaver after its fir
 
 The intended reader is an implementation agent. Findings therefore include affected enforcement sites, evidence, repair requirements, deterministic acceptance tests, and sequencing. The evidence is a live-state snapshot, not a timeless benchmark: the runner continued to advance work while the audit ran.
 
+The handoff also includes a primary-source research review through 9 August 2026. Its purpose is to distinguish genuinely unusual Weaver invariants from ideas already established in durable workflows, agent memory, learned policy, capability security, and long-horizon evaluation. Many of the closest 2026 systems are recent preprints rather than settled peer-reviewed results; they are architectural comparators and sources of testable methods, not authority by citation.
+
 Snapshot time: approximately `2026-08-09T18:52:09Z`.
 
 ## Executive verdict
@@ -25,6 +27,7 @@ The durable execution thesis is substantially proven. The learning thesis is not
 | Decision hygiene | Deteriorating | Long-running routines use standing decisions as cycle reports, leaving stale and contradictory commitments in every fresh projection. |
 | Policy usefulness | Promising in a small core | Several decomposition, read-only recovery, direct-link, and merge-bar policies visibly changed later plans. |
 | Policy learning validity | Not trustworthy yet | Application IDs are not validated, evidence is model-self-reported, first positive evidence promotes, negative evidence does not retire policies, and active contradictions remain. |
+| Research position | Distinctive combination, not unique ingredients | Durable execution, bounded missions, learned rules, ledgers, review gates, and capabilities all have close precedents. The unusual part is their composition around typed organizational commitments, adoption, effect reconciliation, and a learning layer that cannot grant authority. |
 | Unattended production readiness | Not yet | The send path has an egress/rejection race, pass conflicts can be recorded as completed, the interaction/reply lifecycle has no live longitudinal evidence, and the local executor does not structurally contain non-action workers. |
 
 The right description today is **a high-agency durable engineering harness under supervision**, not yet a trustworthy self-improving organizational controller.
@@ -41,6 +44,7 @@ The audit was read-only. It covered:
 - Current runner process and logs.
 - Recent git history, which showed approximately 166 commits during the audited six calendar dates.
 - Current GitHub state for representative PRs.
+- Primary papers, official repositories, and official runtime documentation covering durable execution, persistent agent state, multi-agent orchestration, experiential policy learning, capability/authorization systems, external-effect verification, and long-horizon evaluation through 9 August 2026.
 
 Validation performed:
 
@@ -600,6 +604,220 @@ No bypass incident was found in live state. The structural claim is nevertheless
 - Exercise the PostgreSQL contract suite and a fresh-coordinator pass/wake cycle against Postgres.
 - After the repair series, freeze the harness version for a one- to two-week cohort before making trend or policy-causality claims.
 
+## External research landscape
+
+### Research verdict
+
+This is an unusually active area. The June 2026 [Always-On Agents survey](https://arxiv.org/abs/2606.30306) coded 435 works and reached a conclusion that closely describes Weaver's opportunity: the literature is much stronger on accumulating and retrieving persistent state than on governing, recovering, correcting, rolling back, or relinquishing it. The survey's six diagnostic axes—authority, scope, mutability, provenance, recoverability, and actionability—are a useful independent vocabulary for evaluating Weaver's typed state.
+
+The non-unique pieces are increasingly well explored or commoditized:
+
+- Durable wait/resume, replay, queues, timers, human approval, and retry.
+- Persistent Agent or conversation identity and long-term memory.
+- Orchestrator-led task decomposition and progress ledgers.
+- Reflection, workflow, skill, rule, and policy extraction from prior trajectories.
+- Typed policy-as-code, verifier-gated edits, provenance, versioning, and rollback.
+- Capability controls, least-privilege credentials, and argument-level tool policy.
+- Repository-scale and increasingly roadmap-scale coding benchmarks.
+
+Across the primary sources reviewed here, no single system combines Weaver's full intended contract: durable organizational position above disposable runs; a persistent Assignment distinct from its attempts; proposed work that requires adoption; immutable accepted revisions and retained rejection; standing commitment supersession; capability separated from authority; a five-fact external-effect lifecycle; unknown-result readback; revision-checked arrival reconciliation; and learning structurally unable to grant authority.
+
+That is a claim about the surveyed combination, not proof that no unpublished or unreviewed system has it. Weaver should not claim novelty for any ingredient in isolation.
+
+### Closest direct comparator: Argus
+
+[Argus: A General-Purpose Agentic Runtime for Long-Horizon Reasoning](https://arxiv.org/html/2608.05144v1), posted on 5 August 2026, is the closest direct conceptual comparator.
+
+Its overlap with Weaver is substantial:
+
+- The durable object is a campaign, not a provider transcript.
+- A campaign is divided into bounded missions with explicit outcomes.
+- Mission assignment is transactional and advances at a clean mission boundary.
+- Engineer and Reviewer calls use fresh provider sessions for each round.
+- Manager, Planner, Engineer, and Reviewer roles have distinct authoritative outputs.
+- A typed append-only trace is the canonical timeline; the record plane cannot declare work complete.
+- Accepted and rejected results, failed routes, skills, memories, verifiers, and routing choices persist across missions.
+- Candidate reusable state requires evidence checking and an authorized commit.
+- Work can stop as blocked rather than manufacture a success.
+- Process replacement resumes from committed campaign state rather than reconstructing from a transcript.
+
+Argus therefore means Weaver cannot safely claim originality for “bounded missions over durable state,” fresh execution sessions, reviewed persistence, role-owned state, explicit blocked outcomes, or fixed-model runtime self-evolution.
+
+The differences remain material:
+
+1. **Working truth.** Argus uses a shared, ordinary `CHECKPOINT.md` as its bounded cross-session handoff. The Engineer updates it and the Reviewer may correct it and become its final editor for the round, while a typed event trace remains canonical. Weaver's intended rule is stricter: a model-generated summary can support a projection but cannot become a standing decision, complete an Assignment, grant authority, or assert an external effect.
+2. **Adoption.** Argus permits recorded Engineer self-review for allowed low-risk work. Weaver requires worker output to remain proposed until a separate coordinator adoption decision, even when deterministic verification passes.
+3. **Identity granularity.** Argus sharply separates campaign and mission and records provider rounds, but Weaver makes intended Assignment and disposable Run first-class independent identities with attempt history and acceptance criteria.
+4. **Learning scope.** Argus evolves memories, skills, procedures, verifiers, routing, and task definitions. Weaver's learnable policy vocabulary is deliberately narrower and is intended to add verification, narrow authority, or advise without granting capability or egress authority.
+5. **External effects.** Argus does not make draft, send, external receipt, reply, evaluated business result, and unknown-result readback part of its scientific contract. Concrete sandbox and deployment mechanisms are outside its central claim.
+
+Argus currently has much stronger evaluation evidence. Its report includes 731 SWE-Bench Pro tasks, approximately 78% success against a roughly 59% direct-Copilot reference at 1.41× aggregate tokens, 43 Reviewer-withheld completions, 34 later verifier recoveries, 22 strict review-loop completions, and 35 blocked rather than falsely completed tasks. Six paper campaigns covered 640 campaign-hours, 254 bounded missions, 576 Engineer rounds, 286 Reviewer revisions, 89 session rolls, and 16 stage rollbacks.
+
+Its authors nevertheless state the central limitation honestly: the startup-to-mature comparison is observational. Matched frozen-state runs, randomized task order, and randomized review routing are still required to separate the effects of persistent state, review, and task sequence. Weaver should adopt that standard rather than use policy citations or declining aggregate intervention curves as causal proof.
+
+### Durable execution is a substrate, not the organizational model
+
+| System | Relevant capability | Boundary relative to Weaver |
+| --- | --- | --- |
+| [Temporal](https://docs.temporal.io/workflows) | A user-defined Workflow ID identifies a business process while system Run IDs change; Event History reconstructs state through deterministic replay; Activities isolate side effects and LLM calls. | The Workflow/Run distinction strongly validates durable identity above attempts. An Activity is executed work, not durable intended work with candidate history, acceptance criteria, and adoption. Successful Activity output enters Workflow state automatically. |
+| [LangGraph](https://docs.langchain.com/oss/python/langgraph/persistence) | Checkpoints graph state per thread; Stores retain cross-thread memory; interrupts wait indefinitely and resume by `thread_id`. | Its Thread is explicitly a persistent conversation container. There is no Assignment identity, proposal/adoption transition, decision lineage, or generic authority/effect ontology. |
+| [Restate](https://docs.restate.dev/use-cases/ai-agents) | Journals LLM/tool steps, suspends idle work, persists timers and promises, supplies keyed state and single-writer consistency, and supports compensation. | A keyed object could host a Workstream, but evidence, candidate work, accepted work, and standing commitments are application semantics above Restate. Its generic retry/idempotency guidance does not impose unknown-result readback. |
+| [DBOS](https://docs.dbos.dev/ai/ai-quickstart) | Checkpoints workflow and step state in SQLite/Postgres; re-execution returns stored completed-step outputs; supports durable communication and human waits. | A lightweight plausible executor/store substrate. Steps are execution boundaries, not persistent responsibilities requiring adoption. |
+| [Dapr Agents](https://docs.dapr.io/developing-ai/dapr-agents/dapr-agents-introduction/) | Persists LLM/tool calls through Dapr Workflows, supports Pub/Sub, child-workflow tools, cryptographic service identity, and policy hooks. | Agent identity, conversation memory, and durable workflow remain coupled. Hooks are useful enforcement seams but do not create Weaver's fact or adoption model. |
+
+Temporal is structurally closest at the execution layer. `Workflow ID chain ≈ Workstream` and `Workflow Run ≈ Run` are useful analogies, but no direct analogue sits between them for persistent intended Assignment. Restate and DBOS are plausible future Weaver substrates: they could replace home-grown generic durability without replacing Weaver's organizational schema.
+
+### Memory and execution-state systems
+
+Persistent memory is not equivalent to durable organizational truth.
+
+| Work | Main idea | Relevance and limitation |
+| --- | --- | --- |
+| [MemGPT](https://arxiv.org/abs/2310.08560) / [Letta](https://github.com/letta-ai/letta) | A persistent Agent manages tiers of editable in-context and archival memory across sessions. | Strong memory infrastructure, but the durable Agent and its conversation are the continuity container. Model-edited prose is fed back as operative context without Weaver's commitment/adoption boundary. |
+| [Generative Agents](https://arxiv.org/abs/2304.03442) | Natural-language observations, reflections, plans, and retrieval create believable long-running behaviour. | Seminal reflection architecture; observations and model-derived reflections do not have Weaver's truth precedence, concurrency, or authority semantics. |
+| [MAGE](https://www.microsoft.com/en-us/research/publication/beyond-semantic-organization-memory-as-execution-state-management-for-long-horizon-agents/) | A hierarchical execution-state tree supports grow, compress, maintain, and revise operations; the active path bounds context while branches retain failed routes. | Very close to a bounded current-position projection, but generated summaries themselves constitute execution state and the same agent manages and acts on them. |
+| [Ledger](https://arxiv.org/abs/2608.00808) | Deterministically derives what a coding agent observed, modified, and attempted; an `inform` path renders current state and a `govern` path suppresses still-valid repeated work. | Directly relevant to Weaver's projection bloat and stale repeated actions. It operates within one coding trajectory and deliberately stores only mechanically derived facts, not organizational commitments. |
+| [Zep/Graphiti](https://arxiv.org/abs/2501.13956) | Non-lossy episodes, source-linked semantic facts, and bitemporal validity/invalidation preserve contradiction history. | A useful precedent for evidence provenance and supersession. LLM extraction still determines semantic memory; coordinator adoption and authority remain absent. |
+
+Memory evaluations reinforce Weaver's stricter position. [LongMemEval](https://arxiv.org/abs/2410.10813) tests multi-session extraction, temporal reasoning, updates, and abstention; [MemoryAgentBench](https://arxiv.org/abs/2507.05257) finds no current memory agent jointly masters retrieval, test-time learning, long-range understanding, and selective forgetting; [AgingBench](https://arxiv.org/abs/2605.26302) separates compression, interference, revision, and maintenance aging over sustained sessions. [Deployment-Time Memorization](https://arxiv.org/abs/2606.10062) shows that deleting raw memory may leave facts recoverable through derived summaries. These results support source-linked derived state, explicit invalidation, and full-pipeline purge rather than treating the latest summary as clean truth.
+
+Ledger is the most immediately actionable design. It reports higher SWE-bench Verified success and roughly 24–32% lower cost across several agent/model combinations while adding no model calls. Weaver should preserve a single typed source of current state and use it twice: render the bounded position before planning, then deterministically govern a proposed mutation or repetition against that same state before execution.
+
+### Orchestration and software delegation
+
+[Magentic-One](https://arxiv.org/abs/2411.04468) maintains an outer Task Ledger containing facts, guesses, and plan, plus an inner Progress Ledger tracking current progress and agent assignments. It replans after repeated stalls. This is an important predecessor for controller-led decomposition, but its ledgers are model-maintained text within a group-chat run; facts, commitments, assignments, candidates, and acceptance are not independent durable typed records.
+
+[OpenHands](https://arxiv.org/abs/2511.03690) supplies a mature disposable software-agent execution surface: sandboxing, lifecycle control, remote execution, multi-model routing, security analysis, server interfaces, and production reliability instrumentation. Its persistence restores conversation/event history, workspace, and execution state. Its goal-verification loop can use a second model to inspect concrete evidence and request revision. Public sources do not describe a durable organizational layer with decision supersession, proposed-versus-adopted deliverables, or immutable accepted revisions.
+
+[Software Delegation Contracts](https://arxiv.org/abs/2606.17099) models delegation as task, authority, returned work package, and acceptance context, and reports that explicit contracts improve review evidence and reduce ambiguity. It is a small recent study, but it supports making Assignment briefs and acceptance context typed rather than relying on a conversational handoff.
+
+[SWE-Lancer](https://arxiv.org/abs/2502.12115) includes manager tasks that choose among competing implementation proposals, and [AIDev](https://arxiv.org/abs/2602.09185) reconstructs real agent-authored PR timelines across proposal, human review, revision, CI, merge, and rejection. These validate proposal/review as meaningful facts, but neither supplies a general durable adoption model.
+
+MetaGPT and ChatDev model organizational roles and staged review—[MetaGPT](https://arxiv.org/abs/2308.00352), [ChatDev](https://arxiv.org/abs/2307.07924)—but their organization principally exists as prompt-driven SOPs and role conversations. Weaver's organization is intended to exist as durable typed facts even if every role process disappears.
+
+### Experiential learning and the policy tree
+
+The policy tree belongs to a crowded self-improving-agent research line. The following claims are not novel by themselves: storing natural-language lessons, extracting reusable workflows, assigning stable rule IDs, validating policy edits, recording provenance, retaining rejected hypotheses, versioning a learned policy, or rolling back a bad version.
+
+| System | What it learns | Trust and correction model | Gap relative to Weaver |
+| --- | --- | --- | --- |
+| [Reflexion](https://arxiv.org/abs/2303.11366) | Verbal reflections from trajectory and task feedback. | Appended directly and used on retries. | Primarily same-task learning; no candidate status, source-linked later outcome, or authority model. |
+| [ExpeL](https://arxiv.org/abs/2308.10144) | Cross-task natural-language insights and retrieved successful trajectories. | `ADD`, `EDIT`, `UPVOTE`, and `DOWNVOTE`; an insight is removed when importance reaches zero. | Early evidence accumulation, but no durable links from an insight to each contributing episode and no later-workstream promotion gate. |
+| [Voyager](https://arxiv.org/abs/2305.16291) | Executable skills refined with environment feedback and indexed for reuse. | A skill is committed after critic self-verification. | Strong pre-admission validation but no post-admission outcome ledger or correction lineage; capability grows without an authority distinction. |
+| [Agent Workflow Memory](https://arxiv.org/abs/2409.07429) | Parameterized workflows abstracted from successful trajectories. | Online admission after an LM evaluator labels one trajectory successful. | Immediate self-judged admission, no negative evidence or authority semantics. |
+| [AutoManual](https://arxiv.org/abs/2405.16247) | Six typed categories of rule assembled into a manual. | Planner cites relevant rule IDs; Builder updates rules; validation logs retain episode/rule IDs; Consolidator merges/deletes. | The closest early analogue to policy citations, but rules become active immediately and edits/deletion do not preserve immutable supersession lineage. |
+| [ACE](https://arxiv.org/abs/2510.04618) | Localized delta updates to an itemized playbook. | Stable bullet IDs and helpful/harmful counters; deduplication and pruning. | No source provenance, candidate/trusted lifecycle, or typed authority scope. Harmful-update experiments show why negative evidence matters. |
+| [ReasoningBank](https://arxiv.org/abs/2509.25140) | Structured memories distilled from successful and failed trajectories. | Current implementation appends extracted memories; richer consolidation is future work. | No lifecycle, durable application evidence, or authority boundary. |
+| [MemRL](https://arxiv.org/abs/2601.03192) | Intent–Experience–Utility memories selected by similarity and learned value. | Environmental reward updates memory utility. | Closest analogue to outcome-weighted reuse; explicitly identifies ambiguous credit when several memories apply and warns that false-positive reward can entrench bad behaviour. |
+| [SkillMaster](https://arxiv.org/abs/2605.08693) | Skills proposed, updated, or retained by an agent trained to manage its skill bank. | Candidate edits receive a counterfactual utility signal from related probe tasks run with original versus modified skill banks. | Strong causal method for learned skill value; no organizational provenance or authority firewall. |
+| [Kintsugi](https://arxiv.org/abs/2605.09487) | A typed executable KB of predicates, operators, policy schemas, monitors, recovery rules, experiences, and goals. | Every localized edit names evidence, metric, and regression scope; deterministic admission requires type-check, execution, focused improvement, and no protected regression; rejected hypotheses remain auditable; accepted versions have provenance and rollback. | Closest technical prior art. It learns executable task policy and skill bindings, not organizational practice constrained from granting authority. |
+| [Accumulated Behavioral Rules for Coding Agents](https://arxiv.org/abs/2607.13091) | Accepted human review corrections become persistent behavioural rules and self-review checks. | Rules retain ID, category, origin, scope, constraint, rationale, date, and source comment; conflict resolution goes through repository review. | Closest problem statement. No shadow status, later-outcome promotion, immutable supersession, or closed authority-safe effect vocabulary; its 0-recurrence result across 74 exposures is observational. |
+
+Kintsugi is the most important technical comparator. Weaver should not claim originality for typed learned policy, candidate edits from rollout evidence, deterministic verification, protected regression, inspectable rejection, provenance, versions, rollback, or action traces. Kintsugi's verifier asks whether an executable KB edit improves focused behaviour without protected regression. Weaver's intended contribution is different: a human correction becomes scoped organizational practice, a later authoritative decision cites its application, a qualified later outcome supplies evidence, incorrect policy is superseded with lineage, and learning cannot become an authority source.
+
+The production coding-rules paper independently validates the problem Weaver is trying to solve: coding agents repeat corrected mistakes because review feedback dies with the session. Weaver's stronger schema is valuable only if it actually enforces attribution and later evidence. The present implementation—arbitrary citation IDs, model-authored Boolean evidence, first-positive promotion, unresolved negative evidence, and active contradictions—does not yet meet its own standard or the best neighbouring research standard.
+
+Research-derived policy requirements are therefore:
+
+1. A policy application must link to a qualified applying decision and the exact behavioural delta it caused.
+2. Evidence must link to that application and to a task-native outcome, not merely a later self-report.
+3. Negative evidence and contention must affect projection and trust immediately.
+4. Several cited policies must not all receive undifferentiated credit from one outcome.
+5. Promotion must test focused improvement and protected regressions in quality, spend, verification, and authority.
+6. Causal evaluation must compare matched future work with and without the candidate policy, or against a frozen policy store.
+7. Wrong policies must be retired through immutable, symmetric supersession rather than editing history away.
+
+The deliberate distinction between policy memory and skill acquisition should remain. Much of the literature makes code, tools, APIs, action macros, and behavioural rules one evolving capability library. Weaver's narrow effect vocabulary is the architectural contribution worth defending.
+
+### Authority, capabilities, and external effects
+
+Several systems support Weaver's “capability is not authority” principle:
+
+- [CaMeL](https://arxiv.org/abs/2503.18813) separates trusted control flow from untrusted retrieved data and uses capabilities to prevent unauthorized information flow. It directly supports the rule that a reply or worker/tool result cannot grant authority.
+- [Agent libOS](https://arxiv.org/abs/2606.03895) models Agent processes, object memory, skills, JIT tools, children, budgets, checkpoints, and explicit capabilities. Its central invariant is that model-visible affordances may evolve while authority changes only through audited runtime primitives. This is a strong substrate analogue for Weaver's firewall.
+- [Progent](https://arxiv.org/abs/2504.11703) enforces deterministic argument-level tool policies with default deny; narrowing may proceed while expansion requires an approval strategy.
+- [MiniScope](https://arxiv.org/abs/2512.11147) derives least-privilege OAuth scopes from an execution graph, issues scoped credentials, and measures confirmation burden over a simulated multi-month workload.
+- [AgentSpec](https://arxiv.org/abs/2503.18666) provides policy-as-code and runtime trigger/predicate enforcement.
+- [Capability Gates Are Not Authorization](https://arxiv.org/abs/2606.28679) argues that exposing or hiding a tool is not value-level, fail-closed authorization and prototypes checks over scope, amount, authorization, and idempotency.
+- [Beyond Single-Use Tokens](https://arxiv.org/abs/2608.01710) identifies semantic replay: replanning, retry, delegation, concurrency, and recovery can execute one authorization multiple times with different token IDs. It durably binds confirmation to a canonical action through Issue–Prepare–Commit state.
+
+These works reinforce rather than replace Weaver's domain model. They mostly authorize one execution graph or query. Weaver must preserve authority-source provenance across Workstream decisions, Assignments, action claims, races, and later effects.
+
+The external-effect lifecycle is one of Weaver's most differentiated seams. Mainstream durable runtimes discuss at-least-once execution, provider idempotency, compensation, and stable idempotency keys, but the surveyed agent harnesses generally collapse proposed action, invocation, tool success, provider observation, response, and business outcome.
+
+The closest work includes:
+
+- [Safety Invariants for Agents Orchestrating Irreversible State Transitions](https://arxiv.org/abs/2608.00783), which proves a narrower execution-fidelity condition: the realized effect is either nothing or exactly the rendered transition, exactly once, under planner mistakes, ambiguous outcomes, retries, redelivery, and delegation. It derives seven enforcement invariants and reports 108 production blockchain writes.
+- [tau-bench](https://arxiv.org/abs/2406.12045), [tau2-bench](https://arxiv.org/abs/2506.07982), and [STATE-Bench](https://github.com/microsoft/STATE-Bench), which score resulting provider/database state and policy adherence rather than trusting an agent's success claim.
+- [Proof of Execution](https://arxiv.org/abs/2607.05397), which separates planning, enforcement, effect, and recordkeeping authority and binds authorization, event stream, replay context, and effect history into a validator-checkable object.
+- [Notarized Agents](https://arxiv.org/abs/2606.04193), which proposes receiver-signed receipts in a transparency log so the external receiver, rather than the agent, attests to the effect.
+
+No reviewed mainstream harness states Weaver's exact rule as a first-class domain invariant: an unknown external mutation result triggers authoritative provider readback and categorically cannot trigger a second send merely because the first invocation result is unknown. That makes the current stale-approval send race, verifier egress, and missing provider-attempt ledger priority defects in a potentially strong contribution rather than incidental bugs.
+
+### Long-horizon and governance evaluation
+
+Current evaluation is moving beyond one small issue, but it still rarely tests organizational continuity:
+
+- [METR's task-completion time horizons](https://metr.org/time-horizons/) estimate the human-expert task duration at which an agent reaches a specified success probability. This is task difficulty, not the time the agent remained alive. METR also warns that its tasks are cleaner and lower-context than normal organizational work.
+- [SWE-EVO](https://arxiv.org/abs/2512.18470) uses version-evolution tasks spanning an average of 21 files and hundreds of tests; current agents perform far below SWE-bench Verified levels.
+- [RoadmapBench](https://arxiv.org/abs/2605.15846) uses 115 real version-upgrade tasks with multi-target roadmaps and a median reference change of roughly 3,700 lines across 51 files; even its strongest reported system resolves only 39.1%.
+- [DeepSWE](https://arxiv.org/abs/2607.07946) supplies 113 original, contamination-resistant tasks with hand-written functional verifiers. Its verifier disagrees with independent review far less often than inherited issue-fix tests, reinforcing task-native verification rather than accidental test satisfaction.
+- [SentinelBench](https://arxiv.org/abs/2606.05342) evaluates monitoring agents in evolving web environments with scripted external events, reaction time, resource use, and change-triggered waits.
+- [MemoryArena](https://arxiv.org/abs/2602.16313) evaluates interdependent work over multiple sessions, where earlier action and feedback must guide later tasks.
+- [AgentDojo](https://arxiv.org/abs/2406.13352) tests useful tool use under 629 indirect-prompt-injection cases across 97 realistic tasks.
+- [Wink](https://arxiv.org/abs/2602.17037) studies asynchronous self-intervention across more than 10,000 production coding trajectories and measures recovery and engineer interventions.
+
+These benchmarks still normally pin one environment and bounded rollout. I found no benchmark that tests the complete Weaver contract:
+
+1. Create durable intended work and dispatch an attempt.
+2. Kill the coordinator and worker.
+3. Inject concurrent worker, human, timer, reply, and provider arrivals.
+4. Rebuild a bounded projection from typed state in a fresh coordinator.
+5. Reconcile a revision conflict without losing or falsely consuming an arrival.
+6. Preserve standing decisions unless explicitly superseded.
+7. Keep worker output proposed until immutable adoption or retained rejection.
+8. Change or narrow authority while an action is waiting.
+9. Resolve an ambiguous external mutation by provider readback without duplicate effect.
+10. Apply, withhold, correct, or supersede learned policy and measure the later outcome.
+11. Score task-native success, false completion, unauthorized/duplicate effects, human effort, spend, recovery, and projection size.
+
+That sequence is a credible Weaver-specific benchmark contribution. It would test organizational durability rather than merely a longer conversation.
+
+### Defensible Weaver positioning
+
+The strongest position is:
+
+> Weaver is a durable organizational execution and governance harness for disposable agents. A Workstream preserves intent and commitments; an Assignment preserves intended responsibility across failed Runs; worker output remains proposed until adopted; external effects are reconciled against provider truth; and learned policy may improve verification, narrow behaviour, or advise without becoming an authority source.
+
+More specifically, the surveyed combination appears unusual because it joins:
+
+1. Workstream identity distinct from reusable Agent identity and disposable Run identity.
+2. Assignment identity as intended work whose attempts may die without losing responsibility.
+3. Candidate result versus authoritative adoption, with immutable accepted revision and retained rejection.
+4. Standing decisions changed only by explicit supersession with lineage.
+5. Typed projection assembled from authoritative state rather than a generated conversation summary.
+6. Capability separated from authority and revalidated immediately before egress.
+7. Draft, send, provider receipt, reply, and evaluated result as distinct facts.
+8. Unknown external result requiring readback instead of generic retry.
+9. Revision-checked writes with at-least-once wake reconciliation.
+10. Scoped, attributable learning constrained from granting operational authority.
+11. Human interventions per successful longitudinal outcome as the optimization target, guarded by quality and authority.
+
+This is compositional novelty, not ingredient novelty. Weaver should cite Argus when discussing bounded missions over durable state, Kintsugi when discussing typed verifier-gated learned policy, Temporal/Restate/DBOS when discussing generic durability, Ledger/MAGE when discussing execution state, and Agent libOS/CaMeL when discussing authority.
+
+There is also a naming collision: [SkillWeaver](https://arxiv.org/abs/2504.07079) is an unrelated 2025 system that teaches web agents to synthesize and refine reusable APIs. Searching for “Weaver agent learning” may surface it.
+
+### Research-derived implementation and evaluation requirements
+
+The research sharpens the repair programme in six ways:
+
+1. **Current heads, not compressed authority.** Borrow Ledger's deterministic current-state derivation and bitemporal invalidation ideas from Graphiti, but keep all authority in typed records. A compact projection is a view; it cannot become an editable truth document.
+2. **Protected policy regression.** A policy cannot earn trust merely because one later coordinator reports no intervention. Admission must link application to a qualified outcome and demonstrate no regression in outcome quality, verification, spend, or authority.
+3. **Counterfactual policy value.** Randomly withhold eligible shadow policies from matched workstreams, or compare against a frozen policy store. Report the assignment/decision delta and task-native result. Policy citations alone are not evidence of causal help.
+4. **Primitive-boundary authority.** Use Agent-libOS/CaMeL-style trusted enforcement at the executor and egress primitives. Tool presence, prompt instructions, policy prose, and model self-description are not authority.
+5. **Canonical actions and effect receipts.** Bind approval to a canonical action identity, transactionally claim it immediately before egress, retain each invocation attempt separately from provider effect, and reconcile ambiguous results from provider truth.
+6. **Task-native longitudinal evaluation.** Evaluate qualified Workstream outcomes, not adoption volume or session duration. Include human-equivalent task difficulty, founder effort, Pilot acts, agent acts, cost, false completion, duplicate/unauthorized effects, recovery, and state growth.
+
 ## Recommended implementation sequence
 
 Keep each pull request coherent and mergeable. Do not combine the policy schema migration with the egress race or projection redesign.
@@ -618,10 +836,12 @@ Keep each pull request coherent and mergeable. Do not combine the policy schema 
 3. **PR 3 — policy integrity contract**
    - Attributable policy proposal provenance.
    - Validated policy citations.
-   - Typed application-linked evidence.
+   - Typed application-linked evidence and the exact behaviour/decision delta attributed to each policy.
    - Typed correction/application-point attribution rather than a self-reported Boolean.
    - Crash-safe cross-store handshake or backend joint transaction.
    - Explicit decision on whether promotion requires a different later matching workstream.
+   - First-class negative evidence, contested state, and multi-policy credit isolation.
+   - Kintsugi-style focused improvement and protected-regression evidence for quality, verification, spend, and authority.
    - Non-mutating integrity audit and compatibility handling for old evidence.
 4. **PR 4 — policy correction and authority semantics**
    - Symmetric policy lineage and coordinator supersession tool, including replacement by an existing policy.
@@ -632,6 +852,7 @@ Keep each pull request coherent and mergeable. Do not combine the policy schema 
    - Decision lifecycle discipline.
    - Active/relevant assignment and deliverable projection.
    - Compact lineage.
+   - Deterministically derived current heads with explicit stale-state invalidation; use the same typed state to inform planning and govern repeated/stale proposed work.
    - Long-running routine size test.
 6. **PR 6 — dependency and intake integrity**
    - Accepted dependency requirement.
@@ -642,6 +863,8 @@ Keep each pull request coherent and mergeable. Do not combine the policy schema 
    - Actor and infrastructure separation.
    - Cost/reliability measures.
    - Stable post-fix cohort protocol.
+   - Matched policy-on/policy-off or live-versus-frozen-policy evaluation with randomized withholding where safe.
+   - A longitudinal chaos scenario spanning fresh processes, concurrent arrivals, supersession, adoption/rejection, authority change, unknown-effect readback, and final task-native scoring.
 
 Each PR must update [`docs/harness.md`](./harness.md) and [`docs/learning.md`](./learning.md) only to claims the implementation and deterministic tests actually prove. User-visible behaviour changes also require the corresponding `docs-public/` update.
 
@@ -677,6 +900,8 @@ The programme is complete when:
 12. The outcome dashboard separates successful outcomes, adopted products, provider backoff, worker failures, Pilot approvals, and direct founder interventions.
 13. The full deterministic suite, PostgreSQL store contracts, and a fresh pass-and-wake acceptance cycle are green.
 14. A stable post-fix live cohort demonstrates outcome quality, cost, reliability, and intervention trends without mixing materially different harness versions.
+15. A matched or randomized policy evaluation can distinguish policy reuse from task mix and coordinator rediscovery, attributes each tested policy to a concrete decision delta, and checks protected regressions rather than treating citation or one self-reported success as causal evidence.
+16. A deterministic longitudinal scenario kills all model processes between stages, injects conflicting arrivals and an ambiguous external result, and still preserves commitments, adoption boundaries, authority, at-most-one effect, and a qualified final outcome from typed state alone.
 
 ## Final assessment
 
