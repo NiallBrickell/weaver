@@ -19,7 +19,8 @@ export type ToolDecision =
 
 /**
  * Live per-call supervision supplied by the harness for action workers. An
- * ordinary worker uses the host's normal Claude Code permissions instead.
+ * ordinary worker uses the executor substrate's normal coding-agent permissions
+ * instead.
  */
 export type ToolSupervisor = (
   toolName: string,
@@ -68,14 +69,14 @@ export interface WorkerExecutionRequest {
   assignmentId: string;
   /** The complete brief: objective, briefing, acceptance criteria, secret NAMES, declared inputs. */
   prompt: string;
-  /** Normal Claude Code behavior plus Weaver's bounded-assignment contract. */
+  /** Current production preset plus Weaver's substrate-neutral bounded-assignment contract. */
   systemPrompt: {
     type: 'preset';
     preset: 'claude_code';
     append: string;
   };
   model: string;
-  /** Ordinary workers use the complete Claude Code tool preset. */
+  /** Current production workers use the complete Claude Code tool preset. */
   tools: { type: 'preset'; preset: 'claude_code' };
   /** Harness tools that never need a permission round trip. */
   allowedTools: string[];

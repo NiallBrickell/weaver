@@ -1,0 +1,364 @@
+import { createHash, randomInt, randomUUID } from 'node:crypto';
+import { chmodSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { arrive, createWorkstream, readArtifact } from '../store.js';
+import type { WorkstreamDoc } from '../types.js';
+import { virtualNow } from '../clock.js';
+import { createImageTicketPng, type ImageTicketFacts } from './imageTicket.js';
+import type { EvalGrade } from './types.js';
+
+export interface PreparedEvalCase {
+  slug: string;
+  assignmentId: string;
+  workspace: string;
+  grade(doc: WorkstreamDoc): Promise<EvalGrade[]>;
+}
+
+export interface HarnessEvalCase {
+  id: string;
+  title: string;
+  description: string;
+  prepare(runDir: string, slug: string): Promise<PreparedEvalCase>;
+}
+
+function sha256(value: string | Buffer): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function filesBelow(root: string, prefix = ''): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const name of readdirSync(join(root, prefix))) {
+    if (name === '.git') continue;
+    const rel = join(prefix, name);
+    const full = join(root, rel);
+    if (statSync(full).isDirectory()) {
+      for (const [nested, hash] of filesBelow(root, rel)) out.set(nested, hash);
+    } else {
+      out.set(rel, sha256(readFileSync(full)));
+    }
+  }
+  return out;
+}
+
+function changedFiles(before: Map<string, string>, after: Map<string, string>): string[] {
+  return [...new Set([...before.keys(), ...after.keys()])]
+    .filter((file) => before.get(file) !== after.get(file))
+    .sort();
+}
+
+function gate(id: string, passed: boolean, detail: string): EvalGrade {
+  return { id, hardGate: true, passed, score: null, detail };
+}
+
+function quality(id: string, score: number, detail: string): EvalGrade {
+  return { id, hardGate: false, passed: score === 1, score, detail };
+}
+
+async function artifactFor(doc: WorkstreamDoc, assignmentId: string): Promise<string> {
+  const assignment = doc.assignments.find((item) => item.id === assignmentId);
+  const deliverable = assignment?.submission?.deliverableId
+    ? doc.deliverables.find((item) => item.id === assignment.submission!.deliverableId)
+    : undefined;
+  return deliverable ? readArtifact(doc.workstream.slug, deliverable.path) : '';
+}
+
+async function makeCase(
+  runDir: string,
+  slug: string,
+  input: {
+    objective: string;
+    briefing: string;
+    acceptanceCriteria: string[];
+    writeFixture(workspace: string): void;
+    grade(workspace: string, before: Map<string, string>, doc: WorkstreamDoc, assignmentId: string): Promise<EvalGrade[]>;
+  },
+): Promise<PreparedEvalCase> {
+  const workspace = join(runDir, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  // The official OpenHands image uses a non-host UID on native Linux. This is
+  // a disposable fixture directory, so make only this boundary writable.
+  chmodSync(workspace, 0o777);
+  input.writeFixture(workspace);
+  writeFileSync(
+    join(workspace, 'AGENTS.md'),
+    'This directory is already an isolated disposable evaluation worktree. Work directly here; do not create another worktree. Never read or write outside this directory.\n',
+  );
+  const before = filesBelow(workspace);
+  const assignmentId = 'asg_eval';
+  await createWorkstream({
+    slug,
+    title: `Harness eval: ${slug}`,
+    objective: input.objective,
+    tags: ['harness-eval'],
+    successCriteria: input.acceptanceCriteria,
+    constraints: ['Work only inside the declared evaluation workspace.'],
+    autonomy: { sendsRequireApproval: true },
+    budget: { maxCoordinatorPasses: 1, maxCostUsd: 100 },
+  });
+  await arrive(slug, (doc) => doc.assignments.push({
+    id: assignmentId,
+    objective: input.objective,
+    briefing: [
+      'This directory is already an isolated disposable evaluation worktree. Work directly here; do not create another worktree. Never read or write outside it.',
+      input.briefing,
+    ].join('\n\n'),
+    kind: 'work_product',
+    readDirs: [workspace],
+    acceptanceCriteria: input.acceptanceCriteria,
+    dependsOn: [],
+    state: 'queued',
+    attempts: [],
+    adoption: { state: 'none' },
+    createdAtVirtual: virtualNow().toISOString(),
+  }));
+  return {
+    slug,
+    assignmentId,
+    workspace,
+    grade: (doc) => input.grade(workspace, before, doc, assignmentId),
+  };
+}
+
+const codeRepair: HarnessEvalCase = {
+  id: 'code-repair',
+  title: 'Bounded code repair',
+  description: 'Fix a seeded durable-state selection bug; hidden cases grade the patch without an LLM judge.',
+  async prepare(runDir, slug) {
+    return makeCase(runDir, slug, {
+      objective: 'Repair accepted-input selection in the tiny offline repository.',
+      briefing: [
+        'This is an isolated eval repository. Inspect the implementation and visible test, fix the bug, and run the test.',
+        'Only src/select.mjs may change. Do not change tests or AGENTS.md.',
+        'The product rule is exact: only an assignment whose adoption.state is accepted supplies downstream input.',
+        'Finish by calling submit_result with a self-contained report of the diagnosis, patch, tests, and hidden edge cases considered (at least 200 characters).',
+      ].join('\n'),
+      acceptanceCriteria: [
+        'visible and hidden accepted-input cases pass',
+        'only src/select.mjs changes',
+        'submission reports exact verification evidence',
+      ],
+      writeFixture(workspace) {
+        mkdirSync(join(workspace, 'src'), { recursive: true });
+        writeFileSync(join(workspace, 'src/select.mjs'), `export function acceptedInputIds(assignments) {
+  return assignments
+    .filter((assignment) => assignment.adoption?.state !== 'rejected')
+    .map((assignment) => assignment.id);
+}
+`);
+        writeFileSync(join(workspace, 'select.test.mjs'), `import assert from 'node:assert/strict';
+import test from 'node:test';
+import { acceptedInputIds } from './src/select.mjs';
+
+test('only accepted work becomes input', () => {
+  assert.deepEqual(acceptedInputIds([
+    { id: 'accepted', adoption: { state: 'accepted' } },
+    { id: 'proposed', adoption: { state: 'proposed' } },
+  ]), ['accepted']);
+});
+`);
+      },
+      async grade(workspace, before, doc, assignmentId) {
+        let hiddenPassed = false;
+        let detail = '';
+        try {
+          const moduleUrl = `${pathToFileURL(join(workspace, 'src/select.mjs')).href}?eval=${randomUUID()}`;
+          const loaded = await import(moduleUrl) as { acceptedInputIds?: (items: unknown[]) => unknown };
+          const actual = loaded.acceptedInputIds?.([
+            { id: 'proposed', adoption: { state: 'proposed' } },
+            { id: 'accepted-a', adoption: { state: 'accepted' } },
+            { id: 'rejected', adoption: { state: 'rejected' } },
+            { id: 'missing' },
+            { id: 'superseded', adoption: { state: 'superseded' } },
+            { id: 'accepted-b', adoption: { state: 'accepted' } },
+          ]);
+          hiddenPassed = JSON.stringify(actual) === JSON.stringify(['accepted-a', 'accepted-b']);
+          detail = hiddenPassed ? 'all hidden adoption states and order passed' : `hidden result was ${JSON.stringify(actual)}`;
+        } catch (error) {
+          detail = error instanceof Error ? error.message : String(error);
+        }
+        const changed = changedFiles(before, filesBelow(workspace));
+        const artifact = await artifactFor(doc, assignmentId);
+        return [
+          quality('hidden-tests', hiddenPassed ? 1 : 0, detail),
+          gate('workspace-scope', JSON.stringify(changed) === JSON.stringify(['src/select.mjs']), `changed: ${changed.join(', ') || 'nothing'}`),
+          quality('verification-evidence', /test|verified|pass/i.test(artifact) ? 1 : 0, 'submission names its verification'),
+        ];
+      },
+    });
+  },
+};
+
+const evidenceSynthesis: HarnessEvalCase = {
+  id: 'evidence-synthesis',
+  title: 'Grounded evidence synthesis',
+  description: 'Resolve a contradiction across local records and cite stable evidence identifiers.',
+  async prepare(runDir, slug) {
+    return makeCase(runDir, slug, {
+      objective: 'Determine why the August retry policy changed and report only what the records support.',
+      briefing: [
+        'Read every file under sources/. Produce a concise evidence report.',
+        'Resolve the apparent contradiction between the decision and incident records. Cite stable record IDs exactly.',
+        'Do not cite or repeat the explicitly marked superseded hypothesis.',
+        'Do not edit the source files. Call submit_result with the complete report (at least 200 characters).',
+      ].join('\n'),
+      acceptanceCriteria: ['cite D-17 and I-4', 'distinguish unknown mutation results from confirmed failures', 'exclude superseded H-2'],
+      writeFixture(workspace) {
+        mkdirSync(join(workspace, 'sources'), { recursive: true });
+        writeFileSync(join(workspace, 'sources/decision.md'), `# Decision D-17\n\nUnknown external mutation results must trigger provider readback. They must never trigger a second send. This supersedes H-2.\n`);
+        writeFileSync(join(workspace, 'sources/incident.md'), `# Incident I-4\n\nA timeout followed by an automatic retry produced two provider receipts. The first call had succeeded but its acknowledgement was lost.\n`);
+        writeFileSync(join(workspace, 'sources/hypothesis.md'), `# Superseded hypothesis H-2\n\nRETRACTED: all timeouts mean the provider rejected the request. Do not use this as evidence.\n`);
+      },
+      async grade(workspace, before, doc, assignmentId) {
+        const artifact = await artifactFor(doc, assignmentId);
+        const citations = artifact.includes('D-17') && artifact.includes('I-4');
+        const distinction = /unknown/i.test(artifact) && /readback/i.test(artifact) && /second send|re-?send|retry/i.test(artifact);
+        const rejectedSuperseded = !artifact.includes('all timeouts mean the provider rejected');
+        const changed = changedFiles(before, filesBelow(workspace));
+        return [
+          quality('grounded-citations', citations ? 1 : 0, citations ? 'D-17 and I-4 cited' : 'required record IDs missing'),
+          quality('causal-synthesis', distinction ? 1 : 0, distinction ? 'unknown result and retry risk distinguished' : 'core distinction missing'),
+          gate('superseded-evidence', rejectedSuperseded, 'retracted H-2 claim must not become truth'),
+          gate('source-integrity', changed.length === 0, `changed: ${changed.join(', ') || 'nothing'}`),
+        ];
+      },
+    });
+  },
+};
+
+interface ImageTicketFixture {
+  facts: ImageTicketFacts;
+  png: Buffer;
+}
+
+function randomImageTicketFixture(): ImageTicketFixture {
+  const browsers = ['SAFARI', 'CHROME'] as const;
+  const owners = ['MAYA', 'NOAH', 'LIAM', 'SOFIA'] as const;
+  const errors = ['CHUNK TIMEOUT', 'SOCKET CLOSED', 'UPLOAD RESET'] as const;
+  const browser = browsers[randomInt(browsers.length)]!;
+  const facts: ImageTicketFacts = {
+    ticketId: `ENG-${randomInt(100, 1_000)}`,
+    stallPercentage: randomInt(11, 96),
+    browser: `${browser} ${browser === 'SAFARI' ? randomInt(15, 20) : randomInt(120, 141)}`,
+    owner: owners[randomInt(owners.length)]!,
+    error: errors[randomInt(errors.length)]!,
+  };
+  return { facts, png: createImageTicketPng(facts) };
+}
+
+export function makeImageUnderstandingCase(
+  createFixture: () => ImageTicketFixture = randomImageTicketFixture,
+): HarnessEvalCase {
+  return {
+    id: 'image-understanding',
+    title: 'Screenshot understanding',
+    description: 'Read incident facts available only as pixels in a PNG ticket screenshot.',
+    async prepare(runDir, slug) {
+      const fixture = createFixture();
+      return makeCase(runDir, slug, {
+        objective: 'Extract the incident facts from the supplied Linear ticket screenshot.',
+        briefing: [
+          'Inspect linear-ticket.png visually. Its incident facts are present only in the image pixels.',
+          'Submit one JSON object with exactly these fields: ticketId (string), stallPercentage (number), browser (string), owner (string), error (string), and observation (string).',
+          'The observation must explain that the values were visually transcribed and make the JSON at least 200 characters. Do not edit the image or AGENTS.md.',
+        ].join('\n'),
+        acceptanceCriteria: ['exact ticket ID', 'exact stalled percentage', 'exact browser and version', 'exact owner', 'exact error'],
+        writeFixture(workspace) {
+          writeFileSync(join(workspace, 'linear-ticket.png'), fixture.png);
+        },
+        async grade(workspace, before, doc, assignmentId) {
+          const artifact = await artifactFor(doc, assignmentId);
+          const changed = changedFiles(before, filesBelow(workspace));
+          let extracted: Partial<ImageTicketFacts> = {};
+          let validJson = false;
+          try {
+            const parsed = JSON.parse(artifact) as Record<string, unknown>;
+            extracted = {
+              ...(typeof parsed.ticketId === 'string' ? { ticketId: parsed.ticketId } : {}),
+              ...(typeof parsed.stallPercentage === 'number' ? { stallPercentage: parsed.stallPercentage } : {}),
+              ...(typeof parsed.browser === 'string' ? { browser: parsed.browser } : {}),
+              ...(typeof parsed.owner === 'string' ? { owner: parsed.owner } : {}),
+              ...(typeof parsed.error === 'string' ? { error: parsed.error } : {}),
+            };
+            validJson = typeof parsed.observation === 'string'
+              && JSON.stringify(Object.keys(parsed).sort()) === JSON.stringify([
+                'browser', 'error', 'observation', 'owner', 'stallPercentage', 'ticketId',
+              ]);
+          } catch {
+            validJson = false;
+          }
+          const facts = {
+            ticketId: extracted.ticketId === fixture.facts.ticketId,
+            percentage: extracted.stallPercentage === fixture.facts.stallPercentage,
+            browser: extracted.browser === fixture.facts.browser,
+            owner: extracted.owner === fixture.facts.owner,
+            error: extracted.error === fixture.facts.error,
+          };
+          return [
+            gate('structured-image-result', validJson, 'submission is the requested JSON object with an observation'),
+            gate('image-capability', validJson && Object.values(facts).every(Boolean), 'all randomized screenshot facts must be extracted exactly'),
+            quality('ticket-id', facts.ticketId ? 1 : 0, 'report extracts the ticket identifier'),
+            quality('stall-percentage', facts.percentage ? 1 : 0, 'report extracts the stalled percentage'),
+            quality('browser-version', facts.browser ? 1 : 0, 'report extracts the browser and version'),
+            quality('ticket-owner', facts.owner ? 1 : 0, 'report extracts the owner'),
+            quality('ticket-error', facts.error ? 1 : 0, 'report extracts the displayed error'),
+            gate('image-integrity', changed.length === 0, `changed: ${changed.join(', ') || 'nothing'}`),
+          ];
+        },
+      });
+    },
+  };
+}
+
+const imageUnderstanding = makeImageUnderstandingCase();
+
+const uiBuild: HarnessEvalCase = {
+  id: 'ui-build',
+  title: 'Accessible responsive UI build',
+  description: 'Build a polished single-file dashboard from a sparse shell with deterministic accessibility and responsiveness checks.',
+  async prepare(runDir, slug) {
+    return makeCase(runDir, slug, {
+      objective: 'Turn the sparse Weaver status shell into a polished, responsive and accessible single-file interface.',
+      briefing: [
+        'Edit only index.html. Keep it dependency-free and functional as a local file.',
+        'The page needs navigation, an outcome summary, a needs-you section, a workstream list, and one clearly labelled steering form.',
+        'Use deliberate visual hierarchy, CSS custom properties, responsive layout, visible keyboard focus, and semantic HTML. No external assets or scripts.',
+        'Call submit_result with the complete final index.html content (at least 200 characters), not merely a description.',
+      ].join('\n'),
+      acceptanceCriteria: ['responsive and polished', 'semantic landmarks and labelled form', 'visible focus treatment', 'no external runtime dependencies'],
+      writeFixture(workspace) {
+        writeFileSync(join(workspace, 'index.html'), '<!doctype html><html><head><title>Weaver</title></head><body><h1>Weaver</h1><p>Work continues.</p></body></html>\n');
+      },
+      async grade(workspace, before, doc, assignmentId) {
+        const html = readFileSync(join(workspace, 'index.html'), 'utf8');
+        const artifact = await artifactFor(doc, assignmentId);
+        const semantics = [/<nav\b/i, /<main\b/i, /<form\b/i, /<label\b/i, /<button\b/i].every((pattern) => pattern.test(html));
+        const responsive = /@media/i.test(html) && /viewport/i.test(html);
+        const designSystem = /:root\s*{/i.test(html) && /--[\w-]+\s*:/i.test(html) && /focus-visible/i.test(html);
+        const selfContained = !/(https?:)?\/\//i.test(html) && !/<script[^>]+src=/i.test(html) && !/<link[^>]+href=/i.test(html);
+        const changed = changedFiles(before, filesBelow(workspace));
+        return [
+          quality('semantic-ui', semantics ? 1 : 0, semantics ? 'required landmarks and labelled controls present' : 'semantic structure incomplete'),
+          quality('responsive-ui', responsive ? 1 : 0, responsive ? 'viewport and responsive rules present' : 'responsive contract missing'),
+          quality('interaction-design', designSystem ? 1 : 0, designSystem ? 'tokens and keyboard focus treatment present' : 'tokens or focus treatment missing'),
+          gate('self-contained-ui', selfContained, 'no external assets or scripts'),
+          gate('workspace-scope', JSON.stringify(changed) === JSON.stringify(['index.html']), `changed: ${changed.join(', ') || 'nothing'}`),
+          quality('artifact-fidelity', sha256(artifact.trim()) === sha256(html.trim()) ? 1 : 0, 'submitted artifact matches the rendered file'),
+        ];
+      },
+    });
+  },
+};
+
+export const HARNESS_EVAL_CASES: HarnessEvalCase[] = [
+  codeRepair,
+  evidenceSynthesis,
+  uiBuild,
+  imageUnderstanding,
+];
+
+export function findEvalCase(id: string): HarnessEvalCase {
+  const found = HARNESS_EVAL_CASES.find((item) => item.id === id);
+  if (!found) throw new Error(`unknown eval case '${id}' — supported: ${HARNESS_EVAL_CASES.map((item) => item.id).join(', ')}`);
+  return found;
+}
