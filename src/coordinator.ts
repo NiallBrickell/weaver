@@ -684,7 +684,7 @@ export async function runCoordinatorPass(
           objective: z.string(),
           success_criteria: z.array(z.string()).default([]),
           constraints: z.array(z.string()).default([]),
-          tags: z.array(z.string()).default([]),
+          tags: z.array(z.string()).default([]).describe('scope tags for policy matching. Include \'routine\' whenever the objective is recurring (a cadence, "keep X healthy", periodic sweeps/intake) — the dashboard files routine streams in their own section, and an untagged recurring stream clutters the main board as if it were one-shot work'),
           max_coordinator_passes: z.number().optional().describe('defaults to 500 if omitted, same as weaver create'),
           max_cost_usd: z.number().optional().describe('defaults to 1000 if omitted, same as weaver create'),
           sends_require_approval: z.boolean().optional().describe('defaults to true if omitted, same as weaver create'),
