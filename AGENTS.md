@@ -112,7 +112,7 @@ Document surprises as you find them: the moment something is non-obvious or cost
 
 ## Documentation
 
-Two audiences, two places (org-wide convention): `docs-public/` is the public Mintlify site — any user-visible capability ships a `docs-public/` page + `docs.json` nav entry in the same PR. `docs/*.md` is internal (invariant maps, surprises, working notes) and never substitutes for a public page.
+Two audiences, two places (org-wide convention): `docs-public/` is plain GitHub-rendered markdown (no Mintlify, no `docs.json`, no build step) — any user-visible capability ships a `docs-public/*.md` page plus a link in `docs-public/README.md` in the same PR. `docs/*.md` is internal (invariant maps, surprises, working notes) and never substitutes for a public page.
 
 ## Commands
 

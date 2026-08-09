@@ -1,7 +1,6 @@
----
-title: "Claude capacity & billing"
-description: "How Weaver keeps durable work moving through Claude usage limits without changing billing or identity"
----
+# Claude capacity & billing
+
+*How Weaver keeps durable work moving through Claude usage limits without changing billing or identity*
 
 The job is simple: give Weaver an outcome once, and do not lose the work or babysit retries when Claude temporarily has no capacity.
 
@@ -15,9 +14,7 @@ Anthropic announced a separate monthly Agent SDK allowance, then paused that cha
 
 If a supported paid plan offers usage credits or a usage bundle, the operator can explicitly enable it and set a provider-side spending limit in Claude **Settings > Usage**. Anthropic documents those controls in [Manage usage credits for paid Claude plans](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans) and [Buy usage bundles](https://support.claude.com/en/articles/14246112-buy-usage-bundles).
 
-<Warning>
-  Enabling usage credits authorizes additional spend with Anthropic. Weaver never does this for you. Weaver's dollar figure is an SDK-reported estimate used as a runaway backstop, not an Anthropic billing control.
-</Warning>
+> **Warning:** Enabling usage credits authorizes additional spend with Anthropic. Weaver never does this for you. Weaver's dollar figure is an SDK-reported estimate used as a runaway backstop, not an Anthropic billing control.
 
 ## What Weaver does when capacity runs out
 

@@ -1,7 +1,6 @@
----
-title: "Does each outcome need you less often?"
-description: "Track recorded human interventions beside quality and authority signals, with the denominator stated honestly"
----
+# Does each outcome need you less often?
+
+*Track recorded human interventions beside quality and authority signals, with the denominator stated honestly*
 
 `weaver stats` renders a single self-contained HTML page of fleet-wide metrics — no server, no dependencies, safe to keep open in a tab and regenerate whenever you want a fresh read.
 

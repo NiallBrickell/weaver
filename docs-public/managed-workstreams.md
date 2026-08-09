@@ -1,7 +1,6 @@
----
-title: "Managed Workstreams"
-description: "A coordinator can delegate a genuinely separate outcome to its own Workstream — flat, not a tree"
----
+# Managed Workstreams
+
+*A coordinator can delegate a genuinely separate outcome to its own Workstream — flat, not a tree*
 
 Some outcomes are too big for one Workstream's decision log, but still belong to it organizationally: "ship the migration" wants its own direction, its own budget, its own standing decisions — while still being *your* responsibility to keep an eye on. A managed Workstream is Weaver's answer: a coordinator can create a brand-new, fully independent Workstream, point it back at itself as manager, and get told when it finishes or needs a human.
 
@@ -21,17 +20,17 @@ A managed stream can itself manage others — delegation can nest — but nothin
 
 These are coordinator-only capabilities — there's no new CLI verb, because the decision to delegate is exactly the kind of judgment call the coordinator (not the operator) makes each pass.
 
-<Steps>
-  <Step title="create_workstream">
-    Creates a new Workstream from explicit fields only — slug, title, objective, success criteria, constraints, tags, budget. The new stream starts exactly as fresh as `weaver create` would leave it: no decisions, no events, no memory of the manager's own reasoning. Its budget is fully independent — never drawn from or capped by the manager's remaining budget.
-  </Step>
-  <Step title="inspect_workstream">
-    Reads a bounded, typed summary of a workstream the caller manages: status, budget/spend, open attention, conclusion, recent events, directions sent, recent notices received. Refuses outright if the caller isn't the recorded manager. Never returns the target's raw decision log or a rendered projection — only these declared facts.
-  </Step>
-  <Step title="direct_workstream">
-    Sends durable text to a managed workstream. Refuses the same way if the caller isn't the manager.
-  </Step>
-</Steps>
+1. **create_workstream**
+
+   Creates a new Workstream from explicit fields only — slug, title, objective, success criteria, constraints, tags, budget. The new stream starts exactly as fresh as `weaver create` would leave it: no decisions, no events, no memory of the manager's own reasoning. Its budget is fully independent — never drawn from or capped by the manager's remaining budget.
+
+2. **inspect_workstream**
+
+   Reads a bounded, typed summary of a workstream the caller manages: status, budget/spend, open attention, conclusion, recent events, directions sent, recent notices received. Refuses outright if the caller isn't the recorded manager. Never returns the target's raw decision log or a rendered projection — only these declared facts.
+
+3. **direct_workstream**
+
+   Sends durable text to a managed workstream. Refuses the same way if the caller isn't the manager.
 
 ## Directions and notices are not authority
 

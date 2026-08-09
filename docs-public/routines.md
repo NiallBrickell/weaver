@@ -1,7 +1,6 @@
----
-title: "Routines"
-description: "Standing loops that wake with their decision log, constraints, and learned policies intact"
----
+# Routines
+
+*Standing loops that wake with their decision log, constraints, and learned policies intact*
 
 A routine is an outcome that never ends after one report. It does the current cycle, checks what actually happened, records what the next cycle must know, and schedules its own next wake — an error-triage sweep every 12 hours, an evals-health check daily, a usage report weekly.
 
@@ -26,4 +25,4 @@ Run #30 inherits the decisions and corrections from runs 1–29, then continues 
 
 - Wakes are stored data, not sleeping processes — the resident runner discovers what's due. Kill the runner for a week; the routine picks up exactly where it stopped.
 - The dashboard shows routines in their own `↻ ROUTINES` section with the next-run time.
-- `weaver pause <slug>` stops a routine with its state and scheduled wakes intact; `weaver resume <slug>` restarts it. Run `weaver pause` with no slug to pause every currently active workstream. [Pausing work](/pausing) explains the fleet boundary. `weaver tag <slug> add routine` converts an existing workstream.
+- `weaver pause <slug>` stops a routine with its state and scheduled wakes intact; `weaver resume <slug>` restarts it. Run `weaver pause` with no slug to pause every currently active workstream. [Pausing work](./pausing.md) explains the fleet boundary. `weaver tag <slug> add routine` converts an existing workstream.

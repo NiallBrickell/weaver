@@ -1,7 +1,6 @@
----
-title: "The learning loop"
-description: "Corrections become policies; policies earn trust with evidence; authority is never learnable"
----
+# The learning loop
+
+*Corrections become policies; policies earn trust with evidence; authority is never learnable*
 
 The claim is deliberately narrow: **"stored a memory" is not learning.** Learning is the next matching workstream's plan being different for an inspectable, attributable reason — and needing fewer human interventions without weaker verification.
 
@@ -56,7 +55,7 @@ weaver backfill --tags myapp --claude-projects ~/.claude/projects/<project> --li
 
 Backfill imports candidates, never trust. Every seeded policy lands in **shadow** with full provenance (file and heading, or session and quote) and earns *active* through the same evidence loop as a live correction. The authority firewall applies at import too: text that reads like granting authority — merging, sending, spending, bypassing gates — is refused with a note, never converted. Re-running is a no-op: candidates dedup against the store, so backfill is safe to repeat as your rules files evolve.
 
-Once your store has substance, it's shareable: [team seeds](/team-seeds) export your guardrails in sanitized form for teammates to import — shadow on their machine, earning trust through their outcomes, with their corrections superseding yours on the record.
+Once your store has substance, it's shareable: [team seeds](./team-seeds.md) export your guardrails in sanitized form for teammates to import — shadow on their machine, earning trust through their outcomes, with their corrections superseding yours on the record.
 
 ## The RL framing
 
@@ -64,6 +63,6 @@ The bookkeeping is deliberately shaped as a reinforcement-learning substrate so 
 
 - **Trajectory**: the episode — state (projection), action (proposed course), correction signal (intervention), outcome (evaluated results).
 - **Action space**: when to distill a policy, how to scope it, which matching policies to apply where.
-- **Target**: human interventions per successful outcome. The desired direction is down only while outcome quality and verification hold and the authority boundary does not move. [The stats page](/stats) shows the current adopted-work-product indicator beside those signals; it does not pretend adoption is completion.
+- **Target**: human interventions per successful outcome. The desired direction is down only while outcome quality and verification hold and the authority boundary does not move. [The stats page](./stats.md) shows the current adopted-work-product indicator beside those signals; it does not pretend adoption is completion.
 
 The optimization order is fixed: episodes complete, attribution enforced, reward adversarially audited — only then is training against this data a well-posed problem rather than vibes with a database.

@@ -1,7 +1,6 @@
----
-title: "Secrets & access"
-description: "Models see names; shells get values; approved actions inherit the operator's MCP servers and CLIs"
----
+# Secrets & access
+
+*Models see names; shells get values; approved actions inherit the operator's MCP servers and CLIs*
 
 ## Secrets
 
@@ -30,7 +29,7 @@ An approved action acts *as you, on your machine* — so it gets what you have:
 
 Operator MCP authentication headers are never placed literally in Agent SDK process arguments. Weaver replaces static header values with generated environment placeholders before spawning Claude Code, using the [runtime expansion supported by Claude Code MCP configuration](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcpjson). The generated environment copy joins the disposable worker's output-redaction set, then disappears with the process; Weaver never writes it into workstream state.
 
-The standing order is: exhaust the machine's existing access (MCP auth, CLI logins) before ever asking the human for a credential — and when an ask is genuinely necessary, it arrives as a one-click card naming the exact secret to set (`weaver secret set <NAME>`), with chasing the external service as the fallback option, never the lead. A card that sends you to a status page while a credential you hold would unblock the work is the workstream doing its remediation wrong.
+The standing order is: exhaust the machine's existing access (MCP auth, CLI logins) before ever asking the human for a credential — and when an ask is genuinely necessary, it arrives as a one-click card naming the exact secret to set (`weaver secret set <name>`), with chasing the external service as the fallback option, never the lead. A card that sends you to a status page while a credential you hold would unblock the work is the workstream doing its remediation wrong.
 
 Every assignment is a regular Claude Code worker. It gets Bash, file editing, web tools, and the MCP servers and repository instructions already configured for its working directory. `research`, `evidence`, and `work_product` describe what the worker owes the Workstream; they do not select a smaller runtime. A command such as `git log --pretty=format:'%h|%s'` therefore goes through the normal shell, with normal quoting, rather than a Weaver parser or a parallel set of Git wrappers.
 
@@ -40,6 +39,6 @@ Weaver does not add a second process sandbox in this MVP; the environment that l
 
 Everything rides one ambient operator principal: the local Claude Code login. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN` are stripped from every spawned session, so a stray exported credential cannot silently switch billing or identity. Weaver never mints or stores Claude tokens, pools credentials, or cycles accounts around a usage limit.
 
-Anthropic's proposed separate Agent SDK allowance is currently paused, so SDK work continues to draw from shared Claude plan limits. The dollar figures on Weaver's dashboard are SDK-reported estimates used only as a runaway backstop, not provider billing controls. See [Claude capacity & billing](/claude-capacity) for current provider guidance, explicit spend controls, durable backoff, and recovery behavior.
+Anthropic's proposed separate Agent SDK allowance is currently paused, so SDK work continues to draw from shared Claude plan limits. The dollar figures on Weaver's dashboard are SDK-reported estimates used only as a runaway backstop, not provider billing controls. See [Claude capacity & billing](./claude-capacity.md) for current provider guidance, explicit spend controls, durable backoff, and recovery behavior.
 
 Capacity is durable typed state, indexed by model. Authentication raises one recovery card immediately; usage, session, rate, and provider limits raise one only after twelve consecutive backoffs, giving expected resets time to self-clear. Weaver retries at the stored reset, probes once when credential metadata changes, or makes a wait due after `weaver capacity retry`; a successful real run clears the matching state and card.

@@ -1,0 +1,56 @@
+# Quickstart
+
+*Name the outcome once; Weaver keeps the work moving until the done-bar is met*
+
+## Install
+
+```bash
+git clone https://github.com/NiallBrickell/weaver && cd weaver
+yarn install
+```
+
+Weaver authenticates as the one operator already logged into Claude Code on this machine — no API key, stored token, or account pool. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN` are deliberately stripped from spawned sessions so billing or identity can never silently switch. [Claude capacity & billing](./claude-capacity.md) explains current plan usage, explicit paid continuation, and what Weaver does when capacity runs out.
+
+## Create a workstream
+
+```bash
+weaver create --slug fix-onboarding \
+  --title "Fix the onboarding drop-off" \
+  --objective "Find why signups stall at step 3, fix it, open a PR with evidence." \
+  --constraint "Research first; repository work happens in a fresh worktree; PR and merge are gated actions" \
+  --constraint "Open pull requests only — merging is the founder's act"
+```
+
+Constraints are hard rules the coordinator must respect; they're yours alone to change (`weaver constraint <slug> add|remove`).
+
+This is not a prompt for one agent. The objective stays live while Weaver turns it into bounded assignments, reviews what comes back, starts the next stage, and remembers what still stands between the current state and done.
+
+## Steer it
+
+```bash
+weaver steer fix-onboarding "Repo is at ~/work/myapp. The funnel dashboard is in Metabase. Done = a merged-ready PR plus before/after numbers."
+```
+
+Steering is durable human input: it wakes the workstream, the coordinator must acknowledge and act on it, and — if it *corrects* a course rather than supplying facts — it becomes a candidate policy future workstreams inherit.
+
+## Run everything
+
+```bash
+weaver run     # resident runner: ticks all active workstreams, 10 in parallel
+weaver watch   # interactive dashboard in a second terminal
+weaver stats   # outcome scoreboard: human interventions, quality signals, authority use
+```
+
+The runner holds no state — kill it, restart it, nothing is lost. It starts fresh agents for the next piece of work, confirms outside-world changes, handles failures, and resumes scheduled or event-driven waits without handing the outcome back to you.
+
+Need work to stop without losing its position? `weaver pause <slug>` pauses one workstream, while `weaver pause` pauses every workstream active at that moment. Resume one with `weaver resume <slug>`. Assignments and wakes remain durable, and workstreams created later start active. See [Pausing work](./pausing.md) for the in-flight boundary and fleet semantics.
+
+From here, the dashboard's [needs-you queue](./dashboard.md) contains only judgment, authority, and blockers that genuinely need you. Finishing one assignment, failing a check, or moving from research to implementation is Weaver's job.
+
+Once you have repeated, comparable work, run `weaver stats`. It shows whether that work is needing you less often, alongside rejections and the Pilot-versus-human approval split that keep the trend honest. The [stats guide](./stats.md) explains exactly what the current chart does and does not measure.
+
+## Catch up after leaving it running
+
+Press uppercase `P` on a selected row for that workstream's [printout](./printouts.md), or move above the first row to the fleet header and press `P` for everything. Weaver writes an immutable HTML catch-up and opens it in your browser as one narrow, long-form engineering document. Every workstream and its detailed mutation record is visible as you read down the page; nothing needs expanding. Use the page button or uppercase `C` to copy the complete plain-text report. From a regular terminal, use `weaver printout [slug]` or omit the slug for the fleet; add `--text` only when you deliberately want the raw terminal form.
+
+Not sure what to hand it? [Giving it work](./giving-it-work.md) walks through the four shapes a workstream can hold — building, standing routines, investigations, real-world processes — and the arc each one follows from objective to verified effect.

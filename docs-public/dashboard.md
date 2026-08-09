@@ -1,7 +1,6 @@
----
-title: "The dashboard"
-description: "See every outcome, what changed, what needs your judgment, and whether it is actually done"
----
+# The dashboard
+
+*See every outcome, what changed, what needs your judgment, and whether it is actually done*
 
 `weaver watch` opens the interactive terminal dashboard. It shows whole outcomes rather than a collection of current agent sessions: what is moving, what changed, what is waiting, what needs you, and what has enough evidence to be called done. Weaver absorbs the routine transitions between research, implementation, review, verification, and retry; your turns are reserved for judgment.
 
@@ -21,9 +20,9 @@ Pilot keeps routine tool decisions from interrupting a live agent run. Weaver ke
 
 ## The fleet
 
-Below the queue: every workstream with a colored status dot — red `NEEDS YOU`, cyan `WORKING`, bright-blue `QUEUED` (in line for the runner), blue `WAITING` (scheduled later), dim `IDLE`, green reserved for `DONE ✓` alone — plus a spend-estimate bar, pass count, and `you N×`: how many times you've intervened. [Routines](/routines) render in their own `↻ ROUTINES` section with next-run times.
+Below the queue: every workstream with a colored status dot — red `NEEDS YOU`, cyan `WORKING`, bright-blue `QUEUED` (in line for the runner), blue `WAITING` (scheduled later), dim `IDLE`, green reserved for `DONE ✓` alone — plus a spend-estimate bar, pass count, and `you N×`: how many times you've intervened. [Routines](./routines.md) render in their own `↻ ROUTINES` section with next-run times.
 
-`you N×` is this workstream's local score: how many recorded human interventions it needed. [`weaver stats`](/stats) compares that across work and keeps rejections and approval boundaries beside the trend, so a quieter system cannot claim success merely by lowering the bar.
+`you N×` is this workstream's local score: how many recorded human interventions it needed. [`weaver stats`](./stats.md) compares that across work and keeps rejections and approval boundaries beside the trend, so a quieter system cannot claim success merely by lowering the bar.
 
 A `DONE` row answers "so what did it actually do?" in place: select it and its detail lines show the coordinator's informational account, its separately validated typed evidence IDs, and the hard tallies (readback-verified actions, adopted deliverables, passes, interventions), with `i` for the full record. The account cannot make an outcome true; the cited typed facts do that. Outcomes live where you already are, not behind a CLI.
 
@@ -31,7 +30,7 @@ A `DONE` row answers "so what did it actually do?" in place: select it and its d
 
 Press uppercase `P` to write and open an HTML report of everything recorded since the last printout. Like `i`, it follows the cursor: an attention item or workstream selects that workstream; move above the first row to the highlighted `W E A V E R` header for every workstream plus global policy activity. Lowercase `p` remains pause/resume.
 
-The report is a narrow, long-form engineering document. Every selected workstream and its detailed typed mutation timeline is already present in the page's normal reading flow—there are no cards or collapsed sections to open. The page button or uppercase `C` copies the complete plain-text report. Every published window remains linked under **Printouts** in the HTML knowledge inspector opened by `i`. See [Printouts](/printouts) for the checkpoint and truth contract, or run `weaver printout [slug]` outside the dashboard. (`weaver watch --plain` has no hotkey, but the CLI command opens the same page.)
+The report is a narrow, long-form engineering document. Every selected workstream and its detailed typed mutation timeline is already present in the page's normal reading flow—there are no cards or collapsed sections to open. The page button or uppercase `C` copies the complete plain-text report. Every published window remains linked under **Printouts** in the HTML knowledge inspector opened by `i`. See [Printouts](./printouts.md) for the checkpoint and truth contract, or run `weaver printout [slug]` outside the dashboard. (`weaver watch --plain` has no hotkey, but the CLI command opens the same page.)
 
 ## Knowledge, scoped to the selection
 
