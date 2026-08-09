@@ -17,6 +17,16 @@ weaver do "The EDP nightly syncs keep silently stalling — figure out why and m
 
 Everything a `create` invocation would ask for is derived from the message — slug, title, an expanded brief that preserves every concrete detail you gave, checkable done-criteria — and your standing house constraints are applied automatically. Phrasing that implies recurrence ("every week, clean up…") makes it a routine with a self-scheduling cadence. The sections below exist for when you want to hand-set any of that.
 
+The house pack is machine-local config, not source: put a `house.json` under `WEAVER_HOME` (default `./state`) to set the standing `constraints` every onboarded workstream carries, a free-text `repoMap` describing this machine's repos so a one-liner that only implies its repo still derives a brief that names it, and the default policy-scoping `tags`. A missing or malformed file falls back to conservative defaults and never blocks onboarding:
+
+```json
+{
+  "constraints": ["Open pull requests only — merging is the founder's act"],
+  "repoMap": "Known repos under ~/work:\n- shop — the storefront (Next.js). Default guess for product features.\n- shop-api — the backend.",
+  "tags": ["myapp"]
+}
+```
+
 An optional second argument overrides the done-bar when the default (fixed, merged through review, evidence in the PR) isn't what you mean — `weaver do "<message>" "verified live in the product afterwards, read-only"`. Production is never touched during verification unless that second sentence explicitly asks, and then only read-only.
 
 For anything longer than a sentence, run **`weaver do` with no arguments**: it prompts for the message and reads it raw from stdin — type or paste freely across lines, finish with Ctrl-D (or a line containing only `.`). This is the safe path for real messages, because a shell-quoted argument is parsed by the shell first: `$36.69` inside double quotes becomes `.69`, an embedded quote ends the argument. Stdin has no such grammar — what you paste is what the brief preserves. Either way, derivation is one model pass (20–60s) with a progress spinner, so thinking never looks like a hang.
@@ -55,7 +65,7 @@ Whatever the shape, Weaver keeps responsibility while the outcome moves through 
 
 1. **Understand the next piece** (`WORKING`). A fresh regular Code worker investigates the bounded assignment and submits what it found.
 2. **Do and review it.** The coordinator checks the submission against its acceptance criteria, accepts or rejects it, records the chosen course, and dispatches the next bounded assignment. One worker finishing does not hand the outcome back to you.
-3. **Change the world through Pilot.** Opening or merging a pull request, deploying, sending, or mutating a remote service is a separate action. [Pilot](https://github.com/erdoai/pilot) approves routine-safe commands inside the live run; anything with real blast radius arrives on your [needs-you queue](/dashboard). Your constraints remain hard ceilings.
+3. **Change the world through Pilot.** Opening or merging a pull request, deploying, sending, or mutating a remote service is a separate action. [Pilot](https://github.com/NiallBrickell/pilot) approves routine-safe commands inside the live run; anything with real blast radius arrives on your [needs-you queue](/dashboard). Your constraints remain hard ceilings.
 4. **Confirm the effect.** A deterministic check, run with no model in the loop, verifies what actually happened outside Weaver. A model saying "done" is not evidence. See [Actions](/actions).
 5. **Wait and resume** (`WAITING`). The workstream records what it is waiting for — a reply, a scheduled wake, your verdict — and everything exits. A fresh coordinator resumes from that position when the wake condition arrives.
 6. **Finish only at the done-bar.** Weaver closes the workstream when the whole outcome is evidenced, not when an agent produced the first plausible work product.

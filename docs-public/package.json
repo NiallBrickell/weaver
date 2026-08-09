@@ -10,6 +10,6 @@
   "devDependencies": {
     "@mintlify/cli": "^4.0.0"
   },
-  "author": "Erdo AI",
+  "author": "Niall Brickell",
   "license": "MIT"
 }

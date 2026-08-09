@@ -11,21 +11,13 @@
   "anchors": [
     {
       "name": "GitHub",
-      "href": "https://github.com/erdoai/weaver",
+      "href": "https://github.com/NiallBrickell/weaver",
       "icon": "github"
     }
   ],
-  "navbar": {
-    "links": [
-      {
-        "label": "erdo",
-        "href": "https://erdo.ai"
-      }
-    ]
-  },
   "footer": {
     "socials": {
-      "github": "https://github.com/erdoai"
+      "github": "https://github.com/NiallBrickell"
     }
   },
   "feedback": {

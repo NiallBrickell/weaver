@@ -52,13 +52,13 @@ async function make(slug: string, sourceKey?: string): Promise<void> {
 }
 
 test('a workstream standing for an external thing is findable by its source key', async () => {
-  await make('erdo-425-sms-consent', 'linear:a90143e8');
+  await make('acme-425-sms-consent', 'linear:a90143e8');
   await make('unrelated-stream');
-  assert.equal(await findBySourceKey('linear:a90143e8'), 'erdo-425-sms-consent');
+  assert.equal(await findBySourceKey('linear:a90143e8'), 'acme-425-sms-consent');
 });
 
 test('an external thing with no workstream yet returns null', async () => {
-  await make('erdo-425-sms-consent', 'linear:a90143e8');
+  await make('acme-425-sms-consent', 'linear:a90143e8');
   assert.equal(await findBySourceKey('linear:deadbeef'), null);
 });
 
@@ -67,20 +67,20 @@ test('seeing the same issue on a later pass finds the first workstream, never a 
   // Pass one has nothing and creates; pass two must find what pass one made.
   const key = 'linear:a90143e8';
   assert.equal(await findBySourceKey(key), null);
-  await make('erdo-425-sms-consent', key);
+  await make('acme-425-sms-consent', key);
 
-  assert.equal(await findBySourceKey(key), 'erdo-425-sms-consent');
-  assert.deepEqual(await listWorkstreams(), ['erdo-425-sms-consent']);
+  assert.equal(await findBySourceKey(key), 'acme-425-sms-consent');
+  assert.deepEqual(await listWorkstreams(), ['acme-425-sms-consent']);
 });
 
 test('an unreadable document does not hide a sibling source key', async () => {
   // A corrupt doc must not make an existing workstream invisible to the
   // dedupe — that would silently duplicate the work it stands for.
   await make('broken-stream', 'linear:broken');
-  await make('erdo-425-sms-consent', 'linear:a90143e8');
+  await make('acme-425-sms-consent', 'linear:a90143e8');
   fs.writeFileSync(path.join(workstreamDir('broken-stream'), 'workstream.json'), '{ not json');
 
-  assert.equal(await findBySourceKey('linear:a90143e8'), 'erdo-425-sms-consent');
+  assert.equal(await findBySourceKey('linear:a90143e8'), 'acme-425-sms-consent');
 });
 
 test('creating a managed workstream twice for one external thing is refused at the helper', async () => {
@@ -90,29 +90,29 @@ test('creating a managed workstream twice for one external thing is refused at t
   const { createManagedWorkstream } = await import('./managedWorkstreams.js');
   await make('linear-intake');
   await createManagedWorkstream('linear-intake', {
-    slug: 'erdo-425-connectivity',
-    title: 'ERDO-425',
+    slug: 'acme-425-connectivity',
+    title: 'ACME-425',
     objective: 'close the issue out',
     successCriteria: [],
     constraints: [],
     tags: ['linear'],
-    sourceKey: 'linear:ERDO-425',
+    sourceKey: 'linear:ACME-425',
   });
 
   await assert.rejects(
     () =>
       createManagedWorkstream('linear-intake', {
-        slug: 'erdo-425-connectivity-again',
-        title: 'ERDO-425',
+        slug: 'acme-425-connectivity-again',
+        title: 'ACME-425',
         objective: 'close the issue out',
         successCriteria: [],
         constraints: [],
         tags: ['linear'],
-        sourceKey: 'linear:ERDO-425',
+        sourceKey: 'linear:ACME-425',
       }),
-    /already stands for linear:ERDO-425/,
+    /already stands for linear:ACME-425/,
   );
-  assert.deepEqual((await listWorkstreams()).sort(), ['erdo-425-connectivity', 'linear-intake']);
+  assert.deepEqual((await listWorkstreams()).sort(), ['acme-425-connectivity', 'linear-intake']);
 });
 
 test('a manager reads its live child count from the projection, not from notices', async () => {
@@ -126,13 +126,13 @@ test('a manager reads its live child count from the projection, not from notices
   // Two running, one concluded — the count that governs "how many more may I
   // take on?" must be the ACTIVE one, not the total ever created.
   const p = buildProjection(doc, [], [], [
-    { slug: 'erdo-410', status: 'active' },
-    { slug: 'erdo-411', status: 'active' },
-    { slug: 'erdo-412', status: 'done' },
+    { slug: 'acme-410', status: 'active' },
+    { slug: 'acme-411', status: 'active' },
+    { slug: 'acme-412', status: 'done' },
   ]);
   assert.match(p, /Workstreams you manage \(2 of 3 still running/);
-  assert.match(p, /- erdo-410 \[active\]/);
-  assert.match(p, /- erdo-412 \[done\]/);
+  assert.match(p, /- acme-410 \[active\]/);
+  assert.match(p, /- acme-412 \[done\]/);
 });
 
 test('listManagedBy gives the projection exactly the children it manages, one level deep', async () => {

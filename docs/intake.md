@@ -47,7 +47,7 @@ to actually see a screenshot on a ticket — begins with `extract`, so it was
 denied, and the instinct was to add `extract` to the list. A gate whose failure
 mode is *silently not seeing the picture* and whose repair is *guess more verbs*
 is not a safety mechanism. It contained nothing structurally either: a tool named
-`get_and_delete` would have passed it. [PR #27](https://github.com/erdoai/weaver/pull/27)
+`get_and_delete` would have passed it. [PR #27](https://github.com/NiallBrickell/weaver/pull/27)
 had already deleted the same heuristic for workers, for the same reason.
 
 So the gate is gone, along with `canUseTool`, the `permissionMode` change, the
