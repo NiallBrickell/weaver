@@ -425,7 +425,11 @@ export async function runWorker(
       strictMcpConfig: isAction,
       ...(isAction ? { supervise: pilotSupervisor(asg.exec!.cwd, slug) } : {}),
       submit,
-      maxTurns: 80,
+      // 80 turns killed a routine clone-fix-test brief on a large repo before
+      // it could submit (11 wasted minutes + a re-split). Repo-scale setup
+      // alone eats dozens of turns; the real runaway bounds are the assignment
+      // budget and the engine's supervision, not a tight turn count.
+      maxTurns: Number(process.env.WEAVER_WORKER_MAX_TURNS) || 200,
       abort,
       onMessage: (message) => {
         tailMessage(slug, 'worker', assignmentId, message, operatorMcp.env);
