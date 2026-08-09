@@ -147,13 +147,13 @@ test('interruptionLoad: top-3 actors chart, tail folds to other, totals stay unf
     d.steering.push(
       day(1, 'niall'), day(2, 'niall'), day(3, 'niall'),
       day(4, 'claude-session'), day(5, 'claude-session'),
-      day(6, 'maurice'), day(7, 'maurice'),
+      day(6, 'codex-session'), day(7, 'codex-session'),
       day(8, 'intern'),
     );
   });
   const load_ = interruptionLoad([await load('stats-ws')], ['2026-08-04']);
-  assert.deepEqual(load_.segments, ['niall', 'claude-session', 'maurice', 'other']);
-  assert.deepEqual(load_.rows[0]!.counts, { niall: 3, 'claude-session': 2, maurice: 2, other: 1 });
+  assert.deepEqual(load_.segments, ['niall', 'claude-session', 'codex-session', 'other']);
+  assert.deepEqual(load_.rows[0]!.counts, { niall: 3, 'claude-session': 2, 'codex-session': 2, other: 1 });
   assert.equal(load_.totals.length, 4); // intern unfolded in the table
   assert.equal(load_.totals[0]!.byKind.steering, 3);
 });
