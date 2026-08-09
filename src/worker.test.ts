@@ -299,3 +299,31 @@ test('a worker retry consumes worker capacity permits but preserves coordinator 
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('pilot passthrough — the operator settings allow — is an allow, never a refusal', async () => {
+  const http = await import('node:http');
+  const { pilotSupervisor } = await import('./worker.js');
+  const answers: Record<string, string> = { Edit: 'passthrough', Bash: 'deny', Write: 'gibberish' };
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      const { tool_name } = JSON.parse(raw) as { tool_name: string };
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ decision: answers[tool_name], reason: 'matched Claude Code settings' }));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as { port: number }).port;
+  process.env.WEAVER_PILOT_URL = `http://127.0.0.1:${port}`;
+  try {
+    const supervise = pilotSupervisor('/tmp', 'test-stream');
+    assert.equal((await supervise('Edit', { file_path: '/tmp/x' })).behavior, 'allow');
+    assert.equal((await supervise('Bash', { command: 'rm -rf /' })).behavior, 'deny');
+    // Unknown decisions keep failing closed.
+    assert.equal((await supervise('Write', { file_path: '/tmp/x' })).behavior, 'deny');
+  } finally {
+    delete process.env.WEAVER_PILOT_URL;
+    server.close();
+  }
+});

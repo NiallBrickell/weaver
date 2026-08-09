@@ -53,7 +53,7 @@ export function selectExecutor(): WorkerExecutor {
  * plan. Pilot unreachable or non-approve ⇒ deny (fail closed); the worker
  * reports the denial honestly and readback/coordinator handle the fallout.
  */
-function pilotSupervisor(cwd: string, slug: string) {
+export function pilotSupervisor(cwd: string, slug: string) {
   const base = process.env.WEAVER_PILOT_URL ?? 'http://127.0.0.1:9721';
   return async (toolName: string, input: Record<string, unknown>): Promise<
     { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }
@@ -74,6 +74,14 @@ function pilotSupervisor(cwd: string, slug: string) {
       if (!res.ok) return { behavior: 'deny', message: `pilot HTTP ${res.status} — failing closed` };
       const body = (await res.json()) as { decision?: string; reason?: string };
       if (body.decision === 'approve') return { behavior: 'allow', updatedInput: input };
+      // 'passthrough' is pilot reporting the operator's OWN Claude Code
+      // settings allow this call in this cwd (its settings deny/ask outcomes
+      // arrive as 'deny'). Interactive sessions then proceed without a prompt;
+      // a headless worker has no interactive layer to pass through TO, so the
+      // settings allow IS the decision. Treating it as a refusal inverted the
+      // operator's own rules — workers lost Edit/Write/tests wherever the
+      // operator had explicitly allowed them.
+      if (body.decision === 'passthrough') return { behavior: 'allow', updatedInput: input };
       return { behavior: 'deny', message: `pilot ${body.decision ?? 'unknown'}: ${body.reason ?? 'no reason'} — do not retry this exact call; adapt or report the blocker via submit_result` };
     } catch (e) {
       return { behavior: 'deny', message: `pilot unreachable (${e instanceof Error ? e.message : e}) — failing closed` };
