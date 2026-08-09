@@ -11,5 +11,5 @@
     "@mintlify/cli": "^4.0.0"
   },
   "author": "Niall Brickell",
-  "license": "MIT"
+  "license": "FSL-1.1-MIT"
 }

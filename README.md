@@ -96,3 +96,7 @@ weaver printout [slug]    # catch up on one stream, or omit slug for the fleet
 ## Provenance
 
 Weaver grew from a question about horizontal, longitudinal work: agents are good at one bounded task, so what carries an *outcome* across sessions, workers, failures, and weeks of waiting? The durable layer is the answer this repo defends, and the longitudinal acceptance proof has passed with real model runs (see [demo/TRANSCRIPT.md](./demo/TRANSCRIPT.md)). It is now a working harness in its own right: the knowledge layer can live in any plain Postgres so one fleet spans machines, and execution is growing the same pluggable seam. Durability and authority rails are covered by a deterministic test suite (`yarn test`, no model calls) — model quality can never make a durability test pass.
+
+## License
+
+[FSL-1.1-MIT](./LICENSE.md) (Fair Source): use, modify, and self-host freely, including commercially — just no competing product or service built from it. Each release becomes plain MIT two years after publication.
