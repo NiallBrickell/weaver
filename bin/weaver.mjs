@@ -6,6 +6,11 @@ import { realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const here = dirname(realpathSync(fileURLToPath(import.meta.url)));
+// Repo-root .env fills unset config (incl. WEAVER_HOME/WEAVER_STORE) before the
+// default below; anything already in the environment still wins. Also loaded in
+// src/cli.ts for the yarn/npx entrypoints — loadEnvFile never overrides, so the
+// second call is a harmless no-op.
+try { process.loadEnvFile(join(here, "..", ".env")); } catch {}
 process.env.WEAVER_HOME ??= join(here, "..", "state");
 const { register } = await import(join(here, "..", "node_modules", "tsx", "dist", "esm", "api", "index.mjs"));
 register();

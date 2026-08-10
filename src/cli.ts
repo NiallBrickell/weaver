@@ -4,6 +4,7 @@
  */
 
 import { advanceClock, virtualNow } from './clock.js';
+import { loadDotenv } from './env.js';
 import { tick } from './engine.js';
 import { renderStatus } from './status.js';
 import {
@@ -131,6 +132,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
 `;
 
 async function main(): Promise<void> {
+  loadDotenv(); // repo-root .env fills unset config; explicit env still wins
   const [cmd, ...rest] = args();
   switch (cmd) {
     case 'do': {
