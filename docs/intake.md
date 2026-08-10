@@ -29,8 +29,9 @@ coordinator's and workers' own prompts — Weaver should not do it either.
 
 Intake needs no new capability anywhere. The coordinator has **no tools onto the
 outside world** and needs none: reading a tracker is ordinary worker work. A pass
-dispatches a research assignment ("list the open issues in project X, in priority
-order, and report what each one asks for"), the worker reads Linear over the
+dispatches a work assignment ("list the open issues in project X, in priority
+order, report what each one asks for, and move the ones now in flight or shipped
+to their right status"), the worker reads AND writes Linear over the
 operator's own MCP servers with the ordinary Code toolset, and submits what it
 found. The next pass adopts that submission and calls `create_workstream` for
 what is new. Two passes instead of one, and the extra pass is the point: the read

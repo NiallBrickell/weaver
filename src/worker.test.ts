@@ -40,7 +40,7 @@ describe('executor selection', () => {
   });
 });
 
-test('a research assignment runs as a regular full-capability Code worker', async () => {
+test('a work assignment runs as a regular full-capability Code worker with ungated read+write MCP', async () => {
   const home = workerHome();
   const readDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-research-source-'));
   let request: WorkerExecutionRequest | undefined;
@@ -76,7 +76,7 @@ test('a research assignment runs as a regular full-capability Code worker', asyn
       id: 'asg_research',
       objective: 'inspect recorded engineering decisions',
       briefing: 'Read the declared repository and report grounded evidence.',
-      kind: 'research',
+      kind: 'work',
       readDirs: [readDir],
       acceptanceCriteria: ['cite the source'],
       dependsOn: [],
@@ -93,6 +93,13 @@ test('a research assignment runs as a regular full-capability Code worker', asyn
     assert.deepEqual(request.systemPrompt.type, 'preset');
     assert.match(request.systemPrompt.append, /normal coding tools/);
     assert.match(request.systemPrompt.append, /Bash, file editing, web access/);
+    // The freed-MCP-writes decision: a work worker is told it may use the
+    // configured MCP servers read AND write, with no tool special-cased — so a
+    // tracker status change is ordinary work, not a gated action. Pinned here so
+    // a future prompt edit cannot silently re-forbid remote writes.
+    assert.match(request.systemPrompt.append, /read AND write/);
+    assert.match(request.systemPrompt.append, /IRREVERSIBLE egress/);
+    assert.doesNotMatch(request.systemPrompt.append, /changing a remote service/);
     assert.equal(request.cwd, readDir);
     assert.deepEqual(request.additionalDirectories, [readDir]);
     assert.ok(request.prompt.includes(`- ${readDir}`));
@@ -200,7 +207,7 @@ async function runningWorker(slug: string): Promise<void> {
     budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
   await arrive(slug, (d) => d.assignments.push({
-    id: 'asg_worker', objective: 'produce evidence', briefing: 'n/a', kind: 'research',
+    id: 'asg_worker', objective: 'produce evidence', briefing: 'n/a', kind: 'work',
     acceptanceCriteria: ['n/a'], dependsOn: [], state: 'running',
     attempts: [{ runId: 'run_worker', startedAt: new Date().toISOString() }],
     adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
