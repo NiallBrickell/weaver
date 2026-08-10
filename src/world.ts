@@ -16,12 +16,45 @@ function outboxDir(slug: string): string {
   return path.join(workstreamDir(slug), 'world', 'outbox');
 }
 
+function ledgerPath(slug: string): string {
+  return path.join(workstreamDir(slug), 'world', 'ledger.jsonl');
+}
+
 export interface ProviderRecord {
   ref: string;
   to: string;
   subject: string;
   body: string;
   sentAt: string;
+}
+
+/** The provider's own append-only log. It separates the two facts an outbox
+ * file conflates: an INVOCATION attempt (the harness called providerSend) and
+ * an external EFFECT (a message the provider actually holds). At-most-one
+ * effect per interaction is the idempotency-key guarantee; multiple attempts
+ * are allowed and expected under retry/crash recovery. This is what lets a
+ * test prove "the unknown-result protocol never produced a second effect"
+ * rather than inferring it from outbox-file cardinality. */
+export interface LedgerEntry {
+  kind: 'attempt' | 'effect';
+  interactionId: string;
+  ref: string;
+  at: string;
+}
+
+function appendLedger(slug: string, entry: LedgerEntry): void {
+  fs.mkdirSync(path.dirname(ledgerPath(slug)), { recursive: true });
+  fs.appendFileSync(ledgerPath(slug), `${JSON.stringify(entry)}\n`);
+}
+
+export function readLedger(slug: string): LedgerEntry[] {
+  const p = ledgerPath(slug);
+  if (!fs.existsSync(p)) return [];
+  return fs
+    .readFileSync(p, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as LedgerEntry);
 }
 
 export class SendCrashedAfterEgress extends Error {
@@ -31,7 +64,13 @@ export class SendCrashedAfterEgress extends Error {
   }
 }
 
-/** Egress. Throws SendCrashedAfterEgress under chaos AFTER the provider records it. */
+/**
+ * Egress, protected by the interaction idempotency key. Every call is logged
+ * as an attempt; the external effect is created at most once per interaction —
+ * a second call for the same key returns the existing record and creates NO
+ * new effect, exactly like a provider deduplicating on a client idempotency
+ * key. Throws SendCrashedAfterEgress under chaos AFTER the effect is recorded.
+ */
 export function providerSend(
   slug: string,
   interactionId: string,
@@ -39,12 +78,18 @@ export function providerSend(
 ): ProviderRecord {
   const dir = outboxDir(slug);
   fs.mkdirSync(dir, { recursive: true });
-  const record: ProviderRecord = {
-    ref: `prov_${interactionId}`,
-    ...msg,
-    sentAt: new Date().toISOString(),
-  };
-  fs.writeFileSync(path.join(dir, `${record.ref}.json`), JSON.stringify(record, null, 2));
+  const ref = `prov_${interactionId}`;
+  const effectPath = path.join(dir, `${ref}.json`);
+  appendLedger(slug, { kind: 'attempt', interactionId, ref, at: new Date().toISOString() });
+  // Idempotency key = the interaction. If the effect already exists, this is a
+  // duplicate invocation (a retry that should never have happened, or a
+  // recovery race): honour the key, create no second effect.
+  if (fs.existsSync(effectPath)) {
+    return JSON.parse(fs.readFileSync(effectPath, 'utf8')) as ProviderRecord;
+  }
+  const record: ProviderRecord = { ref, ...msg, sentAt: new Date().toISOString() };
+  fs.writeFileSync(effectPath, JSON.stringify(record, null, 2));
+  appendLedger(slug, { kind: 'effect', interactionId, ref, at: record.sentAt });
   if (process.env.WEAVER_SEND_UNKNOWN === '1') {
     throw new SendCrashedAfterEgress();
   }

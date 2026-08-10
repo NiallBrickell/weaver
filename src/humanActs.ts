@@ -89,6 +89,14 @@ export async function rejectSend(slug: string, intId: string): Promise<void> {
   await arrive(slug, (d, event) => {
     const int = d.interactions.find((i) => i.id === intId);
     if (!int) throw new Error(`no interaction ${intId}`);
+    // A rejection is only meaningful while the send is still stoppable. Once
+    // egress is claimed ('sending') or has happened ('sent'/'unknown'/
+    // 'confirmed'), the rejection LOST the race: refuse it rather than
+    // overwrite a real external effect with 'rejected' and lie that it was
+    // stopped. This is the mirror of the atomic egress claim in the engine.
+    if (int.status !== 'awaiting_approval' && int.status !== 'approved') {
+      throw new Error(`${intId} can no longer be rejected: it is ${int.status} (egress already claimed or executed)`);
+    }
     int.status = 'rejected';
     int.rejectedBy = actor();
     int.rejectedAt = new Date().toISOString();

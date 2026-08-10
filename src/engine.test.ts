@@ -17,6 +17,8 @@ import {
   verifyAction,
 } from './engine.js';
 import { runCoordinatorPass } from './coordinator.js';
+import { rejectSend } from './humanActs.js';
+import { providerSend, readLedger } from './world.js';
 import { arrive, createWorkstream, load, newId, writeArtifact } from './store.js';
 import { runWorker } from './worker.js';
 import { virtualNow } from './clock.js';
@@ -85,6 +87,93 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.WEAVER_SEND_UNKNOWN;
+});
+
+test('a rejection that lands BEFORE the egress claim produces zero external effects', async () => {
+  const intId = await makeApprovedSend();
+  // The human rejects while the interaction is still 'approved' — the reject
+  // wins the race. The engine must make no provider call at all.
+  await rejectSend(SLUG, intId);
+  const report = await tick(SLUG, { maxPasses: 0 });
+  assert.equal(report.sendsExecuted, 0);
+  const int = (await load(SLUG)).interactions.find((i) => i.id === intId)!;
+  assert.equal(int.status, 'rejected');
+  assert.equal(fs.existsSync(outboxDir(SLUG)), false, 'no outbox — provider was never called');
+  assert.equal(readLedger(SLUG).filter((e) => e.kind === 'attempt').length, 0);
+});
+
+test('a rejection that lands AFTER the send is refused, never overwriting a real effect', async () => {
+  const intId = await makeApprovedSend();
+  await tick(SLUG, { maxPasses: 0 }); // send executes → 'sent'
+  assert.equal((await load(SLUG)).interactions.find((i) => i.id === intId)!.status, 'sent');
+  // The rejection lost the race: it must be refused, not silently flip a sent
+  // interaction to 'rejected' and lie that it stopped the send.
+  await assert.rejects(rejectSend(SLUG, intId), /can no longer be rejected/);
+  assert.equal((await load(SLUG)).interactions.find((i) => i.id === intId)!.status, 'sent');
+});
+
+test('a rejection is refused once egress is claimed (status sending)', async () => {
+  const intId = await makeApprovedSend();
+  await arrive(SLUG, (d) => {
+    d.interactions.find((i) => i.id === intId)!.status = 'sending';
+  });
+  await assert.rejects(rejectSend(SLUG, intId), /can no longer be rejected/);
+});
+
+test('the provider effect is idempotent on the interaction key: two invocations, one effect', async () => {
+  const intId = await makeApprovedSend();
+  const first = providerSend(SLUG, intId, { to: 'x', subject: 's', body: 'body-one' });
+  const second = providerSend(SLUG, intId, { to: 'x', subject: 's', body: 'body-two' });
+  // Two attempts logged, exactly one external effect, and the FIRST content
+  // preserved — a duplicate send cannot create a second message or mutate one.
+  const ledger = readLedger(SLUG);
+  assert.equal(ledger.filter((e) => e.kind === 'attempt').length, 2);
+  assert.equal(ledger.filter((e) => e.kind === 'effect').length, 1);
+  assert.equal(fs.readdirSync(outboxDir(SLUG)).length, 1);
+  assert.equal(first.body, 'body-one');
+  assert.equal(second.body, 'body-one');
+});
+
+test('a claim crashed BEFORE egress (sending, no effect) completes safely, exactly once', async () => {
+  const intId = await makeApprovedSend();
+  // Simulate a crash after the durable claim but before the provider call:
+  // status 'sending', no provider record exists.
+  await arrive(SLUG, (d) => {
+    d.interactions.find((i) => i.id === intId)!.status = 'sending';
+  });
+  await tick(SLUG, { maxPasses: 0 });
+  const int = (await load(SLUG)).interactions.find((i) => i.id === intId)!;
+  assert.equal(int.status, 'sent');
+  assert.equal(readLedger(SLUG).filter((e) => e.kind === 'effect').length, 1);
+});
+
+test('a crash AFTER egress leaves exactly one effect and is resolved by readback, never re-sent', async () => {
+  const intId = await makeApprovedSend();
+  // Chaos stays on for the whole tick: the claim sends, the send "crashes"
+  // after egress → 'unknown', and the tick's own next cycle resolves it by
+  // readback (never a second send). The idempotency key guarantees at most one
+  // external effect; a re-send would show a second attempt in the ledger.
+  process.env.WEAVER_SEND_UNKNOWN = '1';
+  await tick(SLUG, { maxPasses: 0 });
+  const int = (await load(SLUG)).interactions.find((i) => i.id === intId)!;
+  assert.equal(int.status, 'confirmed');
+  const ledger = readLedger(SLUG);
+  assert.equal(ledger.filter((e) => e.kind === 'effect').length, 1, 'exactly one external effect despite the unknown result');
+  assert.equal(ledger.filter((e) => e.kind === 'attempt').length, 1, 'readback resolution must not re-send (a re-send would log a second attempt)');
+});
+
+test('verifyAction refuses a gated, unapproved action — readback is not a shell backdoor', async () => {
+  await makeActionWorkstream('verify-gated-ws', {}); // default: gated, no approval, no attempts
+  await assert.rejects(verifyAction('verify-gated-ws', 'asg_act'), /not approved/);
+});
+
+test('verifyAction refuses an approved action that never executed', async () => {
+  await makeActionWorkstream('verify-noattempt-ws', {
+    exec: { cwd: process.env.WEAVER_HOME!, verify: 'true', approval: { by: 'human', at: new Date().toISOString() } },
+    state: 'awaiting_review',
+    attempts: [],
+  });
+  await assert.rejects(verifyAction('verify-noattempt-ws', 'asg_act'), /no execution attempt/);
 });
 
 test('an approved send executes once and records the provider ref', async () => {
@@ -357,7 +446,9 @@ test('a gated action never runs: tick launches no worker for it', async () => {
 
 test('readback records CONFIRMED on exit 0 and FAILED (with output) otherwise', async () => {
   await makeActionWorkstream('verify-ws', {
-    exec: { cwd: process.env.WEAVER_HOME!, verify: 'echo effect-present' },
+    exec: { cwd: process.env.WEAVER_HOME!, verify: 'echo effect-present', approval: { by: 'human', at: new Date().toISOString() } },
+    state: 'awaiting_review',
+    attempts: [{ runId: 'r1', startedAt: new Date().toISOString(), endedAt: new Date().toISOString() }],
   });
   assert.equal(await verifyAction('verify-ws', 'asg_act'), true);
   let asg = (await load('verify-ws')).assignments[0]!;
@@ -365,7 +456,9 @@ test('readback records CONFIRMED on exit 0 and FAILED (with output) otherwise', 
   assert.match(asg.exec!.verified!.output, /effect-present/);
 
   await makeActionWorkstream('verify-fail-ws', {
-    exec: { cwd: process.env.WEAVER_HOME!, verify: 'echo no-effect >&2; false' },
+    exec: { cwd: process.env.WEAVER_HOME!, verify: 'echo no-effect >&2; false', approval: { by: 'human', at: new Date().toISOString() } },
+    state: 'awaiting_review',
+    attempts: [{ runId: 'r1', startedAt: new Date().toISOString(), endedAt: new Date().toISOString() }],
   });
   assert.equal(await verifyAction('verify-fail-ws', 'asg_act'), false);
   asg = (await load('verify-fail-ws')).assignments[0]!;

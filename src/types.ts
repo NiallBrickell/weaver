@@ -186,6 +186,7 @@ export interface Interaction {
   status:
     | 'awaiting_approval'
     | 'approved'
+    | 'sending' // egress claimed: linearized against rejection; a stale one is resolved by readback, never re-sent
     | 'sent'
     | 'unknown' // crash after egress: readback required, never a re-send
     | 'confirmed' // provider readback confirmed the send

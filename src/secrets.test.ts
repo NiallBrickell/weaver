@@ -164,7 +164,10 @@ test('verify runs with secrets in env and its captured output is redacted', asyn
     exec: {
       cwd: process.env.WEAVER_HOME!,
       verify: 'test "$MY_TOKEN" = "$(cat expected.txt)" && echo "got $MY_TOKEN"',
+      approval: { by: 'human', at: new Date().toISOString() },
     },
+    state: 'awaiting_review',
+    attempts: [{ runId: 'r1', startedAt: new Date().toISOString(), endedAt: new Date().toISOString() }],
   });
   assert.equal(await verifyAction('sec-verify-ws', 'asg_act'), true);
   const out = (await load('sec-verify-ws')).assignments[0]!.exec!.verified!.output;

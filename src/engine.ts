@@ -65,6 +65,29 @@ async function executeApprovedSends(slug: string): Promise<number> {
     // Revalidate pause immediately before egress. The tick may have started
     // while active and received a human pause during artifact verification.
     if ((await workstreamStatus(slug)) !== 'active') break;
+    // ATOMIC EGRESS CLAIM. Draft/send/reject are separate facts, and a human
+    // rejection can land at any instant. This revision-checked write is the
+    // single linearization point between "approved" and "rejected": it flips
+    // the interaction out of the rejectable 'approved' state into 'sending'
+    // and re-verifies the pin under the write lock. A rejection that crosses
+    // FIRST leaves status !== 'approved' and we make no call; a rejection that
+    // crosses AFTER finds 'sending' and is refused (see rejectSend). Once
+    // 'sending' is durable, a crash before/around providerSend is resolved by
+    // readback (resolveUnknownSends), never by a blind re-send.
+    let claimed = false;
+    await arrive(slug, (d, event) => {
+      const i2 = d.interactions.find((x) => x.id === int.id)!;
+      if (i2.status !== 'approved') return; // lost the race to a rejection or another claim
+      if (!i2.pinnedHash || d.deliverables.find((x) => x.id === i2.deliverableId)?.adopted?.contentHash !== i2.pinnedHash) {
+        i2.status = 'rejected';
+        event('send.refused', `${int.id} refused at egress claim: pinned content drifted`, [int.id]);
+        return;
+      }
+      i2.status = 'sending';
+      claimed = true;
+      event('send.claimed', `${int.id} claimed for egress (linearized against rejection)`, [int.id]);
+    });
+    if (!claimed) continue;
     try {
       const rec = providerSend(slug, int.id, { to: int.to, subject: int.subject, body });
       await arrive(slug, (d, event) => {
@@ -90,11 +113,16 @@ async function executeApprovedSends(slug: string): Promise<number> {
   return executed;
 }
 
-/** Step 1b: resolve unknown sends by provider readback — never a second send. */
+/** Step 1b: resolve unknown/stuck sends by provider readback — never a second
+ * send. 'unknown' is a known crash-after-egress; a 'sending' seen at the top of
+ * a tick is a claim from a PRIOR crashed tick (tick is single-flight per slug,
+ * so no live claim is ever in this set) — both are resolved the same way: ask
+ * the provider whether the effect exists. Confirmed → done; absent → the send
+ * never landed, requeue as approved. Neither path ever re-sends blindly. */
 async function resolveUnknownSends(slug: string): Promise<number> {
   const doc = await load(slug);
   let resolved = 0;
-  for (const int of doc.interactions.filter((i) => i.status === 'unknown')) {
+  for (const int of doc.interactions.filter((i) => i.status === 'unknown' || i.status === 'sending')) {
     const rec = providerLookup(slug, int.id);
     await arrive(slug, (d, event) => {
       const i2 = d.interactions.find((x) => x.id === int.id)!;
@@ -307,6 +335,22 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
   const doc = await load(slug);
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg?.exec) throw new Error(`${assignmentId} is not an action assignment`);
+  // ELIGIBILITY GATE. Readback observes the world AFTER an approved act; it is
+  // not a free-standing way to run model-authored shell with the workstream's
+  // secrets. Refuse unless the action was actually approved (human or pilot)
+  // AND has a recorded execution attempt that legitimately needs reading back.
+  // Without this, a gated/unapproved action's `exec.verify` — arbitrary shell —
+  // could run with credentials and masquerade as deterministic observation.
+  // (Making that shell UNABLE to create the fact it observes needs a read-only
+  // execution substrate; that belongs to the WorkerExecutor seam. Until then
+  // this gate + the post-approval-only invariant is the documented boundary —
+  // see docs/harness.md.)
+  if (!asg.exec.approval) {
+    throw new Error(`${assignmentId} verify refused: action is not approved (state ${asg.state}) — readback runs only after an approved act`);
+  }
+  if (asg.attempts.length === 0) {
+    throw new Error(`${assignmentId} verify refused: no execution attempt to read back`);
+  }
   const secrets = loadSecrets(slug);
   let ok = false;
   let output = '';
