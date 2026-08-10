@@ -791,6 +791,41 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       }
     }
 
+    // Orphan running-pass sweep, INDEPENDENT of the stored lease. The recovery
+    // above only repairs a pass its own expired lease still names. A pass left
+    // 'running' with no LIVE lease naming it — lease already cleared, or never
+    // matched — would otherwise keep false 'running' provenance forever. Tick
+    // is single-flight per slug, so any 'running' pass seen here whose lease is
+    // not live has no driver: mark it no_finish and restore a wake so the
+    // stream cannot silently sleep.
+    {
+      const d0 = await load(slug);
+      const liveLeasePass =
+        d0.lease && new Date(d0.lease.expiresAt).getTime() > Date.now() ? d0.lease.passId : undefined;
+      const orphans = d0.passes.filter((p) => p.outcome === 'running' && p.id !== liveLeasePass);
+      if (orphans.length) {
+        await arrive(slug, (d, event) => {
+          for (const p of d.passes) {
+            if (p.outcome !== 'running' || p.id === liveLeasePass) continue;
+            p.outcome = 'no_finish';
+            p.endedAt = p.endedAt ?? new Date().toISOString();
+            p.summary = p.summary ?? 'orphaned running pass (no live lease) — swept by recovery';
+            event('pass.orphan_swept', `${p.id} was 'running' with no live lease — marked no_finish`, [p.id]);
+          }
+          if (d.workstream.status === 'active' && !d.wakes.some((w) => w.status === 'pending')) {
+            d.wakes.push({
+              id: newId('wake'),
+              reason: 'orphaned running pass swept — reconcile from current state',
+              condition: { type: 'immediate' },
+              status: 'pending',
+              createdAt: new Date().toISOString(),
+            });
+          }
+        });
+        progressed = true;
+      }
+    }
+
     const preDoc = await load(slug);
     const due = dueWakes(preDoc);
     // A live lease means no pass can start: leave the wakes PENDING for the

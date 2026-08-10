@@ -325,7 +325,11 @@ export interface PassRecord {
   /** What the coordinator says it did — informational; typed state is truth. */
   summary?: string;
   changes: string[];
-  outcome: 'completed' | 'error' | 'no_finish' | 'running';
+  /** 'conflicted' = finish_pass lost its revision-checked write to a concurrent
+   * arrival. It is NOT a completion (no summary landed, steering stayed
+   * unconsumed) and NOT a logical failure (the revision check working as
+   * designed) — a fresh pass reconciles from the newer state. */
+  outcome: 'completed' | 'error' | 'no_finish' | 'running' | 'conflicted';
   infrastructure?: InfrastructureWait;
 }
 

@@ -572,6 +572,23 @@ export function renderWorkstreamHtml(
   );
 }
 
+/**
+ * Structurally impossible pass combinations — the audit signal for provenance
+ * that should never occur. A clean finish always records a summary, so a
+ * 'completed' pass without one is a tell of the old conflicted-finish bug (a
+ * finish that lost its write yet was recorded completed). Surfaced, never
+ * rewritten: history stays as it was, but the anomaly is visible.
+ */
+export function passIntegrityWarnings(doc: WorkstreamDoc): string[] {
+  const out: string[] = [];
+  for (const p of doc.passes) {
+    if (p.outcome === 'completed' && !p.summary) {
+      out.push(`${p.id}: completed without a summary — a clean finish always records one`);
+    }
+  }
+  return out;
+}
+
 export function renderOverviewHtml(
   docs: WorkstreamDoc[],
   policies: PolicyRecord[],
@@ -605,6 +622,10 @@ export function renderOverviewHtml(
 <tr><th>Interventions</th><td>${doc.spend.humanInterventions}</td></tr>
 <tr><th>Spend</th><td>${doc.spend.coordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}</td></tr>
 <tr><th>Tags</th><td>${ws.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(' ') || '(none)'}</td></tr>
+${(() => {
+  const warnings = passIntegrityWarnings(doc);
+  return warnings.length ? `<tr><th>Integrity</th><td class="bad">${warnings.length} pass provenance anomaly(ies): ${esc(warnings[0]!)}${warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ''}</td></tr>` : '';
+})()}
 ${managedRow}
 </tbody></table>
 </article>`;
