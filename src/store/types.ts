@@ -47,6 +47,30 @@ export type EventHelper = (type: string, summary: string, refs?: string[]) => vo
 
 export type Mutator = (doc: WorkstreamDoc, event: EventHelper) => void;
 
+/**
+ * Two workstreams may never stand for the same external thing. Uniqueness on
+ * `WorkstreamCore.sourceKey` is enforced ATOMICALLY inside each backend's
+ * `create` (fs: a home-scoped create lock around a fail-loud scan; sqlite: the
+ * BEGIN IMMEDIATE write lock around a json_extract lookup; pg: a partial UNIQUE
+ * index) — never as a scan-then-create in a caller, which would race. The
+ * shared layer translates this into a friendly message that names the existing
+ * slug; a raw throw from a backend already names the key.
+ */
+export class SourceKeyConflictError extends Error {
+  constructor(
+    public readonly sourceKey: string,
+    /** Set by the shared layer once it resolves which slug already holds it. */
+    public readonly existingSlug?: string,
+  ) {
+    super(
+      existingSlug
+        ? `'${existingSlug}' already stands for ${sourceKey}`
+        : `another workstream already stands for ${sourceKey}`,
+    );
+    this.name = 'SourceKeyConflictError';
+  }
+}
+
 export class RevisionConflictError extends Error {
   constructor(
     public readonly expected: number,

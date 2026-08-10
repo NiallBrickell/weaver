@@ -43,7 +43,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, type Mutator, type StateStore } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './types.js';
 
 /**
  * Idempotent, run once per process at construction. TEXT for doc JSON (SQLite
@@ -165,6 +165,17 @@ export class SqliteStore implements StateStore {
     return this.txn(() => {
       if (this.db.prepare('SELECT 1 FROM workstreams WHERE slug = ?').get(core.slug)) {
         throw new Error(`workstream '${core.slug}' already exists`);
+      }
+      // Source-key uniqueness is atomic here: BEGIN IMMEDIATE holds the write
+      // lock, so no concurrent create — same key, different slug — can commit
+      // between this lookup and the INSERT. json_extract reads sourceKey out of
+      // the stored doc; malformed JSON (external tampering) makes it THROW,
+      // which is the intended fail-loud: corruption may not hide an identity.
+      if (core.sourceKey !== undefined) {
+        const clash = this.db
+          .prepare(`SELECT slug FROM workstreams WHERE json_extract(doc, '$.workstream.sourceKey') = ? LIMIT 1`)
+          .get(core.sourceKey);
+        if (clash) throw new SourceKeyConflictError(core.sourceKey);
       }
       // Receipt before COMMIT (fs sidecar, same as pg): a failure here rolls
       // the INSERT back, so a committed head always has its transition; an

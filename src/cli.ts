@@ -10,12 +10,12 @@ import {
   arrive,
   closeStore,
   createWorkstream,
-  findBySourceKey,
   listManagedBy,
   listWorkstreams,
   load,
   newId,
   readArtifact,
+  SourceKeyConflictError,
 } from './store.js';
 
 function args(): string[] {
@@ -188,13 +188,11 @@ async function main(): Promise<void> {
       const title = opt(rest, 'title') ?? fail('--title required');
       const objective = opt(rest, 'objective') ?? fail('--objective required');
       // A stream created by hand for something that also exists in a tracker
-      // carries the same key an intake stream would spawn it under, so the
-      // two can never both create it.
+      // carries the same key an intake stream would spawn it under, so the two
+      // can never both create it. Uniqueness is enforced atomically at the
+      // store write — no scan-then-create race — and surfaces as a
+      // SourceKeyConflictError we render as a clean CLI failure.
       const sourceKey = opt(rest, 'source-key');
-      if (sourceKey) {
-        const existing = await findBySourceKey(sourceKey);
-        if (existing) fail(`'${existing}' already stands for ${sourceKey}`);
-      }
       const doc = await createWorkstream({
         slug,
         title,
@@ -210,6 +208,11 @@ async function main(): Promise<void> {
           maxCoordinatorPasses: Number(opt(rest, 'max-passes') ?? 500),
           maxCostUsd: Number(opt(rest, 'max-cost') ?? 1000),
         },
+      }).catch((e) => {
+        // A collision on a hand-set source key is a clean user error, not a
+        // stack trace: name the workstream that already holds it and exit.
+        if (e instanceof SourceKeyConflictError) fail(e.message);
+        throw e;
       });
       // The creation itself is the first wake: direction needs establishing.
       await arrive(slug, (d, event) => {

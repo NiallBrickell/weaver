@@ -13,7 +13,7 @@
  */
 
 import type { ManagerDirection, WorkstreamCore, WorkstreamDoc } from './types.js';
-import { arrive, createWorkstream, findBySourceKey, load, newId } from './store.js';
+import { arrive, createWorkstream, load, newId } from './store.js';
 import { virtualNow } from './clock.js';
 
 export class ManagedWorkstreamError extends Error {}
@@ -45,14 +45,11 @@ export async function createManagedWorkstream(callingSlug: string, args: CreateM
   }
   // Structural backstop for at-least-once intake: a coordinator that looks at
   // the same tracker on every pass must not be able to open the same work
-  // twice, whatever it believes it has already done. Checked here rather than
-  // only in the tool so no caller can bypass it.
-  if (args.sourceKey) {
-    const existing = await findBySourceKey(args.sourceKey);
-    if (existing) {
-      throw new ManagedWorkstreamError(`'${existing}' already stands for ${args.sourceKey}`);
-    }
-  }
+  // twice, whatever it believes it has already done. Uniqueness on sourceKey
+  // is enforced ATOMICALLY at the store write (createWorkstream → the backend),
+  // not by a scan-then-create here — two different slugs carrying the same key
+  // cannot both land under a race. A conflict surfaces as SourceKeyConflictError
+  // ('… already stands for …'), which the coordinator tool renders to the model.
   const core: Omit<WorkstreamCore, 'id' | 'createdAt' | 'status'> = {
     slug: args.slug,
     title: args.title,

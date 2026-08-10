@@ -32,7 +32,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, type Mutator, type StateStore } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './types.js';
 
 /**
  * Idempotent, run on first use of every process. The `revision` COLUMN is the
@@ -52,6 +52,13 @@ const SCHEMA = `
     revision integer NOT NULL,
     doc      jsonb   NOT NULL
   );
+  -- Two workstreams may never stand for the same external thing. A partial
+  -- UNIQUE index enforces sourceKey uniqueness ATOMICALLY at INSERT — genuinely
+  -- race-proof across machines, the strongest enforcement of the three
+  -- backends — and only where a sourceKey is present.
+  CREATE UNIQUE INDEX IF NOT EXISTS workstreams_source_key
+    ON workstreams ((doc -> 'workstream' ->> 'sourceKey'))
+    WHERE doc -> 'workstream' ->> 'sourceKey' IS NOT NULL;
   CREATE TABLE IF NOT EXISTS artifacts (
     slug     text NOT NULL,
     rel_path text NOT NULL,
@@ -111,6 +118,12 @@ export class PgStore implements StateStore {
       );
     } catch (e) {
       if ((e as { code?: string }).code === '23505') {
+        // Two unique constraints can raise 23505: the slug PK and the
+        // sourceKey partial index. Distinguish by the reported constraint so
+        // the caller gets the right message.
+        if ((e as { constraint?: string }).constraint === 'workstreams_source_key' && core.sourceKey !== undefined) {
+          throw new SourceKeyConflictError(core.sourceKey);
+        }
         throw new Error(`workstream '${core.slug}' already exists`);
       }
       throw e;

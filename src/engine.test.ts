@@ -12,6 +12,7 @@ import * as path from 'node:path';
 
 import {
   coordinatorBackoffActive,
+  flagDanglingDependencies,
   runnableAssignments,
   tick,
   verifyAction,
@@ -403,6 +404,84 @@ test('a typed worker-model wait parks assignments without parsing prose', async 
   doc.wakes[0]!.infrastructure!.retryAt = virtualNow().toISOString();
   doc.capacity!.byModel.sonnet!.wait.retryAt = virtualNow().toISOString();
   assert.deepEqual(runnableAssignments(doc), ['asg_first', 'asg_second']);
+});
+
+// ---------------------------------------------------------------------------
+// Dependency satisfaction: a downstream assignment runs only when its upstream
+// both finished AND was adopted — the same rule worker.ts uses to decide which
+// dependency artifacts to inject, so the scheduler and the injection agree.
+
+function asg(partial: Partial<Assignment> & { id: string }): Assignment {
+  return {
+    objective: partial.id,
+    briefing: 'n/a',
+    kind: 'research',
+    acceptanceCriteria: ['n/a'],
+    dependsOn: [],
+    state: 'queued',
+    attempts: [],
+    adoption: { state: 'none' },
+    createdAtVirtual: virtualNow().toISOString(),
+    ...partial,
+  };
+}
+
+test('a dependency unblocks downstream ONLY when the upstream is completed AND accepted', async () => {
+  freshHome();
+  await createWorkstream({
+    slug: 'dep-ws', title: 'Dep', objective: 'o', tags: [], successCriteria: [], constraints: [],
+    autonomy: { sendsRequireApproval: true }, budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+  });
+  const base = await load('dep-ws');
+  const downstream = asg({ id: 'asg_down', dependsOn: ['asg_up'], state: 'queued' });
+
+  // Every upstream state the coordinator/engine can leave behind, and whether
+  // it should unblock the downstream worker. Only completed+accepted does.
+  const cases: Array<[string, Partial<Assignment>, boolean]> = [
+    ['completed + accepted', { state: 'completed', adoption: { state: 'accepted' } }, true],
+    ['completed + rejected (reject_submission)', { state: 'completed', adoption: { state: 'rejected' } }, false],
+    ['completed but NOT accepted', { state: 'completed', adoption: { state: 'none' } }, false],
+    ['awaiting_review + proposed', { state: 'awaiting_review', adoption: { state: 'proposed' } }, false],
+    ['failed', { state: 'failed', adoption: { state: 'none' } }, false],
+    ['cancelled', { state: 'cancelled', adoption: { state: 'none' } }, false],
+  ];
+  for (const [label, upstream, expectRunnable] of cases) {
+    const doc = structuredClone(base);
+    doc.assignments = [asg({ id: 'asg_up', ...upstream }), structuredClone(downstream)];
+    assert.deepEqual(runnableAssignments(doc), expectRunnable ? ['asg_down'] : [], label);
+  }
+
+  // An UNKNOWN dependency id (no matching assignment) can never be satisfied.
+  const dangling = structuredClone(base);
+  dangling.assignments = [asg({ id: 'asg_down', dependsOn: ['asg_missing'], state: 'queued' })];
+  assert.deepEqual(runnableAssignments(dangling), [], 'unknown dependency id never satisfies');
+});
+
+test('a dangling dependency raises exactly one integrity blocker and never re-raises', async () => {
+  freshHome();
+  await createWorkstream({
+    slug: 'dangle-ws', title: 'Dangle', objective: 'o', tags: [], successCriteria: [], constraints: [],
+    autonomy: { sendsRequireApproval: true }, budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+  });
+  await arrive('dangle-ws', (d) => {
+    d.assignments.push(asg({ id: 'asg_down', dependsOn: ['asg_missing'], state: 'queued' }));
+  });
+
+  // The scheduler blocks it, and the integrity sweep surfaces it once.
+  assert.deepEqual(runnableAssignments(await load('dangle-ws')), []);
+  assert.equal(await flagDanglingDependencies('dangle-ws'), 1);
+  const open = (await load('dangle-ws')).attention.filter(
+    (a) => a.kind === 'blocker' && a.status === 'open' && a.refId === 'asg_down',
+  );
+  assert.equal(open.length, 1);
+  assert.match(open[0]!.summary, /asg_missing/);
+
+  // Deduped: a second sweep raises nothing and leaves exactly one signal.
+  assert.equal(await flagDanglingDependencies('dangle-ws'), 0);
+  assert.equal(
+    (await load('dangle-ws')).attention.filter((a) => a.refId === 'asg_down').length,
+    1,
+  );
 });
 
 // ---------------------------------------------------------------------------
