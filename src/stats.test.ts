@@ -15,17 +15,22 @@ import * as path from 'node:path';
 import type { PolicyRecord } from './policies.js';
 import { approveAction } from './humanActs.js';
 import {
+  actorClass,
+  attributionSplit,
   computeStats,
   cumulativeRatio,
   datedInterventions,
   fleetDays,
   interruptionLoad,
+  passHealth,
+  passHealthTotals,
   policyStatusByDay,
   promotionAt,
   provenanceSplit,
   renderStatsHtml,
   runStats,
   undatedInterventions,
+  workerReliability,
 } from './stats.js';
 import { setSecret } from './secrets.js';
 import { arrive, createWorkstream, load } from './store.js';
@@ -180,15 +185,19 @@ test('fleetDays: gap-filled, adoption dated by pin, rejection dated by its pass,
   assert.equal(days[2]!.adoptions, 1); // dated by the adoption pin
 });
 
-test('cumulativeRatio: null until the first adoption, then interventions/adoptions', async () => {
+test('cumulativeRatio: outcome curve divides by conclusions, adopted is a separate leading curve', async () => {
   const days = fleetDays([], '2026-08-01');
   assert.deepEqual(days, []);
   const series = cumulativeRatio([
-    { day: '2026-08-01', interventions: 3, adoptions: 0, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 1, costUsd: 0 },
-    { day: '2026-08-02', interventions: 1, adoptions: 2, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 1, costUsd: 0 },
+    { day: '2026-08-01', interventions: 3, conclusions: 0, adoptions: 2, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 1, costUsd: 0 },
+    { day: '2026-08-02', interventions: 1, conclusions: 2, adoptions: 2, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 1, costUsd: 0 },
   ]);
+  // The outcome curve is null until the first qualified conclusion exists,
+  // even while adopted work products already accumulate (adoption ≠ success).
   assert.equal(series[0]!.ratio, null);
-  assert.equal(series[1]!.ratio, 2); // 4 interventions / 2 adoptions
+  assert.equal(series[0]!.ratioAdopted, 1.5); // 3 interventions / 2 adopted
+  assert.equal(series[1]!.ratio, 2); // 4 interventions / 2 conclusions
+  assert.equal(series[1]!.ratioAdopted, 1); // 4 interventions / 4 adopted
 });
 
 function policy(over: Partial<PolicyRecord>): PolicyRecord {
@@ -251,7 +260,8 @@ test('renderStatsHtml: empty fleet renders honestly, never invents data', async 
   const html = renderStatsHtml(computeStats([], [], new Date('2026-08-05T00:00:00.000Z')));
   assert.match(html, /No fleet activity yet/);
   assert.match(html, /Does each outcome need you less often/);
-  assert.match(html, /current curve: interventions per adopted work product/);
+  assert.match(html, /success denominator: qualified typed conclusions/);
+  assert.match(html, /leading indicator, not outcome success/);
   assert.match(html, /Adoption ≠ completion/);
   assert.doesNotMatch(html, /Convergence dashboard/);
   assert.doesNotMatch(html, /NaN/);
@@ -269,6 +279,7 @@ test('runStats writes stats.html with secrets redacted', async () => {
       id: 'del_1', title: 'done', kind: 'markdown', path: 'a.md', contentHash: 'h1', createdAtVirtual: '2026-08-04T11:00:00.000Z',
       adopted: { contentHash: 'h1', passId: 'pass_1', atVirtual: '2026-08-04T11:00:00.000Z' },
     });
+    d.workstream.conclusion = { passId: 'pass_1', atVirtual: '2026-08-04T11:30:00.000Z', summary: 'done', evidenceIds: ['del_1'] };
   });
   setSecret('TOKEN', 'hunter2-value');
   const out = await runStats(new Date('2026-08-05T00:00:00.000Z'));
@@ -276,11 +287,145 @@ test('runStats writes stats.html with secrets redacted', async () => {
   assert.ok(out.endsWith('stats.html'));
   assert.doesNotMatch(html, /hunter2-value/);
   assert.match(html, /secret-ws/);
-  // The one dated intervention over the one adopted outcome.
   const payload = JSON.parse(html.match(/<script type="application\/json" id="stats-data">(.*?)<\/script>/s)![1]!) as {
-    totals: { perOutcome: number | null };
+    totals: { interventionsPerOutcome: number | null; interventionsPerAdopted: number | null; successfulOutcomes: number };
   };
-  assert.equal(payload.totals.perOutcome, 1);
+  // One dated intervention over one qualified conclusion (the success target),
+  // with the adopted-work leading indicator kept as a distinct number.
+  assert.equal(payload.totals.successfulOutcomes, 1);
+  assert.equal(payload.totals.interventionsPerOutcome, 1);
+  assert.equal(payload.totals.interventionsPerAdopted, 1);
+});
+
+test('passHealth: infrastructure backoff is never a logical failure, conflicted is neither', () => {
+  const base = { id: 'p', startedAt: '2026-08-01T00:00:00.000Z', baseRevision: 1, wakeReasons: [], changes: [] };
+  const wait = { kind: 'rate_limit', recovery: 'automatic_retry', source: 'coordinator', sourceId: 'p', model: 'm', detectedAt: '2026-08-01T00:00:00.000Z', retryAt: '2026-08-01T01:00:00.000Z' } as const;
+  assert.equal(passHealth({ ...base, outcome: 'completed' }), 'completed');
+  assert.equal(passHealth({ ...base, outcome: 'error' }), 'logicalFailure');
+  assert.equal(passHealth({ ...base, outcome: 'no_finish' }), 'logicalFailure');
+  // The engine stamps error+infrastructure on a provider outage; the outage
+  // wins — it is a backoff, not the coordinator being wrong.
+  assert.equal(passHealth({ ...base, outcome: 'error', infrastructure: wait }), 'providerBackoff');
+  // conflicted is not in the schema union today; classified forward-compatibly
+  // as neither success nor logical failure (the revision check working).
+  assert.equal(passHealth({ ...base, outcome: 'conflicted' as never }), 'conflicted');
+  assert.equal(passHealth({ ...base, outcome: 'running' }), 'running');
+});
+
+test('actorClass: founder, agent-session, pilot/system, and unattributed split apart', () => {
+  assert.equal(actorClass('niall'), 'founder');
+  assert.equal(actorClass('claude-session'), 'session');
+  assert.equal(actorClass('codex-session'), 'session');
+  assert.equal(actorClass('pilot'), 'pilot');
+  assert.equal(actorClass('coordinator'), 'pilot');
+  assert.equal(actorClass('unattributed'), 'unattributed');
+});
+
+test('outcome scoreboard: conclusions are success, adopted/backoff/conflicted/actors report honestly', async () => {
+  // Workstream A: a genuine successful outcome — a qualified typed conclusion,
+  // one clean pass, and interventions from a founder, an agent session, a
+  // legacy (unattributed) act, plus a delegated pilot auto-approval.
+  await createWorkstream({
+    slug: 'ws-a', title: 'concluded', objective: 'o', tags: ['hiring'], successCriteria: [], constraints: [],
+    autonomy: { sendsRequireApproval: true }, budget: { maxCoordinatorPasses: 9, maxCostUsd: 9 },
+  });
+  await arrive('ws-a', (d) => {
+    d.workstream.conclusion = { passId: 'pa1', atVirtual: '2026-08-03T12:00:00.000Z', summary: 'shipped', evidenceIds: ['del_a'] };
+    d.spend.humanInterventions = 3; // founder steer + session steer + legacy steer
+    d.spend.totalCostUsd = 6;
+    d.deliverables.push({ id: 'del_a', title: 'd', kind: 'md', path: 'a.md', contentHash: 'h', createdAtVirtual: '2026-08-03T10:00:00.000Z', adopted: { contentHash: 'h', passId: 'pa1', atVirtual: '2026-08-03T11:00:00.000Z' } });
+    d.steering.push(
+      { id: 's_f', body: 'founder steer', by: 'niall', at: '2026-08-01T09:00:00.000Z' },
+      { id: 's_s', body: 'session steer', by: 'claude-session', at: '2026-08-01T10:00:00.000Z' },
+      // A legacy steer predating actor attribution (no `by`): a real, dated human
+      // act, but attributable to neither the founder nor a session bucket.
+      { id: 's_u', body: 'legacy steer', at: '2026-08-01T11:00:00.000Z' },
+    );
+    // A completed action approved by pilot (delegated authority, not a human act)
+    // that took two attempts (a recovered flake).
+    d.assignments.push({
+      ...baseAssignment('asg_a', '2026-08-01T08:00:00.000Z'),
+      exec: { cwd: '/', verify: 'true', approval: { by: 'pilot', at: '2026-08-02T10:00:00.000Z' } },
+      attempts: [
+        { runId: 'r1', startedAt: '2026-08-01T08:10:00.000Z', costUsd: 0.5 },
+        { runId: 'r2', startedAt: '2026-08-01T08:20:00.000Z', costUsd: 0.5 },
+      ],
+    });
+    // Passes: one clean success, one provider backoff (error+infrastructure),
+    // one conflicted (neither), one plain logical failure.
+    const wait = { kind: 'rate_limit', recovery: 'automatic_retry', source: 'coordinator', sourceId: 'pa2', model: 'm', detectedAt: '2026-08-01T00:00:00.000Z', retryAt: '2026-08-01T01:00:00.000Z' } as const;
+    d.passes.push(
+      { id: 'pa1', startedAt: '2026-08-03T12:00:00.000Z', baseRevision: 1, wakeReasons: [], changes: [], outcome: 'completed' },
+      { id: 'pa2', startedAt: '2026-08-03T13:00:00.000Z', baseRevision: 1, wakeReasons: [], changes: [], outcome: 'error', infrastructure: wait },
+      { id: 'pa3', startedAt: '2026-08-03T14:00:00.000Z', baseRevision: 1, wakeReasons: [], changes: [], outcome: 'conflicted' as never },
+      { id: 'pa4', startedAt: '2026-08-03T15:00:00.000Z', baseRevision: 1, wakeReasons: [], changes: [], outcome: 'no_finish' },
+    );
+  });
+
+  // Workstream B: NOT concluded, but it has adopted work products. Adopted work
+  // is a leading indicator and must never inflate the success count.
+  await createWorkstream({
+    slug: 'ws-b', title: 'adopted only', objective: 'o', tags: ['hiring'], successCriteria: [], constraints: [],
+    autonomy: { sendsRequireApproval: true }, budget: { maxCoordinatorPasses: 9, maxCostUsd: 9 },
+  });
+  await arrive('ws-b', (d) => {
+    d.spend.humanInterventions = 0;
+    d.spend.totalCostUsd = 4;
+    d.deliverables.push(
+      { id: 'del_b1', title: 'd', kind: 'md', path: 'b1.md', contentHash: 'h', createdAtVirtual: '2026-08-02T10:00:00.000Z', adopted: { contentHash: 'h', passId: 'pb1', atVirtual: '2026-08-02T11:00:00.000Z' } },
+      { id: 'del_b2', title: 'd', kind: 'md', path: 'b2.md', contentHash: 'h', createdAtVirtual: '2026-08-02T12:00:00.000Z', adopted: { contentHash: 'h', passId: 'pb1', atVirtual: '2026-08-02T13:00:00.000Z' } },
+    );
+    // A worker assignment completed on its first attempt.
+    d.assignments.push({ ...baseAssignment('asg_b', '2026-08-02T08:00:00.000Z'), attempts: [{ runId: 'rb', startedAt: '2026-08-02T08:05:00.000Z', costUsd: 0.2 }] });
+  });
+
+  const docs = [await load('ws-a'), await load('ws-b')];
+  // A learned-policy that earned active — must stay separate from pilot approvals.
+  const learned = policy({ id: 'pol_learned', status: 'active', provenance: { workstreamSlug: 'ws-a', passId: 'p', interventionSummary: 'corrected' } });
+  const stats = computeStats(docs, [learned], new Date('2026-08-05T00:00:00.000Z'));
+  const tot = stats.totals;
+
+  // (1) Success denominator = qualified typed conclusions; adopted is separate.
+  assert.equal(tot.successfulOutcomes, 1, 'only ws-a concluded');
+  assert.equal(tot.adoptions, 3, 'three adopted work products across the fleet');
+  assert.notEqual(tot.successfulOutcomes, tot.adoptions, 'adopted work is never the success count');
+  assert.equal(tot.interventionsPerOutcome, 3, '3 interventions / 1 conclusion');
+  assert.equal(tot.interventionsPerAdopted, 1, '3 interventions / 3 adopted (leading indicator)');
+  // cost-per-successful-outcome uses the conclusion denominator; per-adopted differs.
+  assert.equal(tot.costPerOutcome, 10, '$10 total / 1 conclusion');
+  assert.equal(tot.costPerAdopted, 10 / 3, '$10 total / 3 adopted (leading indicator)');
+
+  // (2) Provider backoff is not a logical failure; conflicted is neither.
+  assert.equal(tot.passHealth.completed, 1);
+  assert.equal(tot.passHealth.providerBackoff, 1, 'error+infrastructure is a backoff');
+  assert.equal(tot.passHealth.logicalFailure, 1, 'only the no_finish with no infrastructure');
+  assert.equal(tot.passHealth.conflicted, 1, 'conflicted counted on its own, never as error');
+
+  // (3) Actor buckets split into distinct numbers, never collapsed.
+  assert.deepEqual(tot.attribution, { founder: 1, session: 1, unattributed: 1, pilot: 1 });
+  assert.equal(tot.attribution.founder + tot.attribution.session + tot.attribution.unattributed, 3, 'the three dated human acts partition cleanly');
+  // Pilot auto-approvals are delegated authority, reported separately from
+  // learned-policy effects — the two are distinct fields and one never folds
+  // into the other, even when both happen to be 1.
+  assert.equal(tot.attribution.pilot, 1, 'one delegated pilot auto-approval');
+  assert.equal(tot.autoApproved, 1, 'pilot count tracks auto-approvals');
+  assert.equal(tot.policiesActive, 1, 'one learned policy earned active — a separate axis');
+
+  // (4) Worker reliability: one first-try completion (ws-b) and one recovered
+  // completion after a retry (ws-a); recovery rate over assignments needing it.
+  assert.equal(tot.reliability.completed, 2);
+  assert.equal(tot.reliability.firstAttempt, 1);
+  assert.equal(tot.reliability.recovered, 1);
+  assert.equal(tot.reliability.firstAttemptRate, 0.5);
+  assert.equal(tot.reliability.recoveryRate, 1, 'the one assignment that needed a retry recovered');
+});
+
+test('attributionSplit / passHealthTotals / workerReliability are honest on an empty fleet', () => {
+  assert.deepEqual(attributionSplit([]), { founder: 0, session: 0, unattributed: 0, pilot: 0 });
+  assert.deepEqual(passHealthTotals([]), { completed: 0, providerBackoff: 0, logicalFailure: 0, conflicted: 0, running: 0 });
+  const rel = workerReliability([]);
+  assert.equal(rel.firstAttemptRate, null);
+  assert.equal(rel.recoveryRate, null);
 });
 
 test('computeStats week-ago delta needs eight days of history', async () => {
@@ -291,10 +436,12 @@ test('computeStats week-ago delta needs eight days of history', async () => {
       id: 'del_1', title: 'done', kind: 'markdown', path: 'a.md', contentHash: 'h1', createdAtVirtual: '2026-08-01T11:00:00.000Z',
       adopted: { contentHash: 'h1', passId: 'pass_1', atVirtual: '2026-08-01T11:00:00.000Z' },
     });
+    d.workstream.conclusion = { passId: 'pass_1', atVirtual: '2026-08-01T11:00:00.000Z', summary: 'done', evidenceIds: ['del_1'] };
   });
   const docs: WorkstreamDoc[] = [await load('stats-ws')];
   const short = computeStats(docs, [], new Date('2026-08-05T00:00:00.000Z'));
   assert.equal(short.totals.perOutcomeWeekAgo, null);
   const long = computeStats(docs, [], new Date('2026-08-12T00:00:00.000Z'));
-  assert.equal(long.totals.perOutcomeWeekAgo, 1); // ratio was already 1.0 a week before
+  // The outcome curve (per qualified conclusion) was already 1.0 a week before.
+  assert.equal(long.totals.perOutcomeWeekAgo, 1);
 });
