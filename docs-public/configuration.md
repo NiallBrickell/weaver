@@ -57,8 +57,13 @@ pending (see [Claude capacity & billing](./claude-capacity.md)).
 
 | Variable | Default | What it sets |
 | --- | --- | --- |
-| `WEAVER_EXECUTOR` | `local` | The worker execution substrate |
+| `WEAVER_EXECUTOR` | `local-sdk` | Where a worker's model loop runs — `local-sdk` (local Claude Agent SDK) or `openhands` (a pinned OpenHands Agent Server container). See [Where workers run](./executors.md) |
+| `WEAVER_OPENHANDS_API_KEY` | *(unset)* | Provider key the OpenHands container uses for the model (falls back to `LLM_API_KEY`); required when `WEAVER_EXECUTOR=openhands` |
+| `WEAVER_OPENHANDS_BASE_URL` | *(unset)* | Optional provider base URL for the OpenHands model (e.g. an OpenRouter-compatible endpoint) |
 | `WEAVER_PILOT_URL` | `http://localhost:9721` | The operator's pilot daemon that gates external actions |
+
+An unknown `WEAVER_EXECUTOR` fails hard before any attempt starts — a silent
+local fallback would make a misconfigured remote fleet look healthy.
 
 The global `weaver` command reads `.env` from the repo it resolves to, so these
 apply no matter which directory you run from.

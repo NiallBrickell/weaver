@@ -1,4 +1,8 @@
-import type { WorkerExecutor } from '../executor/types.js';
+import type {
+  ExecutorTelemetry,
+  ExecutorUsage,
+  WorkerExecutor,
+} from '../executor/types.js';
 
 export const EVAL_EXECUTORS = ['claude-sdk', 'codex-sdk', 'opencode', 'openhands'] as const;
 
@@ -11,31 +15,16 @@ export interface EvalTarget {
   label: string;
 }
 
-export interface EvalUsage {
-  inputTokens: number | null;
-  outputTokens: number | null;
-  cachedInputTokens: number | null;
-  reasoningOutputTokens: number | null;
-}
+/**
+ * Eval telemetry is the production `ExecutorTelemetry` with its `executor`
+ * label narrowed to the known eval candidates. The shape is owned by the
+ * executor layer so production code never depends on the eval harness.
+ */
+export type EvalUsage = ExecutorUsage;
 
-export interface EvalExecutionTelemetry {
+export type EvalExecutionTelemetry = Omit<ExecutorTelemetry, 'executor'> & {
   executor: EvalExecutorId;
-  modelRequested: string;
-  providerResolved: string | null;
-  modelResolved: string | null;
-  harnessVersion: string;
-  isolation: 'host-process' | 'agent-server' | 'managed-sandbox';
-  startedAt: string;
-  endedAt: string;
-  durationMs: number;
-  startupMs: number | null;
-  timeToSubmissionMs: number | null;
-  usage: EvalUsage;
-  costUsd: number | null;
-  sessionId: string | null;
-  terminalReason: 'completed' | 'aborted' | 'unsupported' | 'error';
-  error: string | null;
-}
+};
 
 /**
  * An eval candidate is still a real WorkerExecutor. Telemetry is deliberately

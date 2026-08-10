@@ -73,8 +73,11 @@ data is reported as unavailable, never as zero.
 
 > **A local task-quality result is not proof of production containment.** Host-process candidates
 > rely on the environment that launched Weaver, and a local OpenHands container is not a managed
-> multi-tenant sandbox. No candidate can enter production selection until confinement and
-> supervised-action cases pass as well.
+> multi-tenant sandbox. OpenHands is the chosen production remote executor
+> (`WEAVER_EXECUTOR=openhands`, see [Where workers run](./executors.md)), but that promotion is
+> scoped to cooperative work assignments: its container mounts only the assignment workspace, and an
+> action assignment fails closed there. Enforced multi-tenant isolation and supervised remote actions
+> are what the still-open confinement and supervised-action gates widen it to.
 
 Weaver does not implement its own sandbox for this work. The evals exercise maintained SDKs and the
 official OpenHands Agent Server runtime; production containment remains the chosen runtime
