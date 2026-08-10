@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { LocalSdkExecutor } from './executor/localSdk.js';
+import { OpenHandsExecutor } from './executor/openHands.js';
 import {
   consumeDueWorkerInfrastructureWakes,
   finalizeWorkerRun,
@@ -31,6 +32,10 @@ describe('executor selection', () => {
   it('unset and local-sdk both resolve to the local SDK reference executor', () => {
     withEnv(undefined, () => assert.ok(selectExecutor() instanceof LocalSdkExecutor));
     withEnv('local-sdk', () => assert.ok(selectExecutor() instanceof LocalSdkExecutor));
+  });
+
+  it('openhands resolves to the containerized remote executor', () => {
+    withEnv('openhands', () => assert.ok(selectExecutor() instanceof OpenHandsExecutor));
   });
 
   it('an unknown executor fails hard, naming the variable — never a silent local fallback', () => {

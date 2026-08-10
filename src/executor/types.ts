@@ -129,3 +129,39 @@ export interface WorkerExecutionOutcome {
 export interface WorkerExecutor {
   execute(req: WorkerExecutionRequest): Promise<WorkerExecutionOutcome>;
 }
+
+/** Substrate containment class for one executor run. */
+export type ExecutorIsolation = 'host-process' | 'agent-server' | 'managed-sandbox';
+
+/** Provider usage counters for one run; unknown metrics stay null. */
+export interface ExecutorUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedInputTokens: number | null;
+  reasoningOutputTokens: number | null;
+}
+
+/**
+ * Observability record an executor emits for one run — cost, usage, timing,
+ * containment class. This is provenance, never durable truth: an executor
+ * cannot use this side channel to claim it submitted anything (that fact lives
+ * only behind the harness `submit` closure).
+ */
+export interface ExecutorTelemetry {
+  executor: string;
+  modelRequested: string;
+  providerResolved: string | null;
+  modelResolved: string | null;
+  harnessVersion: string;
+  isolation: ExecutorIsolation;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  startupMs: number | null;
+  timeToSubmissionMs: number | null;
+  usage: ExecutorUsage;
+  costUsd: number | null;
+  sessionId: string | null;
+  terminalReason: 'completed' | 'aborted' | 'unsupported' | 'error';
+  error: string | null;
+}

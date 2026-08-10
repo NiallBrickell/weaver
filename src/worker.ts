@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { virtualNow } from './clock.js';
 import { LocalSdkExecutor } from './executor/localSdk.js';
+import { OpenHandsExecutor } from './executor/openHands.js';
 import type { SubmitReply, SubmitSurface, WorkerExecutor } from './executor/types.js';
 import { armWall } from './wall.js';
 import {
@@ -39,11 +40,18 @@ export function workerModel(): string {
  * substrate — every executor gets the same harness-owned supervision and
  * submit callbacks. Unknown values fail hard: silently falling back to local
  * execution would make a misconfigured remote fleet look healthy.
+ *
+ * `openhands` runs the worker's loop inside a pinned OpenHands Agent Server
+ * container (see src/executor/openHands.ts) — the first remote substrate. It
+ * needs Docker plus WEAVER_OPENHANDS_API_KEY (or LLM_API_KEY); an action
+ * assignment fails closed there, because container tool calls cannot yet be
+ * routed through Pilot supervision.
  */
 export function selectExecutor(): WorkerExecutor {
   const name = process.env.WEAVER_EXECUTOR ?? 'local-sdk';
   if (name === 'local-sdk') return new LocalSdkExecutor();
-  throw new Error(`unknown WEAVER_EXECUTOR '${name}' — supported: local-sdk`);
+  if (name === 'openhands') return new OpenHandsExecutor();
+  throw new Error(`unknown WEAVER_EXECUTOR '${name}' — supported: local-sdk, openhands`);
 }
 
 /**

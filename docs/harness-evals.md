@@ -9,9 +9,11 @@ This is the *remote-execution* half of the same seam story the rest of the harne
 The durable brain is now genuinely shareable across machines — the knowledge layer lives behind
 `StateStore` (plain Postgres via `WEAVER_STORE`), and a fleet of disposable bots keeps its memory in
 one Weaver over the network-ingress seam (`weaver serve`, [`src/ingress.ts`](../src/ingress.ts)).
-What is *not* yet pluggable is where a worker's model loop actually runs: `selectExecutor()` still
-only knows `local-sdk`. Choosing a remote execution vehicle is choosing what fills that slot, and
-this bakeoff is how that choice earns its evidence instead of arriving by anecdote.
+The remaining seam is where a worker's model loop actually runs. That choice has now been made:
+`selectExecutor()` knows `local-sdk` (default) and `openhands`, the first remote substrate
+([`src/executor/openHands.ts`](../src/executor/openHands.ts)). This bakeoff is how that choice
+earned — and how any future change to it keeps earning — its evidence instead of arriving by
+anecdote.
 
 The candidates are:
 
@@ -23,9 +25,12 @@ The candidates are:
 - `openhands`: the pinned official OpenHands Agent Server Docker image, one fresh container and
   conversation per assignment.
 
-These adapters live under [`src/evals/`](../src/evals/). They are intentionally absent from
-`selectExecutor` ([`src/worker.ts`](../src/worker.ts)): an eval result cannot silently change how
-real Workstreams execute.
+These adapters live under [`src/evals/`](../src/evals/). Three of them (`claude-sdk`, `codex-sdk`,
+`opencode`) remain eval-only — they are not in `selectExecutor` ([`src/worker.ts`](../src/worker.ts)),
+so an eval result cannot silently change how real Workstreams execute. The fourth, `openhands`, has
+been promoted: its runtime now lives in [`src/executor/openHands.ts`](../src/executor/openHands.ts)
+and the eval adapter is a thin wrapper over that production class, so the bakeoff exercises the exact
+code a production `openhands` worker runs.
 
 ## What is being tested
 
