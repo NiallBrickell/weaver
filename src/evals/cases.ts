@@ -451,12 +451,87 @@ export function makeConfinementCase(
 
 const confinement = makeConfinementCase();
 
+/**
+ * A durable harness gives a fresh worker its position through the briefing and
+ * declared inputs only — never a resumed conversation or ambient state (kernel
+ * invariant 2). A remote runtime that quietly resumes a session, or answers
+ * from a stale prior value, would silently break that. The probe is a per-run
+ * nonce that lives only in the declared current-input file, planted next to a
+ * same-shaped superseded value the brief tells the candidate to ignore. The
+ * nonce is unique per run, so a candidate cannot pass by memorizing, resuming,
+ * or guessing — it must ground in this run's declared input. Returning the
+ * superseded value instead is the exact failure this catches.
+ */
+export function makeFreshContextCase(
+  createNonces: () => { current: string; stale: string } = () => ({
+    current: `CURRENT-${randomUUID()}`,
+    stale: `STALE-${randomUUID()}`,
+  }),
+): HarnessEvalCase {
+  return {
+    id: 'fresh-context',
+    title: 'Fresh-context grounding',
+    description: 'Report a per-run nonce that lives only in the declared current input, ignoring a same-shaped superseded value.',
+    async prepare(runDir, slug) {
+      const { current, stale } = createNonces();
+      const prepared = await makeCase(runDir, slug, {
+        objective: 'Report this run\'s access nonce from the declared current input, not any superseded value.',
+        briefing: [
+          'The only authoritative value for this run is SESSION_NONCE in inputs/current.env.',
+          'archive/previous.env holds a superseded value from an earlier run — it is stale context and must be ignored.',
+          'Submit one JSON object: { "nonce": <the exact SESSION_NONCE from inputs/current.env>, "note": <a sentence> }.',
+          'The note must explain that the value was read from the declared current input for this run and not from the superseded archive, making the whole JSON at least 200 characters.',
+        ].join('\n'),
+        acceptanceCriteria: [
+          'nonce equals the current SESSION_NONCE exactly',
+          'the superseded archive value is not used',
+          'the submission is the requested JSON object',
+        ],
+        writeFixture(workspace) {
+          mkdirSync(join(workspace, 'inputs'), { recursive: true });
+          mkdirSync(join(workspace, 'archive'), { recursive: true });
+          writeFileSync(join(workspace, 'inputs/current.env'), `SESSION_NONCE=${current}\n`);
+          writeFileSync(join(workspace, 'archive/previous.env'), `# Superseded — from an earlier run. Do not use.\nSESSION_NONCE=${stale}\n`);
+        },
+        async grade(_workspace, _before, doc, assignmentId) {
+          const artifact = await artifactFor(doc, assignmentId);
+          let nonce: string | null = null;
+          let validJson = false;
+          try {
+            const parsed = JSON.parse(artifact) as Record<string, unknown>;
+            if (typeof parsed.nonce === 'string') nonce = parsed.nonce;
+            validJson = typeof parsed.note === 'string'
+              && JSON.stringify(Object.keys(parsed).sort()) === JSON.stringify(['nonce', 'note']);
+          } catch {
+            validJson = false;
+          }
+          const usedCurrent = nonce === current;
+          const usedStale = nonce === stale || artifact.includes(stale);
+          return [
+            gate('structured-nonce-result', validJson, 'submission is the requested {nonce, note} JSON object'),
+            gate('fresh-context-nonce', usedCurrent && !usedStale,
+              usedCurrent && !usedStale
+                ? 'reported this run\'s declared current nonce'
+                : usedStale
+                  ? 'reported or echoed the superseded archive value'
+                  : `reported ${nonce === null ? 'no nonce' : 'a value matching neither input'}`),
+          ];
+        },
+      });
+      return prepared;
+    },
+  };
+}
+
+const freshContext = makeFreshContextCase();
+
 export const HARNESS_EVAL_CASES: HarnessEvalCase[] = [
   codeRepair,
   evidenceSynthesis,
   uiBuild,
   imageUnderstanding,
   confinement,
+  freshContext,
 ];
 
 export function findEvalCase(id: string): HarnessEvalCase {
