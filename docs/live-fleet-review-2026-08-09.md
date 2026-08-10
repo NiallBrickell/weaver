@@ -1,5 +1,30 @@
 # Weaver live-fleet review — 9 August 2026
 
+## Implementation status — updated 10 August 2026
+
+The repair programme below has been implemented and merged to `main` (full
+suite green, 253 deterministic tests, typecheck clean). Mapping of the review's
+recommended sequence to the merged work:
+
+| Review PR | Merged | What shipped | Deliberately deferred |
+|---|---|---|---|
+| PR 1 — external-effect safety | #42 | Atomic egress claim linearising send vs rejection; append-only provider ledger (attempts vs effects) with the interaction as idempotency key; `verifyAction` refuses gated/unapproved/never-attempted actions and loads no secrets until eligible | **Read-only verifier substrate** (a verifier structurally unable to create the fact it observes) — belongs to the `WorkerExecutor` seam; the post-approval-only gate is the documented trust boundary until then |
+| PR 2 — pass & conclusion provenance | #43 | `finish_pass` marks finished only when its write lands; a lost finish records a new `conflicted` outcome (immediate reconciliation wake, steering left unconsumed, no false strike); orphan running-pass sweep independent of the lease; conclusions can no longer self-certify via a coordinator's own decision; `passIntegrityWarnings` audit signal | **Criterion-by-criterion typed conclusion evaluation** against `successCriteria` (the concrete self-certification hole is closed; full criterion eval is the stronger form) |
+| PR 3 + 4 — policy integrity, correction & authority | #41 | Cross-workstream attributable promotion (different workstream + applying-decision link); negative evidence → `contested` (out of active guidance, never auto-demote); atomic single-mutation `supersede_policy` (tool + CLI); grant-text refusal on live proposals | Auto-detection/auto-resolution of the two pre-existing contradictory active merge policies — now prevented at ingress and contestable/supersedable, but existing pairs need a manual supersede pass |
+| PR 5 — bounded organizational projection | #40 | Completed/cancelled assignments counted not enumerated; older adopted deliverables and retired decisions collapse to a bounded lineage tail; standing rationales excerpted; new `closed` decision state + `close_decision` so cycle-courses stop masquerading as standing; convergence nudge; 80-cycle size-bound test | **Typed deliverable head/relevance relation** for projecting exactly the current heads (recent-window + count used instead, safe for routines) |
+| PR 6 — dependency & intake integrity | #44 | A dependency unblocks only when the upstream is completed **and** accepted; unknown dep id fails closed + raises one integrity blocker; atomic source-key uniqueness moved into `StateStore.create` across fs/sqlite/pg, proved by a real cross-process race test | — |
+| PR 7 — outcome metrics & stable evaluation | #45 | Success denominator = qualified typed conclusion; adopted products reported as an explicit leading indicator; provider backoff split from logical failure (`conflicted` is neither); actor buckets (founder / session / pilot / unattributed) split, pilot reported separately from learned-policy effects; worker first-attempt + cost-per-outcome | **Matched / randomized policy-on-vs-off (or frozen-store) counterfactual evaluation** and the **longitudinal chaos benchmark**; a **stable post-fix cohort** before making trend/causality claims |
+
+Cross-cutting follow-ups still open (all surfaced in the PRs, none silently dropped):
+
+- **Substrate-enforced containment** for both the action verifier (PR 1) and non-action workers (the review's "local executor containment is an explicit MVP boundary", P1) — one `WorkerExecutor`-contract change.
+- **Criterion-native success evaluation** (PR 2) and the **task-native longitudinal Weaver benchmark** (research section) — the evaluation half of the thesis, distinct from the durability half now hardened.
+
+Behaviour change to watch in the live fleet (from PR 6): a downstream assignment
+queued on a *rejected or cancelled* upstream now stays blocked until a
+coordinator pass explicitly cancels or re-points the dependency — the kernel
+semantic (no inferring "settled without input"), visible in the projection.
+
 ## Status and purpose
 
 This is an implementation handoff from a read-only audit of Weaver after its first several days of sustained use. It evaluates whether the harness is useful, whether it is genuinely advancing work autonomously, whether the decision and policy layers are helping, and where the implementation falls short of the kernel claims.
