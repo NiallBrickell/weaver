@@ -31,7 +31,7 @@ import { execFile } from 'node:child_process';
 import { runInspect } from './inspect.js';
 import { requestedPrintoutScope } from './printoutControls.js';
 import { publishPrintoutHtml } from './printoutHtml.js';
-import { acquireRunnerLock, liveRunnerPid, runLoop, runnerLoopHealthy } from './runner.js';
+import { acquireRunnerLock, liveRunnerPid, promoteOnRunnerVacancy, runLoop, runnerLoopHealthy } from './runner.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 
@@ -905,7 +905,8 @@ export async function runTui(): Promise<void> {
   // ONE command: the dashboard embeds the runner unless one is already live
   // elsewhere (headless `weaver run`, another watch). The singleton lock makes
   // extra dashboards harmless viewers.
-  const release = acquireRunnerLock();
+  let release = acquireRunnerLock();
+  let stopPromotion: (() => void) | undefined;
   const runnerAbort = new AbortController();
   // The embedded runner, its workers, and the SDK all write diagnostics to
   // stderr — every stray line printed into the alt screen shifts Ink's frame
@@ -936,7 +937,7 @@ export async function runTui(): Promise<void> {
       { exitOnCtrlC: true },
     );
     process.stdout.on('resize', onResize);
-    if (release) {
+    const startEmbeddedLoop = () => {
       void runLoop({
         intervalMs: 30_000,
         concurrency: 10,
@@ -944,9 +945,22 @@ export async function runTui(): Promise<void> {
         log: () => {},
         logError: () => {},
       });
+    };
+    if (release) {
+      startEmbeddedLoop();
+    } else {
+      // Standby: a viewer opened while another runner held the lock promotes to
+      // runner the moment that runner dies and frees the lock — otherwise the
+      // fleet stops ticking while this live dashboard renders a frozen view.
+      stopPromotion = promoteOnRunnerVacancy((acquired) => {
+        release = acquired;
+        startEmbeddedLoop();
+        instance?.rerender(<App embeddedRunner />);
+      });
     }
     await instance.waitUntilExit();
   } finally {
+    stopPromotion?.();
     process.stdout.off('resize', onResize);
     runnerAbort.abort();
     // Do not release the singleton while a detached tick may still be inside
