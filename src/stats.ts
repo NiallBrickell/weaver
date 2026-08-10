@@ -3,10 +3,13 @@
  *
  * Renders the METRICS layer across every workstream as one self-contained
  * static HTML file (no server, no CDN, charts drawn client-side from embedded
- * JSON): recorded interventions per adopted work product over time, plus the
- * approval split, policy evidence, and per-workstream stats. Adoption is not
- * completion, so this is a leading indicator for the product target (human
- * interventions per successful outcome), not that target mislabeled.
+ * JSON): recorded interventions per SUCCESSFUL OUTCOME over time, plus the
+ * approval split, policy evidence, and per-workstream stats. The success
+ * denominator is a qualified typed conclusion (WorkstreamCore.conclusion) —
+ * adoption is not completion, so adopted work products ride alongside as an
+ * explicit leading indicator, never relabeled as outcome success. Provider
+ * capacity backoff is kept out of the logical-failure bucket, and pilot
+ * auto-approvals (delegated authority) never count as learned-policy wins.
  *
  * Every time series is computed from DURABLE typed records: steering
  * timestamps, gate approvals, deliverable adoption pins, pass records, policy
@@ -32,7 +35,7 @@ import type { PolicyRecord } from './policies.js';
 import { loadPolicies } from './policies.js';
 import { loadSecrets, redactSecrets } from './secrets.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
-import type { WorkstreamDoc } from './types.js';
+import type { PassRecord, WorkstreamDoc } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Compute layer — pure over typed state (this is what the tests exercise)
@@ -55,6 +58,29 @@ export const UNATTRIBUTED = 'unattributed';
 
 /** Resolutions stamped by these are system acts, never human interventions. */
 const SYSTEM_ACTORS = new Set(['pilot', 'coordinator']);
+
+/**
+ * Who a durable act is attributable to, as distinct buckets that must never
+ * collapse into one number:
+ * - `founder`  — a person acting directly at the keyboard.
+ * - `session`  — the founder via an agent session on their behalf (actor name
+ *                carries a session marker); still a human intervention, but a
+ *                cheaper one than a founder keypress.
+ * - `pilot`    — the operator's pilot daemon or the coordinator (system acts).
+ *                Delegated/standing authority, NOT a human intervention and
+ *                NEVER a learned-policy win.
+ * - `unattributed` — dated acts predating actor attribution (legacy residual).
+ */
+export type ActorClass = 'founder' | 'session' | 'pilot' | 'unattributed';
+
+const SESSION_MARKER = 'session';
+
+export function actorClass(actor: string): ActorClass {
+  if (actor === UNATTRIBUTED) return 'unattributed';
+  if (SYSTEM_ACTORS.has(actor)) return 'pilot';
+  if (actor.toLowerCase().includes(SESSION_MARKER)) return 'session';
+  return 'founder';
+}
 
 /**
  * Human interventions that left a durable timestamp, one entry per human ACT.
@@ -112,6 +138,10 @@ export function undatedInterventions(docs: WorkstreamDoc[]): number {
 export interface FleetDay {
   day: string;
   interventions: number;
+  /** Qualified typed conclusions (WorkstreamCore.conclusion) — the outcome
+   * denominator. A concluded workstream is a successful outcome; an adopted
+   * work product is not (adoption ≠ completion), so it is a leading indicator. */
+  conclusions: number;
   adoptions: number;
   rejections: number;
   autoApproved: number;
@@ -121,7 +151,7 @@ export interface FleetDay {
 }
 
 function blank(day: string): FleetDay {
-  return { day, interventions: 0, adoptions: 0, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 0, costUsd: 0 };
+  return { day, interventions: 0, conclusions: 0, adoptions: 0, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 0, costUsd: 0 };
 }
 
 /** Daily fleet activity from durable records, gap-filled up to `today`. */
@@ -135,6 +165,9 @@ export function fleetDays(docs: WorkstreamDoc[], today: string): FleetDay[] {
   };
   for (const doc of docs) {
     for (const act of datedInterventions(doc)) touch(act.at).interventions += 1;
+    // A qualified typed conclusion is the outcome; dated to the virtual day the
+    // workstream believes it concluded, exactly like adoption pins.
+    if (doc.workstream.conclusion) touch(doc.workstream.conclusion.atVirtual).conclusions += 1;
     for (const del of doc.deliverables) {
       if (del.adopted) touch(del.adopted.atVirtual).adoptions += 1;
     }
@@ -169,18 +202,37 @@ export function fleetDays(docs: WorkstreamDoc[], today: string): FleetDay[] {
 export interface RatioPoint {
   day: string;
   interventions: number; // cumulative
-  adoptions: number; // cumulative
-  ratio: number | null; // null until the first adoption exists
+  conclusions: number; // cumulative qualified typed conclusions
+  adoptions: number; // cumulative adopted work products (leading indicator)
+  /** The outcome curve: interventions per successful outcome (typed
+   * conclusion). Null until the first qualified conclusion exists. */
+  ratio: number | null;
+  /** Leading indicator, NOT outcome success: interventions per adopted work
+   * product. Null until the first adoption exists. */
+  ratioAdopted: number | null;
 }
 
-/** The intervention curve: cumulative interventions per adopted work product. */
+/**
+ * The intervention curve. Primary denominator is qualified typed conclusions
+ * (successful outcomes); adopted work products ride alongside as an explicit
+ * leading indicator, never relabeled as success (adoption ≠ completion).
+ */
 export function cumulativeRatio(days: FleetDay[]): RatioPoint[] {
   let ints = 0;
+  let concl = 0;
   let adopts = 0;
   return days.map((d) => {
     ints += d.interventions;
+    concl += d.conclusions;
     adopts += d.adoptions;
-    return { day: d.day, interventions: ints, adoptions: adopts, ratio: adopts > 0 ? ints / adopts : null };
+    return {
+      day: d.day,
+      interventions: ints,
+      conclusions: concl,
+      adoptions: adopts,
+      ratio: concl > 0 ? ints / concl : null,
+      ratioAdopted: adopts > 0 ? ints / adopts : null,
+    };
   });
 }
 
@@ -295,10 +347,126 @@ export function interruptionLoad(docs: WorkstreamDoc[], days: string[]): Interru
   return { segments, rows, totals };
 }
 
+/**
+ * Intervention load split into fixed attribution buckets, never one number.
+ * `founder + session + unattributed` partition the DATED human interventions
+ * (the same acts `datedInterventions` yields); `pilot` counts the operator's
+ * delegated pilot auto-approvals — delegated authority, reported here so it is
+ * visibly SEPARATE from human interventions and from learned-policy effects.
+ */
+export interface Attribution {
+  founder: number;
+  session: number;
+  unattributed: number;
+  pilot: number;
+}
+
+export function attributionSplit(docs: WorkstreamDoc[]): Attribution {
+  const out: Attribution = { founder: 0, session: 0, unattributed: 0, pilot: 0 };
+  for (const doc of docs) {
+    for (const act of datedInterventions(doc)) {
+      const cls = actorClass(act.actor);
+      // datedInterventions excludes system acts by construction, so a dated act
+      // never classifies as 'pilot'; the guard keeps human buckets honest even
+      // if a rejection were ever stamped by a system actor.
+      if (cls !== 'pilot') out[cls] += 1;
+    }
+    for (const a of doc.assignments) {
+      if (a.exec?.approval?.by === 'pilot') out.pilot += 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * A coordinator pass's health, with provider backoff separated from logical
+ * failure so a capacity/rate/auth outage never reads as the coordinator being
+ * wrong:
+ * - `providerBackoff` — any pass carrying a typed `.infrastructure` wait. These
+ *   don't consume the pass cap and aren't logical failures.
+ * - `logicalFailure`  — outcome `error`/`no_finish` with NO `.infrastructure`.
+ * - `conflicted`      — a revision-conflict finish: the revision check working,
+ *   so neither success nor logical failure. Not emitted by the schema today;
+ *   classified forward-compatibly and always kept out of the failure bucket.
+ * - `completed` / `running` — success and in-flight.
+ */
+export type PassHealthKind = 'completed' | 'providerBackoff' | 'logicalFailure' | 'conflicted' | 'running';
+
+export function passHealth(p: PassRecord): PassHealthKind {
+  if (p.infrastructure) return 'providerBackoff';
+  const outcome = p.outcome as string;
+  if (outcome === 'completed') return 'completed';
+  if (outcome === 'error' || outcome === 'no_finish') return 'logicalFailure';
+  if (outcome === 'conflicted') return 'conflicted';
+  return 'running';
+}
+
+export interface PassHealthTotals {
+  completed: number;
+  providerBackoff: number;
+  logicalFailure: number;
+  conflicted: number;
+  running: number;
+}
+
+export function passHealthTotals(docs: WorkstreamDoc[]): PassHealthTotals {
+  const out: PassHealthTotals = { completed: 0, providerBackoff: 0, logicalFailure: 0, conflicted: 0, running: 0 };
+  for (const doc of docs) for (const p of doc.passes) out[passHealth(p)] += 1;
+  return out;
+}
+
+/**
+ * Worker reliability from assignment attempt history. First-attempt completion
+ * is the assignment finishing without needing a retry; recovery is the harness
+ * absorbing a flake by retrying to a completion. Both are computed from typed
+ * `attempts`, never a run trace.
+ */
+export interface WorkerReliability {
+  completed: number; // assignments in state 'completed'
+  firstAttempt: number; // completed with a single attempt
+  recovered: number; // completed after more than one attempt
+  neededRetry: number; // terminal (completed|failed) assignments with >1 attempt
+  failed: number; // assignments in state 'failed'
+  firstAttemptRate: number | null; // firstAttempt / completed
+  recoveryRate: number | null; // recovered / neededRetry
+}
+
+export function workerReliability(docs: WorkstreamDoc[]): WorkerReliability {
+  let completed = 0;
+  let firstAttempt = 0;
+  let recovered = 0;
+  let neededRetry = 0;
+  let failed = 0;
+  for (const doc of docs) {
+    for (const a of doc.assignments) {
+      const attempts = a.attempts.length;
+      if (a.state === 'completed') {
+        completed += 1;
+        if (attempts <= 1) firstAttempt += 1;
+        else recovered += 1;
+      }
+      if (a.state === 'failed') failed += 1;
+      if ((a.state === 'completed' || a.state === 'failed') && attempts > 1) neededRetry += 1;
+    }
+  }
+  return {
+    completed,
+    firstAttempt,
+    recovered,
+    neededRetry,
+    failed,
+    firstAttemptRate: completed > 0 ? firstAttempt / completed : null,
+    recoveryRate: neededRetry > 0 ? recovered / neededRetry : null,
+  };
+}
+
 export interface WorkstreamRow {
   slug: string;
   title: string;
   status: string;
+  /** A qualified typed conclusion exists — this workstream is a successful
+   * outcome, not merely one with adopted work products. */
+  concluded: boolean;
   passes: number;
   costUsd: number;
   interventions: number;
@@ -306,6 +474,8 @@ export interface WorkstreamRow {
   rejected: number;
   autoApproved: number;
   humanApproved: number;
+  /** Leading indicator: interventions per adopted work product (NOT per
+   * successful outcome — a single stream concludes 0 or 1 times). */
   perOutcome: number | null;
 }
 
@@ -324,6 +494,7 @@ export function workstreamRows(docs: WorkstreamDoc[]): WorkstreamRow[] {
         slug: doc.workstream.slug,
         title: doc.workstream.title,
         status: doc.workstream.status,
+        concluded: !!doc.workstream.conclusion,
         passes: doc.spend.coordinatorPasses,
         costUsd: doc.spend.totalCostUsd,
         interventions,
@@ -352,11 +523,25 @@ export interface StatsPayload {
     costUsd: number;
     interventions: number; // durable lifetime counters
     undated: number; // interventions without a durable timestamp
+    /** Qualified typed conclusions — the SUCCESS denominator. */
+    successfulOutcomes: number;
+    /** Adopted work products — a leading indicator, NEVER the success count. */
     adoptions: number;
     autoApproved: number;
     humanApproved: number;
-    perOutcome: number | null;
+    /** Interventions per successful outcome (conclusion denominator) — target. */
+    interventionsPerOutcome: number | null;
+    /** Leading indicator: interventions per adopted work product. */
+    interventionsPerAdopted: number | null;
+    /** Week-ago value of the outcome curve (conclusion denominator, dated acts). */
     perOutcomeWeekAgo: number | null;
+    /** Total spend / successful outcomes. */
+    costPerOutcome: number | null;
+    /** Leading indicator: total spend / adopted work products. */
+    costPerAdopted: number | null;
+    passHealth: PassHealthTotals;
+    reliability: WorkerReliability;
+    attribution: Attribution;
     policiesActive: number;
     policiesShadow: number;
     policiesSuperseded: number;
@@ -369,7 +554,9 @@ export function computeStats(docs: WorkstreamDoc[], policies: PolicyRecord[], no
   const last = ratio[ratio.length - 1];
   const weekAgo = ratio.length > 7 ? ratio[ratio.length - 8] : undefined;
   const adoptions = days.reduce((n, d) => n + d.adoptions, 0);
+  const successfulOutcomes = docs.filter((d) => d.workstream.conclusion).length;
   const counterInterventions = docs.reduce((n, d) => n + (d.spend.humanInterventions ?? 0), 0);
+  const costUsd = docs.reduce((n, d) => n + d.spend.totalCostUsd, 0);
   const rows = workstreamRows(docs);
   return {
     generatedAt: now.toISOString(),
@@ -389,17 +576,24 @@ export function computeStats(docs: WorkstreamDoc[], policies: PolicyRecord[], no
       workstreams: docs.length,
       active: docs.filter((d) => d.workstream.status === 'active').length,
       passes: docs.reduce((n, d) => n + d.spend.coordinatorPasses, 0),
-      costUsd: docs.reduce((n, d) => n + d.spend.totalCostUsd, 0),
+      costUsd,
       interventions: counterInterventions,
       undated: undatedInterventions(docs),
+      successfulOutcomes,
       adoptions,
       autoApproved: days.reduce((n, d) => n + d.autoApproved, 0),
       humanApproved: days.reduce((n, d) => n + d.humanApproved, 0),
-      // The headline anchors to the LIFETIME counter, so the undated remainder
-      // can never quietly leave the numerator; the curve (dated acts only) is
-      // the trend, and its endpoints feed the delta below.
-      perOutcome: adoptions > 0 ? counterInterventions / adoptions : null,
+      // The headline anchors to the LIFETIME counter over qualified conclusions,
+      // so the undated remainder can never quietly leave the numerator; the
+      // curve (dated acts only) is the trend, and its endpoints feed the delta.
+      interventionsPerOutcome: successfulOutcomes > 0 ? counterInterventions / successfulOutcomes : null,
+      interventionsPerAdopted: adoptions > 0 ? counterInterventions / adoptions : null,
       perOutcomeWeekAgo: weekAgo?.ratio ?? null,
+      costPerOutcome: successfulOutcomes > 0 ? costUsd / successfulOutcomes : null,
+      costPerAdopted: adoptions > 0 ? costUsd / adoptions : null,
+      passHealth: passHealthTotals(docs),
+      reliability: workerReliability(docs),
+      attribution: attributionSplit(docs),
       policiesActive: policies.filter((p) => p.status === 'active').length,
       policiesShadow: policies.filter((p) => p.status === 'shadow').length,
       policiesSuperseded: policies.filter((p) => p.status === 'superseded').length,
@@ -866,15 +1060,20 @@ const SCRIPT = String.raw`
        { label: 'rejected', num: true, get: function (d) { return d.rejections; } }], days);
 
     lineChart(document.getElementById('chart-ratio'), {
-      label: 'Cumulative interventions per adopted work product',
+      label: 'Cumulative interventions per successful outcome, with the adopted-work leading indicator',
       rows: ratio,
-      series: [{ label: 'interventions per adopted work product', cssVar: '--s1', get: function (d) { return d.ratio == null ? null : Math.round(d.ratio * 100) / 100; } }],
+      series: [
+        { label: 'per successful outcome (conclusion)', cssVar: '--s1', get: function (d) { return d.ratio == null ? null : Math.round(d.ratio * 100) / 100; } },
+        { label: 'per adopted work product (leading indicator, not outcome success)', cssVar: '--s2', get: function (d) { return d.ratioAdopted == null ? null : Math.round(d.ratioAdopted * 100) / 100; } },
+      ],
     });
     tableView(document.getElementById('table-ratio'),
       [{ label: 'day', get: function (d) { return d.day; } },
        { label: 'cum. interventions', num: true, get: function (d) { return d.interventions; } },
+       { label: 'cum. outcomes', num: true, get: function (d) { return d.conclusions; } },
        { label: 'cum. adopted', num: true, get: function (d) { return d.adoptions; } },
-       { label: 'per adopted work product', num: true, get: function (d) { return d.ratio == null ? null : Math.round(d.ratio * 100) / 100; } }], ratio);
+       { label: 'per successful outcome', num: true, get: function (d) { return d.ratio == null ? null : Math.round(d.ratio * 100) / 100; } },
+       { label: 'per adopted (leading)', num: true, get: function (d) { return d.ratioAdopted == null ? null : Math.round(d.ratioAdopted * 100) / 100; } }], ratio);
 
     stackedCols(document.getElementById('chart-approvals'), {
       label: 'Action approvals per day: pilot vs human',
@@ -973,9 +1172,9 @@ function chartSection(id: string, title: string, hint: string): string {
 
 export function renderStatsHtml(stats: StatsPayload): string {
   const t = stats.totals;
-  const per = t.perOutcome;
+  const per = t.interventionsPerOutcome;
   // The delta compares like with like: both endpoints come from the dated-act
-  // curve (the hero VALUE is counter-anchored and would mix units).
+  // outcome curve (conclusion denominator); the hero VALUE is counter-anchored.
   const curveNow = stats.ratio[stats.ratio.length - 1]?.ratio ?? null;
   let delta = '';
   if (curveNow != null && t.perOutcomeWeekAgo != null) {
@@ -983,17 +1182,54 @@ export function renderStatsHtml(stats: StatsPayload): string {
     const cls = diff < 0 ? 'down-good' : diff > 0 ? 'up-bad' : '';
     delta = `<div class="delta ${cls}">${diff <= 0 ? '' : '+'}${diff.toFixed(2)} over 7 days (dated acts)</div>`;
   } else {
-    delta = `<div class="delta">↓ means fewer recorded touches per adoption — compare like with like</div>`;
+    delta = `<div class="delta">↓ means fewer recorded touches per successful outcome — compare like with like</div>`;
   }
   const autonomyPct =
     t.autoApproved + t.humanApproved > 0
       ? `${Math.round((t.autoApproved / (t.autoApproved + t.humanApproved)) * 100)}%`
       : '—';
+  const rel = t.reliability;
+  const ph = t.passHealth;
+  const at = t.attribution;
+  const firstAttemptPct = rel.firstAttemptRate == null ? '—' : `${Math.round(rel.firstAttemptRate * 100)}%`;
+  const recoveryPct = rel.recoveryRate == null ? '—' : `${Math.round(rel.recoveryRate * 100)}%`;
   const kpis = [
-    tile('Interventions per adopted work product', per == null ? '—' : per.toFixed(2), delta, true),
-    tile('Adopted work products', String(t.adoptions)),
-    tile('Human interventions', String(t.interventions), t.undated ? `<div class="delta">${t.undated} undated (budget/config edits)</div>` : ''),
-    tile('Actions auto-approved', autonomyPct, `<div class="delta">${t.autoApproved} pilot · ${t.humanApproved} human</div>`),
+    tile(
+      'Interventions per successful outcome',
+      per == null ? '—' : per.toFixed(2),
+      `${delta}<div class="delta">${t.interventionsPerAdopted == null ? '—' : t.interventionsPerAdopted.toFixed(2)} per adopted work product (leading indicator, not outcome success)</div>`,
+      true,
+    ),
+    tile(
+      'Successful outcomes',
+      String(t.successfulOutcomes),
+      `<div class="delta">qualified typed conclusions · ${t.adoptions} adopted work products (leading indicator, not outcome success)</div>`,
+    ),
+    tile(
+      'Human interventions',
+      String(t.interventions),
+      `<div class="delta">${at.founder} founder · ${at.session} agent-session · ${at.unattributed} legacy${t.undated ? ` · ${t.undated} undated (budget/config)` : ''}</div>`,
+    ),
+    tile(
+      'Actions auto-approved (delegated)',
+      autonomyPct,
+      `<div class="delta">${at.pilot} pilot · ${t.humanApproved} human — delegated authority, NOT a learned-policy win</div>`,
+    ),
+    tile(
+      'Worker first-attempt completion',
+      firstAttemptPct,
+      `<div class="delta">${rel.firstAttempt}/${rel.completed} completed first try · ${recoveryPct} retry recovery</div>`,
+    ),
+    tile(
+      'Cost per successful outcome',
+      t.costPerOutcome == null ? '—' : `$${t.costPerOutcome.toFixed(2)}`,
+      `<div class="delta">${t.costPerAdopted == null ? '—' : `$${t.costPerAdopted.toFixed(2)}`} per adopted work product (leading indicator)</div>`,
+    ),
+    tile(
+      'Coordinator pass health',
+      String(ph.logicalFailure),
+      `<div class="delta">logical failures · ${ph.providerBackoff} provider backoff · ${ph.conflicted} conflicted (revision check)</div>`,
+    ),
     tile('Policies earned active', String(t.policiesActive), `<div class="delta">${t.policiesShadow} shadow · ${t.policiesSuperseded} superseded</div>`),
     tile('Fleet spend', `$${t.costUsd.toFixed(0)}`, `<div class="delta">${t.passes} passes · ${t.workstreams} workstreams (${t.active} active)</div>`),
   ].join('\n');
@@ -1002,6 +1238,7 @@ export function renderStatsHtml(stats: StatsPayload): string {
     .map(
       (r) => `<tr>
 <td><strong>${esc(r.slug)}</strong> <span style="color:var(--muted)">${esc(r.status)}</span></td>
+<td>${r.concluded ? '✓ concluded' : '—'}</td>
 <td class="num">${r.passes}</td>
 <td class="num">${r.adopted}</td>
 <td class="num">${r.rejected}</td>
@@ -1039,8 +1276,8 @@ export function renderStatsHtml(stats: StatsPayload): string {
 </div>
 <div class="kpis">${kpis}</div>
 <section><div class="chart-grid two">
-${chartSection('activity', 'Work products vs interventions', 'Adopted work products and recorded human interventions per day, fleet-wide. Compare similar work; a quieter line is not a quality measure by itself.')}
-${chartSection('ratio', 'The intervention curve', 'Cumulative recorded human interventions per adopted work product, over dated acts only. This is a leading indicator, not completed-outcome success relabeled.')}
+${chartSection('activity', 'Work products vs interventions', 'Adopted work products and recorded human interventions per day, fleet-wide. Adopted work is a leading indicator, not outcome success. Compare similar work; a quieter line is not a quality measure by itself.')}
+${chartSection('ratio', 'The intervention curve', 'Cumulative recorded human interventions over dated acts only. The primary line divides by successful outcomes (qualified typed conclusions) — the product target; the secondary line divides by adopted work products, an explicit leading indicator, never completed-outcome success relabeled.')}
 </div></section>
 <section><div class="chart-grid two">
 ${chartSection('approvals', 'Who approves the real world', 'Gated actions approved per day: pilot auto-approvals (within the operator’s standing rules) vs explicit human keypresses. Authority is never learned — this ratio moves only when the operator widens pilot’s rules.')}
@@ -1063,9 +1300,9 @@ ${chartSection('policies', 'Policy population', 'Every policy starts shadow (unp
 </section>
 <section>
 <h2>Per workstream</h2>
-<p class="hint">The intervention count per adopted work product varies with task mix and required authority. The fleet trend is a prompt to investigate; this table is where to look when it moves.</p>
+<p class="hint">A workstream is a successful outcome only once it carries a qualified typed conclusion (the “Outcome” column); adopted work is a leading indicator beside it. The intervention count per adopted work product varies with task mix and required authority. The fleet trend is a prompt to investigate; this table is where to look when it moves.</p>
 <div class="scroll-x"><table>
-<thead><tr><th>Workstream</th><th class="num">Passes</th><th class="num">Adopted work</th><th class="num">Rejected</th><th class="num">Interventions</th><th class="num">Per adoption</th><th class="num">Auto-approved</th><th class="num">Cost</th></tr></thead>
+<thead><tr><th>Workstream</th><th>Outcome</th><th class="num">Passes</th><th class="num">Adopted work</th><th class="num">Rejected</th><th class="num">Interventions</th><th class="num">Per adoption</th><th class="num">Auto-approved</th><th class="num">Cost</th></tr></thead>
 <tbody>${rowsHtml}</tbody>
 </table></div>
 </section>`
@@ -1082,14 +1319,14 @@ ${chartSection('policies', 'Policy population', 'Every policy starts shadow (unp
 <body>
 <main>
 <h1>Does each outcome need you less often?</h1>
-<p class="subtitle">${stats.totals.workstreams} workstream(s) · generated ${esc(stats.generatedAt)} · target: fewer human interventions per successful outcome, without weaker work or wider authority · current curve: interventions per adopted work product</p>
+<p class="subtitle">${stats.totals.workstreams} workstream(s) · generated ${esc(stats.generatedAt)} · target: fewer human interventions per successful outcome, without weaker work or wider authority · success denominator: qualified typed conclusions · adopted work products shown as a leading indicator, not outcome success</p>
 ${body}
 <footer>
 Generated by <code>weaver stats</code> from durable typed state — steering timestamps, gate approvals, adoption pins, pass records, and policy evidence; never from the bounded event tail, which would fabricate convergence as old events fall off. An intervention is a steer, an approval or rejection of a gated action or send, an attention resolution, or a human adoption override — one keypress counts once, whatever it also auto-resolves; ${
     stats.totals.undated
       ? `${stats.totals.undated} intervention(s) (budget/config edits) carry no durable timestamp and appear in totals only.`
       : `budget/config edits would appear in totals only.`
-  } Adoption ≠ completion: the current denominator is adopted work products, not successful Workstream conclusions.
+  } Adoption ≠ completion: the success denominator is qualified typed Workstream conclusions; adopted work products are reported alongside as a leading indicator, never as outcome success. Provider capacity/rate/auth backoff (a pass carrying a typed infrastructure wait) is reported separately from logical coordinator failure (error/no_finish with no infrastructure); a revision-conflict finish counts as neither. Pilot auto-approvals are delegated authority, reported separately from learned-policy effects.
 </footer>
 <script type="application/json" id="stats-data">${json}</script>
 <script>${SCRIPT}</script>

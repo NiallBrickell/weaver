@@ -24,7 +24,7 @@ Below the queue: every workstream with a colored status dot — red `NEEDS YOU`,
 
 Finished work earns 12 hours on the board (`WEAVER_DONE_LINGER_HOURS` overrides), then leaves it: a concluded workstream lingers long enough for you to see the outcome land, then drops off the list, replaced by one dim tally line. Nothing is deleted — knowledge pages, printouts, and `weaver status` read the same typed state — and the header's done count keeps the full total.
 
-`you N×` is this workstream's local score: how many recorded human interventions it needed. [`weaver stats`](./stats.md) compares that across work and keeps rejections and approval boundaries beside the trend, so a quieter system cannot claim success merely by lowering the bar.
+`you N×` is this workstream's local score: how many recorded human interventions it needed. [`weaver stats`](./stats.md) compares that across work per successful outcome — a qualified typed conclusion, not merely an adopted work product — and keeps rejections, provider-backoff-vs-logical-failure, and approval boundaries beside the trend, so a quieter system cannot claim success merely by lowering the bar.
 
 A `DONE` row answers "so what did it actually do?" in place: select it and its detail lines show the coordinator's informational account, its separately validated typed evidence IDs, and the hard tallies (readback-verified actions, adopted deliverables, passes, interventions), with `i` for the full record. The account cannot make an outcome true; the cited typed facts do that. Outcomes live where you already are, not behind a CLI.
 
