@@ -170,6 +170,29 @@ test('a stale lock left by a heartbeating dead runner is reclaimed, not wedged',
   release!();
 });
 
+test('a standby dashboard promotes to runner only once the held lock is freed', async () => {
+  const { acquireRunnerLock, promoteOnRunnerVacancy } = await import('./runner.js');
+  // A live runner holds the lock; the standby dashboard is a pure viewer.
+  const held = acquireRunnerLock();
+  assert.notEqual(held, null, 'first acquirer must win the free lock');
+
+  let promoted: (() => void) | null = null;
+  const stop = promoteOnRunnerVacancy((release) => { promoted = release; }, 5);
+  try {
+    // While the lock is held, the standby keeps failing to acquire.
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(promoted, null, 'a viewer must not promote while a runner holds the lock');
+
+    // The runner dies / exits and frees the lock — the standby takes over.
+    held!();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.notEqual(promoted, null, 'the standby must promote once the lock is free');
+  } finally {
+    stop();
+    (promoted as (() => void) | null)?.();
+  }
+});
+
 test('the loop heartbeat lives beside the lock dir, never inside it', async () => {
   const { runLoop } = await import('./runner.js');
   const abort = new AbortController();

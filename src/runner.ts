@@ -65,6 +65,31 @@ export function acquireRunnerLock(): (() => void) | null {
 }
 
 /**
+ * Viewer→runner promotion for a standby dashboard. A `weaver watch` opened while
+ * another runner held the lock is a pure viewer with no tick loop. When that
+ * runner dies and frees the lock, SOMETHING must take over or the fleet silently
+ * stops ticking while a live dashboard sits right there rendering a frozen view
+ * (seen in production: a headless runner died at 14:02 and a `weaver watch`
+ * opened before it kept viewing a dead fleet for 46 minutes — nothing ticked).
+ * This polls the singleton lock and, the first time it acquires, hands the
+ * release to `onPromote` and stops. Returns a stop() for the poller; the timer
+ * is unref'd so a standby dashboard never pins the process on this alone.
+ */
+export function promoteOnRunnerVacancy(
+  onPromote: (release: () => void) => void,
+  intervalMs = 5_000,
+): () => void {
+  const timer = setInterval(() => {
+    const release = acquireRunnerLock();
+    if (!release) return;
+    clearInterval(timer);
+    onPromote(release);
+  }, intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+/**
  * Infra-backoff recovery. When passes fail on limits or auth, streams park
  * behind provider-timed backoff wakes — but an auth outage usually ends the
  * moment the operator re-authenticates. While a backoff wake is pending, the
