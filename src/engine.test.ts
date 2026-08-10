@@ -826,3 +826,37 @@ test('steering that answers an attention card resolves it in the same act', asyn
   assert.equal(doc.steering.length, 1);
   assert.ok(doc.wakes.some((w) => w.status === 'pending')); // coordinator still gets the answer
 });
+
+test('an orphaned running pass (no live lease) is swept to no_finish and the stream re-woken', async () => {
+  const slug = 'orphan-pass-ws';
+  await createWorkstream({
+    slug,
+    title: 'Orphan pass',
+    objective: 'test orphan running-pass recovery',
+    tags: [],
+    successCriteria: [],
+    constraints: [],
+    autonomy: { sendsRequireApproval: true },
+    budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+  });
+  // A pass left 'running' with NO lease naming it — the coordinator process
+  // died and the lease was already cleared. The existing lease-based recovery
+  // never sees it; the orphan sweep must.
+  await arrive(slug, (d) => {
+    d.passes.push({
+      id: 'pass_orphan',
+      startedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+      baseRevision: d.revision,
+      wakeReasons: ['manual'],
+      changes: [],
+      outcome: 'running',
+    });
+    d.lease = null;
+    // Clear any pending wakes so we can prove the sweep restores one.
+    for (const w of d.wakes) w.status = 'cancelled';
+  });
+  await tick(slug, { maxPasses: 0 });
+  const doc = await load(slug);
+  assert.equal(doc.passes.find((p) => p.id === 'pass_orphan')!.outcome, 'no_finish');
+  assert.ok(doc.wakes.some((w) => w.status === 'pending'), 'a reconciliation wake was restored');
+});

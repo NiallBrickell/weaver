@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   clearCoordinatorCapacityBackoff,
+  passOutcome,
   pickCoordinatorModel,
   recordCoordinatorCapacityBackoff,
 } from './coordinator.js';
@@ -118,4 +119,14 @@ test('a limited primary model degrades the pass to the fallback, and only then',
   capacity.byModel['claude-fable-5']!.wait = wait('claude-fable-5', future);
   (capacity.byModel as Record<string, unknown>)['claude-opus-5'] = { wait: wait('claude-opus-5', future), consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now };
   assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5');
+});
+
+test('passOutcome: a conflicted finish is never recorded as completed', () => {
+  // The P0: finished was set before the finish write ran, so a conflict still
+  // finalized as completed. finishConflicted must win over finished.
+  assert.equal(passOutcome({ hadError: false, finishConflicted: true, finished: true }), 'conflicted');
+  assert.equal(passOutcome({ hadError: false, finishConflicted: false, finished: true }), 'completed');
+  assert.equal(passOutcome({ hadError: false, finishConflicted: false, finished: false }), 'no_finish');
+  // An SDK/infra error dominates either way.
+  assert.equal(passOutcome({ hadError: true, finishConflicted: true, finished: true }), 'error');
 });

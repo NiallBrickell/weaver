@@ -195,17 +195,20 @@ test('a failed CLI-style output write leaves the activity window unacknowledged'
   assert.match((await preparePrintout('failed-output')).text, /must repeat after EPIPE/);
 });
 
-test('typed conclusion accepts only adopted, verified, or standing evidence ids', async () => {
+test('typed conclusion accepts adopted, verified, or human-steering evidence — never a self-authored decision', async () => {
   await make('done');
   await arrive('done', (doc) => {
     doc.deliverables.push(deliverable('del_done', 'asg_work', true));
     doc.assignments.push(assignment('asg_verified', 'action', 'Merge the PR', {
       exec: { cwd: '/repo', verify: 'gh pr view', verified: { ok: true, output: 'merged', at: '2026-08-06T09:00:00.000Z' } },
     }));
+    doc.steering.push({ id: 'str_stop', body: 'stop here — do not proceed', at: '2026-08-06T09:00:30.000Z' });
     doc.decisions.push({ id: 'dec_stop', title: 'Objective met', rationale: 'verified result', madeBy: 'coordinator', status: 'standing', decidedAtVirtual: '2026-08-06T09:01:00.000Z' });
   });
   const doc = await load('done');
-  assert.equal(conclusionEvidenceLabels(doc, ['del_done', 'asg_verified', 'dec_stop']).length, 3);
+  assert.equal(conclusionEvidenceLabels(doc, ['del_done', 'asg_verified', 'str_stop']).length, 3);
+  // A coordinator-authored decision can no longer self-certify a conclusion.
+  assert.throws(() => conclusionEvidenceLabels(doc, ['dec_stop']), /cannot self-certify/);
   assert.throws(() => conclusionEvidenceLabels(doc, ['missing']), /not an adopted deliverable/);
   assert.throws(() => conclusionEvidenceLabels(doc, []), /at least one/);
   await arrive('done', (current, event) => {

@@ -12,7 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { runInspect, renderOverviewHtml, renderWorkstreamHtml } from './inspect.js';
+import { runInspect, renderOverviewHtml, renderWorkstreamHtml, passIntegrityWarnings } from './inspect.js';
 import { loadPolicies, proposePolicy, recordPolicyOutcome } from './policies.js';
 import { setSecret } from './secrets.js';
 import { arrive, createWorkstream, load, newId, workstreamDir, weaverHome, writeArtifact } from './store.js';
@@ -312,4 +312,17 @@ test('escaping: state text cannot inject markup into the page', async () => {
   assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
   // The click-detail JSON block must not be terminated early by state text.
   assert.ok(!/<script type="application\/json"[^>]*>[^<]*<script>/.test(html));
+});
+
+test('passIntegrityWarnings flags a completed pass that has no summary', () => {
+  const doc = {
+    passes: [
+      { id: 'pass_ok', outcome: 'completed', summary: 'did the thing', startedAt: '', baseRevision: 1, wakeReasons: [], changes: [] },
+      { id: 'pass_bad', outcome: 'completed', startedAt: '', baseRevision: 1, wakeReasons: [], changes: [] },
+      { id: 'pass_conf', outcome: 'conflicted', startedAt: '', baseRevision: 1, wakeReasons: [], changes: [] },
+    ],
+  } as unknown as Parameters<typeof passIntegrityWarnings>[0];
+  const warnings = passIntegrityWarnings(doc);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /pass_bad: completed without a summary/);
 });
