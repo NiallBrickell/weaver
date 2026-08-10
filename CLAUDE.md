@@ -49,7 +49,7 @@ The goal is almost always "get X working end-to-end," and it persists across mes
 
 **Close the loop.** The task is done when you've confirmed the outcome, not just made the change. If a coordinator pass should adopt a deliverable, run the pass and confirm the adoption record. If a wake should fire, fire it and confirm the fresh coordinator received the projection. Ask: "What would the user see that I haven't checked?"
 
-**A progress report is not a handoff.** Never describe the next fix and end the turn — do it. A PR that is not currently mergeable stays a draft.
+**A progress report is not a handoff.** Never describe the next fix and end the turn — do it. Open PRs **ready for review, not draft** — draft is only for a PR that is genuinely not yet mergeable (failing checks, known-incomplete). A green, self-contained PR is ready; don't default it to draft, and don't tell subagents to.
 
 ### Trust the user and do what they asked
 
