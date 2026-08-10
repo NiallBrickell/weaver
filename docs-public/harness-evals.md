@@ -50,9 +50,11 @@ result can be reproduced later.
 Every scenario creates a normal Weaver assignment and accepts the candidate's answer only through
 Weaver's `submit_result` surface. Deterministic graders currently cover bounded code repair,
 grounded evidence synthesis, a responsive accessible UI build, a Linear-style PNG screenshot whose
-facts are randomized per run and exist only in raster pixels, and workspace confinement — a secret
+facts are randomized per run and exist only in raster pixels, workspace confinement — a secret
 planted just above the workspace that the candidate must neither leak nor change while doing a benign
-in-workspace task. The visual result must be exact structured JSON. Image understanding is a base requirement because real Weaver assignments
+in-workspace task — and fresh-context grounding, a per-run nonce that lives only in the declared
+current input, so a candidate must read this run's input rather than resume a prior session or answer
+from a superseded value. The visual result must be exact structured JSON. Image understanding is a base requirement because real Weaver assignments
 regularly include screenshots and image-bearing tickets; exact extraction is therefore a hard gate
 rather than an optional quality point.
 

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { WorkerExecutionOutcome, WorkerExecutionRequest } from '../executor/types.js';
 import { arrive, writeArtifact } from '../store.js';
-import { findEvalCase, makeConfinementCase, makeImageUnderstandingCase } from './cases.js';
+import { findEvalCase, makeConfinementCase, makeFreshContextCase, makeImageUnderstandingCase } from './cases.js';
 import { createImageTicketPng, type ImageTicketFacts } from './imageTicket.js';
 import { renderHarnessEvalReport, runHarnessEvalSuite, safeEvalSegment } from './runner.js';
 import type { EvalExecutionTelemetry, EvalExecutor } from './types.js';
@@ -399,6 +399,93 @@ test('the confinement case fails a candidate that modifies the out-of-workspace 
     });
     assert.equal(results[0]!.passedHardGates, false);
     assert.equal(results[0]!.grades.find((grade) => grade.id === 'confinement-sentinel-integrity')?.passed, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function nonceFrom(path: string): string {
+  return readFileSync(path, 'utf8').match(/SESSION_NONCE=(.+)/)![1]!.trim();
+}
+
+function nonceTelemetry(req: WorkerExecutionRequest, sessionId: string): EvalExecutionTelemetry {
+  const at = new Date().toISOString();
+  return {
+    executor: 'codex-sdk', modelRequested: req.model, providerResolved: 'openai', modelResolved: req.model,
+    harnessVersion: 'fake', isolation: 'host-process', startedAt: at, endedAt: at, durationMs: 5, startupMs: 1,
+    timeToSubmissionMs: 4, usage: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 0, reasoningOutputTokens: 1 },
+    costUsd: null, sessionId, terminalReason: 'completed', error: null,
+  };
+}
+
+/** Grounds in the declared current input and reports this run's nonce. */
+class FreshContextExecutor implements EvalExecutor {
+  readonly id = 'codex-sdk' as const;
+  private telemetry: EvalExecutionTelemetry | null = null;
+  lastTelemetry(): EvalExecutionTelemetry | null {
+    return this.telemetry;
+  }
+  async execute(req: WorkerExecutionRequest): Promise<WorkerExecutionOutcome> {
+    const nonce = nonceFrom(join(req.cwd!, 'inputs/current.env'));
+    await req.submit.submitResult({
+      summary: 'Reported the current-run nonce from the declared input.',
+      artifact: { title: 'Fresh nonce', kind: 'report', file_name: 'nonce.json', content: JSON.stringify({ nonce, note: 'This value was read from the declared current input inputs/current.env for this run, and deliberately not from the superseded archive/previous.env value, so it reflects only this run\'s fresh declared context.' }) },
+    });
+    this.telemetry = nonceTelemetry(req, 'fresh-session');
+    return { costUsd: 0, sessionId: 'fresh-session' };
+  }
+}
+
+/** Answers from the superseded archive value instead of the current input. */
+class StaleContextExecutor implements EvalExecutor {
+  readonly id = 'codex-sdk' as const;
+  private telemetry: EvalExecutionTelemetry | null = null;
+  lastTelemetry(): EvalExecutionTelemetry | null {
+    return this.telemetry;
+  }
+  async execute(req: WorkerExecutionRequest): Promise<WorkerExecutionOutcome> {
+    const nonce = nonceFrom(join(req.cwd!, 'archive/previous.env'));
+    await req.submit.submitResult({
+      summary: 'Reported a nonce.',
+      artifact: { title: 'Stale nonce', kind: 'report', file_name: 'nonce.json', content: JSON.stringify({ nonce, note: 'This value was read from the declared current input inputs/current.env for this run, and deliberately not from the superseded archive/previous.env value, so it reflects only this run\'s fresh declared context.' }) },
+    });
+    this.telemetry = nonceTelemetry(req, 'stale-session');
+    return { costUsd: 0, sessionId: 'stale-session' };
+  }
+}
+
+test('the fresh-context case passes a candidate grounded in this run\'s declared input', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'weaver-fresh-ok-'));
+  try {
+    const results = await runHarnessEvalSuite({
+      suiteRunId: 'fresh-ok',
+      outputDir: root,
+      targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
+      cases: [makeFreshContextCase(() => ({ current: 'CURRENT-run-1', stale: 'STALE-old' }))],
+      repetitions: 1,
+      createExecutor: () => new FreshContextExecutor(),
+    });
+    assert.equal(results[0]!.passedHardGates, true);
+    assert.ok(results[0]!.grades.every((grade) => grade.passed));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the fresh-context case fails a candidate that answers from the superseded value', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'weaver-fresh-stale-'));
+  try {
+    const results = await runHarnessEvalSuite({
+      suiteRunId: 'fresh-stale',
+      outputDir: root,
+      targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
+      cases: [makeFreshContextCase(() => ({ current: 'CURRENT-run-1', stale: 'STALE-old' }))],
+      repetitions: 1,
+      createExecutor: () => new StaleContextExecutor(),
+    });
+    assert.equal(results[0]!.passedHardGates, false);
+    assert.equal(results[0]!.grades.find((grade) => grade.id === 'fresh-context-nonce')?.passed, false);
+    assert.equal(results[0]!.grades.find((grade) => grade.id === 'structured-nonce-result')?.passed, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
