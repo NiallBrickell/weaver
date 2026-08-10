@@ -12,6 +12,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Quickstart](./quickstart.md) — name the outcome once and keep the work moving until the done-bar is met
 - [Giving it work](./giving-it-work.md) — the shapes of work a workstream can hold, and the arc from objective to verified effect
 - [Watching a tracker](./linear.md) — point a workstream at Linear, Jira, or anything with an MCP server, and labeled issues become real work
+- [Connecting bots](./bots.md) — a fleet of disposable bots (any language) keep their durable memory in Weaver over `weaver serve`
 - [The dashboard](./dashboard.md) — every outcome, what changed, what needs your judgment, and whether it is actually done
 - [Printouts](./printouts.md) — a copyable account of what happened since you last checked
 - [Does each outcome need you less often?](./stats.md) — recorded human interventions beside quality and authority signals

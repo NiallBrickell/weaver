@@ -124,6 +124,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
   weaver run [--interval N]                  resident runner: tick every active workstream every N seconds (default 30)
+  weaver serve [--host H] [--port N]         HTTP ingress for external bots (needs WEAVER_SERVE_TOKEN); create-or-get workstreams, post observations, read status
   weaver pause [slug]                        pause every active workstream, or one named workstream (state is kept)
   weaver resume <slug>                       restart one paused workstream (state is kept)
   weaver resolve <slug> <attentionId> [note] mark an attention item handled (human act)
@@ -459,26 +460,13 @@ async function main(): Promise<void> {
       const source = opt(rest, 'source') ?? fail('--source required');
       const summary = opt(rest, 'summary') ?? fail('--summary required');
       const obsKey = opt(rest, 'key');
-      if (obsKey) {
-        const existing = (await load(slug)).observations.find((o) => o.ingressKey === obsKey);
-        if (existing) {
-          process.stdout.write(`duplicate ingress key '${obsKey}' — already recorded as ${existing.id}; no-op\n`);
-          break;
-        }
+      const { recordObservation } = await import('./ingress.js');
+      const result = await recordObservation(slug, { source, summary, ingressKey: obsKey });
+      if (result.duplicate) {
+        process.stdout.write(`duplicate ingress key '${obsKey}' — already recorded as ${result.id}; no-op\n`);
+      } else {
+        process.stdout.write(`observation recorded — run: weaver tick ${slug}\n`);
       }
-      await arrive(slug, (d, event) => {
-        const id = newId('obs');
-        d.observations.push({ id, ...(obsKey ? { ingressKey: obsKey } : {}), source, summary, atVirtual: virtualNow().toISOString() });
-        d.wakes.push({
-          id: newId('wake'),
-          reason: `new observation from ${source}`,
-          condition: { type: 'immediate' },
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-        });
-        event('observation.arrived', `${id} [${source}] ${summary}`, [id]);
-      });
-      process.stdout.write(`observation recorded — run: weaver tick ${slug}\n`);
       break;
     }
 
@@ -653,6 +641,21 @@ async function main(): Promise<void> {
       if (!release) fail(`a runner is already live (pid ${liveRunnerPid()}) — one runner per state dir`);
       process.stdout.write(`weaver run — ticking active workstreams every ${interval / 1000}s, ${concurrency} in parallel (Ctrl-C to stop)\n`);
       await runLoop({ intervalMs: interval, concurrency });
+      break;
+    }
+    case 'serve': {
+      const token = process.env.WEAVER_SERVE_TOKEN;
+      if (!token) fail('WEAVER_SERVE_TOKEN must be set — the ingress adapter refuses to serve the durable fleet unauthenticated');
+      const host = opt(rest, 'host') ?? '127.0.0.1';
+      const port = Number(opt(rest, 'port') ?? '9723');
+      const { startServer } = await import('./serve.js');
+      const running = await startServer({ token, host, port });
+      process.stdout.write(
+        `weaver serve — ingress for external bots on http://${host}:${running.port} (Ctrl-C to stop)\n` +
+          `  POST /workstreams · GET /workstreams/:slug · POST /workstreams/:slug/observations\n`,
+      );
+      // The runner (weaver run) executes; this process only accepts ingress.
+      await new Promise<never>(() => {});
       break;
     }
 
