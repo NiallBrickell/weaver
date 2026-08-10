@@ -19,10 +19,18 @@ export interface Decision {
   rationale: string;
   madeBy: 'coordinator' | 'human';
   passId?: Id;
-  status: 'standing' | 'superseded';
+  /** 'standing' = a live commitment. 'superseded' = replaced by a specific
+   * successor decision (supersededBy). 'closed' = retired without a successor
+   * — the honest state for a routine's per-cycle course once the cycle ends,
+   * so cycle history does not pile up forever as fake standing commitments.
+   * Only 'standing' decisions are authoritative or count as conclusion
+   * evidence; superseded/closed survive as inspectable lineage. */
+  status: 'standing' | 'superseded' | 'closed';
   /** Lineage: which decision this one replaced, and which replaced it. */
   supersedes?: Id;
   supersededBy?: Id;
+  /** Why a decision was closed (retired without a successor). */
+  closedReason?: string;
   /** Optional review boundary, e.g. "review if reply rate < 10% after 20 sends". */
   reviewWhen?: string;
   /** Learned policies this decision applies (attributable learning). */

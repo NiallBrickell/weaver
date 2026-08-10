@@ -139,7 +139,7 @@ function decisionGraphSvg(decisions: Decision[]): string {
         ...titleLines.map(
           (line, i) => `<text class="node-title" x="${x + 12}" y="${y + 37 + i * 15}">${esc(line)}</text>`,
         ),
-        `<text class="node-date" x="${x + 12}" y="${y + H - 9}">${esc(fmtVirtual(d.decidedAtVirtual))}${d.status === 'superseded' ? ' · superseded' : ' · standing'}</text>`,
+        `<text class="node-date" x="${x + 12}" y="${y + H - 9}">${esc(fmtVirtual(d.decidedAtVirtual))} · ${d.status}</text>`,
         `</g>`,
       );
     });
@@ -174,8 +174,10 @@ function decisionSection(doc: WorkstreamDoc): string {
   );
   const json = JSON.stringify(details).replaceAll('<', '\\u003c');
   const standing = decisions.filter((d) => d.status === 'standing').length;
+  const closed = decisions.filter((d) => d.status === 'closed').length;
+  const superseded = decisions.length - standing - closed;
   return `<section>
-<h2>Decision lineage <span class="count">${standing} standing · ${decisions.length - standing} superseded</span></h2>
+<h2>Decision lineage <span class="count">${standing} standing · ${superseded} superseded${closed ? ` · ${closed} closed` : ''}</span></h2>
 <p class="hint">Each row is one line of direction; arrows are explicit supersessions — a decision is never silently reversed. Click a node for its rationale and applied policies.</p>
 <div class="legend">
   <span><i class="swatch human"></i>made by human</span>
@@ -575,7 +577,7 @@ export function renderOverviewHtml(
   const cards = docs.map((doc) => {
     const ws = doc.workstream;
     const standing = doc.decisions.filter((d) => d.status === 'standing').length;
-    const superseded = doc.decisions.length - standing;
+    const retired = doc.decisions.length - standing;
     const adopted = doc.deliverables.filter((d) => d.adopted).length;
     const candidates = doc.deliverables.length - adopted;
     // Flat, one level only: computed from the already-loaded fleet, so this
@@ -594,7 +596,7 @@ export function renderOverviewHtml(
 <header><a href="${esc(ws.slug)}/inspect.html"><strong>${esc(ws.title)}</strong></a> <span class="pill status-${ws.status === 'active' ? 'active' : 'shadow'}">${esc(ws.status)}</span></header>
 <p class="meta">${esc(ws.objective)}</p>
 <table><tbody>
-<tr><th>Decisions</th><td>${standing} standing · ${superseded} superseded</td></tr>
+<tr><th>Decisions</th><td>${standing} standing · ${retired} retired</td></tr>
 <tr><th>Deliverables</th><td>${adopted} adopted · ${candidates} candidate/rejected</td></tr>
 <tr><th>Actions</th><td>${doc.assignments.filter((a) => a.kind === 'action').length}</td></tr>
 <tr><th>Interventions</th><td>${doc.spend.humanInterventions}</td></tr>

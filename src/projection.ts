@@ -8,7 +8,7 @@
  * or claim an external effect that typed state does not record.
  */
 
-import type { WorkstreamDoc } from './types.js';
+import type { WorkstreamDoc, Deliverable } from './types.js';
 import type { PolicyRecord } from './policies.js';
 import { renderPoliciesForProjection } from './policies.js';
 import { secretNames } from './secrets.js';
@@ -18,8 +18,27 @@ import { infrastructureWaitSummary } from './capacity.js';
 const SCHEMA_VERSION = 1;
 export const PROMPT_VERSION = 1;
 
+// The projection is the coordinator's ENTIRE position; it must not grow with
+// completed work or a long-running routine drowns every fresh pass in a prompt
+// that reads like a transcript (kernel rule 2/4). These bounds cap the SIZE of
+// each accumulating section without discarding any typed fact — the full
+// history stays authoritative and inspectable via [i]/printout/CLI. What a
+// fresh coordinator needs to CONTINUE — live authority, unresolved work, waits,
+// every standing commitment's gist — is always rendered in full.
+const RATIONALE_EXCERPT = 280; // per standing-decision rationale in the projection
+const STANDING_SOFT_CAP = 20; // above this, nudge the coordinator to close stale cycle courses
+const RETIRED_SHOWN = 10; // most-recent superseded/closed decisions rendered as lineage
+const ACCEPTED_SHOWN = 25; // most-recent adopted deliverables rendered in full
+
 function fmtList(items: string[], empty: string): string {
   return items.length ? items.map((i) => `- ${i}`).join('\n') : `- (${empty})`;
+}
+
+/** Bounded excerpt: keeps supporting prose from dominating the projection.
+ * The full text is never lost — it lives in the typed decision/deliverable. */
+function excerpt(s: string, n: number): string {
+  const flat = s.replace(/\s+/g, ' ').trim();
+  return flat.length > n ? `${flat.slice(0, n).trimEnd()}…` : flat;
 }
 
 /** Index of the last completed pass's end time, for "newly arrived" cutoff. */
@@ -76,18 +95,37 @@ export function buildProjection(
     `- Credentials available to action workers as environment variables (names only — values never appear anywhere): ${creds.length ? creds.join(', ') : 'none'}. Plan acts assuming these work; if an act needs a credential not listed, raise attention instead of improvising.`,
   ].join('\n');
 
-  // 3. Current operating state: candidates awaiting review + accepted products
+  // 3. Current operating state: candidates awaiting review + accepted products.
+  // Candidates are live unresolved work — always shown in full. Accepted
+  // products accumulate for the life of a routine, so only the most recent are
+  // rendered in full; the rest stay pinned and inspectable. (A typed
+  // deliverable head/relevance relation would let us show exactly the current
+  // heads — that is deliberately left to a later schema change.)
   const accepted = doc.deliverables.filter((d) => d.adopted);
-  const candidates = doc.deliverables.filter((d) => !d.adopted);
-  const acceptedLines = accepted.map(
-    (d) =>
-      `${d.id} "${d.title}" (${d.kind}) — ADOPTED, pinned ${d.adopted!.contentHash.slice(0, 8)} in pass ${d.adopted!.passId}`,
+  const shownAccepted = accepted.slice(-ACCEPTED_SHOWN);
+  const olderAccepted = accepted.length - shownAccepted.length;
+  const acceptedLines = [
+    ...(olderAccepted > 0
+      ? [`(+${olderAccepted} earlier adopted work products — pinned and inspectable, not shown here)`]
+      : []),
+    ...shownAccepted.map(
+      (d) =>
+        `${d.id} "${d.title}" (${d.kind}) — ADOPTED, pinned ${d.adopted!.contentHash.slice(0, 8)} in pass ${d.adopted!.passId}`,
+    ),
+  ];
+  // "Awaiting review" means genuinely undecided — a submission the coordinator
+  // still owes a verdict. A REJECTED candidate is decided (kept inspectable,
+  // but not an open loop), so it must not linger here forever pretending to
+  // need review; only 'proposed'/'none' adoption is live.
+  const adoptionOf = (d: Deliverable): string =>
+    doc.assignments.find((x) => x.submission?.deliverableId === d.id)?.adoption.state ?? 'none';
+  const candidates = doc.deliverables.filter(
+    (d) => !d.adopted && ['none', 'proposed'].includes(adoptionOf(d)),
   );
-  const candLines = candidates.map((d) => {
-    const a = doc.assignments.find((x) => x.submission?.deliverableId === d.id);
-    const adoption = a?.adoption.state ?? 'none';
-    return `${d.id} "${d.title}" (${d.kind}) — candidate, adoption=${adoption}, hash ${d.contentHash.slice(0, 8)}, from ${d.producedByAssignment ?? '?'}`;
-  });
+  const candLines = candidates.map(
+    (d) =>
+      `${d.id} "${d.title}" (${d.kind}) — candidate, adoption=${adoptionOf(d)}, hash ${d.contentHash.slice(0, 8)}, from ${d.producedByAssignment ?? '?'}`,
+  );
   const capacityLines = Object.values(doc.capacity?.byModel ?? {}).map(
     (entry) => `${entry.wait.model} [${entry.wait.kind}, ${entry.consecutiveBackoffs} consecutive] — ${infrastructureWaitSummary(entry.wait, doc.workstream.slug)}`,
   );
@@ -103,28 +141,51 @@ export function buildProjection(
     fmtList(capacityLines, 'available'),
   ].join('\n');
 
-  // 4. Standing decisions with lineage
+  // 4. Standing decisions with lineage. Standing decisions are the live
+  // commitments — all shown, but each rationale is excerpted so supporting
+  // prose cannot dominate the projection. Retired decisions (superseded or
+  // closed) survive only as a bounded lineage tail; their full text lives in
+  // inspection. A routine that lets per-cycle courses pile up as standing is
+  // the growth this section guards against — hence the nudge to close them.
   const standing = doc.decisions.filter((d) => d.status === 'standing');
-  const superseded = doc.decisions.filter((d) => d.status === 'superseded');
+  const retired = doc.decisions.filter((d) => d.status !== 'standing');
   const decLines = standing.map((d) => {
     const lineage = d.supersedes ? ` (supersedes ${d.supersedes})` : '';
     const review = d.reviewWhen ? ` Review when: ${d.reviewWhen}.` : '';
-    return `${d.id} [STANDING${lineage}] "${d.title}" — ${d.rationale}${review} (by ${d.madeBy}, ${d.decidedAtVirtual})`;
+    return `${d.id} [STANDING${lineage}] "${d.title}" — ${excerpt(d.rationale, RATIONALE_EXCERPT)}${review} (by ${d.madeBy}, ${d.decidedAtVirtual})`;
   });
-  const supLines = superseded.map(
-    (d) => `${d.id} [superseded by ${d.supersededBy}] "${d.title}"`,
-  );
+  const shownRetired = retired.slice(-RETIRED_SHOWN);
+  const olderRetired = retired.length - shownRetired.length;
+  const retLines = [
+    ...(olderRetired > 0 ? [`(+${olderRetired} earlier retired decisions — inspectable lineage, not shown here)`] : []),
+    ...shownRetired.map((d) =>
+      d.status === 'superseded'
+        ? `${d.id} [superseded by ${d.supersededBy}] "${d.title}"`
+        : `${d.id} [closed${d.closedReason ? `: ${excerpt(d.closedReason, 80)}` : ''}] "${d.title}"`,
+    ),
+  ];
   const s4 = [
     `## 4. Standing decisions`,
     `These are authoritative commitments. Continue them unless newly arrived evidence justifies an explicit superseding decision — never silently reverse one.`,
     fmtList(decLines, 'no standing decisions yet — establishing direction is likely your first job'),
-    ...(supLines.length ? [``, `Superseded (lineage):`, fmtList(supLines, '')] : []),
+    ...(standing.length > STANDING_SOFT_CAP
+      ? [
+          ``,
+          `NOTE: ${standing.length} standing decisions. Standing decisions are commitments, not a cycle log — retire ones that no longer bind (supersede the prior course, or close_decision a finished cycle's course) and keep per-cycle findings as deliverables/results, not decisions.`,
+        ]
+      : []),
+    ...(retLines.length ? [``, `Retired (lineage — context only, not authoritative):`, fmtList(retLines, '')] : []),
     renderPoliciesForProjection(policies),
   ].join('\n');
 
-  // 5. Active assignments
+  // 5. Assignments. Only LIVE work — a completed assignment carries no open
+  // obligation (its adopted product is in §3, its readback in the event tail),
+  // so projecting every completed assignment forever just reproduces the work
+  // log. Failed assignments stay: they carry a live retry/pivot/cancel
+  // decision. Terminal work is counted, not enumerated.
+  const terminal = doc.assignments.filter((a) => ['completed', 'cancelled'].includes(a.state));
   const active = doc.assignments.filter(
-    (a) => !['cancelled'].includes(a.state),
+    (a) => !['completed', 'cancelled'].includes(a.state),
   );
   const asgLines = active.map((a) => {
     const attempts = a.attempts.length;
@@ -148,7 +209,9 @@ export function buildProjection(
   const s5 = [
     `## 5. Assignments`,
     `Acceptance criteria are the contract; a worker finishing is not the same as its result being adopted.`,
-    fmtList(asgLines, 'none'),
+    `Live assignments (completed and cancelled work is not listed — its products are above and its history is inspectable):`,
+    fmtList(asgLines, 'none live'),
+    ...(terminal.length ? [`- (${terminal.length} completed/cancelled assignments, not shown — see inspection)`] : []),
   ].join('\n');
 
   // 6. Unresolved approvals, steering, active interactions

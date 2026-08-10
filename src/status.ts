@@ -179,11 +179,23 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
       .filter((o) => o.evaluation)
       .map((o) => `observation ${o.id}: ${o.evaluation!.note}`),
   ];
+  // Bounded like the projection: the five-questions view answers "why this
+  // course" from the current commitments, not the whole history. Full lineage
+  // lives in [i]/printout. Rationale is excerpted; only recent adopted products
+  // are listed (older ones stay pinned and inspectable).
+  const whyExcerpt = (s: string): string => {
+    const flat = s.replace(/\s+/g, ' ').trim();
+    return flat.length > 200 ? `${flat.slice(0, 200).trimEnd()}…` : flat;
+  };
+  const recentAdopted = adopted.slice(-8);
   const whyLines = [
     ...standing.map(
-      (d) => `decision ${d.id}: "${d.title}" — ${d.rationale}${d.supersedes ? ` (supersedes ${d.supersedes})` : ''}`,
+      (d) => `decision ${d.id}: "${d.title}" — ${whyExcerpt(d.rationale)}${d.supersedes ? ` (supersedes ${d.supersedes})` : ''}`,
     ),
-    ...adopted.map((d) => `adopted ${d.id}: "${d.title}" (pinned ${d.adopted!.contentHash.slice(0, 8)})`),
+    ...(adopted.length > recentAdopted.length
+      ? [`(+${adopted.length - recentAdopted.length} earlier adopted products — see [i])`]
+      : []),
+    ...recentAdopted.map((d) => `adopted ${d.id}: "${d.title}" (pinned ${d.adopted!.contentHash.slice(0, 8)})`),
     ...evaluated,
   ];
   out.push(section('## Why (current course, from lineage)', whyLines, 'no commitments yet'));

@@ -14,7 +14,7 @@ weaver create --slug sentry-sweep --tag routine \
 
 A scheduled prompt can produce a fresh piece of work on a timer, but the responsibility between cycles still belongs to you. A Weaver routine owns that recurring outcome and wakes up with:
 
-- **Its decision log** — triage dispositions, superseded approaches, standing judgments about what counts as noise.
+- **Its decision log** — the *standing* judgments that still bind: what counts as noise, which approaches are ruled out. A per-cycle plan is closed once its cycle is done (it stays as inspectable lineage, not a live commitment), and what a cycle *found* is kept as a result/deliverable — so the decision log stays a short list of commitments rather than a cycle-by-cycle transcript, however many hundreds of cycles run.
 - **Its constraints** — the hard rules you set once ("open PRs, never merge", "targeted tests only").
 - **Learned policies** — every correction you made in *any* matching workstream, already applied, still auditable.
 - **Verified history** — what it claims it did last cycle was confirmed by readback, so this cycle builds on facts.
