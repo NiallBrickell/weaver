@@ -19,6 +19,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Routines](./routines.md) — standing loops that wake with their decision log, constraints, and learned policies intact
 - [Pausing work](./pausing.md) — stop one workstream or the active fleet without losing its durable position
 - [Secrets & access](./secrets-and-access.md) — models see names, shells get values, approved actions inherit your MCP servers and CLIs
+- [Configuration](./configuration.md) — machine-local settings (models, store, actions) in a `.env` file that only ever fills gaps
 - [Claude capacity & billing](./claude-capacity.md) — keeping durable work moving through Claude usage limits without changing billing or identity
 - [Team seeds](./team-seeds.md) — share your guardrails with your team, never your trust or your transcripts
 - [Hosted state](./hosted-state.md) — point `WEAVER_STORE` at SQLite or plain Postgres and the durable layer lives in one database
