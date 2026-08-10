@@ -99,7 +99,7 @@ baseline uses the existing Claude Code login.
 The local OpenHands target needs Docker and an explicit provider key:
 
 ```bash
-WEAVER_OPENHANDS_API_KEY=... yarn eval:harness \
+WEAVER_MODEL_API_KEY=... yarn eval:harness \
   --target openhands=openrouter/moonshotai/kimi-k3
 ```
 

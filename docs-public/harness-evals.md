@@ -34,7 +34,7 @@ The local OpenHands target invokes the pinned official Agent Server image and ne
 explicit model-provider key:
 
 ```bash
-WEAVER_OPENHANDS_API_KEY=... yarn eval:harness \
+WEAVER_MODEL_API_KEY=... yarn eval:harness \
   --target openhands=openrouter/moonshotai/kimi-k3
 ```
 

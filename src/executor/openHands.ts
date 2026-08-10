@@ -102,7 +102,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
   constructor(options: OpenHandsExecutorOptions = {}) {
     this.apiKey =
       options.apiKey ??
-      process.env.WEAVER_OPENHANDS_API_KEY ??
+      process.env.WEAVER_MODEL_API_KEY ??
       process.env.LLM_API_KEY;
     this.baseUrl = options.baseUrl ?? process.env.WEAVER_OPENHANDS_BASE_URL;
     this.dockerCommand = options.dockerCommand ?? 'docker';
@@ -337,7 +337,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
     }
     if (!this.apiKey) {
       throw new UnsupportedOpenHandsRequest(
-        'OpenHands executor requires WEAVER_OPENHANDS_API_KEY (or LLM_API_KEY)',
+        'OpenHands executor requires WEAVER_MODEL_API_KEY (or LLM_API_KEY)',
       );
     }
 
