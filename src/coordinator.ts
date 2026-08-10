@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { inVirtual, parseDuration, virtualNow } from './clock.js';
 import { conclusionEvidenceLabels } from './conclusion.js';
 import { buildProjection } from './projection.js';
-import { matchPolicies, proposePolicy, recordPolicyOutcome } from './policies.js';
+import { loadPolicies, matchPolicies, proposePolicy, recordPolicyOutcome, supersedePolicy, validatePolicyCitations } from './policies.js';
 import {
   ManagedWorkstreamError,
   createManagedWorkstream,
@@ -105,7 +105,7 @@ Rules you operate under:
 7. If a tool reports a revision conflict, stop making changes and call finish_pass — a fresh pass will reconcile from the newer state.
 8. Human steering is durable input: acknowledge it in your changes and act on it.
 9. Be economical: make the bounded progress this wake justifies, record why, and exit via finish_pass. Do not try to do everything in one pass.
-10. Learn from corrections, attributably. When human steering corrects a course you (or a prior pass) proposed — not merely supplies missing facts — distill the correction with propose_policy so the next matching workstream starts smarter. When you apply a learned policy, cite it in applied_policy_ids on the applying decision; when its point survives the workstream without further correction, record_policy_outcome. Policies never widen authority, and an unhelpful policy is contradicted openly in a decision, never silently ignored.
+10. Learn from corrections, attributably. When human steering corrects a course you (or a prior pass) proposed — not merely supplies missing facts — distill the correction with propose_policy so the next matching workstream starts smarter. When you apply a learned policy, cite it in applied_policy_ids on the applying decision (dangling, superseded, or scope-mismatched ids are refused); when its point survives the workstream without further correction, record_policy_outcome naming that applying decision. A policy only becomes 'active' on an intervention-free outcome from a workstream OTHER than the one that proposed it, so evidence you record here certifies a policy learned elsewhere, not one born in this stream. A CONTESTED policy (shown under "under review") carries recorded negative evidence — do NOT treat it as active guidance; if you conclude it is wrong, supersede_policy it with a corrected replacement (lineage kept), never silently ignore it. Policies never widen authority.
 11. Escalate futility — persistence is not a virtue past the evidence. Before dispatching yet another attempt at an objective, look at the trail: if two or more DISTINCT approaches have already failed on adopted evidence (not one approach twice), or new evidence says the objective is infeasible as stated, outside the workstream's grantable authority, or plainly not worth its remaining budget, STOP. Record a decision summarizing what was tried, why each failed, and your recommendation (pivot / descope / conclude), then raise_attention kind 'blocker' putting that judgment call to the human. Grinding a doomed objective to the budget ceiling is the worst outcome: it costs the most and tells the human last.
 12. You have NO tools onto the outside world, by design — your durable input is this projection and your writes are typed. Anything you need to know about a system beyond this workstream (what an issue says now, whether an alert is still firing, what a page renders) is a research assignment: the worker has the ordinary Code toolset and the operator's MCP servers, and returns what it found as a submission you adopt. So never guess at external state, and never treat "I cannot see it from here" as a blocker — it is a dispatch. Briefs must name the source precisely (issue identifier, URL, dashboard) rather than paraphrasing it, and must tell the worker to LOOK AT THE IMAGES: screenshots and diagrams usually carry the specifics the prose leaves out, and a picture turned into someone's sentence about it has already lost the detail the work depends on.
 13. When something refuses you, judge the refusal before you route around it. A denied tool, an approval you cannot get, a fact the state has nowhere to hold — each is a fork, and building an elaborate path around a constraint that is simply wrong is worse than being blocked, because it hides the problem and everything after it inherits the detour. Ask first whether the constraint is right. If it is (authority ceilings, the approval gate, having no external tools of your own — these are right), take the plain supported path: dispatch a worker, request a human-approved action, or raise_attention. If it is not, say so in a decision and put it to the human rather than engineering past it.
@@ -219,10 +219,19 @@ export async function runCoordinatorPass(
           rationale: z.string(),
           review_when: z.string().optional().describe('condition or timeframe at which this decision should be reviewed'),
           supersedes_decision_id: z.string().optional(),
-          applied_policy_ids: z.array(z.string()).optional().describe('learned policy ids this decision applies — cite them so learning stays attributable'),
+          applied_policy_ids: z.array(z.string()).optional().describe('learned policy ids this decision applies — cite them so learning stays attributable. Each must be an existing, non-superseded policy whose scope tags match this workstream'),
         },
-        async (a) =>
-          change((d, event) => {
+        async (a) => {
+          // Citations are validated BEFORE the write: a dangling, superseded,
+          // or scope-mismatched id must never land in appliedPolicyIds, or the
+          // attribution the learning loop depends on is a lie. Loaded outside
+          // the synchronous mutator (the policy store is async).
+          if (a.applied_policy_ids?.length) {
+            const all = (await loadPolicies()).policies;
+            const bad = validatePolicyCitations(a.applied_policy_ids, all, doc.workstream.tags ?? []);
+            if (bad) return err(`applied_policy_ids: ${bad}`);
+          }
+          return change((d, event) => {
             const id = newId('dec');
             if (a.supersedes_decision_id) {
               const old = d.decisions.find((x) => x.id === a.supersedes_decision_id);
@@ -245,7 +254,8 @@ export async function runCoordinatorPass(
             });
             event('decision.recorded', `${id} "${a.title}"${a.supersedes_decision_id ? ` (supersedes ${a.supersedes_decision_id})` : ''}`, [id]);
             return `recorded decision ${id} "${a.title}"`;
-          }),
+          });
+        },
       ),
       tool(
         'close_decision',
@@ -626,9 +636,10 @@ export async function runCoordinatorPass(
 
       tool(
         'record_policy_outcome',
-        'Record outcome evidence for a learned policy you applied in this workstream. intervention_free means the point the policy covers needed no further human correction here — that is what earns a shadow policy promotion to active.',
+        'Record outcome evidence for a learned policy you applied in this workstream. You must name the applying decision (its appliedPolicyIds must cite this policy) — evidence has to point at a real application. intervention_free means the point the policy covers needed no further human correction here. Promotion to active is earned only by an intervention-free outcome from a workstream OTHER than the one that proposed the policy; negative evidence marks it contested (under review), never demotes it.',
         {
           policy_id: z.string(),
+          applying_decision_id: z.string().describe('the decision in THIS workstream whose appliedPolicyIds cites this policy — the application this outcome evaluates'),
           note: z.string(),
           intervention_free: z.boolean(),
         },
@@ -638,12 +649,56 @@ export async function runCoordinatorPass(
               policyId: a.policy_id,
               workstreamSlug: slug,
               passId,
+              applyingDecisionId: a.applying_decision_id,
               note: a.note,
               interventionFree: a.intervention_free,
             });
             const noted = await change((d, event) => {
-              event('policy.evidence', `${policy.id} now [${policy.status}]: ${a.note}`, [policy.id]);
-              return `recorded evidence on ${policy.id} (status: ${policy.status})`;
+              const flag = policy.contested ? ' (CONTESTED — under review)' : '';
+              event('policy.evidence', `${policy.id} now [${policy.status}]${flag}: ${a.note}`, [policy.id]);
+              return `recorded evidence on ${policy.id} (status: ${policy.status})${flag}`;
+            });
+            return noted;
+          } catch (e) {
+            return err(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+
+      tool(
+        'supersede_policy',
+        'Replace a learned policy that proved wrong for a matching workstream — like a superseding decision, lineage kept. This is the ONLY way (besides a human review-clear) to resolve a CONTESTED policy. Provide EITHER the text of a corrected replacement (statement + tags + effect), OR the id of an existing policy to link as the replacement. The replacement is shadow and earns trust through the normal evidence loop; supersession never widens authority.',
+        {
+          old_policy_id: z.string(),
+          reason: z.string().describe('why the old policy was wrong / what the replacement fixes'),
+          replacement_policy_id: z.string().optional().describe('link an EXISTING policy as the replacement instead of writing a new one'),
+          replacement_statement: z.string().optional(),
+          replacement_tags: z.array(z.string()).optional(),
+          replacement_effect_kind: z.enum(['add_verification', 'narrow_authority', 'advisory']).optional(),
+          replacement_effect_description: z.string().optional(),
+        },
+        async (a) => {
+          try {
+            let next;
+            if (a.replacement_policy_id) {
+              next = await supersedePolicy(a.old_policy_id, { withExisting: a.replacement_policy_id });
+            } else {
+              if (!a.replacement_statement || !a.replacement_tags?.length || !a.replacement_effect_kind || !a.replacement_effect_description) {
+                return err('supersede_policy: provide either replacement_policy_id, or ALL of replacement_statement, replacement_tags, replacement_effect_kind, replacement_effect_description');
+              }
+              next = await supersedePolicy(a.old_policy_id, {
+                statement: a.replacement_statement,
+                tags: a.replacement_tags,
+                effectKind: a.replacement_effect_kind,
+                effectDescription: a.replacement_effect_description,
+                workstreamSlug: slug,
+                passId,
+                interventionSummary: a.reason,
+              });
+            }
+            const noted = await change((d, event) => {
+              event('policy.superseded', `${a.old_policy_id} superseded by ${next!.id}: ${a.reason}`, [a.old_policy_id, next!.id]);
+              return `superseded ${a.old_policy_id} → ${next!.id} (shadow)`;
             });
             return noted;
           } catch (e) {

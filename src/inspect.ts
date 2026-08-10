@@ -203,7 +203,10 @@ function policyCard(p: PolicyRecord): string {
         .join('')}</ul>`
     : `<p class="empty">No evidence yet — unproven.</p>`;
   const lineage = p.supersededBy ? `<p class="lineage">superseded by <code>${esc(p.supersededBy)}</code></p>` : '';
-  return `<article class="card policy ${p.status}">
+  const contested = p.contested
+    ? `<p class="meta"><span class="pill warn">contested — under review</span> ${esc(p.contested.note)} (in <code>${esc(p.contested.workstreamSlug)}</code>)</p>`
+    : '';
+  return `<article class="card policy ${p.status}${p.contested ? ' contested' : ''}">
 <header><code>${esc(p.id)}</code> <span class="pill status-${p.status}">${p.status}</span> <span class="pill effect">${esc(p.effect.kind)}</span></header>
 <p class="statement">${esc(p.statement)}</p>
 <p class="meta">effect: ${esc(p.effect.description)}</p>
@@ -213,7 +216,7 @@ function policyCard(p: PolicyRecord): string {
       ? `learned from <code>${esc(p.provenance.workstreamSlug)}</code> pass <code>${esc(p.provenance.passId)}</code>${p.provenance.steeringId ? ` steering <code>${esc(p.provenance.steeringId)}</code>` : ''}`
       : `seeded by <code>${esc(p.provenance.source)}</code> from <code>${esc(p.provenance.ref)}</code>`
   } — ${esc(p.provenance.interventionSummary)}</p>
-${evidence}${lineage}
+${contested}${evidence}${lineage}
 </article>`;
 }
 

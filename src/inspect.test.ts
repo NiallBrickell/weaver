@@ -126,10 +126,26 @@ test('inspect on a synthetic doc renders lineage, adoption, actions, and interve
     passId: 'pass_1',
     interventionSummary: 'human corrected an unverified address',
   });
+  // Promotion is cross-workstream and decision-attributed: a DIFFERENT
+  // workstream applies the policy (citing it on a decision) and succeeds.
+  await makeWorkstream('other-ws');
+  await arrive('other-ws', (d) => {
+    d.decisions.push({
+      id: 'dec_apply1',
+      title: 'apply the verification policy',
+      rationale: 'r',
+      madeBy: 'coordinator',
+      passId: 'pass_9',
+      status: 'standing',
+      appliedPolicyIds: [pol.id],
+      decidedAtVirtual: virtualNow().toISOString(),
+    });
+  });
   await recordPolicyOutcome({
     policyId: pol.id,
     workstreamSlug: 'other-ws',
     passId: 'pass_9',
+    applyingDecisionId: 'dec_apply1',
     note: 'applied cleanly',
     interventionFree: true,
   });

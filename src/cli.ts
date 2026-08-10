@@ -105,9 +105,11 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver constraint <slug> add <text>        add a hard constraint (human-owned direction)
   weaver constraint <slug> remove <match>    remove the constraint containing <match>
   weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
-  weaver policies                            list learned policies (shadow/active/superseded)
+  weaver policies                            list learned policies (shadow/active/superseded, contested flagged)
   weaver policies export [--author name] [--out file]   sanitized team seed: statements/scope/effect only
   weaver policies import <file>              import a teammate's seed — all shadow, dedup, authority refused
+  weaver policies supersede <oldId> (--with <id> | --statement <s> --tag <t>... --effect <kind> [--effect-desc <d>]) [--reason <r>]   replace a wrong policy (lineage kept); resolves a contested one
+  weaver policies review-clear <id> [note]   clear a contest after review found the policy still sound (no supersession)
   weaver backfill --tags <t1,t2> [--rules <path>]... [--claude-projects <dir>] [--limit N] [--dry-run]
                                              seed shadow policies from existing practice: rules files (CLAUDE.md/AGENTS.md, deterministic) and/or recent Claude Code transcripts (one model pass, default 5 sessions)
   weaver secret set <NAME> [--ws slug]       store a secret (value read from stdin, never argv); global unless --ws
@@ -532,11 +534,50 @@ async function main(): Promise<void> {
         );
         break;
       }
+      if (rest[0] === 'supersede') {
+        // weaver policies supersede <oldId> ( --with <existingId> | --statement <s> --tag <t>... --effect <kind> [--effect-desc <d>] ) [--reason <r>] [--ws <slug>]
+        const oldId = rest[1] ?? fail('usage: weaver policies supersede <oldId> (--with <id> | --statement <s> --tag <t>... --effect <kind>)');
+        const { supersedePolicy } = await import('./policies.js');
+        const withExisting = opt(rest, 'with');
+        let next;
+        if (withExisting) {
+          next = await supersedePolicy(oldId, { withExisting });
+        } else {
+          const statement = opt(rest, 'statement') ?? fail('--statement (or --with <existingId>) required');
+          const tags = optAll(rest, 'tag');
+          if (!tags.length) fail('--tag required (at least one) for a new replacement');
+          const effectKind = opt(rest, 'effect') ?? 'advisory';
+          if (!['add_verification', 'narrow_authority', 'advisory'].includes(effectKind)) {
+            fail(`--effect must be add_verification|narrow_authority|advisory, got '${effectKind}'`);
+          }
+          next = await supersedePolicy(oldId, {
+            statement,
+            tags,
+            effectKind: effectKind as 'add_verification' | 'narrow_authority' | 'advisory',
+            effectDescription: opt(rest, 'effect-desc') ?? statement,
+            workstreamSlug: opt(rest, 'ws') ?? 'cli',
+            passId: newId('pass'),
+            interventionSummary: opt(rest, 'reason') ?? 'superseded via CLI',
+          });
+        }
+        process.stdout.write(`superseded ${oldId} → ${next.id} (shadow — earns active through the normal evidence loop)\n`);
+        break;
+      }
+      if (rest[0] === 'review-clear') {
+        // weaver policies review-clear <id> [note] — resolve a contest without superseding.
+        const id = rest[1] ?? fail('usage: weaver policies review-clear <policyId> [note]');
+        const { reviewClearPolicy } = await import('./policies.js');
+        await reviewClearPolicy(id, rest.slice(2).join(' ') || 'cleared via CLI');
+        process.stdout.write(`${id} contest cleared — it renders as ordinary guidance again\n`);
+        break;
+      }
       for (const p of (await loadPolicies()).policies) {
         process.stdout.write(
-          `${p.id} [${p.status}/${p.effect.kind}] tags=[${p.scope.tags.join(',')}] "${p.statement}"\n` +
+          `${p.id} [${p.status}/${p.effect.kind}]${p.contested ? ' CONTESTED' : ''} tags=[${p.scope.tags.join(',')}] "${p.statement}"\n` +
           `    from ${policyOrigin(p)} (${p.provenance.interventionSummary.slice(0, 100)})\n` +
-          `    evidence: ${p.evidence.length} (${p.evidence.filter((e) => e.interventionFree).length} intervention-free)${p.supersededBy ? ` superseded by ${p.supersededBy}` : ''}\n`,
+          `    evidence: ${p.evidence.length} (${p.evidence.filter((e) => e.interventionFree).length} intervention-free)` +
+          `${p.supersedes ? ` supersedes ${p.supersedes}` : ''}${p.supersededBy ? ` superseded by ${p.supersededBy}` : ''}` +
+          `${p.contested ? `\n    CONTESTED in ${p.contested.workstreamSlug}: ${p.contested.note.slice(0, 100)}` : ''}\n`,
         );
       }
       break;

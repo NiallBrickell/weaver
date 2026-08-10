@@ -25,12 +25,18 @@ import * as path from 'node:path';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {
+  grantsAuthority,
   loadPolicies,
   normalizeStatement,
   proposeBackfillPolicy,
   type PolicyRecord,
 } from './policies.js';
 import { sdkEnv } from './secrets.js';
+
+// The authority firewall lives in policies.ts now, so live proposal, backfill,
+// and seed import share ONE lexical gate. Re-exported here for existing
+// importers (cli.ts, backfill.test.ts) that reach for it via this module.
+export { grantsAuthority } from './policies.js';
 
 export interface BackfillCandidate {
   statement: string;
@@ -51,20 +57,6 @@ export interface BackfillReport {
   duplicates: BackfillCandidate[];
   /** Rule text refused with a reason (authority-granting language). */
   skipped: { text: string; reason: string; ref: string }[];
-}
-
-// ---------------------------------------------------------------------------
-// The authority firewall at import time. A rule that reads like a GRANT
-// (a spend/send/merge verb with no restricting language around it) is
-// refused outright — the effect vocabulary couldn't represent it anyway
-// (docs/learning.md), and converting it to "advice to do X" would smuggle
-// the grant in through the back door.
-
-const GRANT_VERBS = /\b(merge|send|spend|deploy|publish|bypass|force-push|delete|approve)(s|ed|ing)?\b/i;
-const RESTRICTING = /\b(never|not|don'?t|do not|cannot|must not|avoid|refuse[sd]?|forbidden|only|require[sd]?|approval|ask|explicit)\b/i;
-
-export function grantsAuthority(text: string): boolean {
-  return GRANT_VERBS.test(text) && !RESTRICTING.test(text);
 }
 
 // Effect classification, deliberately simple: a rule that mandates
