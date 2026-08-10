@@ -26,7 +26,7 @@ Set the executor and give the container a provider key for the model:
 
 ```bash
 WEAVER_EXECUTOR=openhands
-WEAVER_OPENHANDS_API_KEY=…        # or LLM_API_KEY
+WEAVER_MODEL_API_KEY=…        # or LLM_API_KEY
 WEAVER_OPENHANDS_BASE_URL=…       # optional, for an OpenRouter-style endpoint
 ```
 

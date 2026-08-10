@@ -13,7 +13,7 @@ Executors: ${EVAL_EXECUTORS.join(', ')}
 Examples:
   yarn eval:harness --target codex-sdk=gpt-5.6-sol --case code-repair
   yarn eval:harness --target opencode=openrouter/moonshotai/kimi-k3 --repeat 3
-  WEAVER_OPENHANDS_API_KEY=... yarn eval:harness --target openhands=openrouter/moonshotai/kimi-k3
+  WEAVER_MODEL_API_KEY=... yarn eval:harness --target openhands=openrouter/moonshotai/kimi-k3
 
 Every target is explicit. The suite never silently substitutes a model or falls back to another executor.`;
 

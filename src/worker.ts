@@ -43,7 +43,7 @@ export function workerModel(): string {
  *
  * `openhands` runs the worker's loop inside a pinned OpenHands Agent Server
  * container (see src/executor/openHands.ts) — the first remote substrate. It
- * needs Docker plus WEAVER_OPENHANDS_API_KEY (or LLM_API_KEY); an action
+ * needs Docker plus WEAVER_MODEL_API_KEY (or LLM_API_KEY); an action
  * assignment fails closed there, because container tool calls cannot yet be
  * routed through Pilot supervision.
  */
