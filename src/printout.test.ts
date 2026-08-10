@@ -10,6 +10,7 @@ import { conclusionEvidenceLabels } from './conclusion.js';
 import { acknowledgePrintout, deliverPrintout, preparePrintout, type PrintoutReport } from './printout.js';
 import { proposeBackfillPolicy, recordPolicyOutcome } from './policies.js';
 import { buildProjection } from './projection.js';
+import { virtualNow } from './clock.js';
 import { emitTail } from './tail.js';
 import { setSecret } from './secrets.js';
 import { arrive, createWorkstream, listWorkstreams, load, mutate, printoutJournalDir, workstreamDir } from './store.js';
@@ -268,7 +269,8 @@ test('selected and fleet checkpoints are independent and fleet includes global p
   await arrive('alpha', (_doc, event) => event('alpha.changed', 'alpha alone changed'));
   await arrive('beta', (_doc, event) => event('beta.changed', 'beta alone changed'));
   const policy = await proposeBackfillPolicy({ statement: 'Verify before announcing', tags: ['test'], effectKind: 'add_verification', effectDescription: 'require a readback', source: 'seed', ref: 'team', interventionSummary: 'seeded' });
-  await recordPolicyOutcome({ policyId: policy.id, workstreamSlug: 'alpha', passId: 'pass_1', note: 'helped', interventionFree: true });
+  await arrive('alpha', (doc) => doc.decisions.push({ id: 'dec_alpha1', title: 'apply', rationale: 'r', madeBy: 'coordinator', passId: 'pass_1', status: 'standing', appliedPolicyIds: [policy.id], decidedAtVirtual: virtualNow().toISOString() }));
+  await recordPolicyOutcome({ policyId: policy.id, workstreamSlug: 'alpha', passId: 'pass_1', applyingDecisionId: 'dec_alpha1', note: 'helped', interventionFree: true });
 
   const alpha = (await delivered('alpha')).text;
   assert.match(alpha, /alpha alone changed/);
@@ -313,7 +315,8 @@ test('a post-checkpoint journal gap shows current workstream and policy facts', 
   });
   fs.rmSync(path.join(printoutJournalDir('gap'), 'revisions', 'revision-0000000000000001.json'));
   const policy = await proposeBackfillPolicy({ statement: 'Gap policy stays visible', tags: ['test'], effectKind: 'advisory', effectDescription: 'show current state', source: 'seed', ref: 'team', interventionSummary: 'seeded' });
-  await recordPolicyOutcome({ policyId: policy.id, workstreamSlug: 'gap', passId: 'pass_gap', note: 'prevented an incorrect deploy', interventionFree: true });
+  await arrive('gap', (doc) => doc.decisions.push({ id: 'dec_gap1', title: 'apply', rationale: 'r', madeBy: 'coordinator', passId: 'pass_gap', status: 'standing', appliedPolicyIds: [policy.id], decidedAtVirtual: virtualNow().toISOString() }));
+  await recordPolicyOutcome({ policyId: policy.id, workstreamSlug: 'gap', passId: 'pass_gap', applyingDecisionId: 'dec_gap1', note: 'prevented an incorrect deploy', interventionFree: true });
   fs.rmSync(path.join(process.env.WEAVER_HOME!, '.printout', 'policies', 'revisions', 'revision-0000000000000001.json'));
 
   const fleet = await preparePrintout();

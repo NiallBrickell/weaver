@@ -27,18 +27,22 @@ When steering *corrects* a course — rather than supplying facts the coordinato
 ## The lifecycle
 
 ```text
-shadow ──(applied + intervention-free on its point)──► active
-   │                                                      │
-   └────────── superseded (lineage kept) ◄────────────────┘
+shadow ──(another workstream applies it, cites it, and needs no correction)──► active
+   │  └──(negative evidence)──► contested (under review) ──┐                    │
+   │                                                       │                    │
+   └──────────────── superseded (lineage kept) ◄───────────┴────────────────────┘
 ```
 
-- **Shadow**: visible to every workstream sharing a tag. Applying one must be cited on the applying decision — a policy is never ambient prose with silent power.
-- **Active**: earned, not asserted. Promotion requires evidence that a matching workstream applied the policy and needed no further correction on the same point.
-- **Superseded**: a wrong policy is replaced with lineage, exactly like decisions — contradicted openly, never silently ignored.
+- **Shadow**: visible to every workstream sharing a tag. Applying one must be cited on the applying decision — a policy is never ambient prose with silent power. The citation is checked when the decision is written: a citation to a policy that does not exist, is superseded, or does not match the workstream's tags is rejected.
+- **Active**: earned, attributable, and **cross-workstream**. Recording an outcome names the decision that applied the policy — that decision must really exist and really cite the policy. Promotion needs at least one intervention-free outcome from a workstream *other than* the one that proposed the policy: a policy can't certify itself on its own origin. (A shared or backfilled policy has no origin workstream, so any workstream's clean, cited outcome earns it.)
+- **Contested**: when a matching workstream applies a policy and *still* needs a correction on its point, that negative evidence marks the policy **contested** — under review. A contested policy is pulled out of active guidance in the projection and won't guide (or promote) again until a human resolves it, but it is **never** silently demoted or deleted. You resolve it by superseding it with a better rule, or — if the failure was situational and the rule is still sound — clearing the review (`weaver policies review-clear`).
+- **Superseded**: a wrong policy is replaced with lineage, exactly like decisions — contradicted openly, never silently ignored. Replacement and lineage are written together, atomically, so a crash can't leave two rules both live. You can supersede with a freshly written rule or by linking an existing one (`weaver policies supersede`, or the coordinator's `supersede_policy`).
 
 ## The authority firewall
 
 Structural, not behavioral: the policy effect vocabulary is closed — *add verification*, *narrow authority*, *advisory*. A policy that would spend, send, merge, contact, or widen access is unrepresentable in the store. However trusted a policy becomes, authority still comes only from the workstream's own configuration and egress-time revalidation. **Learning can recommend; it can never permit.**
+
+On top of that structural gate, the *wording* of a policy is screened wherever a statement enters the store — live proposals, backfill, seed import, and supersession alike. Text that reads as *granting* authority ("the workstream **may merge** its own PR ... only when CI is green", "reviewers **are allowed to deploy**") is refused, even when hedged with "only", because grant-shaped prose in the projection can still nudge a coordinator. A policy may advise how to act under a grant you already have ("only merge after CI passes"); it may never assert the grant itself. The screen errs toward refusal — rephrase without the permission word.
 
 ## Backfill: start from how you already work
 
