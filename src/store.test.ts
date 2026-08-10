@@ -22,16 +22,20 @@ import pg from 'pg';
 
 import {
   RevisionConflictError,
+  SourceKeyConflictError,
   arrive,
   artifactsDir,
   closeStore,
   createWorkstream,
+  findBySourceKey,
+  listWorkstreams,
   load,
   mutate,
   mutatePolicies,
   newId,
   tryTickLock,
   verifyArtifact,
+  workstreamDir,
   writeArtifact,
 } from './store.js';
 import { loadPolicies, type PolicyRecord } from './policies.js';
@@ -346,10 +350,116 @@ function contractSuite(backend: Backend): void {
     assert.ok(again, 'reacquire after release must succeed');
     await again!();
   });
+
+  test('a second workstream for the same source key is refused, naming the holder', async () => {
+    await createWorkstream({
+      slug: 'first-holder', title: 'First', objective: 'o', tags: [], successCriteria: [], constraints: [],
+      sourceKey: 'tracker:9', autonomy: { sendsRequireApproval: true }, budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+    });
+    await assert.rejects(
+      createWorkstream({
+        slug: 'would-duplicate', title: 'Dup', objective: 'o', tags: [], successCriteria: [], constraints: [],
+        sourceKey: 'tracker:9', autonomy: { sendsRequireApproval: true }, budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+      }),
+      (e) =>
+        e instanceof SourceKeyConflictError &&
+        /first-holder/.test(e.message) &&
+        /already stands for tracker:9/.test(e.message),
+    );
+    assert.equal((await listWorkstreams()).includes('would-duplicate'), false);
+    assert.equal(await findBySourceKey('tracker:9'), 'first-holder');
+  });
+
+  test('two creates racing the same source key across processes: exactly one lands', async () => {
+    // Two DIFFERENT slugs, the SAME sourceKey, from separate OS processes gated
+    // to fire together. Uniqueness is enforced ATOMICALLY inside the backend's
+    // create (fs: a home-scoped create lock around a fail-loud scan; sqlite:
+    // BEGIN IMMEDIATE + json_extract; pg: a partial UNIQUE index), so exactly
+    // one workstream may ever stand for the key — the loser must fail, never a
+    // silent second identity.
+    const home = process.env.WEAVER_HOME!;
+    const storeUrl = pathToFileURL(path.resolve('src/store.ts')).href;
+    const gate = path.join(home, 'create-gate');
+    const key = 'tracker:shared-425';
+    const slugs = ['stream-a', 'stream-b'];
+    // Initialize the backend in the parent first (sqlite: persist WAL mode +
+    // schema to the file; pg: run migrations) so the two children race the
+    // create itself, not first-touch database setup.
+    await listWorkstreams();
+    const children = slugs.map((slug, index) => {
+      const ready = path.join(home, `create-ready-${index}`);
+      const code = `
+        import fs from 'node:fs';
+        const { createWorkstream, closeStore, SourceKeyConflictError } = await import(${JSON.stringify(storeUrl)});
+        fs.writeFileSync(${JSON.stringify(ready)}, 'ready');
+        const wait = new Int32Array(new SharedArrayBuffer(4));
+        while (!fs.existsSync(${JSON.stringify(gate)})) Atomics.wait(wait, 0, 0, 5);
+        try {
+          await createWorkstream({
+            slug: ${JSON.stringify(slug)}, title: 't', objective: 'o', tags: [],
+            successCriteria: [], constraints: [], sourceKey: ${JSON.stringify(key)},
+            autonomy: { sendsRequireApproval: true },
+            budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+          });
+          console.log('won');
+        } catch (error) {
+          console.log(error instanceof SourceKeyConflictError ? 'conflict' : 'error: ' + (error?.stack ?? error));
+        }
+        await closeStore();
+      `;
+      return new Promise<string>((resolve, reject) => {
+        const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', code], {
+          cwd: process.cwd(),
+          env: { ...process.env, WEAVER_HOME: home },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+        child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+        child.on('close', (exitCode) =>
+          exitCode === 0
+            ? resolve(stdout.trim())
+            : reject(new Error(`child ${slug} exited ${exitCode}: ${stdout}${stderr}`)));
+      });
+    });
+    const deadline = Date.now() + 10_000;
+    while (fs.readdirSync(home).filter((name) => name.startsWith('create-ready-')).length < slugs.length) {
+      if (Date.now() > deadline) throw new Error('child create barrier timed out');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    fs.writeFileSync(gate, 'go');
+    const outcomes = (await Promise.all(children)).sort();
+    assert.deepEqual(outcomes, ['conflict', 'won']); // exactly one created, the other refused
+    const created = (await listWorkstreams()).filter((s) => slugs.includes(s));
+    assert.equal(created.length, 1); // never a silent second identity
+    assert.equal(await findBySourceKey(key), created[0]);
+  });
 }
 
 describe('store contract — fs backend', () => {
   contractSuite(fsBackend);
+
+  test('a sourced create fails LOUD when an existing workstream is unreadable', async () => {
+    // The source-key uniqueness scan must never silently skip a corrupt doc:
+    // corruption cannot make an existing identity disappear and let a duplicate
+    // slip in. (The best-effort findBySourceKey skips corruption; create must
+    // not.) fs only — sqlite/pg detect existing keys through the store engine.
+    await fsBackend.reset();
+    await createWorkstream({
+      slug: 'broken-holder', title: 'Broken', objective: 'o', tags: [], successCriteria: [], constraints: [],
+      sourceKey: 'tracker:corrupt', autonomy: { sendsRequireApproval: true }, budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+    });
+    fs.writeFileSync(path.join(workstreamDir('broken-holder'), 'workstream.json'), '{ not json');
+    await assert.rejects(
+      createWorkstream({
+        slug: 'new-sourced', title: 'New', objective: 'o', tags: [], successCriteria: [], constraints: [],
+        sourceKey: 'tracker:unrelated', autonomy: { sendsRequireApproval: true }, budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+      }),
+      /unreadable|refusing to create/,
+    );
+    assert.equal((await listWorkstreams()).includes('new-sourced'), false);
+  });
 });
 
 describe('store contract — sqlite backend', () => {

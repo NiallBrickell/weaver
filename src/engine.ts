@@ -588,10 +588,72 @@ export function runnableAssignments(doc: WorkstreamDoc): string[] {
     .filter((a) =>
       a.dependsOn.every((dep) => {
         const d = doc.assignments.find((x) => x.id === dep);
-        return d ? ['completed', 'cancelled'].includes(d.state) : true;
+        // A dependency is satisfied ONLY by an upstream that both reached
+        // 'completed' AND was ADOPTED ('accepted'). Adoption is what pins the
+        // artifact a worker actually receives (worker.ts injects accepted
+        // deliverables only), so the scheduler's satisfaction rule and the
+        // injection rule now agree: a runnable assignment receives every
+        // dependency artifact it expects.
+        //
+        // A rejected upstream is ALSO 'completed' (reject_submission sets
+        // completed+rejected) but produced no accepted artifact, and a
+        // cancelled upstream produced none either — so neither auto-satisfies
+        // anymore. If a downstream genuinely needs no accepted input, that is
+        // the coordinator's explicit act: it cancels or re-points the
+        // dependency. The scheduler never infers "settled without input" from a
+        // rejection or cancellation. An UNKNOWN dep id (no matching assignment)
+        // can never be satisfied — it blocks here, and flagDanglingDependencies
+        // raises the integrity signal so the stuck work is not silent.
+        return d ? d.state === 'completed' && d.adoption.state === 'accepted' : false;
       }),
     )
     .map((a) => a.id);
+}
+
+/**
+ * Raise a single, deduped integrity signal for every queued assignment that
+ * depends on an id no assignment carries — a dangling dependency the scheduler
+ * can never satisfy (runnableAssignments blocks it), so without this the work
+ * would sit queued forever, invisible. Mirrors the budget attention: it checks
+ * for an existing open signal before pushing, so a stuck assignment is
+ * surfaced once, not on every tick. A dangling id is an integrity fault, not
+ * routine work, so it reaches the human as a 'blocker'. Returns the number of
+ * fresh signals raised.
+ */
+export async function flagDanglingDependencies(slug: string): Promise<number> {
+  const doc = await load(slug);
+  const known = new Set(doc.assignments.map((a) => a.id));
+  const candidates = doc.assignments.filter(
+    (a) =>
+      a.state === 'queued' &&
+      a.dependsOn.some((dep) => !known.has(dep)) &&
+      !doc.attention.some((att) => att.kind === 'blocker' && att.status === 'open' && att.refId === a.id),
+  );
+  if (candidates.length === 0) return 0;
+  let raised = 0;
+  await arrive(slug, (d, event) => {
+    const knownIds = new Set(d.assignments.map((a) => a.id));
+    for (const candidate of candidates) {
+      // Re-derive against the doc the write sees: a concurrent arrival may have
+      // added the missing assignment, changed the state, or raised the signal.
+      const asg = d.assignments.find((x) => x.id === candidate.id);
+      if (!asg || asg.state !== 'queued') continue;
+      const missing = asg.dependsOn.filter((dep) => !knownIds.has(dep));
+      if (missing.length === 0) continue;
+      if (d.attention.some((att) => att.kind === 'blocker' && att.status === 'open' && att.refId === asg.id)) continue;
+      d.attention.push({
+        id: newId('att'),
+        kind: 'blocker',
+        summary: `Assignment ${asg.id} depends on ${missing.join(', ')}, which no assignment provides — it can never become runnable until you cancel or re-point the dependency.`,
+        refId: asg.id,
+        status: 'open',
+        createdAt: new Date().toISOString(),
+      });
+      event('assignment.dangling_dependency', `${asg.id} blocked on unknown dependency ${missing.join(', ')}`, [asg.id]);
+      raised++;
+    }
+  });
+  return raised;
 }
 
 export function coordinatorBackoffActive(doc: WorkstreamDoc): boolean {
@@ -681,6 +743,11 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       if (afterEngineActionStatus === 'paused') report.skipped = 'workstream became paused during this tick';
       break;
     }
+
+    // Surface any queued assignment stuck on a dependency id no assignment
+    // provides. Raising the signal is deliberately NOT progress: dedup keeps it
+    // from re-raising, so it must not spin the cycle loop.
+    await flagDanglingDependencies(slug);
 
     // Budget gates WORKERS, not just coordinator passes — a long research run
     // must not be able to sail past maxCostUsd. Over budget: launch nothing,

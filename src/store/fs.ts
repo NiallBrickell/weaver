@@ -27,7 +27,7 @@ import { acquireProcessLock } from '../processLock.js';
 import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc, newId, sha256 } from './doc.js';
-import { RevisionConflictError, type Mutator, type StateStore } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './types.js';
 
 export { newId, sha256 };
 
@@ -110,17 +110,56 @@ export class FsStore implements StateStore {
   }
 
   async create(core: Omit<WorkstreamCore, 'id' | 'createdAt' | 'status'>): Promise<WorkstreamDoc> {
-    const dir = workstreamDir(core.slug);
-    fs.mkdirSync(dir, { recursive: true });
-    return withWriteLock(core.slug, () => {
-      if (fs.existsSync(docPath(core.slug))) {
-        throw new Error(`workstream '${core.slug}' already exists`);
+    // The slug write lock is per-slug, so it cannot make source-key uniqueness
+    // atomic: two DIFFERENT slugs carrying the same sourceKey take different
+    // locks and would both pass a scan-then-create. A home-scoped create lock
+    // serializes ALL creations (they are rare), so the sourceKey scan below and
+    // the write happen with no other create interleaving.
+    const home = weaverHome();
+    fs.mkdirSync(home, { recursive: true });
+    const releaseCreate = acquireProcessLock(path.join(home, '.create.lock'), { timeoutMs: 10_000 });
+    if (!releaseCreate) throw new Error('create lock timeout');
+    try {
+      if (core.sourceKey !== undefined) {
+        const existing = this.slugForSourceKey(core.sourceKey);
+        if (existing) throw new SourceKeyConflictError(core.sourceKey);
       }
-      fs.mkdirSync(artifactsDir(core.slug), { recursive: true });
-      const doc = initialDoc(core);
-      writeAtomic(core.slug, doc, creationReceipt(doc));
-      return doc;
-    });
+      return withWriteLock(core.slug, () => {
+        if (fs.existsSync(docPath(core.slug))) {
+          throw new Error(`workstream '${core.slug}' already exists`);
+        }
+        fs.mkdirSync(artifactsDir(core.slug), { recursive: true });
+        const doc = initialDoc(core);
+        writeAtomic(core.slug, doc, creationReceipt(doc));
+        return doc;
+      });
+    } finally {
+      releaseCreate();
+    }
+  }
+
+  /**
+   * The slug already standing for a sourceKey, or null. Unlike the shared
+   * layer's best-effort findBySourceKey, this FAILS LOUD on an unreadable doc:
+   * corruption must never make an existing identity disappear and let a
+   * duplicate be created. Called only inside the create lock.
+   */
+  private slugForSourceKey(sourceKey: string): string | null {
+    const home = weaverHome();
+    if (!fs.existsSync(home)) return null;
+    for (const slug of fs.readdirSync(home).filter((d) => fs.existsSync(docPath(d))).sort()) {
+      let doc: WorkstreamDoc;
+      try {
+        doc = this.loadSync(slug);
+      } catch (error) {
+        throw new Error(
+          `cannot verify source-key uniqueness: workstream '${slug}' is unreadable ` +
+            `(${error instanceof Error ? error.message : error}) — refusing to create so a duplicate identity cannot slip in`,
+        );
+      }
+      if (doc.workstream.sourceKey === sourceKey) return slug;
+    }
+    return null;
   }
 
   async mutate(slug: string, expectedRevision: number | undefined, fn: Mutator): Promise<WorkstreamDoc> {

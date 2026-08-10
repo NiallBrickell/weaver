@@ -31,11 +31,11 @@ import { assertNoSecretValues, loadSecrets, redactSecrets } from './secrets.js';
 import { FsStore, artifactsDir, newId, printoutJournalDir, sha256, weaverHome, workstreamDir } from './store/fs.js';
 import { PgStore } from './store/pg.js';
 import { SqliteStore } from './store/sqlite.js';
-import { RevisionConflictError, type Mutator, type StateStore } from './store/types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './store/types.js';
 import type { WorkstreamCore, WorkstreamDoc } from './types.js';
 
 export { artifactsDir, newId, printoutJournalDir, sha256, weaverHome, workstreamDir };
-export { RevisionConflictError };
+export { RevisionConflictError, SourceKeyConflictError };
 export type { StateStore };
 
 let activeStore: StateStore | undefined;
@@ -179,7 +179,20 @@ export async function createWorkstream(
   // carry a value — so asserting on the serialized core preserves the "no doc
   // write can persist a secret" guarantee for creation on every backend.
   assertNoSecretValues(JSON.stringify(core, null, 2), loadSecrets(core.slug));
-  return getStore().create(core);
+  try {
+    return await getStore().create(core);
+  } catch (e) {
+    // The backend enforces source-key uniqueness atomically at the write (fs
+    // create lock, sqlite BEGIN IMMEDIATE, pg partial unique index) — this is
+    // NOT a pre-scan, so no race can slip a duplicate past it. Enrich the
+    // conflict with the slug that already holds the key (best-effort lookup,
+    // purely for the message) before re-throwing.
+    if (e instanceof SourceKeyConflictError && core.sourceKey !== undefined) {
+      const existing = await findBySourceKey(core.sourceKey);
+      throw new SourceKeyConflictError(core.sourceKey, existing ?? undefined);
+    }
+    throw e;
+  }
 }
 
 /**

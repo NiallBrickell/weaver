@@ -787,6 +787,10 @@ export async function runCoordinatorPass(
         },
         async (a) => {
           // At-least-once intake: looking again is free, and must stay free.
+          // This is a benign idempotency fast-path, NOT the enforcement: the
+          // store write enforces sourceKey uniqueness atomically (a concurrent
+          // create the scan misses still fails below with SourceKeyConflictError,
+          // caught and rendered as err), so intake is race-safe either way.
           if (a.source_key) {
             const existing = await findBySourceKey(a.source_key);
             if (existing) return ok(`already exists: '${existing}' stands for ${a.source_key} — nothing created`);
