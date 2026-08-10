@@ -435,8 +435,16 @@ export async function runWorker(
       // Structural gate, independent of the engine's scheduling: an action
       // worker must never start without its recorded human approval.
       if (!asg.exec?.approval) throw new Error(`${assignmentId} is an action without human approval — refusing to run`);
-      mkdirSync(asg.exec.cwd, { recursive: true });
     }
+    // The worker cwd MUST exist before the SDK spawns the child process: a
+    // non-existent cwd fails the spawn with ENOENT, which the SDK surfaces as
+    // the misleading "native binary … failed to launch". Action cwds and the
+    // neutralWorkspace() fallback self-create, but a coordinator-declared WORK
+    // workspace (readDirs[0] — e.g. a /tmp scratch dir the brief says to clone
+    // into) did not, so every such worker crashed cryptically before it could
+    // create it.
+    const workCwd = isAction ? asg.exec!.cwd : (readDirs[0] ?? neutralWorkspace(slug));
+    mkdirSync(workCwd, { recursive: true });
     const outcome = await executor.execute({
       workstreamSlug: slug,
       assignmentId,
@@ -461,7 +469,7 @@ export async function runWorker(
             // settings, and MCPs shape the session. With none declared, a
             // NEUTRAL per-stream workspace — never the runner's own checkout,
             // whose CLAUDE.md and settings would leak into unrelated work.
-            cwd: readDirs[0] ?? neutralWorkspace(slug),
+            cwd: workCwd,
             additionalDirectories: readDirs,
           }),
       // The SECURED server map: header credentials already moved into env

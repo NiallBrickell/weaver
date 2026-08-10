@@ -357,6 +357,75 @@ test('action prompts carry the target repo agent instructions from the cwd git r
   }
 });
 
+test('a work assignment whose declared workspace does not exist yet is created before launch, never crashing the spawn', async () => {
+  const home = workerHome();
+  // A coordinator-declared scratch workspace that does NOT exist on disk — the
+  // exact shape that crashed workers with a misleading "native binary … failed
+  // to launch" (spawn ENOENT on a missing cwd) before this fix. The brief tells
+  // the worker to clone into it, but the worker can never start to create it if
+  // the spawn cwd must already exist.
+  const missing = path.join(os.tmpdir(), `weaver-missing-ws-${process.pid}-${virtualNow().getTime()}`);
+  fs.rmSync(missing, { recursive: true, force: true });
+  let launched = false;
+  let seenCwd: string | undefined;
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      launched = true;
+      seenCwd = req.cwd;
+      // The directory the SDK would spawn the child into must exist by now.
+      assert.ok(fs.existsSync(req.cwd!), 'the declared workspace must exist before launch');
+      await req.submit.submitResult({
+        summary: 'Investigated in the freshly-created workspace and reported evidence.',
+        artifact: {
+          title: 'Findings',
+          kind: 'report',
+          file_name: 'findings.md',
+          content: `# Findings\n\n${'Evidence gathered in the created workspace. '.repeat(6)}`,
+        },
+      });
+      return { costUsd: 0.1, sessionId: 'fake-missing-ws-session' };
+    },
+  };
+
+  try {
+    await createWorkstream({
+      slug: 'worker-missing-workspace',
+      title: 'worker-missing-workspace',
+      objective: 'test that a declared-but-absent workspace is created before launch',
+      tags: [],
+      successCriteria: [],
+      constraints: [],
+      autonomy: { sendsRequireApproval: true },
+      budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+    });
+    await arrive('worker-missing-workspace', (d) => d.assignments.push({
+      id: 'asg_missing',
+      objective: 'investigate in a declared workspace',
+      briefing: 'Clone the relevant repo into the declared workspace and report.',
+      kind: 'work',
+      readDirs: [missing],
+      acceptanceCriteria: ['cite evidence'],
+      dependsOn: [],
+      state: 'queued',
+      attempts: [],
+      adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await runWorker('worker-missing-workspace', 'asg_missing', executor);
+
+    assert.equal(launched, true, 'the worker must launch, not crash on a missing cwd');
+    assert.equal(seenCwd, missing);
+    assert.ok(fs.existsSync(missing), 'the declared workspace must have been created');
+    const doc = await load('worker-missing-workspace');
+    assert.equal(doc.assignments[0]!.state, 'awaiting_review');
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(missing, { recursive: true, force: true });
+  }
+});
+
 test('a worker with no declared directories gets a neutral per-stream workspace, never the runner cwd', async () => {
   const os = await import('node:os');
   const { neutralWorkspace } = await import('./worker.js');
