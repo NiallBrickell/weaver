@@ -167,7 +167,7 @@ test('an overdue capacity wait stops claiming the workstream is parked while wor
     id: 'asg_live',
     objective: 'Census the eight repos',
     briefing: 'read-only',
-    kind: 'research',
+    kind: 'work',
     acceptanceCriteria: [],
     dependsOn: [],
     state: 'running',

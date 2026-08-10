@@ -102,7 +102,7 @@ test('successful probe expedition uses virtual time and unblocks worker attempts
       status: 'open', createdAt: new Date().toISOString(),
     });
     d.assignments.push({
-      id: 'asg_wait', objective: 'resume', briefing: 'n/a', kind: 'research', acceptanceCriteria: ['n/a'],
+      id: 'asg_wait', objective: 'resume', briefing: 'n/a', kind: 'work', acceptanceCriteria: ['n/a'],
       dependsOn: [], state: 'queued', attempts: [{ runId: 'run_wait', startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), infrastructure }],
       adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
     });

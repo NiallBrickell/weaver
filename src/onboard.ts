@@ -35,7 +35,7 @@ export interface HousePack {
 
 export const DEFAULT_HOUSE: HousePack = {
   constraints: [
-    'Research first; every worker has the normal Claude Code toolset. Repository investigation and implementation happen in a fresh git worktree (branch from origin/main) — never in the user\'s checkouts. Opening or merging a PR, deploying, sending, or mutating a remote service remains a gated action',
+    'Research first; every worker has the normal Claude Code toolset including the operator\'s configured MCP servers, used read AND write — keeping the systems a brief names in sync (a tracker issue\'s status, comments, labels) is ordinary reversible work, not a gated effect. Repository investigation and implementation happen in a fresh git worktree (branch from origin/main) — never in the user\'s checkouts. Irreversible egress — opening or merging a PR, deploying, spending, or sending a message to a person — remains a gated action',
     'Never paste credentials or connection strings into prompts, state, or artifacts; reference credentials as $NAME (the engine injects values)',
     'When blocked on credentials, external accounts, or anything only the founder can supply, raise attention with a one-click ask instead of improvising',
     'Verification runs against tests, previews, and readbacks by default — never poke production. Only when the objective explicitly calls for post-merge verification in the live product may you check there, and then strictly read-only (browser tooling included)',

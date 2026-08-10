@@ -41,14 +41,24 @@ export interface Decision {
 // ---------------------------------------------------------------------------
 // Work
 
-export type AssignmentKind =
-  | 'research'
-  | 'work_product'
-  | 'communication_draft'
-  | 'evidence'
-  /** A real-world act (open a PR, run a CLI) — gated on human approval,
-   * confirmed by deterministic readback, never by the worker's prose. */
-  | 'action';
+/**
+ * A worker does one of two things, and only this distinction has runtime teeth
+ * (everything branches on `=== 'action'`):
+ *
+ * - `work` — bounded, reversible work that PROPOSES a result. Full ordinary
+ *   toolset, including every configured MCP server used freely READ and WRITE:
+ *   keeping the systems the brief names in sync (a tracker's status, a comment,
+ *   a label) is work, not a privileged effect. No gate, no allow-list.
+ * - `action` — one specific, human-approved, Pilot-supervised, readback-verified
+ *   irreversible egress to the outside world: a message to a person, a spend, a
+ *   merge/deploy/push. Confirmed by deterministic readback, never by prose.
+ *
+ * Earlier revisions split the reversible side into research/work_product/
+ * evidence/communication_draft; nothing ever branched on those labels, so they
+ * were needless surface. Legacy stored docs may still carry them — code treats
+ * any non-`action` kind as `work`, so no migration is required.
+ */
+export type AssignmentKind = 'work' | 'action';
 
 export interface Attempt {
   runId: Id;

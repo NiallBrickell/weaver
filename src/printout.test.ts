@@ -78,7 +78,7 @@ test('printout separates claims, adoption, deterministic readback, and provider 
   await arrive('truth', (doc, event) => {
     doc.deliverables.push(candidate, accepted);
     doc.assignments.push(
-      assignment('asg_research', 'research', 'Inspect the release history', {
+      assignment('asg_research', 'work', 'Inspect the release history', {
         readDirs: ['/repo'], state: 'awaiting_review', submission: { summary: 'Found relevant commits', deliverableId: candidate.id }, adoption: { state: 'proposed' },
       }),
       assignment('asg_claim', 'action', 'Merge PR 42', {
@@ -100,7 +100,7 @@ test('printout separates claims, adoption, deterministic readback, and provider 
   emitTail('truth', 'worker', 'asg_claim', 'text', 'PR merged and deployed, trust me');
 
   const report = (await preparePrintout('truth')).text;
-  assert.match(report, /PROPOSED research — asg_research/);
+  assert.match(report, /PROPOSED work — asg_research/);
   assert.match(report, /NO READBACK — EXTERNAL EFFECT NOT CONFIRMED — asg_claim/);
   assert.match(report, /Submission: PR merged \(a claim until accepted\)/);
   assert.match(report, /READBACK FAILED — EXTERNAL EFFECT NOT CONFIRMED — asg_failed/);
@@ -249,7 +249,7 @@ test('append-only journal outlives the bounded 200-event projection tail', async
 test('growing attempt history is journaled as leaf appends rather than quadratic snapshots', async () => {
   await make('compact');
   await delivered('compact');
-  await arrive('compact', (doc) => doc.assignments.push(assignment('asg_many', 'research', 'Run many bounded attempts', { attempts: [] })));
+  await arrive('compact', (doc) => doc.assignments.push(assignment('asg_many', 'work', 'Run many bounded attempts', { attempts: [] })));
   for (let index = 0; index < 250; index++) {
     await arrive('compact', (doc) => doc.assignments[0]!.attempts.push({
       runId: `run_${index}`,

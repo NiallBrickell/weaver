@@ -250,7 +250,7 @@ test('worker and coordinator entry points independently refuse paused work', asy
       id: 'asg_paused',
       objective: 'must not start',
       briefing: 'n/a',
-      kind: 'research',
+      kind: 'work',
       acceptanceCriteria: ['n/a'],
       dependsOn: [],
       state: 'queued',
@@ -289,7 +289,7 @@ test('a stale running attempt is recovered: crash recorded, assignment re-queued
         id: 'asg_dep',
         objective: 'unfinished dependency',
         briefing: 'n/a',
-        kind: 'research',
+        kind: 'work',
         acceptanceCriteria: ['n/a'],
         dependsOn: [],
         state: 'awaiting_review',
@@ -301,7 +301,7 @@ test('a stale running attempt is recovered: crash recorded, assignment re-queued
         id: 'asg_orphan',
         objective: 'orphaned by a dead worker',
         briefing: 'n/a',
-        kind: 'research',
+        kind: 'work',
         acceptanceCriteria: ['n/a'],
         dependsOn: ['asg_dep'],
         state: 'running',
@@ -341,11 +341,11 @@ test('a typed worker-model wait parks assignments without parsing prose', async 
   await arrive('capacity-ws', (d) => {
     d.assignments.push(
       {
-        id: 'asg_first', objective: 'first', briefing: 'n/a', kind: 'research', acceptanceCriteria: ['n/a'],
+        id: 'asg_first', objective: 'first', briefing: 'n/a', kind: 'work', acceptanceCriteria: ['n/a'],
         dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
       },
       {
-        id: 'asg_second', objective: 'second', briefing: 'n/a', kind: 'research', acceptanceCriteria: ['n/a'],
+        id: 'asg_second', objective: 'second', briefing: 'n/a', kind: 'work', acceptanceCriteria: ['n/a'],
         dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
       },
     );
@@ -415,7 +415,7 @@ function asg(partial: Partial<Assignment> & { id: string }): Assignment {
   return {
     objective: partial.id,
     briefing: 'n/a',
-    kind: 'research',
+    kind: 'work',
     acceptanceCriteria: ['n/a'],
     dependsOn: [],
     state: 'queued',
@@ -728,7 +728,7 @@ test('a fresh running attempt is NOT treated as crashed', async () => {
       id: 'asg_live',
       objective: 'still genuinely running',
       briefing: 'n/a',
-      kind: 'research',
+      kind: 'work',
       acceptanceCriteria: ['n/a'],
       dependsOn: [],
       state: 'running',
@@ -758,7 +758,7 @@ test('an attempt whose driver process is dead is recovered immediately, no horiz
         id: 'asg_dep_open',
         objective: 'unfinished dependency keeps the orphan non-runnable',
         briefing: 'n/a',
-        kind: 'research',
+        kind: 'work',
         acceptanceCriteria: ['n/a'],
         dependsOn: [],
         state: 'awaiting_review',
@@ -770,7 +770,7 @@ test('an attempt whose driver process is dead is recovered immediately, no horiz
         id: 'asg_orphaned',
         objective: 'driver died seconds ago',
         briefing: 'n/a',
-        kind: 'research',
+        kind: 'work',
         acceptanceCriteria: ['n/a'],
         dependsOn: ['asg_dep_open'],
         state: 'running',
@@ -836,7 +836,7 @@ test('pilot alive → a WORKER action auto-approves (live per-command supervisio
     });
     await arrive('pilot-ok-ws', (d) => {
       d.assignments.push({
-        id: 'asg_hold', objective: 'hold', briefing: 'n/a', kind: 'research',
+        id: 'asg_hold', objective: 'hold', briefing: 'n/a', kind: 'work',
         acceptanceCriteria: ['n/a'], dependsOn: [], state: 'awaiting_review',
         attempts: [], adoption: { state: 'proposed' }, createdAtVirtual: virtualNow().toISOString(),
       });

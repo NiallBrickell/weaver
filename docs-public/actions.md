@@ -2,7 +2,9 @@
 
 *How intentional external effects are gated, executed with normal tools, and confirmed by deterministic readback*
 
-Weaver has no channel adapters, no integration layer, no per-service plumbing. Every assignment is a regular Claude Code worker with real tools. A kind-`action` assignment is how a workstream directs and accounts for an intentional external effect: open the PR with `gh`, update Sentry through the operator's MCP, call the API with `curl`. Weaver's contribution is the gate before and the readback after; merely having a capable tool does not grant authority or make the worker's claim true.
+Weaver has no channel adapters, no integration layer, no per-service plumbing. Every assignment is a regular Claude Code worker with real tools. A worker has exactly two lifecycles. Most work is `work`: bounded, reversible work that proposes a result, with the full toolset — including the operator's configured MCP servers used read AND write. Moving a tracker issue's status, commenting, or labelling to keep the systems a brief names in sync is ordinary `work`, not an action; the line is drawn by consequence, not by whether the write goes to a remote service.
+
+An `action` assignment is reserved for one *irreversible* egress to the outside world — merging or deploying a PR, spending money, sending a message to a person: `gh pr merge`, a payment API call with `curl`, a real send. Weaver's contribution is the gate before and the deterministic readback after; merely having a capable tool does not grant authority or make the worker's claim true.
 
 ## Where Pilot fits
 

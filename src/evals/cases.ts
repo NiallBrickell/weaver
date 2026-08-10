@@ -103,7 +103,7 @@ async function makeCase(
       'This directory is already an isolated disposable evaluation worktree. Work directly here; do not create another worktree. Never read or write outside it.',
       input.briefing,
     ].join('\n\n'),
-    kind: 'work_product',
+    kind: 'work',
     readDirs: [workspace],
     acceptanceCriteria: input.acceptanceCriteria,
     dependsOn: [],
