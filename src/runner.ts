@@ -209,6 +209,28 @@ export interface RunnerOptions {
   log?: (line: string) => void;
   /** Errors. Default: stderr. */
   logError?: (line: string) => void;
+  /** System-load sampler for load-aware slot throttling; injectable for tests.
+   * Defaults to the OS 1-minute load average and logical core count. */
+  loadSample?: () => { load1: number; cores: number };
+}
+
+/**
+ * Load-aware slot cap. Each granted slot spawns a worker/coordinator SDK
+ * subprocess of a few hundred MB, and the runner shares the machine with the
+ * operator's editor, simulators, Docker, and other agent sessions. When the
+ * 1-minute load already exceeds the core count the box is saturated (often
+ * swapping), and fanning out the full width tips it further — on a thrashing
+ * machine that makes EVERY tick slower, not faster. Scale the cap down as load
+ * climbs past the cores, but never below 1: the fleet must always make some
+ * progress. At or below capacity, run at the configured width. This is the
+ * same "wait for headroom before doing expensive work" discipline the repo's
+ * heavy-command lock applies machine-wide.
+ */
+export function effectiveConcurrency(configured: number, load1: number, cores: number): number {
+  if (!Number.isFinite(load1) || load1 <= 0 || cores <= 0) return configured;
+  if (load1 <= cores) return configured;
+  const scaled = Math.floor((configured * cores) / load1);
+  return Math.max(1, Math.min(configured, scaled));
 }
 
 function heartbeatPath(): string {
@@ -248,6 +270,10 @@ function waitForNextIteration(ms: number, signal?: AbortSignal): Promise<void> {
 export async function runLoop(opts: RunnerOptions): Promise<void> {
   const log = opts.log ?? ((l: string) => process.stdout.write(l + '\n'));
   const logError = opts.logError ?? ((l: string) => process.stderr.write(l + '\n'));
+  const loadSample = opts.loadSample ?? (() => ({ load1: os.loadavg()[0]!, cores: os.cpus().length }));
+  // Last announced slot cap, so a throttle/recovery is logged on transition
+  // only — never silently, and never once per iteration.
+  let lastCap = opts.concurrency;
   const inFlight = new Set<string>();
   // Fairness: slots are granted least-recently-ticked first. A stable
   // (alphabetical) scan with a concurrency break starves every stream ranked
@@ -300,8 +326,18 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
         }
       }
       due.sort((a, b) => (lastTickedAt.get(a) ?? 0) - (lastTickedAt.get(b) ?? 0));
+      // Load-aware cap: when the machine is oversubscribed, grant fewer slots
+      // this iteration (in-flight ticks finish; none are added past the cap).
+      const { load1, cores } = loadSample();
+      const cap = effectiveConcurrency(opts.concurrency, load1, cores);
+      if (cap !== lastCap) {
+        log(cap < opts.concurrency
+          ? `[run] load ${load1.toFixed(1)} on ${cores} cores — throttling parallel ticks ${opts.concurrency}→${cap}`
+          : `[run] load eased (${load1.toFixed(1)} on ${cores} cores) — parallel ticks back to ${cap}`);
+        lastCap = cap;
+      }
       for (const slug of due) {
-        if (inFlight.size >= opts.concurrency) break;
+        if (inFlight.size >= cap) break;
         inFlight.add(slug);
         lastTickedAt.set(slug, Date.now());
         let settled = false;

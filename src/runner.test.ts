@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { advanceClock, virtualNow } from './clock.js';
-import { expediteBackoffWakes, infraBackoffSlugs, runLoop } from './runner.js';
+import { effectiveConcurrency, expediteBackoffWakes, infraBackoffSlugs, runLoop } from './runner.js';
 import { arrive, createWorkstream, load } from './store.js';
 import type { InfrastructureWait } from './types.js';
 
@@ -202,4 +202,42 @@ test('the loop heartbeat lives beside the lock dir, never inside it', async () =
   await loop;
   assert.ok(fs.existsSync(path.join(home, '.runner.heartbeat')));
   assert.ok(!fs.existsSync(path.join(home, '.runner.lock', 'heartbeat')));
+});
+
+test('load-aware concurrency runs full width with headroom and throttles toward 1 when oversubscribed', () => {
+  // At or below core capacity: the configured width, untouched.
+  assert.equal(effectiveConcurrency(10, 7, 14), 10, 'half-loaded box keeps full width');
+  assert.equal(effectiveConcurrency(10, 14, 14), 10, 'a box at exactly capacity is not throttled');
+  // Oversubscribed: scale down inversely with the overload ratio.
+  assert.equal(effectiveConcurrency(10, 28, 14), 5, '2x oversubscribed halves the slots');
+  assert.equal(effectiveConcurrency(10, 127, 14), 1, 'a thrashing box (9x) drops to a single slot');
+  // Never below 1 — the fleet must always make some progress — and never above
+  // the configured cap, whatever the sampler reports.
+  assert.equal(effectiveConcurrency(10, 1_000_000, 14), 1, 'extreme overload still leaves one slot');
+  assert.equal(effectiveConcurrency(4, 1, 14), 4, 'a low load never inflates past the configured cap');
+  // Degenerate samples never throttle (fail open, not closed).
+  assert.equal(effectiveConcurrency(10, 0, 14), 10, 'a zero/absent load reading is not a throttle signal');
+  assert.equal(effectiveConcurrency(10, Number.NaN, 14), 10, 'an unreadable load average fails open');
+  assert.equal(effectiveConcurrency(10, 50, 0), 10, 'an unknown core count fails open');
+});
+
+test('the poll loop throttles its slot cap when the injected load sampler reports oversubscription', async () => {
+  const { runLoop } = await import('./runner.js');
+  const lines: string[] = [];
+  const abort = new AbortController();
+  const loop = runLoop({
+    intervalMs: 10,
+    concurrency: 10,
+    signal: abort.signal,
+    log: (l) => lines.push(l),
+    logError: () => {},
+    loadSample: () => ({ load1: 140, cores: 14 }),
+  });
+  await new Promise((r) => setTimeout(r, 60));
+  abort.abort();
+  await loop;
+  assert.ok(
+    lines.some((l) => /throttling parallel ticks 10→1\b/.test(l)),
+    `expected a throttle line, got: ${JSON.stringify(lines)}`,
+  );
 });
