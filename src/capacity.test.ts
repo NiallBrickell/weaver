@@ -57,6 +57,39 @@ test('SDKResultError.errors is inspected instead of becoming a generic model err
   assert.equal(tracker.classify(source)?.kind, 'usage_limit');
 });
 
+test('a usage limit with no provider reset backs off an hour, not the 15-minute default', () => {
+  // No resetsAt in the signal, so Weaver must guess the backoff. A plan-usage
+  // cap does not clear in 15 minutes — probing that often just re-parks the
+  // exhausted pool every cycle (the Fable-dead-for-days thrash).
+  const usage = new SdkFailureTracker();
+  observe(usage, {
+    type: 'result',
+    subtype: 'error_during_execution',
+    is_error: true,
+    errors: ["You're out of usage credits. Run /usage-credits to continue."],
+    terminal_reason: 'blocking_limit',
+  });
+  const usageWait = usage.classify(source)!;
+  assert.equal(usageWait.kind, 'usage_limit');
+  assert.equal(
+    usageWait.retryAt,
+    '2026-08-06T11:00:00.000Z',
+    'usage limit waits an hour when the provider supplies no reset time',
+  );
+
+  // A transient outage is NOT a usage cap: it keeps the short 15-minute default
+  // so genuinely brief blips recover fast.
+  const transient = new SdkFailureTracker();
+  observe(transient, { type: 'assistant', error: 'overloaded' });
+  const transientWait = transient.classify(source)!;
+  assert.equal(transientWait.kind, 'other');
+  assert.equal(
+    transientWait.retryAt,
+    '2026-08-06T10:15:00.000Z',
+    'a transient outage keeps the 15-minute default',
+  );
+});
+
 test('typed assistant errors distinguish auth, rate limits, and provider outages', () => {
   const cases = [
     ['authentication_failed', 'auth', 'reauthenticate'],

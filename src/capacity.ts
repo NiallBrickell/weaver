@@ -22,6 +22,15 @@ import type {
 } from './types.js';
 
 const DEFAULT_RETRY_MS = 15 * 60_000;
+// A plan-usage cap ('usage_limit'/'sdk_credit_exhausted') does not clear in the
+// 15-minute default — it resets on a billing schedule that can be hours or days
+// out. When the provider gives no explicit reset time, probing the exhausted
+// pool every 15 minutes just burns a pass and re-parks each cycle (observed: a
+// Fable primary dead for days re-thrashed the coordinator every 15 min while the
+// fallback carried the work). A longer default backoff cuts that churn; an
+// explicit `weaver capacity retry` remains the fast path once the operator knows
+// usage is back, and a provider-supplied resetAt still wins over this guess.
+const USAGE_LIMIT_RETRY_MS = 60 * 60_000;
 
 function isoFromEpoch(value: number | undefined): string | undefined {
   if (!value || !Number.isFinite(value)) return undefined;
@@ -192,7 +201,11 @@ export class SdkFailureTracker {
     const resetDelay = resetAt ? Date.parse(resetAt) - wallNow.getTime() : -1;
     // Provider resets are wall-clock facts; Weaver wakes use virtual time.
     // Preserve the delay between them instead of comparing unlike clocks.
-    const retryDelay = resetDelay > 0 ? resetDelay : DEFAULT_RETRY_MS;
+    const noResetDefault =
+      kind === 'usage_limit' || kind === 'sdk_credit_exhausted'
+        ? USAGE_LIMIT_RETRY_MS
+        : DEFAULT_RETRY_MS;
+    const retryDelay = resetDelay > 0 ? resetDelay : noResetDefault;
     const retryAt = new Date(now.getTime() + retryDelay).toISOString();
     return {
       kind,
