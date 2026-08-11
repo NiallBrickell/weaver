@@ -103,8 +103,35 @@ test('isRepoEgressAction matches gh pr create / merge and git push in run or ver
   assert.equal(isRepoEgressAction(action({ verify: 'git push --dry-run' })), true);
 });
 
+// REGRESSION (coordinator, PR #58): every real PR-opening action in production
+// is a WORKER-action — exec.run is undefined and the egress happens inside the
+// model run — so the ONLY durable signal is exec.verify, a PR/branch READBACK.
+// A narrow `gh pr create|merge` / `git push` match saw none of these, making
+// the gate a no-op on the exact incident shape. These are the literal verify
+// strings from the incident's actions, copied verbatim as fixtures.
+test('isRepoEgressAction fires on the incident PR/branch READBACK verifies', () => {
+  const prUrlReadback =
+    "gh pr list --repo erdoai/erdo --head erdo-420-voice-live-transfer --state open --json url --jq '.[0].url' | grep .";
+  const headOidReadback =
+    'test "$(gh pr list --repo erdoai/erdo --head niall/erdo-414-x --json headRefOid --jq \'.[0].headRefOid\')" = "6e84abc"';
+  const pushRemoteRefReadback =
+    'git -C /work/wt fetch origin && git -C /work/wt merge-base --is-ancestor 6e84abc origin/niall/erdo-414-x';
+
+  assert.equal(isRepoEgressAction(action({ verify: prUrlReadback })), true);
+  assert.equal(isRepoEgressAction(action({ verify: headOidReadback })), true);
+  assert.equal(isRepoEgressAction(action({ verify: pushRemoteRefReadback })), true);
+  // The matching push run (exec.run form) is still recognised.
+  assert.equal(
+    isRepoEgressAction(action({ run: 'git -C /work/wt push origin niall/erdo-414-x:niall/erdo-414-x' })),
+    true,
+  );
+});
+
 test('isRepoEgressAction ignores non-egress and non-action assignments', () => {
-  assert.equal(isRepoEgressAction(action({ run: 'gh pr view 42', verify: 'gh pr list' })), false);
+  // Plain non-egress readbacks: no PR inspection, no remote ref, no push.
+  assert.equal(isRepoEgressAction(action({ verify: 'go test ./...' })), false);
+  assert.equal(isRepoEgressAction(action({ verify: 'gh issue view 5' })), false);
+  assert.equal(isRepoEgressAction(action({ run: 'gh issue comment 5 --body hi', verify: 'test -f evidence.md' })), false);
   assert.equal(isRepoEgressAction(action(undefined)), false);
   const work = action({ run: 'git push' });
   work.kind = 'work';
