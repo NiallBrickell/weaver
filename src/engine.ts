@@ -19,7 +19,8 @@ import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import { pidIsLive } from './processLock.js';
-import type { WorkstreamDoc } from './types.js';
+import { isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
+import type { Assignment, WorkstreamDoc } from './types.js';
 
 function dueWakes(doc: WorkstreamDoc): typeof doc.wakes {
   const now = virtualNow().toISOString();
@@ -381,6 +382,64 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
 }
 
 /**
+ * REPO-EGRESS DECONFLICTION GATE — invariant 8 extended across the git-repo
+ * seam. Before an action performs an irreversible repo egress (opening a PR,
+ * merging a PR, pushing a branch), check whether another OPEN PR is
+ * concurrently editing the same files. A colliding open PR is a "conflicting
+ * arrival" on shared EXTERNAL state, exactly as a concurrent steer/reply is on
+ * internal state: at egress we fail CLOSED to the human to reconcile — never a
+ * second competing write into the same files.
+ *
+ * Returns true when it is safe to proceed (no live collision, or this is not a
+ * repo egress, or the detector is unavailable — the detector fails OPEN on
+ * tooling failure, see repoEgressCollisions), false when it HELD the action.
+ *
+ * "RECONCILE, DON'T RE-WRITE" (invariants 7 & 8): a held action is NOT failed
+ * and NOT counted as progress — it stays queued+approved. A later tick
+ * re-checks and proceeds automatically once the collision clears (the other PR
+ * merges/closes). This mirrors invariant 7's send posture (an unknown/blocked
+ * egress triggers reconciliation, never a blind second send) and invariant 8's
+ * write posture (a conflicting arrival forces reconciliation from newer state).
+ * The attention item is deduped on the action id + the sorted colliding PR
+ * numbers so it is raised once per distinct collision, not every tick.
+ */
+async function guardRepoEgress(slug: string, asg: Assignment): Promise<boolean> {
+  if (!isRepoEgressAction(asg) || !asg.exec) return true;
+  const collisions = await repoEgressCollisions(asg.exec.cwd);
+  if (collisions.length === 0) return true;
+  const prNumbers = [...new Set(collisions.map((c) => c.number))].sort((a, b) => a - b);
+  // Stable dedup token embedded in the summary: same action + same colliding PR
+  // set ⇒ one open card, re-checked (and re-raised) only when the set changes.
+  const dedupToken = `[repo-collision ${asg.id}:${prNumbers.join(',')}]`;
+  const detail = collisions
+    .map((c) => `#${c.number} (@${c.author}, ${c.headRefName}) — overlaps ${c.files.join(', ')}`)
+    .join('; ');
+  await arrive(slug, (d, event) => {
+    const hasOpen = d.attention.some(
+      (a) => a.kind === 'blocker' && a.status === 'open' && a.summary.includes(dedupToken),
+    );
+    if (hasOpen) return;
+    d.attention.push({
+      id: newId('att'),
+      kind: 'blocker',
+      summary:
+        `Repo-egress deconfliction held ${asg.id}: open PR(s) are editing the same files — ${detail}. ` +
+        `Reconcile before this action pushes/opens its own PR into the collision: rebase after the other PR merges, or coordinate with its author. ` +
+        `The action stays queued+approved and re-runs automatically once the collision clears. ${dedupToken}`,
+      refId: asg.id,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    });
+    event(
+      'action.repo_egress_held',
+      `${asg.id} held by repo-egress deconfliction — colliding open PR(s) ${prNumbers.map((n) => `#${n}`).join(', ')}`,
+      [asg.id],
+    );
+  });
+  return false;
+}
+
+/**
  * Deterministic execution of human-authored actions: when a human both
  * decided and spelled out the exact command (exec.run), the engine executes
  * it directly — no model in the loop to refuse, drift, or embellish. Exactly
@@ -389,12 +448,20 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
  * re-running). The result is submitted for coordinator review like any other
  * action, and only the verify readback can call the effect real.
  */
-async function executeHumanActions(slug: string): Promise<number> {
+async function executeHumanActions(slug: string, allowed?: Set<string>): Promise<number> {
   const doc = await load(slug);
   if (doc.workstream.status !== 'active') return 0;
   let executed = 0;
   const due = doc.assignments.filter(
-    (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.exec.approval,
+    (a) =>
+      a.kind === 'action' &&
+      a.state === 'queued' &&
+      a.exec?.run &&
+      a.exec.approval &&
+      // Actions the repo-egress deconfliction gate held are excluded here so
+      // this function's own re-derived due list cannot execute what the gate
+      // blocked in tickLocked.
+      (!allowed || allowed.has(a.id)),
   );
   for (const asg of due) {
     // The command is an external act. Pause is re-read at the last async
@@ -725,11 +792,18 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       break;
     }
 
-    // Human-authored commands: engine executes, then readback judges.
-    const engineActs = (await load(slug)).assignments
-      .filter((a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.exec.approval)
-      .map((a) => a.id);
-    const engineActCount = await executeHumanActions(slug);
+    // Human-authored commands: engine executes, then readback judges. Repo
+    // egresses (push/merge/PR-open) pass the deconfliction gate first — a live
+    // colliding open PR holds the action for the human rather than executing a
+    // second competing write into the same files (invariant 8 across the seam).
+    const engineActCandidates = (await load(slug)).assignments.filter(
+      (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.exec.approval,
+    );
+    const engineActs: string[] = [];
+    for (const a of engineActCandidates) {
+      if (await guardRepoEgress(slug, a)) engineActs.push(a.id);
+    }
+    const engineActCount = engineActs.length ? await executeHumanActions(slug, new Set(engineActs)) : 0;
     if (engineActCount > 0) {
       for (const id of engineActs.slice(0, engineActCount)) {
         const ok = await verifyAction(slug, id);
@@ -775,6 +849,13 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
           if (beforeWorkerStatus === 'paused') report.skipped = 'workstream became paused during this tick';
           break cycles;
         }
+        // Repo-egress deconfliction gate: hold an action worker whose egress
+        // (push/merge/PR-open) would collide with another OPEN PR editing the
+        // same files, rather than launching a second competing write. Held
+        // actions stay queued+approved and re-run automatically once the
+        // collision clears; skip past this id without counting it as progress.
+        const runnableAsg = (await load(slug)).assignments.find((a) => a.id === id);
+        if (runnableAsg && !(await guardRepoEgress(slug, runnableAsg))) continue;
         process.stderr.write(`[tick] running worker for ${id}…\n`);
         const started = await runWorker(slug, id);
         if (!started) break cycles;
