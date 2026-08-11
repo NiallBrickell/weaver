@@ -33,3 +33,8 @@ An `action` assignment is reserved for one *irreversible* egress to the outside 
 A worker that dies mid-action is never blindly re-run — re-inspecting the world is always safe; re-doing the act is not. The crashed attempt is failed, the readback runs, and the truth (did the effect land?) comes from the world itself.
 
 Actions are designed idempotent: the briefing names a stable external key (a branch name, a file path, an external ID) so that even a deliberate re-run cannot duplicate the effect.
+
+## Repo deconfliction
+
+Weaver conflict-checks its own state on every write; the same discipline now extends across the git-repo seam. Before an action does an irreversible repo egress (`gh pr create`, `gh pr merge`, `git push`), Weaver checks whether another *open* PR is changing any of the same files. If one is, the action is held — a single card tells you which PR (and whose), and the exact overlapping paths — and it re-runs automatically once that PR merges or closes. A colliding open PR is a conflicting arrival on shared external state, so Weaver reconciles rather than opening a second competing write into the same files. When there is no collision the action ships autonomously as usual, and if the check itself can't run (no `gh`, not a repo) it never blocks work.
+
