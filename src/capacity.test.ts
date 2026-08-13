@@ -3,12 +3,17 @@ import assert from 'node:assert/strict';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import {
   capacityAttentionThreshold,
+  capacityBackoffFor,
+  capacityPresentation,
   classifyCapacityFailure,
+  clearCapacityBackoff,
   infrastructureWaitSummary,
+  providerCapacityHeadline,
   recordCapacityBackoff,
   retryCapacityNow,
   SdkFailureTracker,
 } from './capacity.js';
+import { coordinatorCapacityTarget, workerCapacityTarget } from './modelConfig.js';
 import type { WorkstreamDoc } from './types.js';
 
 function observe(tracker: SdkFailureTracker, message: unknown): void {
@@ -19,6 +24,8 @@ const source = {
   source: 'coordinator' as const,
   sourceId: 'pass_test',
   model: 'claude-fable-5',
+  executor: 'local-sdk',
+  provider: 'anthropic',
   now: new Date('2026-08-06T10:00:00.000Z'),
   wallNow: new Date('2026-08-06T10:00:00.000Z'),
 };
@@ -126,6 +133,21 @@ test('allowed warnings and ordinary model failures are not infrastructure', () =
   const warning = new SdkFailureTracker();
   observe(warning, { type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning' } });
   assert.equal(warning.classify(source), null);
+  assert.deepEqual(warning.capacityObservations(source), [{
+    executor: 'local-sdk',
+    provider: 'anthropic',
+    model: 'claude-fable-5',
+    window: 'unspecified',
+    status: 'allowed_warning',
+    observedAt: source.wallNow.toISOString(),
+  }]);
+
+  const wrongScale = new SdkFailureTracker();
+  observe(wrongScale, {
+    type: 'rate_limit_event',
+    rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour', utilization: 82 },
+  });
+  assert.deepEqual(wrongScale.capacityObservations(source), []);
 
   const ordinary = new SdkFailureTracker();
   observe(ordinary, {
@@ -186,7 +208,7 @@ test('legacy SDK-credit state continues the same usage-limit backoff lineage', (
   } as unknown as WorkstreamDoc;
 
   assert.equal(recordCapacityBackoff(doc, wait).consecutiveBackoffs, 5);
-  assert.equal(doc.capacity!.byModel['claude-fable-5']!.wait.kind, 'usage_limit');
+  assert.equal(capacityBackoffFor(doc, coordinatorCapacityTarget('claude-fable-5'))!.wait.kind, 'usage_limit');
 });
 
 test('typed capacity state preserves independent models and category thresholds', () => {
@@ -201,12 +223,37 @@ test('typed capacity state preserves independent models and category thresholds'
 
   assert.equal(first.consecutiveBackoffs, 1);
   assert.equal(second.consecutiveBackoffs, 2);
-  assert.deepEqual(Object.keys(doc.capacity!.byModel).sort(), ['claude-fable-5', 'sonnet']);
+  assert.deepEqual(
+    Object.values(doc.capacity!.byModel).map((entry) => entry.wait.model).sort(),
+    ['claude-fable-5', 'sonnet'],
+  );
   assert.equal(capacityAttentionThreshold('usage_limit'), 12);
   assert.equal(capacityAttentionThreshold('sdk_credit_exhausted'), 12);
   assert.equal(capacityAttentionThreshold('auth'), 1);
   assert.equal(capacityAttentionThreshold('session_limit'), 12);
   assert.equal(capacityAttentionThreshold('rate_limit'), 12);
+});
+
+test('equal model labels on different executors remain independent pools', () => {
+  const doc = { capacity: null } as WorkstreamDoc;
+  const tracker = new SdkFailureTracker();
+  observe(tracker, { type: 'assistant', error: 'rate_limit' });
+  const local = tracker.classify({ ...source, source: 'worker', model: 'sonnet' })!;
+  const remote = {
+    ...local,
+    sourceId: 'run_remote',
+    executor: 'openhands',
+    provider: 'openrouter',
+  };
+  recordCapacityBackoff(doc, local);
+  recordCapacityBackoff(doc, remote);
+  assert.equal(Object.keys(doc.capacity!.byModel).length, 2);
+
+  clearCapacityBackoff(doc, workerCapacityTarget('sonnet', 'local-sdk'));
+  assert.equal(Object.keys(doc.capacity!.byModel).length, 1);
+  assert.equal(Object.values(doc.capacity!.byModel)[0]!.wait.provider, 'openrouter');
+  assert.match(infrastructureWaitSummary(remote), /^OpenRouter is rate limited/);
+  assert.doesNotMatch(infrastructureWaitSummary(remote), /Claude/);
 });
 
 test('operator summaries expose supported recovery without account cycling', () => {
@@ -218,6 +265,46 @@ test('operator summaries expose supported recovery without account cycling', () 
   assert.match(summary, /weaver capacity retry <slug>/);
   assert.match(summary, /never changes billing/);
   assert.doesNotMatch(summary, /switch|rotate|pool|mint/i);
+});
+
+test('fresh provider utilization becomes honest remaining headroom and then expires', () => {
+  const now = new Date('2026-08-06T10:00:00.000Z');
+  const observation = {
+    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+    window: 'five_hour', status: 'allowed_warning' as const, utilization: 0.82,
+    observedAt: now.toISOString(), resetAt: '2026-08-06T12:00:00.000Z',
+  };
+  assert.equal(providerCapacityHeadline([observation], now), '⚠ Claude 5h 18% left · resets in 2h');
+  assert.equal(providerCapacityHeadline([
+    observation,
+    { ...observation, status: 'allowed', utilization: 0.2, observedAt: '2026-08-06T10:01:00.000Z' },
+  ], new Date('2026-08-06T10:02:00.000Z')), 'Claude 5h 80% left · resets in 2h');
+  assert.equal(providerCapacityHeadline([observation], new Date('2026-08-06T10:31:00.000Z')), undefined);
+});
+
+test('capacity presentation distinguishes fallback degradation from a real block', () => {
+  const previousFallback = process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
+  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = 'claude-opus-5';
+  try {
+    const tracker = new SdkFailureTracker();
+    observe(tracker, { type: 'assistant', error: 'rate_limit' });
+    const primary = tracker.classify(source)!;
+    const doc = {
+      assignments: [], capacity: null, workstream: { slug: 'view' },
+      steering: [], managerDirections: [],
+      wakes: [{ status: 'pending', infrastructure: primary, condition: { type: 'time', dueAtVirtual: primary.retryAt } }],
+    } as unknown as WorkstreamDoc;
+    recordCapacityBackoff(doc, primary);
+    const degraded = capacityPresentation(doc, source.now.toISOString());
+    assert.equal(degraded.blocking, undefined);
+    assert.match(degraded.details[0]!, /fallback claude-opus-5 available/);
+
+    recordCapacityBackoff(doc, { ...primary, sourceId: 'pass_fallback', model: 'claude-opus-5' });
+    assert.match(capacityPresentation(doc, source.now.toISOString()).blocking!.summary, /^coordinator /);
+  } finally {
+    if (previousFallback === undefined) delete process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
+    else process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = previousFallback;
+  }
 });
 
 test('an explicit retry makes typed waits due without claiming recovery', () => {

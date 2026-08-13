@@ -3,7 +3,7 @@
  * raw SDK/provider errors. No model call or live credential is involved.
  */
 
-import { test } from 'node:test';
+import { afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { renderStatus } from './status.js';
@@ -22,6 +22,17 @@ const NOW = '2026-08-06T12:00:00.000Z';
 // (this suite broke at exactly 2026-08-06T12:15Z).
 const FUTURE_1 = new Date(Date.now() + 60 * 60_000).toISOString();
 const FUTURE_2 = new Date(Date.now() + 90 * 60_000).toISOString();
+let previousFallback: string | undefined;
+
+beforeEach(() => {
+  previousFallback = process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
+  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = 'claude-fable-5';
+});
+
+afterEach(() => {
+  if (previousFallback === undefined) delete process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
+  else process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = previousFallback;
+});
 
 function infrastructure(
   kind: CapacityCategory,
@@ -34,6 +45,8 @@ function infrastructure(
     source: 'coordinator',
     sourceId: 'pass_capacity',
     model: 'claude-fable-5',
+    executor: 'local-sdk',
+    provider: 'anthropic',
     detectedAt: NOW,
     retryAt: FUTURE_1,
     ...overrides,
@@ -119,9 +132,10 @@ test('legacy credit state renders the current plan-usage recovery contract', () 
   };
   const status = renderStatus(doc([infrastructureWake('wake_credit', credit), ordinary]));
 
-  assert.match(status, /WAITING — Claude plan usage is limited; work is safely parked/);
+  assert.match(status, /WAITING — coordinator Claude claude-fable-5 usage limited/);
+  assert.match(status, /Claude plan usage is limited for claude-fable-5; dependent work is parked/);
   assert.match(status, /Check `\/usage` in Claude Code/);
-  assert.match(status, /explicitly enable usage credits in Claude Settings > Usage/);
+  assert.match(status, /enable usage credits in Claude Settings > Usage/);
   assert.match(status, /weaver capacity retry capacity-status/);
   assert.match(status, /wake at 2026-08-07T09:00: review the adopted evidence/);
   assert.match(status, /## Needs you\n  \(nothing — the workstream can proceed without you\)/);
@@ -131,7 +145,8 @@ test('authentication failure gives the manual Claude login recovery and no token
   const auth = infrastructure('auth', 'reauthenticate');
   const status = renderStatus(doc([infrastructureWake('wake_auth', auth)]));
 
-  assert.match(status, /WAITING — Claude authentication needs attention; work is safely parked/);
+  assert.match(status, /WAITING — coordinator Claude claude-fable-5 login required/);
+  assert.match(status, /Claude authentication needs attention for claude-fable-5/);
   assert.match(status, /Run `claude auth login` in a terminal/);
   assert.match(status, /Weaver never accepts credentials or tokens/);
   assert.doesNotMatch(status, /switch accounts|rotate|mint|pool/i);
@@ -149,8 +164,8 @@ test('duplicate infrastructure wakes collapse and raw provider/account values ne
   ]));
 
   assert.equal(occurrences(status, 'Claude plan usage is limited'), 1);
-  assert.equal(occurrences(status, 'infrastructure retry scheduled at'), 1);
-  assert.match(status, new RegExp(`infrastructure retry scheduled at ${FUTURE_1.slice(0, 16).replace(/[-:]/g, '\\$&')}`));
+  assert.equal(occurrences(status, 'provider retry scheduled at'), 1);
+  assert.match(status, new RegExp(`provider retry scheduled at ${FUTURE_1.slice(0, 16).replace(/[-:]/g, '\\$&')}`));
   assert.doesNotMatch(status, /secret-token-value|other@example\.com|RAW PROVIDER ERROR/);
 });
 
@@ -180,15 +195,15 @@ test('an overdue capacity wait stops claiming the workstream is parked while wor
   assert.doesNotMatch(status, /WAITING —/);
   assert.doesNotMatch(status, /work is safely parked/);
   assert.match(status, /working: asg_live "Census the eight repos"/);
-  assert.match(status, /infrastructure retry is due now/);
+  assert.doesNotMatch(status, /claude-opus-5|retry eligible now/);
 });
 
 test('a wait whose retry is still ahead is reported as a live block', () => {
   const rate = infrastructure('rate_limit', 'automatic_retry', { retryAt: FUTURE_1 });
   const status = renderStatus(doc([infrastructureWake('wake_rate', rate)]));
 
-  assert.match(status, /WAITING — Claude is rate limited; work is safely parked/);
-  assert.match(status, /infrastructure retry scheduled at/);
+  assert.match(status, /WAITING — coordinator Claude claude-fable-5 rate limited/);
+  assert.match(status, /provider retry scheduled at/);
 });
 
 test('a successful probe exposes its due reconciliation after clearing capacity state', () => {
@@ -203,7 +218,7 @@ test('a successful probe exposes its due reconciliation after clearing capacity 
   recovered.capacity = null;
   const status = renderStatus(recovered);
 
-  assert.match(status, /READY — Claude capacity recovered; reconciliation is due now/);
+  assert.match(status, /READY — provider retry reconciliation is due now/);
   assert.doesNotMatch(status, /workstream is dormant/);
   assert.doesNotMatch(status, /RAW PROVIDER ERROR/);
 });

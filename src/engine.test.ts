@@ -361,6 +361,8 @@ test('a typed worker-model wait parks assignments without parsing prose', async 
         source: 'worker',
         sourceId: 'run_capacity',
         model: 'sonnet',
+        executor: 'local-sdk',
+        provider: 'anthropic',
         detectedAt: virtualNow().toISOString(),
         retryAt,
       },

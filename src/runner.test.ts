@@ -40,6 +40,8 @@ function wait(sourceId = 'pass_wait'): InfrastructureWait {
     source: 'coordinator',
     sourceId,
     model: 'claude-fable-5',
+    executor: 'local-sdk',
+    provider: 'anthropic',
     detectedAt: virtualNow().toISOString(),
     retryAt: new Date(virtualNow().getTime() + 60_000).toISOString(),
   };
@@ -86,6 +88,19 @@ test('runner discovers only pending typed infrastructure waits, never magic pros
     setCapacity(d, [infrastructure]);
   });
   assert.deepEqual(await infraBackoffSlugs(), ['typed']);
+});
+
+test('Claude credential changes never probe a non-Claude executor wait', async () => {
+  await make('kimi-wait');
+  const infrastructure: InfrastructureWait = {
+    ...wait('run_kimi'),
+    source: 'worker',
+    model: 'openrouter/moonshotai/kimi-k3',
+    executor: 'openhands',
+    provider: 'openrouter',
+  };
+  await arrive('kimi-wait', (d) => setCapacity(d, [infrastructure]));
+  assert.deepEqual(await infraBackoffSlugs(), []);
 });
 
 test('successful probe expedition uses virtual time and unblocks worker attempts', async () => {

@@ -158,7 +158,7 @@ test('typed provider capacity changes survive eventless writes', async () => {
   });
 
   const report = (await preparePrintout('capacity')).text;
-  assert.match(report, /Provider capacity: sonnet rate_limit, retry 2026-08-06T09:15:00\.000Z/);
+  assert.match(report, /Provider backoffs: unknown provider via legacy executor · sonnet rate_limit, retry 2026-08-06T09:15:00\.000Z/);
   assert.match(report, /capacity: \/ null → \{"state":"backoff"/);
 });
 

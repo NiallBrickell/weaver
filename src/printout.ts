@@ -208,7 +208,7 @@ function currentBoundary(doc: WorkstreamDoc): string[] {
       `- Typed completion evidence IDs (validated at conclusion): ${doc.workstream.conclusion.evidenceIds.join(', ')}`,
     ] : []),
     `- Diagnostic activity: ${doc.spend.coordinatorPasses} coordinator passes · $${doc.spend.totalCostUsd.toFixed(3)} SDK estimate · ${doc.spend.humanInterventions ?? 0} human interventions`,
-    `- Provider capacity: ${doc.capacity ? Object.entries(doc.capacity.byModel).map(([model, entry]) => `${model} ${entry.wait.kind}, retry ${entry.wait.retryAt}`).join('; ') : 'available'}`,
+    `- Provider backoffs: ${doc.capacity ? Object.values(doc.capacity.byModel).map((entry) => `${entry.wait.provider ?? 'unknown provider'} via ${entry.wait.executor ?? 'legacy executor'} · ${entry.wait.model} ${entry.wait.kind}, retry ${entry.wait.retryAt}`).join('; ') : 'none recorded'}`,
     `- Standing course: ${standing.length ? standing.map((decision) => `${decision.id} “${flat(decision.title)}”`).join('; ') : 'none recorded'}`,
     `- Open needs-you items: ${open.length ? open.map((item) => `${item.id} ${flat(item.summary)}`).join('; ') : 'none'}`,
     `- Work still live: ${live.length ? live.map((assignment) => `${assignment.id} [${assignment.state}]`).join(', ') : 'none'}`,

@@ -482,10 +482,34 @@ test('compact watch rows show durable elapsed activity, never billing/activity c
       dependsOn: [], state: 'running', attempts: [{ runId: 'run_compact', model: 'sonnet', startedAt: new Date(Date.now() - 12 * 60_000).toISOString() }],
       adoption: { state: 'none' }, createdAtVirtual: new Date().toISOString(),
     });
+    const staleWait = {
+      kind: 'usage_limit' as const,
+      recovery: 'wait_or_enable_usage_credits' as const,
+      source: 'coordinator' as const,
+      sourceId: 'pass_old_capacity',
+      model: 'claude-fable-5',
+      executor: 'local-sdk',
+      provider: 'anthropic',
+      detectedAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+      retryAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+    };
+    doc.capacity = {
+      state: 'backoff',
+      byModel: {
+        'local-sdk:anthropic:claude-fable-5': {
+          wait: staleWait,
+          consecutiveBackoffs: 1,
+          firstBackoffAtVirtual: staleWait.detectedAt,
+          lastBackoffAtVirtual: staleWait.detectedAt,
+        },
+      },
+    };
   });
 
   const view = await viewOf('compact-row');
   assert.match(view.row, /WORKING/);
   assert.match(view.row, /12m in flight · decision 1h ago/);
   assert.doesNotMatch(view.row, /\$|passes|interventions|you \d+×|turns|▰|▱/);
+  assert.doesNotMatch(view.row, /WAITING/);
+  assert.ok(!view.details.some((line) => line.includes('pass_old_capacity')));
 });
