@@ -174,6 +174,13 @@ would invalidate the bakeoff.
 - Codex's official TypeScript SDK exposes fresh threads, streaming usage, sandbox mode, approval
   policy, and remote MCP configuration, but not a per-tool authority callback. The eval adapter uses
   a required bearer-authenticated MCP bridge and rejects supervised actions.
+- Codex MCP tools default to prompted per-tool approval (`default_tools_approval_mode` is one of
+  `auto`/`prompt`/`writes`/`approve`), and a headless thread under `approvalPolicy: 'never'`
+  auto-cancels each approval request rather than granting it. The symptom is a run that completes
+  cleanly while every bridge call dies as "user cancelled MCP tool call" — the model even reports
+  its submission was refused. The weaver bridge sets `default_tools_approval_mode: 'auto'` on its
+  server entry, which is safe precisely because the bridge only exposes Weaver's own submission
+  surface, never a widened authority.
 - The Codex TypeScript SDK also exposes neither the other candidates' turn cap nor a distinct system
   prompt field. Its worker contract is appended to user input and the 40-minute Weaver wall is the
   outer bound; efficiency results are not normalized until that limitation is resolved or reported

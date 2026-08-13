@@ -145,6 +145,11 @@ export class CodexEvalExecutor implements EvalExecutor {
               required: true,
               enabled: true,
               enabled_tools: ['append_section', 'submit_result'],
+              // Codex MCP tools default to prompted approval, and a headless
+              // run under approvalPolicy 'never' auto-cancels every approval
+              // request ("user cancelled MCP tool call") — so without 'auto'
+              // the bridge is reachable but submit_result can never land.
+              default_tools_approval_mode: 'auto',
             },
           },
         },
