@@ -847,7 +847,34 @@ test('pilot alive → a WORKER action auto-approves (live per-command supervisio
     const asg = (await load('pilot-ok-ws')).assignments.find((a) => a.id === 'asg_act')!;
     assert.equal(asg.state, 'queued');
     assert.equal(asg.exec!.approval!.by, 'pilot');
-    assert.equal(requests.length, 0); // no plan pre-eval — supervision happens per tool call
+    // The ACT is judged too, not only pilot's liveness: per-command
+    // supervision alone let an npm release through, because the operator's
+    // own Claude Code settings pass individual commands straight through
+    // before pilot's ruleset runs, and the publishing was done by CI off a
+    // pushed tag.
+    assert.equal(requests.length, 1);
+  });
+});
+
+test('a WORKER action pilot refuses on its objective stays gated for the human', async () => {
+  await withPilotStub(() => 'deny', async () => {
+    await makeActionWorkstream('pilot-act-deny-ws', {
+      ...GATED_WITH_CMDS,
+      objective: 'Publish @acme/ui@1.2.3 to npm by pushing the release tag',
+      exec: { ...GATED_WITH_CMDS.exec, cwd: process.env.WEAVER_HOME! },
+      dependsOn: ['asg_hold'],
+    });
+    await arrive('pilot-act-deny-ws', (d) => {
+      d.assignments.push({
+        id: 'asg_hold', objective: 'hold', briefing: 'n/a', kind: 'work',
+        acceptanceCriteria: ['n/a'], dependsOn: [], state: 'awaiting_review',
+        attempts: [], adoption: { state: 'proposed' }, createdAtVirtual: virtualNow().toISOString(),
+      });
+    });
+    await tick('pilot-act-deny-ws', { maxPasses: 0 });
+    const asg = (await load('pilot-act-deny-ws')).assignments.find((a) => a.id === 'asg_act')!;
+    assert.equal(asg.state, 'gated');
+    assert.equal(asg.exec!.approval, undefined);
   });
 });
 
