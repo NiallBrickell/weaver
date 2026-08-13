@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { collisionReconciled, detectRepoCollisions, isRepoEgressAction, type OpenPr } from './deconflict.js';
+import { collisionKey, collisionReconciled, detectRepoCollisions, isRepoEgressAction, type OpenPr } from './deconflict.js';
 import type { Assignment } from './types.js';
 
 // The pure detector is the proof of the repo-egress deconfliction invariant
@@ -164,4 +164,23 @@ test('collisionReconciled honors a resolved card for the exact collision set onl
   );
   // No attention at all → holds.
   assert.equal(collisionReconciled([], token), false);
+});
+
+test('a new colliding PR over already-contended files is not a new question', () => {
+  const files = ['backend/voice/service_widget.go'];
+  // #2019 alone, then #2035 joins it over the same file: same key, so a human
+  // who reconciled once is not asked again. Keying on PR numbers asked three
+  // times in one evening.
+  assert.equal(collisionKey('asg_1', files), collisionKey('asg_1', files));
+  const resolved = [{ status: 'resolved', summary: `reconciled ${collisionKey('asg_1', files)}` }];
+  assert.equal(collisionReconciled(resolved, collisionKey('asg_1', files)), true);
+
+  // A collision pulling in a file nobody has ruled on IS new, and still holds.
+  const wider = [...files, 'backend/mcp/tools.go'];
+  assert.equal(collisionReconciled(resolved, collisionKey('asg_1', wider)), false);
+
+  // Order and duplicates never change the identity of the same file set.
+  assert.equal(collisionKey('asg_1', ['b.go', 'a.go', 'a.go']), collisionKey('asg_1', ['a.go', 'b.go']));
+  // And a different action asking about the same files is its own question.
+  assert.notEqual(collisionKey('asg_2', files), collisionKey('asg_1', files));
 });

@@ -26,7 +26,7 @@ import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import { pidIsLive } from './processLock.js';
-import { collisionReconciled, isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
+import { collisionKey, collisionReconciled, isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
 import { capacityBackoffFor } from './capacity.js';
 import { coordinatorCapacityTarget, workerCapacityTarget } from './modelConfig.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
@@ -438,19 +438,28 @@ async function guardRepoEgress(slug: string, asg: Assignment): Promise<boolean> 
   const collisions = await repoEgressCollisions(asg.exec.cwd);
   if (collisions.length === 0) return true;
   const prNumbers = [...new Set(collisions.map((c) => c.number))].sort((a, b) => a - b);
-  // Stable dedup token embedded in the summary: same action + same colliding PR
-  // set ⇒ one open card, re-checked (and re-raised) only when the set changes.
-  const dedupToken = `[repo-collision ${asg.id}:${prNumbers.join(',')}]`;
+  // Keyed on the contended FILES, not the PR numbers: see collisionKey.
+  const dedupToken = collisionKey(asg.id, collisions.flatMap((c) => c.files));
   const doc = await load(slug);
   if (collisionReconciled(doc.attention, dedupToken)) return true;
   const detail = collisions
     .map((c) => `#${c.number} (@${c.author}, ${c.headRefName}) — overlaps ${c.files.join(', ')}`)
     .join('; ');
   await arrive(slug, (d, event) => {
-    const hasOpen = d.attention.some(
-      (a) => a.kind === 'blocker' && a.status === 'open' && a.summary.includes(dedupToken),
+    // One open card per held action, whatever the PR set does. A card already
+    // asking about this action is the same question, so refresh its text rather
+    // than stacking a second one the human has to answer twice.
+    const existing = d.attention.find(
+      (a) => a.kind === 'blocker' && a.status === 'open' && a.refId === asg.id &&
+        a.summary.includes('[repo-collision '),
     );
-    if (hasOpen) return;
+    if (existing) {
+      existing.summary =
+        `Repo-egress deconfliction held ${asg.id}: open PR(s) are editing the same files — ${detail}. ` +
+        `Reconcile before this action pushes/opens its own PR into the collision: rebase after the other PR merges, or coordinate with its author. ` +
+        `The action stays queued+approved and re-runs automatically once the collision clears. ${dedupToken}`;
+      return;
+    }
     d.attention.push({
       id: newId('att'),
       kind: 'blocker',
