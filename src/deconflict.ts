@@ -1,29 +1,30 @@
 /**
- * Repo-egress deconfliction: extend the revision-checked write discipline
- * (kernel invariant 8) across the git-repo seam.
+ * Repo-egress deconfliction: tell a workstream who else is editing the files
+ * it is about to push.
  *
- * Weaver conflict-checks its OWN state rigorously — `mutate()` fails a write
- * that lost to a concurrent arrival and forces reconciliation from newer
- * state. That discipline historically STOPPED at the git-repo boundary: when a
- * worker/action opened a PR or pushed into a shared external repo, nothing
- * checked whether another OPEN PR was concurrently editing the same files. A
- * real incident followed — the roadmap-intake routine opened PRs (#2010/#2012/
- * #2014) into files a teammate's open PR (#1993) was actively editing.
+ * The original worry was sound — the roadmap-intake routine opened PRs
+ * (#2010/#2012/#2014) into files a teammate's open PR (#1993) was actively
+ * editing, and nobody knew until review. The response was to fail closed at
+ * egress and make a human reconcile first. That was the wrong lever, for two
+ * reasons that only showed up in use.
  *
- * WHAT THAT DOES AND DOES NOT JUSTIFY. Two branches editing the same file is
- * ordinary parallel development: they are separate refs, git merges them, and
- * a real textual conflict surfaces at merge time where a rebase settles it.
- * Holding egress on that asks a human to pre-approve something git already
- * handles — and it asked constantly, because a busy repo always has PRs
- * touching shared files. Five held actions produced seven cards in one evening
- * on overlaps that were, when traced, hundreds of lines apart in the same file.
+ * First, two branches editing one file is ordinary parallel development: they
+ * are separate refs, git merges them, and a real textual conflict surfaces at
+ * merge time where a rebase settles it. Holding egress asks a person to
+ * pre-approve what git already handles, constantly — a busy repo always has
+ * PRs touching shared files, and five held actions produced seven cards in one
+ * evening over overlaps that were hundreds of lines apart in the same file.
  *
- * The lost update is SAME-BRANCH contention: two actions pushing the same head
- * ref, where one force-push discards the other's commits with nothing left to
- * merge. THAT is the git analogue of invariant 8, and it still fails closed to
- * the human. Cross-branch overlap is now reported instead of blocked — recorded
- * on the workstream so the author and reviewer can see who else is in the file,
- * which is what the original incident actually needed.
+ * Second, the failure this could actually prevent — a second writer discarding
+ * our commits — is not visible here. An open PR on our own head ref is OUR
+ * PR, which is what pushing to an existing PR looks like; and a genuine
+ * concurrent push is caught by `git push --force-with-lease`, which aborts
+ * when the remote has moved. A gate that cannot see the danger it was built
+ * for, while blocking the safe case constantly, is worse than no gate.
+ *
+ * So this reports and never blocks: the collisions are recorded on the
+ * workstream, where the author and the reviewer can see who else is in these
+ * files. That is what the incident actually needed — knowledge, not a lock.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -47,17 +48,6 @@ export interface Collision {
   author: string;
   /** The file paths present in BOTH our change and the colliding PR. */
   files: string[];
-  /**
-   * True when the other PR is on OUR head ref — a second writer on the same
-   * branch, where a push discards commits instead of merging them. Only this
-   * blocks; cross-branch overlap is reported.
-   */
-  sameBranch: boolean;
-}
-
-/** Contention that can LOSE work: someone else pushing our own head ref. */
-export function blockingCollisions(collisions: readonly Collision[]): Collision[] {
-  return collisions.filter((c) => c.sameBranch);
 }
 
 /**
@@ -75,6 +65,9 @@ export function detectRepoCollisions(
   const ours = new Set(ourFiles);
   const collisions: Collision[] = [];
   for (const pr of openPRs) {
+    // A PR on our own head ref is OUR PR — pushing to an existing PR is the
+    // normal case, not a competing arrival.
+    if (pr.headRefName === ourHead) continue;
     const intersecting = pr.files.filter((f) => ours.has(f));
     if (intersecting.length === 0) continue;
     collisions.push({
@@ -82,10 +75,6 @@ export function detectRepoCollisions(
       headRefName: pr.headRefName,
       author: pr.author,
       files: intersecting,
-      // Our own ref carrying somebody else's open PR means two writers on one
-      // branch — the only shape here where a push destroys work rather than
-      // queueing a merge.
-      sameBranch: pr.headRefName === ourHead,
     });
   }
   return collisions;
@@ -241,17 +230,3 @@ export function collisionKey(asgId: string, files: readonly string[]): string {
   return `[repo-collision ${asgId}:${[...new Set(files)].sort().join(',')}]`;
 }
 
-/**
- * True when a human has already reconciled this action's contention over these
- * files — the gate fails closed TO THE HUMAN, so a resolved attention card
- * carrying the same key is the reconciliation record the hold asked for.
- * Re-holding on it would re-ask an answered question every tick, forever.
- * A collision that pulls in a file outside the reconciled set mints a different
- * key and still holds.
- */
-export function collisionReconciled(
-  attention: ReadonlyArray<{ status: string; summary: string }>,
-  dedupToken: string,
-): boolean {
-  return attention.some((a) => a.status === 'resolved' && a.summary.includes(dedupToken));
-}
