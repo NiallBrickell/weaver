@@ -465,3 +465,17 @@ test('status/watch/inspect render managed-by/manages as flat one-liners, never a
   assert.match(midStatus, /Managed by: top-mgr/);
   assert.match(midStatus, /Manages: 1 workstream\(s\): leaf-child/);
 });
+
+test('compact watch rows show organizational state, never activity telemetry as progress', async () => {
+  await makeWorkstream('compact-row');
+  const before = await load('compact-row');
+  await mutate('compact-row', before.revision, (doc) => {
+    doc.spend.totalCostUsd = 12.34;
+    doc.spend.coordinatorPasses = 7;
+    doc.spend.humanInterventions = 3;
+  });
+
+  const view = await viewOf('compact-row');
+  assert.match(view.row, /IDLE/);
+  assert.doesNotMatch(view.row, /\$|passes|interventions|you \d+×|▰|▱/);
+});
