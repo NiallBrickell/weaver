@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { collisionKey, collisionReconciled, detectRepoCollisions, isRepoEgressAction, type OpenPr } from './deconflict.js';
+import { blockingCollisions, collisionKey, collisionReconciled, detectRepoCollisions, isRepoEgressAction, type OpenPr } from './deconflict.js';
 import type { Assignment } from './types.js';
 
 // The pure detector is the proof of the repo-egress deconfliction invariant
@@ -27,16 +27,22 @@ test('overlapping open PR is detected with exactly the intersecting files', () =
     headRefName: 'teammate/theirs',
     author: 'teammate',
     files: ['src/b.ts'],
+    sameBranch: false, // a teammate's own branch — reported, never blocking
   });
 });
 
-test('the action own head branch is excluded even when its files overlap', () => {
+test('a PR on the action own head branch is the one collision that blocks', () => {
+  // This used to be excluded as "not a competing arrival". It is the opposite:
+  // a second open PR on our own ref means a push discards commits instead of
+  // merging them — the only shape here that can lose work.
   const collisions = detectRepoCollisions(
     'feat/mine',
     ['src/a.ts'],
     [pr(2010, 'feat/mine', 'weaver-bot', ['src/a.ts'])],
   );
-  assert.deepEqual(collisions, []);
+  assert.equal(collisions.length, 1);
+  assert.equal(collisions[0]!.sameBranch, true);
+  assert.deepEqual(blockingCollisions(collisions).map((c) => c.number), [2010]);
 });
 
 test('a non-overlapping open PR is ignored', () => {
@@ -62,20 +68,24 @@ test('multiple colliding PRs are each reported with their own intersecting files
     'feat/mine',
     ['src/a.ts', 'src/b.ts', 'src/d.ts'],
     [
-      pr(2010, 'feat/mine', 'self', ['src/a.ts']), // own branch — excluded
+      pr(2010, 'feat/mine', 'self', ['src/a.ts']), // own branch — the blocking one
       pr(1993, 'human/pr', 'teammate', ['src/a.ts', 'src/e.ts']),
       pr(2012, 'bot/pr', 'weaver-bot', ['src/b.ts', 'src/d.ts']),
       pr(2013, 'unrelated', 'someone', ['src/z.ts']), // no overlap — ignored
     ],
   );
-  assert.equal(collisions.length, 2);
+  assert.equal(collisions.length, 3);
   assert.deepEqual(
     collisions.map((c) => [c.number, c.files]),
     [
+      [2010, ['src/a.ts']],
       [1993, ['src/a.ts']],
       [2012, ['src/b.ts', 'src/d.ts']],
     ],
   );
+  // All three are reported so the author knows who else is in these files;
+  // only the same-ref one holds the action.
+  assert.deepEqual(blockingCollisions(collisions).map((c) => c.number), [2010]);
 });
 
 // --- isRepoEgressAction: the predicate that decides which actions the gate
@@ -183,4 +193,31 @@ test('a new colliding PR over already-contended files is not a new question', ()
   assert.equal(collisionKey('asg_1', ['b.go', 'a.go', 'a.go']), collisionKey('asg_1', ['a.go', 'b.go']));
   // And a different action asking about the same files is its own question.
   assert.notEqual(collisionKey('asg_2', files), collisionKey('asg_1', files));
+});
+
+test('only a second writer on our OWN branch can lose work; parallel branches ship', () => {
+  const ours = ['backend/voice/service_widget.go'];
+  const found = detectRepoCollisions('fix/mine', ours, [
+    { number: 2019, headRefName: 'fix/theirs', author: 'someone', files: ours },
+    { number: 2035, headRefName: 'fix/other', author: 'another', files: ours },
+  ]);
+  // Both are seen — the author and reviewer are told who else is in the file…
+  assert.equal(found.length, 2);
+  // …but neither blocks: separate refs, git merges them, a real conflict shows
+  // up at merge time. Holding here asked a human to pre-approve normal work.
+  assert.deepEqual(blockingCollisions(found), []);
+
+  // Someone else's PR on OUR head ref is the lost update: a push discards
+  // their commits instead of merging. That still fails closed.
+  const sameRef = detectRepoCollisions('fix/mine', ours, [
+    { number: 2040, headRefName: 'fix/mine', author: 'someone', files: ours },
+  ]);
+  assert.equal(sameRef.length, 1);
+  assert.equal(sameRef[0]!.sameBranch, true);
+  assert.deepEqual(blockingCollisions(sameRef).map((c) => c.number), [2040]);
+
+  // A PR sharing our branch but no files is still not a collision.
+  assert.deepEqual(detectRepoCollisions('fix/mine', ours, [
+    { number: 2041, headRefName: 'fix/mine', author: 'someone', files: ['docs/other.md'] },
+  ]), []);
 });
