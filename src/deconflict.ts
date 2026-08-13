@@ -10,15 +10,20 @@
  * real incident followed — the roadmap-intake routine opened PRs (#2010/#2012/
  * #2014) into files a teammate's open PR (#1993) was actively editing.
  *
- * A colliding open PR is a "conflicting arrival" on shared EXTERNAL state, and
- * it deserves the same posture as invariant 8 on internal state and invariant
- * 7 on sends: at egress, fail CLOSED to the human to reconcile — never a second
- * competing write. This module supplies the pure detector and the IO that
- * gathers the facts to feed it; the engine wires it in as a gate.
+ * WHAT THAT DOES AND DOES NOT JUSTIFY. Two branches editing the same file is
+ * ordinary parallel development: they are separate refs, git merges them, and
+ * a real textual conflict surfaces at merge time where a rebase settles it.
+ * Holding egress on that asks a human to pre-approve something git already
+ * handles — and it asked constantly, because a busy repo always has PRs
+ * touching shared files. Five held actions produced seven cards in one evening
+ * on overlaps that were, when traced, hundreds of lines apart in the same file.
  *
- * Posture is GATE-ONLY (operator decision): a LIVE collision holds the action
- * for the human; NO live conflict → the action ships autonomously as before.
- * There is deliberately no draft-only or owner-signoff behaviour here.
+ * The lost update is SAME-BRANCH contention: two actions pushing the same head
+ * ref, where one force-push discards the other's commits with nothing left to
+ * merge. THAT is the git analogue of invariant 8, and it still fails closed to
+ * the human. Cross-branch overlap is now reported instead of blocked — recorded
+ * on the workstream so the author and reviewer can see who else is in the file,
+ * which is what the original incident actually needed.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -42,6 +47,17 @@ export interface Collision {
   author: string;
   /** The file paths present in BOTH our change and the colliding PR. */
   files: string[];
+  /**
+   * True when the other PR is on OUR head ref — a second writer on the same
+   * branch, where a push discards commits instead of merging them. Only this
+   * blocks; cross-branch overlap is reported.
+   */
+  sameBranch: boolean;
+}
+
+/** Contention that can LOSE work: someone else pushing our own head ref. */
+export function blockingCollisions(collisions: readonly Collision[]): Collision[] {
+  return collisions.filter((c) => c.sameBranch);
 }
 
 /**
@@ -59,8 +75,6 @@ export function detectRepoCollisions(
   const ours = new Set(ourFiles);
   const collisions: Collision[] = [];
   for (const pr of openPRs) {
-    // Exclude the action's own head branch: it is not a competing arrival.
-    if (pr.headRefName === ourHead) continue;
     const intersecting = pr.files.filter((f) => ours.has(f));
     if (intersecting.length === 0) continue;
     collisions.push({
@@ -68,6 +82,10 @@ export function detectRepoCollisions(
       headRefName: pr.headRefName,
       author: pr.author,
       files: intersecting,
+      // Our own ref carrying somebody else's open PR means two writers on one
+      // branch — the only shape here where a push destroys work rather than
+      // queueing a merge.
+      sameBranch: pr.headRefName === ourHead,
     });
   }
   return collisions;

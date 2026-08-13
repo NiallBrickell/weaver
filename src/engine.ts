@@ -26,7 +26,7 @@ import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import { pidIsLive } from './processLock.js';
-import { collisionKey, collisionReconciled, isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
+import { blockingCollisions, collisionKey, collisionReconciled, isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
 import { capacityBackoffFor } from './capacity.js';
 import { coordinatorCapacityTarget, workerCapacityTarget } from './modelConfig.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
@@ -437,43 +437,58 @@ async function guardRepoEgress(slug: string, asg: Assignment): Promise<boolean> 
   if (!isRepoEgressAction(asg) || !asg.exec) return true;
   const collisions = await repoEgressCollisions(asg.exec.cwd);
   if (collisions.length === 0) return true;
-  const prNumbers = [...new Set(collisions.map((c) => c.number))].sort((a, b) => a - b);
-  // Keyed on the contended FILES, not the PR numbers: see collisionKey.
-  const dedupToken = collisionKey(asg.id, collisions.flatMap((c) => c.files));
-  const doc = await load(slug);
-  if (collisionReconciled(doc.attention, dedupToken)) return true;
-  const detail = collisions
+  const describe = (list: typeof collisions) => list
     .map((c) => `#${c.number} (@${c.author}, ${c.headRefName}) — overlaps ${c.files.join(', ')}`)
     .join('; ');
+
+  // Cross-branch overlap is ordinary parallel development: separate refs, git
+  // merges them, and a real textual conflict surfaces at merge time. Say who
+  // else is in these files — that is what the incident behind this gate needed
+  // — and let the action ship.
+  const blocking = blockingCollisions(collisions);
+  const parallel = collisions.filter((c) => !c.sameBranch);
+  if (parallel.length) {
+    await arrive(slug, (d, event) => {
+      event(
+        'action.repo_egress_parallel',
+        `${asg.id} shares files with open PR(s) ${parallel.map((c) => `#${c.number}`).join(', ')} — proceeding; git settles any real conflict at merge time. ${describe(parallel)}`,
+        [asg.id],
+      );
+    });
+  }
+  if (blocking.length === 0) return true;
+
+  // Same head ref, two writers: a push here discards commits instead of
+  // merging them, so this one fails closed to the human like any lost update.
+  const dedupToken = collisionKey(asg.id, blocking.flatMap((c) => c.files));
+  const doc = await load(slug);
+  if (collisionReconciled(doc.attention, dedupToken)) return true;
+  const detail = describe(blocking);
   await arrive(slug, (d, event) => {
-    // One open card per held action, whatever the PR set does. A card already
-    // asking about this action is the same question, so refresh its text rather
-    // than stacking a second one the human has to answer twice.
+    const summary =
+      `Repo-egress deconfliction held ${asg.id}: another open PR is on THIS action's own branch — ${detail}. ` +
+      `Pushing would discard the other writer's commits rather than merge them, so reconcile first: pull their work, or push from a branch of your own. ` +
+      `The action stays queued+approved and re-runs automatically once the branch has one writer. ${dedupToken}`;
+    // One open card per held action, whatever the PR set does.
     const existing = d.attention.find(
       (a) => a.kind === 'blocker' && a.status === 'open' && a.refId === asg.id &&
         a.summary.includes('[repo-collision '),
     );
     if (existing) {
-      existing.summary =
-        `Repo-egress deconfliction held ${asg.id}: open PR(s) are editing the same files — ${detail}. ` +
-        `Reconcile before this action pushes/opens its own PR into the collision: rebase after the other PR merges, or coordinate with its author. ` +
-        `The action stays queued+approved and re-runs automatically once the collision clears. ${dedupToken}`;
+      existing.summary = summary;
       return;
     }
     d.attention.push({
       id: newId('att'),
       kind: 'blocker',
-      summary:
-        `Repo-egress deconfliction held ${asg.id}: open PR(s) are editing the same files — ${detail}. ` +
-        `Reconcile before this action pushes/opens its own PR into the collision: rebase after the other PR merges, or coordinate with its author. ` +
-        `The action stays queued+approved and re-runs automatically once the collision clears. ${dedupToken}`,
+      summary,
       refId: asg.id,
       status: 'open',
       createdAt: new Date().toISOString(),
     });
     event(
       'action.repo_egress_held',
-      `${asg.id} held by repo-egress deconfliction — colliding open PR(s) ${prNumbers.map((n) => `#${n}`).join(', ')}`,
+      `${asg.id} held — open PR(s) ${blocking.map((c) => `#${c.number}`).join(', ')} are writing its own branch`,
       [asg.id],
     );
   });
