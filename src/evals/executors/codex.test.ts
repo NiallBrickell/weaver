@@ -146,6 +146,7 @@ describe('CodexEvalExecutor', () => {
             required: true,
             enabled: true,
             enabled_tools: ['append_section', 'submit_result'],
+            default_tools_approval_mode: 'auto',
           },
         },
       },
