@@ -4,6 +4,7 @@
  */
 
 import { advanceClock, virtualNow } from './clock.js';
+import { KNOWN_COMMANDS, misroutedSubcommand } from './dispatch.js';
 import { loadDotenv } from './env.js';
 import { tick } from './engine.js';
 import { renderStatus } from './status.js';
@@ -131,43 +132,72 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver resolve <slug> <attentionId> [note] mark an attention item handled (human act)
 `;
 
+async function slugExists(slug: string): Promise<boolean> {
+  try {
+    return (await listWorkstreams()).includes(slug);
+  } catch {
+    return false;
+  }
+}
+
+async function runIntake(message: string, done?: string): Promise<void> {
+  message = message.trim();
+  if (!message) {
+    // No message: interactive/piped capture — the recommended path for anything
+    // longer than a sentence (multiline, $, quotes all safe).
+    if (process.stdin.isTTY) {
+      process.stderr.write('Describe what you want done — multiline and paste are fine; finish with Ctrl-D (or a line containing only "."):\n');
+    }
+    message = await readMultiline();
+  }
+  if (!message) fail('usage: weaver do "<what you want done>" ["<what done means>"] — or run `weaver do` with no args and type/paste the message');
+  const { onboard } = await import('./onboard.js');
+  const stopProgress = progress('deriving the workstream from your message (one model pass)');
+  let d;
+  try {
+    d = await onboard(message, done?.trim());
+  } finally {
+    stopProgress();
+  }
+  process.stdout.write(
+    [
+      `▶ ${d.slug}${d.routine ? '  (routine)' : ''} — ${d.title}`,
+      ``,
+      d.objective,
+      ...(d.successCriteria.length ? [``, `done when:`, ...d.successCriteria.map((c) => `  - ${c}`)] : []),
+      ``,
+      `It's running. Watch: weaver watch · redirect anytime: weaver steer ${d.slug} "<msg>"`,
+      ``,
+    ].join('\n'),
+  );
+}
+
 async function main(): Promise<void> {
   loadDotenv(); // repo-root .env fills unset config; explicit env still wins
   const [cmd, ...rest] = args();
+  // Intake is the default action: bare `weaver`, or a first word that is not a
+  // subcommand, is a message to onboard (alias `w=weaver`). Every real
+  // subcommand dispatches natively below.
+  if (cmd === undefined || !KNOWN_COMMANDS.has(cmd)) {
+    await runIntake(cmd === undefined ? '' : [cmd, ...rest].join(' '));
+    return;
+  }
+  await runCommand(cmd, rest);
+}
+
+async function runCommand(cmd: string, rest: string[]): Promise<void> {
   switch (cmd) {
     case 'do': {
+      // A management command mis-routed here by a `w='weaver do'` alias — e.g.
+      // `w steer <slug> "<msg>"` — is dispatched to the real subcommand instead
+      // of onboarding a duplicate workstream from its words.
+      const routed = await misroutedSubcommand(rest, slugExists);
+      if (routed) return runCommand(routed[0], routed[1]);
       // Exactly two args = message + explicit done-statement; anything else
       // joins into one message (so an unquoted sentence still just works).
-      let message = (rest.length === 2 ? rest[0]! : rest.join(' ')).trim();
-      const done = rest.length === 2 ? rest[1]!.trim() : undefined;
-      if (!message) {
-        // No args: interactive/piped capture — the recommended path for
-        // anything longer than a sentence (multiline, $, quotes all safe).
-        if (process.stdin.isTTY) {
-          process.stderr.write('Describe what you want done — multiline and paste are fine; finish with Ctrl-D (or a line containing only "."):\n');
-        }
-        message = await readMultiline();
-      }
-      if (!message) fail('usage: weaver do "<what you want done>" ["<what done means>"] — or run `weaver do` with no args and type/paste the message');
-      const { onboard } = await import('./onboard.js');
-      const stopProgress = progress('deriving the workstream from your message (one model pass)');
-      let d;
-      try {
-        d = await onboard(message, done);
-      } finally {
-        stopProgress();
-      }
-      process.stdout.write(
-        [
-          `▶ ${d.slug}${d.routine ? '  (routine)' : ''} — ${d.title}`,
-          ``,
-          d.objective,
-          ...(d.successCriteria.length ? [``, `done when:`, ...d.successCriteria.map((c) => `  - ${c}`)] : []),
-          ``,
-          `It's running. Watch: weaver watch · redirect anytime: weaver steer ${d.slug} "<msg>"`,
-          ``,
-        ].join('\n'),
-      );
+      const message = rest.length === 2 ? rest[0]! : rest.join(' ');
+      const done = rest.length === 2 ? rest[1]! : undefined;
+      await runIntake(message, done);
       break;
     }
 
