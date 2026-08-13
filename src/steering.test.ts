@@ -32,7 +32,10 @@ test('withdraw takes the last unread steer, refuses one a pass already read', as
   try {
     const { createWorkstream, arrive, load } = await import('./store.js');
     const { addSteering, revokeSteering } = await import('./humanActs.js');
-    await createWorkstream({ slug: 'ws', title: 'W', objective: 'o', tags: [] });
+    await createWorkstream({
+      slug: 'ws', title: 'W', objective: 'o', tags: [],
+      successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
 
     await addSteering('ws', 'first message');
     await addSteering('ws', 'second message, the regretted one');
