@@ -24,7 +24,7 @@ import { deliverManagerNotices, tick } from './engine.js';
 import { printoutChanges } from './printoutJournal.js';
 import { renderStatus } from './status.js';
 import { renderWorkstreamHtml } from './inspect.js';
-import { viewOf } from './watch.js';
+import { capacityHeadlineThatFits, viewOf } from './watch.js';
 import {
   RevisionConflictError,
   arrive,
@@ -512,4 +512,10 @@ test('compact watch rows show durable elapsed activity, never billing/activity c
   assert.doesNotMatch(view.row, /\$|passes|interventions|you \d+×|turns|▰|▱/);
   assert.doesNotMatch(view.row, /WAITING/);
   assert.ok(!view.details.some((line) => line.includes('pass_old_capacity')));
+});
+
+test('plain watch keeps optional capacity headroom inside a narrow header', () => {
+  const headline = '⚠ Claude 5h 18% left · resets in 2h';
+  assert.equal(capacityHeadlineThatFits(headline, headline.length + 3), headline);
+  assert.equal(capacityHeadlineThatFits(headline, headline.length + 2), undefined);
 });
