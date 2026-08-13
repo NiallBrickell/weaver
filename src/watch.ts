@@ -87,6 +87,15 @@ interface WsView {
   providerCapacity: ProviderCapacityObservation[];
 }
 
+/** The provider headline is optional context. Preserve the box and clock when
+ * a narrow terminal cannot hold it; wrapping would corrupt the plain frame. */
+export function capacityHeadlineThatFits(
+  headline: string | undefined,
+  availableColumns: number,
+): string | undefined {
+  return headline && headline.length + 3 <= availableColumns ? headline : undefined;
+}
+
 function attemptFresh(a: Assignment): boolean {
   const t = a.attempts[a.attempts.length - 1];
   return !!t && !t.endedAt && Date.now() - new Date(t.startedAt).getTime() < STALE_ATTEMPT_MS;
@@ -240,17 +249,20 @@ async function frame(): Promise<string> {
     ` ${DIM}·${R} ${BLUE}${counts[2]} waiting${R}` +
     ` ${DIM}·${R} ${DIM}${counts[3]} idle${R}` +
     (counts[4] ? ` ${DIM}·${R} ${RED}${BOLD}${counts[4]} UNREADABLE${R}` : '');
-  const capacityHeadline = providerCapacityHeadline(views.flatMap((view) => view.providerCapacity), now);
+  const plainCounts = `${counts[0]} need you · ${counts[1]} working · ${counts[2]} waiting · ${counts[3]} idle${counts[4] ? ` · ${counts[4]} UNREADABLE` : ''}`;
+  const plainClockLen = (drift ? `virtual ${vNow.toISOString().slice(0, 16)}  ` : '').length + 8;
+  const baseTitleLen = 2 + 11 + 3 + plainCounts.length;
+  const capacityHeadline = capacityHeadlineThatFits(
+    providerCapacityHeadline(views.flatMap((view) => view.providerCapacity), now),
+    w - baseTitleLen - plainClockLen - 3,
+  );
 
   const top = `${DIM}╭${'─'.repeat(w - 2)}╮${R}`;
   const capacityColor = capacityHeadline?.startsWith('⚠') ? AMBER : DIM;
   const title = `${DIM}│${R} ${BOLD}${WHITE}W E A V E R${R}   ${countsStr}${capacityHeadline ? ` ${DIM}·${R} ${capacityColor}${capacityHeadline}${R}` : ''}`;
   const clock = `${drift}${DIM}${now.toTimeString().slice(0, 8)}${R}`;
   // Right-align the clock inside the box using plain lengths.
-  const plainTitleLen =
-    2 + 11 + 3 +
-    `${counts[0]} need you · ${counts[1]} working · ${counts[2]} waiting · ${counts[3]} idle${counts[4] ? ` · ${counts[4]} UNREADABLE` : ''}${capacityHeadline ? ` · ${capacityHeadline}` : ''}`.length;
-  const plainClockLen = (drift ? `virtual ${vNow.toISOString().slice(0, 16)}  ` : '').length + 8;
+  const plainTitleLen = baseTitleLen + (capacityHeadline ? 3 + capacityHeadline.length : 0);
   const gap = Math.max(1, w - plainTitleLen - plainClockLen - 2);
   const header = [top, `${title}${' '.repeat(gap)}${clock} ${DIM}│${R}`, `${DIM}╰${'─'.repeat(w - 2)}╯${R}`].join('\n');
 
