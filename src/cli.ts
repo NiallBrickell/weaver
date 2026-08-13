@@ -290,7 +290,9 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       const slug = rest[1] ?? fail('usage: weaver capacity retry <slug> [--model <model>]');
       const model = opt(rest, 'model');
       const current = await load(slug);
-      const available = Object.keys(current.capacity?.byModel ?? {});
+      const available = [...new Set(
+        Object.values(current.capacity?.byModel ?? {}).map((entry) => entry.wait.model),
+      )].sort();
       if (!available.length) fail(`${slug} has no provider capacity wait to retry`);
       if (model && !available.includes(model)) {
         fail(`${slug} has no provider capacity wait for '${model}' (waiting: ${available.join(', ')})`);

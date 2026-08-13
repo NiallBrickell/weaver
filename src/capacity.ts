@@ -1,7 +1,7 @@
 /**
- * Claude Agent SDK capacity/auth failures, normalized into typed durable waits.
+ * Provider capacity/auth failures, normalized into typed durable waits.
  *
- * Current SDKs report the same outage through several surfaces: assistant
+ * The Claude SDK and remote executors report the same outage through several surfaces: assistant
  * error codes, rate_limit_event metadata, result.errors[], or a thrown error.
  * This collector makes those transport details non-authoritative. Workstream
  * state stores only the closed classification and recovery action — never a
@@ -18,8 +18,17 @@ import type {
   CapacityCategory,
   InfrastructureRecovery,
   InfrastructureWait,
+  ProviderCapacityObservation,
   WorkstreamDoc,
 } from './types.js';
+import {
+  coordinatorCapacityTarget,
+  coordinatorFallbackModel,
+  coordinatorModel,
+  targetOfWait,
+  workerCapacityTarget,
+  type CapacityTarget,
+} from './modelConfig.js';
 
 const DEFAULT_RETRY_MS = 15 * 60_000;
 // A plan-usage cap ('usage_limit'/'sdk_credit_exhausted') does not clear in the
@@ -85,6 +94,8 @@ export interface InfrastructureSource {
   source: 'coordinator' | 'worker';
   sourceId: string;
   model: string;
+  executor: string;
+  provider: string;
   /** Scheduler time stored in wakes (virtual in demos). */
   now?: Date;
   /** Provider wall time used to translate an absolute reset into a delay. */
@@ -97,6 +108,7 @@ export class SdkFailureTracker {
   private texts: string[] = [];
   private errors = new Set<SDKAssistantMessageError>();
   private rateLimit?: SDKRateLimitInfo;
+  private rateLimits = new Map<string, SDKRateLimitInfo>();
   private terminalReason?: string;
 
   observe(message: SDKMessage): void {
@@ -105,9 +117,11 @@ export class SdkFailureTracker {
       this.failed = true;
     }
     if (message.type === 'rate_limit_event') {
+      const info = message.rate_limit_info;
+      this.rateLimits.set(info.rateLimitType ?? 'unspecified', info);
       if (message.rate_limit_info.status === 'rejected') {
         this.failed = true;
-        this.rateLimit = message.rate_limit_info;
+        this.rateLimit = info;
       }
     }
     if (message.type === 'result') {
@@ -128,6 +142,33 @@ export class SdkFailureTracker {
   /** Raw text is used only as a compatibility signal; it is never persisted. */
   diagnostic(): string {
     return this.texts.filter(Boolean).join(' · ').slice(0, 500) || 'model execution failed';
+  }
+
+  /** Provider plan-window facts are observability only. An allowed warning is
+   * useful headroom telemetry, but it must never become an infrastructure
+   * failure or an execution gate. */
+  capacityObservations(source: InfrastructureSource): ProviderCapacityObservation[] {
+    const wallNow = source.wallNow ?? new Date();
+    return [...this.rateLimits.entries()].flatMap(([window, info]) => {
+      const resetAt = earliestFutureReset(info, wallNow);
+      const utilization = typeof info.utilization === 'number' &&
+        Number.isFinite(info.utilization) &&
+        info.utilization >= 0 &&
+        info.utilization <= 1
+        ? info.utilization
+        : undefined;
+      if (utilization === undefined && !resetAt && info.status === 'allowed') return [];
+      return [{
+        executor: source.executor,
+        provider: source.provider,
+        model: source.model,
+        window,
+        status: info.status,
+        ...(utilization !== undefined ? { utilization } : {}),
+        observedAt: wallNow.toISOString(),
+        ...(resetAt ? { resetAt } : {}),
+      }];
+    });
   }
 
   classify(source: InfrastructureSource): InfrastructureWait | null {
@@ -213,6 +254,8 @@ export class SdkFailureTracker {
       source: source.source,
       sourceId: source.sourceId,
       model: source.model,
+      executor: source.executor,
+      provider: source.provider,
       detectedAt: now.toISOString(),
       retryAt,
       ...(resetAt ? { resetAt } : {}),
@@ -221,23 +264,274 @@ export class SdkFailureTracker {
   }
 }
 
+export function capacityTargetKey(target: CapacityTarget): string {
+  return `${target.executor}:${target.provider}:${target.model}`;
+}
+
+function sameTarget(a: CapacityTarget, b: CapacityTarget): boolean {
+  return a.executor === b.executor && a.provider === b.provider && a.model === b.model;
+}
+
+function waitMatchesTarget(wait: InfrastructureWait, target: CapacityTarget): boolean {
+  const stored = targetOfWait(wait);
+  return stored ? sameTarget(stored, target) : false;
+}
+
+/** Exact current-pool lookup. Ambiguous legacy worker waits intentionally do
+ * not match a configured pool: one retry can re-establish scoped state, while
+ * guessing could park or clear an unrelated provider with the same model name. */
+export function capacityBackoffFor(
+  doc: WorkstreamDoc,
+  target: CapacityTarget,
+): CapacityBackoff | undefined {
+  return Object.values(doc.capacity?.byModel ?? {}).find((entry) =>
+    waitMatchesTarget(entry.wait, target),
+  );
+}
+
+export function hasCapacityBackoffForWait(doc: WorkstreamDoc, wait: InfrastructureWait): boolean {
+  const target = targetOfWait(wait);
+  if (target) return capacityBackoffFor(doc, target) !== undefined;
+  return Object.values(doc.capacity?.byModel ?? {}).some(
+    (entry) => entry.wait.source === wait.source && entry.wait.model === wait.model,
+  );
+}
+
+/** Credential-file probes are a Claude Agent SDK recovery mechanism. They
+ * must never be aimed at OpenHands/OpenRouter/Kimi waits. */
+export function isClaudeSdkWait(wait: InfrastructureWait): boolean {
+  const target = targetOfWait(wait);
+  return !!target && target.executor === 'local-sdk' && target.provider === 'anthropic';
+}
+
+function providerName(provider: string | undefined): string {
+  switch (provider?.toLowerCase()) {
+    case 'anthropic': return 'Claude';
+    case 'openrouter': return 'OpenRouter';
+    case 'moonshot':
+    case 'moonshotai': return 'Moonshot';
+    default: return provider && provider !== 'unknown'
+      ? provider.charAt(0).toUpperCase() + provider.slice(1)
+      : 'Provider';
+  }
+}
+
+function waitProviderName(wait: InfrastructureWait): string {
+  return providerName(targetOfWait(wait)?.provider);
+}
+
+function capacityAttentionPrefix(wait: InfrastructureWait): string {
+  return `${waitProviderName(wait)} capacity${wait.executor ? ` via ${wait.executor}` : ''} (${wait.model}/`;
+}
+
+function windowLabel(window: string): string {
+  switch (window) {
+    case 'five_hour': return '5h';
+    case 'seven_day': return '7d';
+    case 'seven_day_opus': return 'Opus 7d';
+    case 'seven_day_sonnet': return 'Sonnet 7d';
+    case 'seven_day_overage_included': return 'included 7d';
+    case 'overage': return 'extra usage';
+    case 'unspecified': return 'plan';
+    default: return window.replaceAll('_', ' ');
+  }
+}
+
+function relativeUntil(iso: string, now: Date): string {
+  const minutes = Math.ceil((Date.parse(iso) - now.getTime()) / 60_000);
+  if (minutes <= 0) return 'now';
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 48 * 60) return `${Math.round(minutes / 60)}h`;
+  return `${Math.round(minutes / (24 * 60))}d`;
+}
+
+const CAPACITY_OBSERVATION_FRESH_MS = 30 * 60_000;
+
+export function recordProviderCapacityObservations(
+  doc: WorkstreamDoc,
+  observations: ProviderCapacityObservation[],
+): void {
+  if (!observations.length) return;
+  const byWindow = new Map<string, ProviderCapacityObservation>();
+  for (const observation of [...(doc.providerCapacity ?? []), ...observations]) {
+    const key = `${observation.executor}:${observation.provider}:${observation.model}:${observation.window}`;
+    const previous = byWindow.get(key);
+    if (!previous || previous.observedAt <= observation.observedAt) byWindow.set(key, observation);
+  }
+  doc.providerCapacity = [...byWindow.values()]
+    .sort((a, b) => b.observedAt.localeCompare(a.observedAt))
+    .slice(0, 24);
+}
+
+export function freshProviderCapacity(
+  observations: ProviderCapacityObservation[],
+  now = new Date(),
+): ProviderCapacityObservation[] {
+  return observations.filter((observation) => {
+    const observed = Date.parse(observation.observedAt);
+    if (!Number.isFinite(observed) || now.getTime() - observed > CAPACITY_OBSERVATION_FRESH_MS) return false;
+    return !observation.resetAt || Date.parse(observation.resetAt) > now.getTime();
+  });
+}
+
+/** One honest fleet-level signal. It is shown only while fresh; missing means
+ * unknown, not 100%. The tightest reported window wins. */
+export function providerCapacityHeadline(
+  observations: ProviderCapacityObservation[],
+  now = new Date(),
+): string | undefined {
+  const latestByWindow = new Map<string, ProviderCapacityObservation>();
+  for (const observation of freshProviderCapacity(observations, now)) {
+    const key = `${observation.executor}:${observation.provider}:${observation.window}`;
+    const previous = latestByWindow.get(key);
+    if (!previous || previous.observedAt < observation.observedAt) {
+      latestByWindow.set(key, observation);
+    }
+  }
+  const fresh = [...latestByWindow.values()];
+  if (!fresh.length) return undefined;
+  const ranked = [...fresh].sort((a, b) => {
+    const status = (x: ProviderCapacityObservation): number =>
+      x.status === 'rejected' ? 2 : x.status === 'allowed_warning' ? 1 : 0;
+    return status(b) - status(a) || (b.utilization ?? -1) - (a.utilization ?? -1);
+  });
+  const observation = ranked[0]!;
+  const name = providerName(observation.provider);
+  const window = windowLabel(observation.window);
+  const position = observation.utilization !== undefined
+    ? `${Math.max(0, Math.round((1 - observation.utilization) * 100))}% left`
+    : observation.status === 'rejected' ? 'at limit' : 'near limit';
+  const reset = observation.resetAt ? ` · resets in ${relativeUntil(observation.resetAt, now)}` : '';
+  const warning = observation.status === 'allowed' ? '' : '⚠ ';
+  return `${warning}${name} ${window} ${position}${reset}`;
+}
+
+export interface CapacityPresentation {
+  /** Present only when capacity prevents the next configured model transition. */
+  blocking?: { summary: string; retryAt: string; recovery: string };
+  details: string[];
+  /** Latest stored waits that belong to a configured role with intended work. */
+  relevantSourceIds: string[];
+  retryEligibleSourceIds: string[];
+}
+
+function activeWait(entry: CapacityBackoff | undefined, nowIso: string): InfrastructureWait | undefined {
+  return entry?.wait.retryAt && entry.wait.retryAt > nowIso ? entry.wait : undefined;
+}
+
+function waitPosition(wait: InfrastructureWait, role: string, now: Date): string {
+  const category = wait.kind === 'usage_limit' || wait.kind === 'sdk_credit_exhausted'
+    ? 'usage limited'
+    : wait.kind === 'session_limit' ? 'session limited'
+      : wait.kind === 'auth' ? 'login required'
+        : wait.kind === 'rate_limit' ? 'rate limited'
+          : 'temporarily unavailable';
+  return `${role} ${waitProviderName(wait)} ${wait.model} ${category} · retry in ${relativeUntil(wait.retryAt, now)}`;
+}
+
+/** Role-aware projection shared by status and both dashboards. Historical,
+ * overdue, and unconfigured model records never turn a workstream into
+ * WAITING. A limited primary with a usable fallback is degradation, not a
+ * block. */
+export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): CapacityPresentation {
+  const now = new Date(nowIso);
+  const primaryTarget = coordinatorCapacityTarget(coordinatorModel());
+  const fallbackTarget = coordinatorCapacityTarget(coordinatorFallbackModel());
+  const workerTarget = workerCapacityTarget();
+  const primaryEntry = capacityBackoffFor(doc, primaryTarget);
+  const fallbackEntry = capacityBackoffFor(doc, fallbackTarget);
+  const workerEntry = capacityBackoffFor(doc, workerTarget);
+  const primary = activeWait(primaryEntry, nowIso);
+  const fallback = sameTarget(primaryTarget, fallbackTarget)
+    ? primary
+    : activeWait(fallbackEntry, nowIso);
+  const worker = activeWait(workerEntry, nowIso);
+  const details: string[] = [];
+  const currentCoordinatorTargets = [primaryTarget, fallbackTarget];
+  const coordinatorIntent =
+    doc.steering.some((steering) => !steering.consumedByPass) ||
+    (doc.managerDirections ?? []).some((direction) => !direction.consumedByPass) ||
+    doc.assignments.some((assignment) => assignment.state === 'awaiting_review') ||
+    doc.wakes.some((wake) => {
+      if (wake.status !== 'pending') return false;
+      if (wake.infrastructure) {
+        return currentCoordinatorTargets.some((target) => waitMatchesTarget(wake.infrastructure!, target));
+      }
+      return wake.condition.type === 'immediate' ||
+        (wake.condition.type === 'time' && wake.condition.dueAtVirtual <= nowIso) ||
+        (wake.condition.type === 'wall_time' && wake.condition.dueAt <= new Date().toISOString());
+    });
+
+  if (coordinatorIntent && primary && !sameTarget(primaryTarget, fallbackTarget) && !fallback) {
+    details.push(`${waitPosition(primary, 'coordinator primary', now)} · fallback ${fallbackTarget.model} available`);
+  }
+  const coordinatorBlocked: InfrastructureWait | undefined = coordinatorIntent &&
+    primary && (sameTarget(primaryTarget, fallbackTarget) || !!fallback) ? primary : undefined;
+  if (coordinatorBlocked) details.push(waitPosition(coordinatorBlocked, 'coordinator', now));
+
+  const queuedWorkerWork = doc.assignments.some((assignment) =>
+    assignment.state === 'queued' && !assignment.exec?.run,
+  );
+  if (worker && queuedWorkerWork) details.push(waitPosition(worker, 'worker', now));
+
+  const coordinatorEntries = sameTarget(primaryTarget, fallbackTarget)
+    ? [['coordinator', primaryEntry] as const]
+    : [
+        ['coordinator primary', primaryEntry] as const,
+        ['coordinator fallback', fallbackEntry] as const,
+      ];
+  const relevantEntries = [
+    ...(coordinatorIntent ? coordinatorEntries : []),
+    ...(queuedWorkerWork ? [['worker', workerEntry] as const] : []),
+  ];
+  const retryEligibleSourceIds: string[] = [];
+  for (const [role, entry] of relevantEntries) {
+    if (entry && entry.wait.retryAt <= nowIso) {
+      const line = `${role} ${waitProviderName(entry.wait)} ${entry.wait.model} retry eligible now`;
+      if (!details.includes(line)) details.push(line);
+      retryEligibleSourceIds.push(entry.wait.sourceId);
+    }
+  }
+
+  const blockingWait = worker && queuedWorkerWork ? worker : coordinatorBlocked;
+  const blockingRole = worker && queuedWorkerWork ? 'worker' : 'coordinator';
+  return {
+    ...(blockingWait ? {
+      blocking: {
+        summary: waitPosition(blockingWait, blockingRole, now),
+        retryAt: blockingWait.retryAt,
+        recovery: infrastructureWaitSummary(blockingWait, doc.workstream.slug),
+      },
+    } : {}),
+    details,
+    relevantSourceIds: [...new Set(relevantEntries.flatMap(([, entry]) => entry ? [entry.wait.sourceId] : []))],
+    retryEligibleSourceIds: [...new Set(retryEligibleSourceIds)],
+  };
+}
+
 export function infrastructureWaitSummary(
   wait: InfrastructureWait,
   slug?: string,
 ): string {
   const retry = `weaver capacity retry ${slug ?? '<slug>'}`;
+  const provider = waitProviderName(wait);
+  const claude = provider === 'Claude';
   switch (wait.kind) {
     case 'usage_limit':
     case 'sdk_credit_exhausted':
-      return `Claude plan usage is limited; work is safely parked until its scheduled retry. Check \`/usage\` in Claude Code; wait for the reset or explicitly enable usage credits in Claude Settings > Usage, then run \`${retry}\`. Weaver never changes billing.`;
+      return claude
+        ? `Claude plan usage is limited for ${wait.model}; dependent work is parked. Check \`/usage\` in Claude Code; wait for the reset or enable usage credits in Claude Settings > Usage, then run \`${retry}\`. Weaver never changes billing.`
+        : `${provider} usage is limited for ${wait.model}; dependent work is parked until its scheduled retry. Check that provider's usage page, wait for its reset, or run \`${retry}\` after restoring capacity. Weaver never changes billing.`;
     case 'auth':
-      return `Claude authentication needs attention; work is safely parked. Run \`claude auth login\` in a terminal and complete the intended operator login. Weaver never accepts credentials or tokens; it retries when credential metadata changes, or after \`${retry}\`.`;
+      return claude
+        ? `Claude authentication needs attention for ${wait.model}; dependent work is parked. Run \`claude auth login\` in a terminal and complete the intended operator login. Weaver never accepts credentials or tokens; it retries when credential metadata changes, or after \`${retry}\`.`
+        : `${provider} authentication needs attention for ${wait.model}; dependent work is parked. Repair the configured ${wait.executor ?? 'executor'} credentials, then run \`${retry}\`. Weaver never accepts or rotates credentials.`;
     case 'session_limit':
-      return "Claude's session limit is active; work is safely parked until its scheduled retry.";
+      return `${provider}'s session limit is active for ${wait.model}; dependent work is parked until its scheduled retry.`;
     case 'rate_limit':
-      return 'Claude is rate limited; work is safely parked until its scheduled retry.';
+      return `${provider} is rate limited for ${wait.model}; dependent work is parked until its scheduled retry.`;
     case 'other':
-      return 'Claude is temporarily unavailable or stopped responding; work is safely parked until its scheduled retry.';
+      return `${provider} is temporarily unavailable for ${wait.model}; dependent work is parked until its scheduled retry.`;
   }
 }
 
@@ -245,7 +539,11 @@ export function recordCapacityBackoff(
   doc: WorkstreamDoc,
   wait: InfrastructureWait,
 ): CapacityBackoff {
-  const previous = doc.capacity?.byModel[wait.model];
+  const target = targetOfWait(wait);
+  const key = target ? capacityTargetKey(target) : wait.model;
+  const previous = target
+    ? capacityBackoffFor(doc, target)
+    : doc.capacity?.byModel[wait.model];
   const previousInFamily = previous &&
     capacityFamily(previous.wait.kind) === capacityFamily(wait.kind)
     ? previous
@@ -256,17 +554,25 @@ export function recordCapacityBackoff(
     firstBackoffAtVirtual: previousInFamily?.firstBackoffAtVirtual ?? wait.detectedAt,
     lastBackoffAtVirtual: wait.detectedAt,
   };
+  const byModel = { ...(doc.capacity?.byModel ?? {}) };
+  if (target) {
+    for (const [storedKey, stored] of Object.entries(byModel)) {
+      if (waitMatchesTarget(stored.wait, target)) delete byModel[storedKey];
+    }
+  }
   doc.capacity = {
     state: 'backoff',
-    byModel: { ...(doc.capacity?.byModel ?? {}), [wait.model]: entry },
+    byModel: { ...byModel, [key]: entry },
   };
   return entry;
 }
 
-export function clearCapacityBackoff(doc: WorkstreamDoc, model: string): void {
-  if (!doc.capacity?.byModel[model]) return;
+export function clearCapacityBackoff(doc: WorkstreamDoc, target: CapacityTarget): void {
+  if (!doc.capacity) return;
   const byModel = { ...doc.capacity.byModel };
-  delete byModel[model];
+  for (const [key, entry] of Object.entries(byModel)) {
+    if (waitMatchesTarget(entry.wait, target)) delete byModel[key];
+  }
   doc.capacity = Object.keys(byModel).length ? { state: 'backoff', byModel } : null;
 }
 
@@ -277,14 +583,19 @@ export function capacityAttentionThreshold(category: CapacityCategory): number {
 export function capacityAttentionSummary(entry: CapacityBackoff, slug?: string): string {
   const { wait, consecutiveBackoffs } = entry;
   const retry = `weaver capacity retry ${slug ?? '<slug>'}`;
-  const prefix = `Claude capacity (${wait.model}/${wait.kind}) has blocked work ${consecutiveBackoffs} times.`;
+  const provider = waitProviderName(wait);
+  const prefix = `${capacityAttentionPrefix(wait)}${wait.kind}) has blocked work ${consecutiveBackoffs} times.`;
   if (wait.kind === 'auth') {
-    return `${prefix} Run \`claude auth login\` and complete the intended operator login; Weaver reads no credential values. If credential metadata is unavailable, run \`${retry}\` afterward. Agent SDK plan guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan`;
+    return provider === 'Claude'
+      ? `${prefix} Run \`claude auth login\` and complete the intended operator login; Weaver reads no credential values. If credential metadata is unavailable, run \`${retry}\` afterward. Agent SDK plan guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan`
+      : `${prefix} Repair the configured ${wait.executor ?? 'executor'} credentials, then run \`${retry}\`; Weaver reads no credential values.`;
   }
   if (wait.kind === 'usage_limit' || wait.kind === 'sdk_credit_exhausted') {
-    return `${prefix} Check \`/usage\` in Claude Code. Wait for the reset, or explicitly enable usage credits with a provider spending limit in Claude Settings > Usage, then run \`${retry}\`. Weaver never changes billing. Guidance: https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan and https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans`;
+    return provider === 'Claude'
+      ? `${prefix} Check \`/usage\` in Claude Code. Wait for the reset, or explicitly enable usage credits with a provider spending limit in Claude Settings > Usage, then run \`${retry}\`. Weaver never changes billing. Guidance: https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan and https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans`
+      : `${prefix} Check the provider's usage page, wait for its reset, then run \`${retry}\`. Weaver never changes billing.`;
   }
-  return `${prefix} The limit should self-clear; check Claude plan status if it persists. Guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan`;
+  return `${prefix} The limit should self-clear; check the provider status if it persists.`;
 }
 
 /** Make a stored provider wait due without claiming the provider recovered.
@@ -295,17 +606,17 @@ export function retryCapacityNow(
   now: string,
   requestedModel?: string,
 ): string[] {
-  const models = Object.keys(doc.capacity?.byModel ?? {})
-    .filter((model) => !requestedModel || model === requestedModel);
-  if (!models.length) return [];
-  const selected = new Set(models);
+  const entries = Object.entries(doc.capacity?.byModel ?? {})
+    .filter(([, entry]) => !requestedModel || entry.wait.model === requestedModel);
+  if (!entries.length) return [];
+  const selectedModels = new Set(entries.map(([, entry]) => entry.wait.model));
 
   for (const wake of doc.wakes) {
     if (
       wake.status === 'pending' &&
       wake.condition.type === 'time' &&
       wake.infrastructure &&
-      selected.has(wake.infrastructure.model)
+      selectedModels.has(wake.infrastructure.model)
     ) {
       wake.condition = { type: 'time', dueAtVirtual: now };
       wake.infrastructure.retryAt = now;
@@ -313,12 +624,39 @@ export function retryCapacityNow(
   }
   for (const assignment of doc.assignments) {
     const wait = assignment.attempts.at(-1)?.infrastructure;
-    if (wait && selected.has(wait.model)) wait.retryAt = now;
+    if (wait && selectedModels.has(wait.model)) wait.retryAt = now;
   }
-  for (const model of models) {
-    doc.capacity!.byModel[model]!.wait.retryAt = now;
+  for (const [key] of entries) {
+    doc.capacity!.byModel[key]!.wait.retryAt = now;
   }
-  return models.sort();
+  return [...selectedModels].sort();
+}
+
+export function retryCapacityTargetNow(
+  doc: WorkstreamDoc,
+  now: string,
+  target: CapacityTarget,
+): boolean {
+  const matching = Object.entries(doc.capacity?.byModel ?? {})
+    .filter(([, entry]) => waitMatchesTarget(entry.wait, target));
+  if (!matching.length) return false;
+  for (const wake of doc.wakes) {
+    if (
+      wake.status === 'pending' &&
+      wake.condition.type === 'time' &&
+      wake.infrastructure &&
+      waitMatchesTarget(wake.infrastructure, target)
+    ) {
+      wake.condition = { type: 'time', dueAtVirtual: now };
+      wake.infrastructure.retryAt = now;
+    }
+  }
+  for (const assignment of doc.assignments) {
+    const wait = assignment.attempts.at(-1)?.infrastructure;
+    if (wait && waitMatchesTarget(wait, target)) wait.retryAt = now;
+  }
+  for (const [key] of matching) doc.capacity!.byModel[key]!.wait.retryAt = now;
+  return true;
 }
 
 export function ensureCapacityAttention(
@@ -328,7 +666,7 @@ export function ensureCapacityAttention(
   makeId: () => string,
 ): void {
   if (entry.consecutiveBackoffs < capacityAttentionThreshold(entry.wait.kind)) return;
-  const key = `Claude capacity (${entry.wait.model}/`;
+  const key = capacityAttentionPrefix(entry.wait);
   const existing = doc.attention.find(
     (item) => item.status === 'open' && item.kind === 'capacity' && item.summary.startsWith(key),
   );
@@ -349,12 +687,19 @@ export function ensureCapacityAttention(
 
 export function resolveCapacityAttention(
   doc: WorkstreamDoc,
-  model: string,
+  target: CapacityTarget,
   resolvedBy: string,
 ): void {
-  const key = `Claude capacity (${model}/`;
+  const keys = new Set([
+    `${providerName(target.provider)} capacity via ${target.executor} (${target.model}/`,
+    ...(target.provider === 'anthropic' ? [`Claude capacity (${target.model}/`] : []),
+  ]);
   for (const item of doc.attention) {
-    if (item.status === 'open' && item.kind === 'capacity' && item.summary.startsWith(key)) {
+    if (
+      item.status === 'open' &&
+      item.kind === 'capacity' &&
+      [...keys].some((key) => item.summary.startsWith(key))
+    ) {
       item.status = 'resolved';
       item.resolvedAt = new Date().toISOString();
       item.resolvedBy = resolvedBy;

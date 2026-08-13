@@ -5,7 +5,11 @@
 
 import type { WorkstreamDoc } from './types.js';
 import { virtualNow } from './clock.js';
-import { infrastructureWaitSummary } from './capacity.js';
+import {
+  capacityPresentation,
+  hasCapacityBackoffForWait,
+  providerCapacityHeadline,
+} from './capacity.js';
 import {
   executionPosition,
   isLegacyDollarBudgetAttention,
@@ -42,35 +46,6 @@ function sinceCutoff(doc: WorkstreamDoc): string | undefined {
  * One outage can produce several retry wakes; collapse identical summaries so
  * the five-question view reports the organizational position once.
  */
-function infrastructureWaits(doc: WorkstreamDoc): {
-  summaries: string[];
-  next: string[];
-} {
-  const summaries = new Set<string>();
-  const nextBySummary = new Map<string, string>();
-  for (const entry of Object.values(doc.capacity?.byModel ?? {})) {
-    const summary = infrastructureWaitSummary(entry.wait, doc.workstream.slug);
-    const due = entry.wait.retryAt <= virtualNow().toISOString();
-    // A wait whose retry has come due is no longer a current block, and saying
-    // "work is safely parked" once it has is a lie NOW must not tell: a stored
-    // wait only clears when that same model runs again (or a credential probe
-    // confirms recovery), so a wait for a model the workstream has since
-    // stopped using never clears and would claim the workstream is parked
-    // forever — while its workers run normally on another model. What remains
-    // true is stated where it belongs: NEXT carries the due reconciliation,
-    // and anything needing a human is already an open NEEDS YOU item.
-    if (!due) summaries.add(summary);
-    const candidate = due
-      ? 'infrastructure retry is due now'
-      : `infrastructure retry scheduled at ${entry.wait.retryAt.slice(0, 16)}`;
-    const current = nextBySummary.get(summary);
-    if (!current || candidate === 'infrastructure retry is due now' || candidate < current) {
-      nextBySummary.set(summary, candidate);
-    }
-  }
-  return { summaries: [...summaries], next: [...nextBySummary.values()] };
-}
-
 /**
  * `manages` is computed by the caller (a fleet-wide `listManagedBy` scan;
  * see store.ts) and passed in so this render stays a pure function of one
@@ -90,6 +65,8 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   );
   out.push(`Execution safety: ${safety.count}/${safety.limit} model starts in rolling ${Math.round(safety.windowSeconds / 60)}m · automatic pause/resume`);
   out.push(`Diagnostics: ${doc.spend.coordinatorPasses} coordinator passes · ~$${doc.spend.totalCostUsd.toFixed(2)} SDK estimate · ${doc.spend.humanInterventions ?? 0} human interventions`);
+  const providerCapacity = providerCapacityHeadline(doc.providerCapacity ?? []);
+  out.push(`Provider capacity: ${providerCapacity ?? 'unknown — no fresh provider-reported plan window'}`);
   if (ws.managedBy) {
     out.push(`Managed by: ${ws.managedBy.slug} (since ${ws.managedBy.sinceVirtual.slice(0, 16)})`);
   }
@@ -107,17 +84,20 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   const pendingWakes = doc.wakes.filter((w) => w.status === 'pending');
   const normalWakes = pendingWakes.filter((w) => !w.infrastructure);
   const recoveredCapacityWakes = pendingWakes.filter(
-    (wake) => wake.infrastructure && !doc.capacity?.byModel[wake.infrastructure.model],
+    (wake) => wake.infrastructure && !hasCapacityBackoffForWait(doc, wake.infrastructure),
   );
-  const infrastructure = infrastructureWaits(doc);
   const wallNow = new Date();
   const virtual = virtualNow();
   const nowVirtual = virtual.toISOString();
+  const capacity = capacityPresentation(doc, nowVirtual);
   const nowLines = [
-    ...infrastructure.summaries.map((summary) => `WAITING — ${summary}`),
+    ...(capacity.blocking ? [`WAITING — ${capacity.blocking.summary}. ${capacity.blocking.recovery}`] : []),
+    ...capacity.details
+      .filter((detail) => detail !== capacity.blocking?.summary)
+      .map((detail) => `capacity: ${detail}`),
     ...recoveredCapacityWakes
       .filter((wake) => isWakeDue(wake.condition, wallNow, virtual))
-      .map(() => 'READY — Claude capacity recovered; reconciliation is due now'),
+      .map(() => 'READY — provider retry reconciliation is due now'),
     ...running.map((a) => `working: ${a.id} "${a.objective}"`),
     ...queued.map((a) => `queued: ${a.id} "${a.objective}"`),
     ...awaiting.map((a) => `awaiting review: ${a.id} "${a.objective}"`),
@@ -153,7 +133,9 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
 
   // NEXT
   const nextLines = [
-    ...infrastructure.next,
+    ...(capacity.blocking
+      ? [`provider retry scheduled at ${capacity.blocking.retryAt.slice(0, 16)}`]
+      : []),
     ...recoveredCapacityWakes.map((wake) =>
       wake.condition.type === 'time' && wake.condition.dueAtVirtual > nowVirtual
         ? `capacity recovery wake at ${wake.condition.dueAtVirtual.slice(0, 16)}`

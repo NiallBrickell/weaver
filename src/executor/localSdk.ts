@@ -23,6 +23,8 @@ function asToolResult(r: SubmitReply): { content: { type: 'text'; text: string }
 }
 
 export class LocalSdkExecutor implements WorkerExecutor {
+  readonly id = 'local-sdk' as const;
+
   async execute(req: WorkerExecutionRequest): Promise<WorkerExecutionOutcome> {
     const server = createSdkMcpServer({
       name: 'weaver',

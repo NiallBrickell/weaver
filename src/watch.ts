@@ -10,12 +10,16 @@
  * that needs a human, it never runs one.
  */
 
-import { infrastructureWaitSummary } from './capacity.js';
+import {
+  capacityPresentation,
+  hasCapacityBackoffForWait,
+  providerCapacityHeadline,
+} from './capacity.js';
 import { activitySummary } from './activity.js';
 import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
-import type { Assignment, WorkstreamDoc } from './types.js';
+import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 
 const R = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -80,6 +84,7 @@ interface WsView {
   /** The one-line summary row (without the slug column, which is padded globally). */
   row: string;
   details: string[];
+  providerCapacity: ProviderCapacityObservation[];
 }
 
 function attemptFresh(a: Assignment): boolean {
@@ -102,6 +107,7 @@ export async function viewOf(slug: string): Promise<WsView> {
       bucket: 4,
       row: `${RED}CANNOT READ STATE: ${e instanceof Error ? e.message : e}${R}`,
       details: [],
+      providerCapacity: [],
     };
   }
   const ws = doc.workstream;
@@ -148,22 +154,23 @@ export async function viewOf(slug: string): Promise<WsView> {
   const virtual = virtualNow();
   const nowV = virtual.toISOString();
   const pendingWakes = doc.wakes.filter((w) => w.status === 'pending');
-  const infrastructure = [...new Set(
-    Object.values(doc.capacity?.byModel ?? {})
-      .map((entry) => infrastructureWaitSummary(entry.wait, doc.workstream.slug)),
-  )];
-  for (const summary of infrastructure) {
+  const capacity = capacityPresentation(doc, nowV);
+  for (const summary of capacity.details) {
     const lines = wrap(summary, 17);
-    details.push(`${BLUE}${BOLD}▸ WAITING${R} ${lines[0] ?? ''}`);
+    details.push(`${BLUE}▸ ${lines[0] ?? ''}${R}`);
     details.push(...lines.slice(1).map((line) => `  ${DIM}${line}${R}`));
   }
   // Typed infrastructure waits have a safe summary above. Never fall back to
   // their raw provider reason; ordinary wakes retain their existing display.
   const recoveredCapacityWakes = pendingWakes.filter(
-    (wake) => wake.infrastructure && !doc.capacity?.byModel[wake.infrastructure.model],
+    (wake) => wake.infrastructure && !hasCapacityBackoffForWait(doc, wake.infrastructure),
+  );
+  const relevantCapacityWakes = pendingWakes.filter(
+    (wake) => wake.infrastructure && capacity.relevantSourceIds.includes(wake.infrastructure.sourceId),
   );
   const normalWakes = pendingWakes.filter((w) => !w.infrastructure);
-  const dueNow = [...normalWakes, ...recoveredCapacityWakes].filter(
+  const operationalWakes = [...normalWakes, ...recoveredCapacityWakes, ...relevantCapacityWakes];
+  const dueNow = operationalWakes.filter(
     (w) => isWakeDue(w.condition, wallNow, virtual),
   ).length;
   const nextWake = normalWakes
@@ -191,9 +198,11 @@ export async function viewOf(slug: string): Promise<WsView> {
       ? 3
       : needsYou
         ? 0
+        : capacity.blocking && !working
+          ? 2
         : working || queued
           ? 1
-          : ws.status === 'active' && pendingWakes.length
+          : ws.status === 'active' && operationalWakes.length
             ? 2
             : 3;
 
@@ -207,7 +216,7 @@ export async function viewOf(slug: string): Promise<WsView> {
     `${paused}${managedBy}` +
     `${activity ? ` ${DIM}${activity}${R}` : ''}`;
 
-  return { slug, bucket, row, details };
+  return { slug, bucket, row, details, providerCapacity: doc.providerCapacity ?? [] };
 }
 
 async function frame(): Promise<string> {
@@ -231,14 +240,16 @@ async function frame(): Promise<string> {
     ` ${DIM}·${R} ${BLUE}${counts[2]} waiting${R}` +
     ` ${DIM}·${R} ${DIM}${counts[3]} idle${R}` +
     (counts[4] ? ` ${DIM}·${R} ${RED}${BOLD}${counts[4]} UNREADABLE${R}` : '');
+  const capacityHeadline = providerCapacityHeadline(views.flatMap((view) => view.providerCapacity), now);
 
   const top = `${DIM}╭${'─'.repeat(w - 2)}╮${R}`;
-  const title = `${DIM}│${R} ${BOLD}${WHITE}W E A V E R${R}   ${countsStr}`;
+  const capacityColor = capacityHeadline?.startsWith('⚠') ? AMBER : DIM;
+  const title = `${DIM}│${R} ${BOLD}${WHITE}W E A V E R${R}   ${countsStr}${capacityHeadline ? ` ${DIM}·${R} ${capacityColor}${capacityHeadline}${R}` : ''}`;
   const clock = `${drift}${DIM}${now.toTimeString().slice(0, 8)}${R}`;
   // Right-align the clock inside the box using plain lengths.
   const plainTitleLen =
     2 + 11 + 3 +
-    `${counts[0]} need you · ${counts[1]} working · ${counts[2]} waiting · ${counts[3]} idle${counts[4] ? ` · ${counts[4]} UNREADABLE` : ''}`.length;
+    `${counts[0]} need you · ${counts[1]} working · ${counts[2]} waiting · ${counts[3]} idle${counts[4] ? ` · ${counts[4]} UNREADABLE` : ''}${capacityHeadline ? ` · ${capacityHeadline}` : ''}`.length;
   const plainClockLen = (drift ? `virtual ${vNow.toISOString().slice(0, 16)}  ` : '').length + 8;
   const gap = Math.max(1, w - plainTitleLen - plainClockLen - 2);
   const header = [top, `${title}${' '.repeat(gap)}${clock} ${DIM}│${R}`, `${DIM}╰${'─'.repeat(w - 2)}╯${R}`].join('\n');

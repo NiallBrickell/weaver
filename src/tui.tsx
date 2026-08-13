@@ -16,7 +16,11 @@ import * as path from 'node:path';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, render, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
-import { infrastructureWaitSummary } from './capacity.js';
+import {
+  capacityPresentation,
+  hasCapacityBackoffForWait,
+  providerCapacityHeadline,
+} from './capacity.js';
 import { activitySummary } from './activity.js';
 import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
@@ -35,7 +39,7 @@ import { requestedPrintoutScope } from './printoutControls.js';
 import { publishPrintoutHtml } from './printoutHtml.js';
 import { acquireRunnerLock, liveRunnerPid, promoteOnRunnerVacancy, runLoop, runnerLoopHealthy } from './runner.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
-import type { WorkstreamDoc } from './types.js';
+import type { ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 
 const STALE_ATTEMPT_MS = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
 
@@ -116,6 +120,7 @@ export function nestUnderManagers(streams: StreamRow[]): StreamRow[] {
 interface Snapshot {
   items: NeedsYouItem[];
   streams: StreamRow[];
+  capacityHeadline?: string;
   /** DONE streams past their linger window — off the board, still on record. */
   archivedDone: number;
 }
@@ -224,6 +229,7 @@ function wrapRows(text: string, width: number): string[] {
 async function snapshot(): Promise<Snapshot> {
   const items: NeedsYouItem[] = [];
   const streams: StreamRow[] = [];
+  const providerCapacity: ProviderCapacityObservation[] = [];
   for (const slug of await listWorkstreams()) {
     let doc: WorkstreamDoc;
     try {
@@ -238,6 +244,7 @@ async function snapshot(): Promise<Snapshot> {
       continue;
     }
     const ws = doc.workstream;
+    providerCapacity.push(...(doc.providerCapacity ?? []));
 
     // ONE decision = ONE row. Approvable things (gated actions, pending
     // sends) render as themselves; attention items that merely point AT one
@@ -346,11 +353,13 @@ async function snapshot(): Promise<Snapshot> {
     const virtual = virtualNow();
     const nowV = virtual.toISOString();
     const pending = doc.wakes.filter((w) => w.status === 'pending');
-    const infrastructure = [...new Set(
-      Object.values(doc.capacity?.byModel ?? {})
-        .map((entry) => infrastructureWaitSummary(entry.wait, doc.workstream.slug)),
-    )];
-    const dueNow = pending.filter((w) => isWakeDue(w.condition, wallNow, virtual)).length;
+    const capacity = capacityPresentation(doc, nowV);
+    const operationalPending = pending.filter((wake) =>
+      !wake.infrastructure ||
+      capacity.relevantSourceIds.includes(wake.infrastructure.sourceId) ||
+      !hasCapacityBackoffForWait(doc, wake.infrastructure),
+    );
+    const dueNow = operationalPending.filter((w) => isWakeDue(w.condition, wallNow, virtual)).length;
     if (dueNow && !working) details.push(`○ ${dueNow} wake(s) due — in line for the runner`);
     const last = doc.events[doc.events.length - 1];
     if (last) details.push(`  last [${last.at.slice(11, 19)}] ${last.type}: ${last.summary.slice(0, 90)}`);
@@ -358,8 +367,9 @@ async function snapshot(): Promise<Snapshot> {
     const bucket: StreamRow['bucket'] =
       ws.status === 'paused' && !needsYou ? 3
       : needsYou ? 0
+      : capacity.blocking && !working ? 2
       : working || queued ? 1
-      : ws.status === 'active' && pending.length ? 2
+      : ws.status === 'active' && operationalPending.length ? 2
       : 3;
 
     // Steering must be VISIBLY acknowledged the moment it lands: an
@@ -370,14 +380,12 @@ async function snapshot(): Promise<Snapshot> {
     }
     // Pilot-pending actions live in the stream details (visible, not yours).
     details.unshift(...pendingPilot);
-    // Capacity is a WAIT, not a judgment card. Render only the safe typed
-    // summary: a raw SDK/provider error may contain unstable or private data.
-    // Wrap it into the selected row's fixed-height detail pane so the recovery
-    // action is visible instead of being truncated off the first line.
+    // Capacity is rendered from the shared role-aware projection. Historical,
+    // overdue, or fallback-covered records are never labelled WAITING.
     const detailWidth = Math.max(40, (process.stdout.columns ?? 120) - 20);
-    const infrastructureDetails = infrastructure.flatMap((summary) =>
+    const infrastructureDetails = capacity.details.flatMap((summary) =>
       wrapDetail(summary, detailWidth).map((line, index) =>
-        index === 0 ? `○ WAITING — ${line}` : `  ${line}`,
+        index === 0 ? `○ ${line}` : `  ${line}`,
       ),
     );
     details.unshift(...infrastructureDetails);
@@ -407,19 +415,19 @@ async function snapshot(): Promise<Snapshot> {
       details.push(`  ${verifiedActs} verified action(s) · ${adopted} adopted deliverable(s) · ${doc.spend.coordinatorPasses} passes · ${doc.spend.humanInterventions ?? 0} human interventions — [i] full record`);
     }
 
-    const nextInfrastructureWake = pending
-      .filter((w) => w.infrastructure && w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
+    const nextInfrastructureWake = operationalPending
+      .filter((w) => capacity.blocking && w.infrastructure && w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
       .sort((a, b) =>
         (a.condition as { dueAtVirtual: string }).dueAtVirtual.localeCompare(
           (b.condition as { dueAtVirtual: string }).dueAtVirtual,
         ),
       )[0];
-    const nextExecutionWake = pending
+    const nextExecutionWake = operationalPending
       .filter((w) => w.executionSafety && w.condition.type === 'wall_time' && w.condition.dueAt > wallNow.toISOString())
       .sort((a, b) =>
         (a.condition as { dueAt: string }).dueAt.localeCompare((b.condition as { dueAt: string }).dueAt),
       )[0];
-    const nextWake = pending
+    const nextWake = operationalPending
       .filter((w) => !w.infrastructure && !w.executionSafety && w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
       .sort((a, b) =>
         (a.condition as { dueAtVirtual: string }).dueAtVirtual.localeCompare(
@@ -448,7 +456,7 @@ async function snapshot(): Promise<Snapshot> {
       depth: 0,
       nextRun,
       nextReason: displayedWake?.reason,
-      infrastructureWait: infrastructure[0],
+      infrastructureWait: capacity.blocking?.summary,
       activity: activitySummary(doc, wallNow, virtual),
       paused: ws.status === 'paused',
       details,
@@ -467,7 +475,12 @@ async function snapshot(): Promise<Snapshot> {
   const visible = nested.filter(
     (s) => !s.concludedAtVirtual || new Date(s.concludedAtVirtual).getTime() > cutoff,
   );
-  return { items, streams: visible, archivedDone: nested.length - visible.length };
+  return {
+    items,
+    streams: visible,
+    archivedDone: nested.length - visible.length,
+    capacityHeadline: providerCapacityHeadline(providerCapacity),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -715,6 +728,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
             : runnerState === 'external' ? <Text color="green">runner ✓ ext</Text>
             : runnerState === 'stalled' ? <Text bold color="red">RUNNER STALLED — q and relaunch!</Text>
             : <Text bold color="red">NO RUNNER — nothing will advance!</Text>}
+          {snap.capacityHeadline ? <><Text dimColor> · </Text><Text color={snap.capacityHeadline.startsWith('⚠') ? 'yellow' : undefined} dimColor={!snap.capacityHeadline.startsWith('⚠')}>{snap.capacityHeadline}</Text></> : null}
           <Text dimColor> · {drift ? `virtual ${vNow.toISOString().slice(0, 16)} ` : ''}{now.toTimeString().slice(0, 8)}</Text>
         </Text>
       </Box>

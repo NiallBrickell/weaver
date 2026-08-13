@@ -259,6 +259,12 @@ export interface InfrastructureWait {
   source: 'coordinator' | 'worker';
   sourceId: Id;
   model: string;
+  /** The disposable execution substrate and upstream provider that produced
+   * this wait. Absent on documents written before provider-scoped capacity;
+   * legacy coordinator waits are known to be local Anthropic SDK waits, while
+   * legacy worker waits deliberately remain ambiguous. */
+  executor?: string;
+  provider?: string;
   detectedAt: Iso;
   retryAt: Iso;
   resetAt?: Iso;
@@ -272,12 +278,29 @@ export interface CapacityBackoff {
   lastBackoffAtVirtual: Iso;
 }
 
-/** Current provider capacity is a typed, model-indexed organizational fact.
- * The index matters because coordinator and worker models can recover at
- * different times; one scalar category would silently collapse that state. */
+/** Current provider capacity is a typed execution-target organizational fact.
+ * Executor + provider + model matter because equal model labels can refer to
+ * different pools; one scalar category would silently collapse that state. */
 export interface CapacityState {
   state: 'backoff';
+  /** Historical field name. New entries are keyed by executor/provider/model;
+   * readers inspect the typed wait rather than interpreting this key. */
   byModel: Record<string, CapacityBackoff>;
+}
+
+/** A provider-reported plan window observed inside a disposable run. This is
+ * glanceable telemetry, never an execution gate: not every executor/provider
+ * reports it, and an observation can become stale between runs. */
+export interface ProviderCapacityObservation {
+  executor: string;
+  provider: string;
+  model: string;
+  window: string;
+  status: 'allowed' | 'allowed_warning' | 'rejected';
+  /** Fraction used, 0..1. Absent when the provider did not report it. */
+  utilization?: number;
+  observedAt: Iso;
+  resetAt?: Iso;
 }
 
 export type WakeCondition =
@@ -506,9 +529,12 @@ export interface WorkstreamDoc {
   /** Bounded narrative tail — projection section 8. Never authoritative. */
   events: EventRecord[];
   spend: WorkstreamSpend;
-  /** Typed source of truth for current Agent SDK capacity constraints. Old
+  /** Typed source of truth for current provider capacity constraints. Old
    * documents may omit this additive field and are treated as recovered. */
   capacity?: CapacityState | null;
+  /** Latest provider-reported plan-window observations. Missing means unknown,
+   * never unlimited; unsupported executors do not manufacture a percentage. */
+  providerCapacity?: ProviderCapacityObservation[];
   /** Single-flight reconciliation lease. */
   lease: WorkstreamLease;
   /** Directions received FROM this workstream's manager (if any). Additive:

@@ -35,13 +35,20 @@ import {
   retireLegacyDollarBudgetCard,
 } from './executionSafety.js';
 import {
+  capacityBackoffFor,
   clearCapacityBackoff,
   ensureCapacityAttention,
   infrastructureWaitSummary,
   recordCapacityBackoff,
+  recordProviderCapacityObservations,
   resolveCapacityAttention,
   SdkFailureTracker,
 } from './capacity.js';
+import {
+  coordinatorCapacityTarget,
+  coordinatorFallbackModel,
+  coordinatorModel,
+} from './modelConfig.js';
 import {
   RevisionConflictError,
   arrive,
@@ -57,17 +64,7 @@ import type { Assignment, InfrastructureWait, PassRecord, WorkstreamDoc } from '
 
 const LEASE_MS = 15 * 60_000;
 
-export function coordinatorModel(): string {
-  // The coordinator is the EVALUATIVE seat — has the work actually been done,
-  // is the course still right, what supersedes what. It runs rarely (one
-  // bounded pass per coalesced wake) and at the moments that matter, so it
-  // gets the most capable model; volume work (workers) stays on sonnet.
-  return process.env.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5';
-}
-
-export function coordinatorFallbackModel(): string {
-  return process.env.WEAVER_COORDINATOR_FALLBACK_MODEL ?? 'claude-opus-5';
-}
+export { coordinatorFallbackModel, coordinatorModel } from './modelConfig.js';
 
 /** Which model THIS pass runs on. Capacity limits are per-model pools, so a
  * parked primary (Fable weekly limit) must not park the fleet: the evaluative
@@ -78,9 +75,9 @@ export function pickCoordinatorModel(doc: WorkstreamDoc, nowIso: string): string
   const primary = coordinatorModel();
   const fallback = coordinatorFallbackModel();
   if (fallback === primary) return primary;
-  const primaryWait = doc.capacity?.byModel[primary]?.wait;
+  const primaryWait = capacityBackoffFor(doc, coordinatorCapacityTarget(primary))?.wait;
   if (!primaryWait || primaryWait.retryAt <= nowIso) return primary;
-  const fallbackWait = doc.capacity?.byModel[fallback]?.wait;
+  const fallbackWait = capacityBackoffFor(doc, coordinatorCapacityTarget(fallback))?.wait;
   return !fallbackWait || fallbackWait.retryAt <= nowIso ? fallback : primary;
 }
 
@@ -96,8 +93,9 @@ export function recordCoordinatorCapacityBackoff(
 }
 
 export function clearCoordinatorCapacityBackoff(doc: WorkstreamDoc, model: string): void {
-  clearCapacityBackoff(doc, model);
-  resolveCapacityAttention(doc, model, 'coordinator');
+  const target = coordinatorCapacityTarget(model);
+  clearCapacityBackoff(doc, target);
+  resolveCapacityAttention(doc, target, 'coordinator');
 }
 
 const SYSTEM_PROMPT = `You are the coordinator of a durable Workstream. You are DISPOSABLE: this pass is one bounded reconciliation over durable typed state, like a controller loop — you were not "here" before, and you will not be "here" after. The projection you received is your complete organizational position; there is no other memory.
@@ -968,14 +966,18 @@ export async function runCoordinatorPass(
   // by user") is NOT a workstream problem: durable state makes waiting free,
   // so back off and retry instead of burning failure strikes or paging the
   // human.
-  const infrastructure = sdkFailure.classify({
+  const capacitySource = {
     source: 'coordinator',
     sourceId: passId,
     model: passModel,
+    executor: 'local-sdk',
+    provider: 'anthropic',
     now: virtualNow(),
     wallNow: new Date(),
     wallFired: wall.fired(),
-  });
+  } as const;
+  const infrastructure = sdkFailure.classify(capacitySource);
+  const capacityObservations = sdkFailure.capacityObservations(capacitySource);
   if (infrastructure) {
     hadError = true;
     errorText = sdkFailure.diagnostic();
@@ -987,6 +989,7 @@ export async function runCoordinatorPass(
   const outcome: PassRecord['outcome'] = passOutcome({ hadError, finishConflicted, finished });
   let summary: string | undefined;
   await arrive(slug, (d, event) => {
+    recordProviderCapacityObservations(d, capacityObservations);
     const rec = d.passes.find((p) => p.id === passId);
     if (rec) {
       rec.outcome = rec.outcome === 'completed' ? 'completed' : outcome;
@@ -1039,7 +1042,7 @@ export async function runCoordinatorPass(
       // bookkeeping; its scheduled reset (or explicit retry) restores the
       // primary as soon as a real pass proves that pool recovered.
       const fb = coordinatorFallbackModel();
-      const fbWait = d.capacity?.byModel[fb]?.wait;
+      const fbWait = capacityBackoffFor(d, coordinatorCapacityTarget(fb))?.wait;
       const fbAvailable = fb !== infrastructure.model && (!fbWait || fbWait.retryAt <= virtualNow().toISOString());
       if (infrastructure.model === coordinatorModel() && fbAvailable) {
         d.wakes.push({

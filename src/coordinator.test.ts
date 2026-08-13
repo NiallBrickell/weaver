@@ -46,6 +46,8 @@ function wait(category: CapacityCategory, index: number): InfrastructureWait {
     source: 'coordinator',
     sourceId: `pass_${index}`,
     model: 'claude-fable-5',
+    executor: 'local-sdk',
+    provider: 'anthropic',
     detectedAt: virtualNow().toISOString(),
     retryAt: new Date(virtualNow().getTime() + 15 * 60_000).toISOString(),
   };
@@ -62,7 +64,7 @@ async function backoff(category: CapacityCategory, count: number): Promise<void>
 test('plan usage state raises one explicit recovery card only after sustained backoff', async () => {
   await backoff('usage_limit', 12);
   let doc = await load('coordinator-capacity');
-  assert.equal(doc.capacity!.byModel['claude-fable-5']!.consecutiveBackoffs, 12);
+  assert.equal(Object.values(doc.capacity!.byModel)[0]!.consecutiveBackoffs, 12);
   assert.equal(doc.attention.filter((item) => item.kind === 'capacity').length, 1);
   assert.match(doc.attention[0]!.summary, /`\/usage`/);
   assert.match(doc.attention[0]!.summary, /weaver capacity retry coordinator-capacity/);

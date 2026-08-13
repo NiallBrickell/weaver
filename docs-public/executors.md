@@ -42,6 +42,12 @@ Requirements:
 - **Provider billing is configured at the provider.** Weaver's rolling
   model-start guard bounds rapid churn but is not a monetary stop. When this
   executor uses API credits, set the real spending ceiling with that provider.
+- **Capacity visibility follows provider evidence.** The local Claude
+  subscription SDK can report fresh plan-window utilization for the dashboard.
+  OpenHands providers such as OpenRouter/Kimi currently expose no equivalent
+  proactive signal through this seam, so Weaver reports their headroom as
+  unknown. A rejected request still becomes a provider-scoped durable backoff;
+  Weaver never converts tokens or estimated cost into a made-up quota bar.
 
 ## What it does and does not guarantee today
 

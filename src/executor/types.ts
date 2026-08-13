@@ -127,6 +127,9 @@ export interface WorkerExecutionOutcome {
 }
 
 export interface WorkerExecutor {
+  /** Stable substrate id used to scope provider backoffs. Optional only for
+   * older/custom executors; Weaver falls back to its configured executor. */
+  readonly id?: string;
   execute(req: WorkerExecutionRequest): Promise<WorkerExecutionOutcome>;
 }
 

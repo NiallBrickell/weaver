@@ -20,9 +20,11 @@ import { arrive, listWorkstreams, load, weaverHome } from './store.js';
 import { virtualNow } from './clock.js';
 import {
   clearCapacityBackoff,
+  isClaudeSdkWait,
   resolveCapacityAttention,
-  retryCapacityNow,
+  retryCapacityTargetNow,
 } from './capacity.js';
+import { coordinatorCapacityTarget, type CapacityTarget } from './modelConfig.js';
 import { acquireProcessLock, liveProcessLockPid } from './processLock.js';
 
 function lockDir(): string {
@@ -106,7 +108,7 @@ export async function infraBackoffSlugs(): Promise<string[]> {
       const d = await load(slug);
       if (d.workstream.status !== 'active') continue;
       if (Object.values(d.capacity?.byModel ?? {}).some(
-        (entry) => entry.wait.retryAt > now,
+        (entry) => isClaudeSdkWait(entry.wait) && entry.wait.retryAt > now,
       )) {
         out.push(slug);
       }
@@ -129,7 +131,7 @@ async function infraBackoffModels(slugs: string[]): Promise<string[]> {
   const now = virtualNow().toISOString();
   for (const slug of slugs) {
     for (const entry of Object.values((await load(slug)).capacity?.byModel ?? {})) {
-      if (entry.wait.retryAt > now) models.add(entry.wait.model);
+      if (isClaudeSdkWait(entry.wait) && entry.wait.retryAt > now) models.add(entry.wait.model);
     }
   }
   return [...models].sort();
@@ -167,7 +169,7 @@ export async function expediteBackoffWakes(
     try {
       const before = await load(slug);
       const hasMatchingWait = Object.values(before.capacity?.byModel ?? {}).some(
-        (entry) => !recoveredModel || entry.wait.model === recoveredModel,
+        (entry) => isClaudeSdkWait(entry.wait) && (!recoveredModel || entry.wait.model === recoveredModel),
       );
       if (!hasMatchingWait) continue;
       await arrive(slug, (d, event) => {
@@ -176,9 +178,15 @@ export async function expediteBackoffWakes(
             wake.status === 'pending' &&
             wake.condition.type === 'time' &&
             wake.infrastructure &&
+            isClaudeSdkWait(wake.infrastructure) &&
             (!recoveredModel || wake.infrastructure.model === recoveredModel))
           .map((wake) => wake.id);
-        const recoveredModels = retryCapacityNow(d, now, recoveredModel);
+        const recoveredModels = [...new Set(
+          Object.values(d.capacity?.byModel ?? {})
+            .map((entry) => entry.wait)
+            .filter((wait) => isClaudeSdkWait(wait) && (!recoveredModel || wait.model === recoveredModel))
+            .map((wait) => wait.model),
+        )];
         for (const wakeId of wakeIds) {
           event('wake.expedited', `${wakeId} pulled forward — credential-change probe confirmed provider recovery`, [wakeId]);
         }
@@ -190,8 +198,10 @@ export async function expediteBackoffWakes(
           }
         }
         for (const model of recoveredModels) {
-          clearCapacityBackoff(d, model);
-          resolveCapacityAttention(d, model, 'capacity-probe');
+          const target: CapacityTarget = coordinatorCapacityTarget(model);
+          retryCapacityTargetNow(d, now, target);
+          clearCapacityBackoff(d, target);
+          resolveCapacityAttention(d, target, 'capacity-probe');
         }
       });
       log(`[run] ${slug}: infra-backoff wake expedited — provider recovered${recoveredModel ? ` for ${recoveredModel}` : ''}`);

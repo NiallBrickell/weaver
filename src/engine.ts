@@ -27,6 +27,8 @@ import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTi
 import { virtualNow } from './clock.js';
 import { pidIsLive } from './processLock.js';
 import { collisionReconciled, isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
+import { capacityBackoffFor } from './capacity.js';
+import { coordinatorCapacityTarget, workerCapacityTarget } from './modelConfig.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
 
 function dueWakes(doc: WorkstreamDoc): typeof doc.wakes {
@@ -648,7 +650,8 @@ export function runnableAssignments(doc: WorkstreamDoc): string[] {
   if (doc.workstream.status !== 'active') return [];
   const now = virtualNow().toISOString();
   const model = workerModel();
-  const workerRetryAt = doc.capacity?.byModel[model]?.wait.retryAt;
+  const target = workerCapacityTarget(model);
+  const workerRetryAt = capacityBackoffFor(doc, target)?.wait.retryAt;
   const providerWait = workerRetryAt ? workerRetryAt > now : false;
   if (providerWait) return [];
   return doc.assignments
@@ -658,7 +661,11 @@ export function runnableAssignments(doc: WorkstreamDoc): string[] {
     // becomes a tight worker retry loop before its wake is due.
     .filter((a) => {
       const wait = a.attempts.at(-1)?.infrastructure;
-      return !wait || wait.model !== model || wait.retryAt <= now;
+      return !wait ||
+        wait.model !== target.model ||
+        wait.executor !== target.executor ||
+        wait.provider !== target.provider ||
+        wait.retryAt <= now;
     })
     // exec.run actions belong to the engine, never to a model worker
     .filter((a) => !a.exec?.run)
@@ -736,7 +743,7 @@ export async function flagDanglingDependencies(slug: string): Promise<number> {
 export function coordinatorBackoffActive(doc: WorkstreamDoc): boolean {
   const now = virtualNow().toISOString();
   const selectedModel = pickCoordinatorModel(doc, now);
-  const retryAt = doc.capacity?.byModel[selectedModel]?.wait.retryAt;
+  const retryAt = capacityBackoffFor(doc, coordinatorCapacityTarget(selectedModel))?.wait.retryAt;
   return retryAt ? retryAt > now : false;
 }
 
@@ -875,7 +882,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
             const a2 = d.assignments.find((a) => a.id === id)!;
             a2.state = 'awaiting_review';
             a2.submission = {
-              summary: 'The worker lost Claude capacity after execution; deterministic readback confirmed the external effect landed.',
+              summary: 'The worker lost provider capacity after execution; deterministic readback confirmed the external effect landed.',
             };
             a2.adoption = { state: 'proposed' };
             d.wakes.push({

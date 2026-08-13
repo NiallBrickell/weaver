@@ -52,6 +52,15 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
   const executor: WorkerExecutor = {
     async execute(req) {
       request = req;
+      req.onMessage?.({
+        type: 'rate_limit_event',
+        rate_limit_info: {
+          status: 'allowed',
+          rateLimitType: 'five_hour',
+          utilization: 0.25,
+          resetsAt: Math.floor((Date.now() + 60 * 60_000) / 1000),
+        },
+      } as never);
       const reply = await req.submit.submitResult({
         summary: 'Grounded evidence gathered with the regular coding-agent surface.',
         artifact: {
@@ -120,6 +129,9 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
     assert.equal(assignment.attempts[0]!.costUsd, 0.25);
     assert.equal(assignment.attempts[0]!.sessionId, 'fake-research-session');
     assert.equal(doc.deliverables.length, 1);
+    assert.equal(doc.providerCapacity?.length, 1);
+    assert.equal(doc.providerCapacity?.[0]?.provider, 'anthropic');
+    assert.equal(doc.providerCapacity?.[0]?.utilization, 0.25);
   } finally {
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });

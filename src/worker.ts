@@ -21,9 +21,16 @@ import {
   ensureCapacityAttention,
   infrastructureWaitSummary,
   recordCapacityBackoff,
+  recordProviderCapacityObservations,
   resolveCapacityAttention,
   SdkFailureTracker,
 } from './capacity.js';
+import {
+  workerCapacityTarget,
+  workerExecutorName,
+  workerModel,
+  type CapacityTarget,
+} from './modelConfig.js';
 import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
@@ -32,12 +39,10 @@ import {
   ExecutionSafetyLimitedError,
   parkIfExecutionLimited,
 } from './executionSafety.js';
-import type { InfrastructureWait, WorkstreamDoc } from './types.js';
+import type { InfrastructureWait, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 import { secureMcpHeaderCredentials, type SecuredMcpConfiguration } from './mcpConfig.js';
 
-export function workerModel(): string {
-  return process.env.WEAVER_WORKER_MODEL ?? 'sonnet';
-}
+export { workerModel } from './modelConfig.js';
 
 /**
  * Which substrate runs the worker's model loop. The seam exists so remote
@@ -184,10 +189,14 @@ export async function finalizeWorkerRun(
     costUsd: number;
     sessionId?: string;
     infrastructure: InfrastructureWait | null;
+    capacityTarget?: CapacityTarget;
+    capacityObservations?: ProviderCapacityObservation[];
     terminalReason?: string;
   },
 ): Promise<void> {
+  const target = outcome.capacityTarget ?? workerCapacityTarget();
   await arrive(slug, (d, event) => {
+    recordProviderCapacityObservations(d, outcome.capacityObservations ?? []);
     const a = d.assignments.find((x) => x.id === assignmentId)!;
     const attempt = a.attempts.find((t) => t.runId === runId);
     if (attempt) {
@@ -198,8 +207,8 @@ export async function finalizeWorkerRun(
     }
     d.spend.totalCostUsd += outcome.costUsd;
     if (outcome.submitted) {
-      clearCapacityBackoff(d, workerModel());
-      resolveCapacityAttention(d, workerModel(), 'worker');
+      clearCapacityBackoff(d, target);
+      resolveCapacityAttention(d, target, 'worker');
       return;
     }
 
@@ -223,8 +232,8 @@ export async function finalizeWorkerRun(
       return;
     }
 
-    clearCapacityBackoff(d, workerModel());
-    resolveCapacityAttention(d, workerModel(), 'worker');
+    clearCapacityBackoff(d, target);
+    resolveCapacityAttention(d, target, 'worker');
     a.state = 'failed';
     const why = outcome.terminalReason ?? 'no_submission';
     if (attempt) attempt.terminalReason = why;
@@ -248,14 +257,20 @@ export async function finalizeWorkerRun(
  * independent commitment to reconcile the stream. */
 export function consumeDueWorkerInfrastructureWakes(
   doc: WorkstreamDoc,
-  model: string,
+  targetOrModel: CapacityTarget | string,
   now: string,
 ): void {
+  const target = typeof targetOrModel === 'string' ? null : targetOrModel;
+  const model = typeof targetOrModel === 'string' ? targetOrModel : targetOrModel.model;
   for (const wake of doc.wakes) {
     if (
       wake.status === 'pending' &&
       wake.infrastructure?.source === 'worker' &&
       wake.infrastructure.model === model &&
+      (!target || (
+        wake.infrastructure.executor === target.executor &&
+        wake.infrastructure.provider === target.provider
+      )) &&
       (wake.condition.type === 'immediate' ||
         (wake.condition.type === 'time' && wake.condition.dueAtVirtual <= now))
     ) {
@@ -276,6 +291,7 @@ export async function runWorker(
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
   // A misconfigured WEAVER_EXECUTOR fails here, before any state moves.
   const executor = providedExecutor ?? selectExecutor();
+  const capacityTarget = workerCapacityTarget(workerModel(), executor.id ?? workerExecutorName());
 
   // Declared inputs: ADOPTED deliverables of dependency assignments only — a
   // rejected candidate never becomes another worker's input.
@@ -307,7 +323,7 @@ export async function runWorker(
       // A due infrastructure wake is a retry permit, not separate intended
       // work. This fresh attempt consumes matching permits; success creates its
       // submission wake, while another outage creates one new future permit.
-      consumeDueWorkerInfrastructureWakes(d, workerModel(), now);
+      consumeDueWorkerInfrastructureWakes(d, capacityTarget, now);
       a.state = 'running';
       a.attempts.push({
         runId,
@@ -530,20 +546,26 @@ export async function runWorker(
     wall.disarm();
   }
 
-  const infrastructure = sdkFailure.classify({
+  const capacitySource = {
     source: 'worker',
     sourceId: runId,
     model: workerModel(),
+    executor: capacityTarget.executor,
+    provider: capacityTarget.provider,
     now: virtualNow(),
     wallNow: new Date(),
     wallFired: wall.fired(),
-  });
+  } as const;
+  const infrastructure = sdkFailure.classify(capacitySource);
+  const capacityObservations = sdkFailure.capacityObservations(capacitySource);
 
   await finalizeWorkerRun(slug, assignmentId, runId, {
     submitted,
     costUsd,
     ...(sessionId ? { sessionId } : {}),
     infrastructure,
+    capacityTarget,
+    capacityObservations,
     ...(resultSubtype ? { terminalReason: resultSubtype } : {}),
   });
   return true;
