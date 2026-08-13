@@ -11,7 +11,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { pickCoordinatorModel, runCoordinatorPass } from './coordinator.js';
 import {
   ExecutionSafetyLimitedError,
@@ -30,6 +30,23 @@ import { collisionReconciled, isRepoEgressAction, repoEgressCollisions } from '.
 import { capacityBackoffFor } from './capacity.js';
 import { coordinatorCapacityTarget, workerCapacityTarget } from './modelConfig.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
+
+/**
+ * The shell a declared action's `run`/`verify` command is executed with.
+ *
+ * execSync defaults to /bin/sh, but a coordinator writes the shell everyone
+ * writes — `diff <(a) <(b)`, `[[ ]]`, arrays — and under /bin/sh those die with
+ * "syntax error near unexpected token `('". The command is then blamed for the
+ * action: a NoBe page deploy that had actually succeeded was rejected because
+ * its readback used process substitution, costing a full re-file cycle. Asking
+ * the model to remember POSIX is the wrong half to fix — the shell a human
+ * would get is bash, so use it when the machine has it and fall back to the
+ * default only where it does not.
+ */
+function actionShell(): string | undefined {
+  return existsSync('/bin/bash') ? '/bin/bash' : undefined;
+}
+
 
 function dueWakes(doc: WorkstreamDoc): typeof doc.wakes {
   const wallNow = new Date();
@@ -363,11 +380,14 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
     throw new Error(`${assignmentId} verify refused: no execution attempt to read back`);
   }
   const secrets = loadSecrets(slug);
+
+
   let ok = false;
   let output = '';
   try {
     output = execSync(asg.exec.verify, {
       cwd: asg.exec.cwd,
+      shell: actionShell(),
       timeout: 60_000,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -502,6 +522,7 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
     try {
       output = execSync(asg.exec!.run!, {
         cwd: asg.exec!.cwd,
+        shell: actionShell(),
         timeout: 120_000,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
