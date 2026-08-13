@@ -68,6 +68,11 @@ interface StreamRow {
   nextReason?: string;
   /** Safe typed infrastructure position; raw provider errors never render. */
   infrastructureWait?: string;
+  /** Set when capacity — not a schedule — is what holds this stream. The row
+   * renders its own state word off this, because "waiting for its next wake"
+   * and "parked behind a provider limit" are different situations an operator
+   * has to tell apart at a glance, and the board used to spell both WAITING. */
+  capacityBlock?: { summary: string; needsHuman: boolean };
   /** Honest elapsed execution / decision age from durable timestamps. */
   activity?: string;
   paused: boolean;
@@ -457,6 +462,12 @@ async function snapshot(): Promise<Snapshot> {
       nextRun,
       nextReason: displayedWake?.reason,
       infrastructureWait: capacity.blocking?.summary,
+      // Only when capacity is what actually holds the stream — a stream with
+      // work in flight has already routed around the limit and must not wear
+      // the badge, however many stale per-model records it still carries.
+      capacityBlock: capacity.blocking && !working
+        ? { summary: capacity.blocking.summary, needsHuman: capacity.blocking.needsHuman }
+        : undefined,
       activity: activitySummary(doc, wallNow, virtual),
       paused: ws.status === 'paused',
       details,
@@ -497,6 +508,30 @@ const DOT: Record<number, { color: string; word: string; glyph: string }> = {
   4: { color: 'red', word: 'UNREADABLE', glyph: '✗' },
   5: { color: 'green', word: 'DONE', glyph: '✓' },
 };
+
+/** The state word, colour and glyph one fleet row wears.
+ *
+ * A capacity park outranks the bucket, because "parked behind a provider
+ * limit" and "waiting for its next scheduled wake" are the same blue WAITING
+ * on the board and mean opposite things — the first is the fleet stopped, the
+ * second is the fleet working as designed. Within a park, red says a person
+ * has to act (enable usage credits, log in again) and yellow says it clears
+ * itself on a reset, so an operator can tell "mine to fix" from "wait it out"
+ * without opening a single stream. An ACTIVE stream in the idle bucket has
+ * nothing scheduled at all — a stranded stream the quiescence backstop should
+ * be reviving, never a restful gray: paused is the only honest IDLE. */
+export function streamDecoration(
+  st: Pick<StreamRow, 'bucket' | 'queuedNow' | 'paused' | 'capacityBlock'>,
+): { color: string; word: string; glyph: string } {
+  if (st.capacityBlock) {
+    return st.capacityBlock.needsHuman
+      ? { color: 'red', word: 'LIMITED', glyph: '▲' }
+      : { color: 'yellow', word: 'LIMITED', glyph: '◔' };
+  }
+  if (st.bucket === 2 && st.queuedNow) return { color: 'blueBright', word: 'QUEUED', glyph: '●' };
+  if (st.bucket === 3 && !st.paused) return { color: 'yellow', word: 'DORMANT', glyph: '■' };
+  return DOT[st.bucket]!;
+}
 
 /** Hard-clear (incl. scrollback) — Ink's incremental repaint desyncs whenever
  * a frame ever wrapped or overflowed, so any layout change gets a clean slate. */
@@ -676,6 +711,11 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
 
   const counts = [0, 0, 0, 0, 0, 0];
   for (const s of snap.streams) counts[s.bucket]! += 1;
+  // Capacity parks are counted apart from ordinary waiting: a fleet that has
+  // stopped because of a provider limit should say so in the header, not hide
+  // inside a waiting tally that looks the same on a busy afternoon.
+  const limited = snap.streams.filter((s) => s.capacityBlock).length;
+  const limitedNeedsYou = snap.streams.some((s) => s.capacityBlock?.needsHuman);
   counts[5]! += snap.archivedDone; // the header's done tally never shrinks as rows age off the board
   const now = new Date();
   const vNow = virtualNow();
@@ -720,6 +760,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
           {snap.items.length ? <Text bold color="red">{snap.items.length} need you</Text> : <Text dimColor>0 need you</Text>}
           <Text dimColor> · </Text><Text color="cyan">{counts[1]} working</Text>
           <Text dimColor> · </Text><Text color="blue">{counts[2]} waiting</Text>
+          {limited ? <><Text dimColor> · </Text><Text bold color={limitedNeedsYou ? 'red' : 'yellow'}>{limited} limited</Text></> : null}
           <Text dimColor> · </Text><Text dimColor>{counts[3]} idle</Text>
           {counts[5] ? <><Text dimColor> · </Text><Text color="green">{counts[5]} done</Text></> : null}
           {counts[4] ? <Text bold color="red"> · {counts[4]} UNREADABLE</Text> : null}
@@ -798,13 +839,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         <Text bold dimColor>{sec.label}</Text>
         {sec.list.map((st) => {
           const isSel = sel?.type === 'stream' && sel.stream.slug === st.slug;
-          // An ACTIVE stream in the idle bucket has nothing scheduled at all —
-          // that is a stranded stream (the quiescence backstop should be
-          // reviving it), never a restful gray: paused is the only honest IDLE.
-          const d =
-            st.bucket === 2 && st.queuedNow ? { color: 'blueBright', word: 'QUEUED', glyph: '●' }
-            : st.bucket === 3 && !st.paused ? { color: 'yellow', word: 'DORMANT', glyph: '■' }
-            : DOT[st.bucket]!;
+          const d = streamDecoration(st);
           return (
             <Box key={st.slug} flexDirection="column">
               <Text inverse={isSel} wrap="truncate-end">
@@ -817,8 +852,10 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                   <>
                     {st.paused ? <Text dimColor> [paused]</Text> : null}
                     {st.activity ? <Text dimColor> {st.activity}</Text> : null}
-                    {st.bucket === 2 && !st.queuedNow && st.nextRun ? (
-                      <Text color="blue"> · in {until(st.nextRun)}{st.infrastructureWait ? `: ${st.infrastructureWait}` : st.nextReason ? `: ${waitLabel(st.nextReason)}` : ''}</Text>
+                    {st.capacityBlock ? (
+                      <Text color={d.color}> · {st.capacityBlock.summary}{st.capacityBlock.needsHuman ? ' — needs you' : ''}</Text>
+                    ) : st.bucket === 2 && !st.queuedNow && st.nextRun ? (
+                      <Text color="blue"> · in {until(st.nextRun)}{st.nextReason ? `: ${waitLabel(st.nextReason)}` : ''}</Text>
                     ) : null}
                   </>
                 )}
