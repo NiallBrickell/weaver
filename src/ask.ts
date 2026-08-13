@@ -17,6 +17,7 @@ import { sdkEnv } from './secrets.js';
 import { listWorkstreams, weaverHome, workstreamDir } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 import { workerModel } from './worker.js';
+import { isLegacyDollarBudgetAttention } from './executionSafety.js';
 
 function digestOne(slug: string, dir: string): string {
   let doc: WorkstreamDoc;
@@ -27,7 +28,7 @@ function digestOne(slug: string, dir: string): string {
   }
   const ws = doc.workstream;
   const decisions = doc.decisions.slice(-4).map((d) => `  - [${d.id}${d.status !== 'standing' ? `, ${d.status}` : ''}] ${d.title.replace(/\s+/g, ' ').slice(0, 160)}`);
-  const attention = doc.attention.filter((a) => a.status === 'open').map((a) => `  - OPEN [${a.id}] ${a.summary.replace(/\s+/g, ' ').slice(0, 120)}`);
+  const attention = doc.attention.filter((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a)).map((a) => `  - OPEN [${a.id}] ${a.summary.replace(/\s+/g, ' ').slice(0, 120)}`);
   const adopted = doc.deliverables.filter((d) => d.adopted).slice(-4).map((d) => `  - [${d.id}] ${d.title.slice(0, 100)}`);
   const events = doc.events.slice(-5).map((e) => `  - ${e.at.slice(0, 16)} ${e.type}: ${e.summary.replace(/\s+/g, ' ').slice(0, 110)}`);
   return [

@@ -19,6 +19,7 @@ import type {
   PrintoutMutationReceipt,
   WorkstreamDoc,
 } from './types.js';
+import { executionPosition, isLegacyDollarBudgetAttention } from './executionSafety.js';
 import {
   loadPolicies,
   policyOrigin,
@@ -190,9 +191,10 @@ function renderInteraction(interaction: Interaction, revision?: number): string[
 
 function currentBoundary(doc: WorkstreamDoc): string[] {
   const standing = doc.decisions.filter((decision) => decision.status === 'standing');
-  const open = doc.attention.filter((item) => item.status === 'open');
+  const open = doc.attention.filter((item) => item.status === 'open' && !isLegacyDollarBudgetAttention(item));
   const live = doc.assignments.filter((assignment) => !['completed', 'failed', 'cancelled'].includes(assignment.state));
   const wakes = doc.wakes.filter((wake) => wake.status === 'pending');
+  const safety = executionPosition(doc);
   return [
     `- Status: ${doc.workstream.status}`,
     `- Objective: ${flat(doc.workstream.objective)}`,
@@ -200,12 +202,12 @@ function currentBoundary(doc: WorkstreamDoc): string[] {
     `- Constraints: ${doc.workstream.constraints.length ? doc.workstream.constraints.map(flat).join('; ') : 'none recorded'}`,
     `- Tags: ${doc.workstream.tags.length ? doc.workstream.tags.join(', ') : 'none'}`,
     `- Authority: outbound sends ${doc.workstream.autonomy.sendsRequireApproval ? 'require approval' : 'may proceed within assigned authority'}`,
-    `- Budget: ${doc.workstream.budget.maxCoordinatorPasses} coordinator passes · $${doc.workstream.budget.maxCostUsd.toFixed(2)} estimated cost`,
+    `- Execution safety: ${safety.count}/${safety.limit} model starts in rolling ${Math.round(safety.windowSeconds / 60)}m · automatic pause/resume`,
     ...(doc.workstream.status === 'done' && doc.workstream.conclusion ? [
       `- Coordinator conclusion account (informational): ${flat(doc.workstream.conclusion.summary)}`,
       `- Typed completion evidence IDs (validated at conclusion): ${doc.workstream.conclusion.evidenceIds.join(', ')}`,
     ] : []),
-    `- Usage: ${doc.spend.coordinatorPasses} coordinator passes · $${doc.spend.totalCostUsd.toFixed(3)} estimated · ${doc.spend.humanInterventions ?? 0} human interventions`,
+    `- Diagnostic activity: ${doc.spend.coordinatorPasses} coordinator passes · $${doc.spend.totalCostUsd.toFixed(3)} SDK estimate · ${doc.spend.humanInterventions ?? 0} human interventions`,
     `- Provider capacity: ${doc.capacity ? Object.entries(doc.capacity.byModel).map(([model, entry]) => `${model} ${entry.wait.kind}, retry ${entry.wait.retryAt}`).join('; ') : 'available'}`,
     `- Standing course: ${standing.length ? standing.map((decision) => `${decision.id} “${flat(decision.title)}”`).join('; ') : 'none recorded'}`,
     `- Open needs-you items: ${open.length ? open.map((item) => `${item.id} ${flat(item.summary)}`).join('; ') : 'none'}`,

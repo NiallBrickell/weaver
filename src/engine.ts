@@ -13,6 +13,13 @@
 import { execSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { pickCoordinatorModel, runCoordinatorPass } from './coordinator.js';
+import {
+  ExecutionSafetyLimitedError,
+  isLegacyDollarBudgetAttention,
+  isWakeDue,
+  parkIfExecutionLimited,
+  retireLegacyDollarBudgetCard,
+} from './executionSafety.js';
 import { loadSecrets, redactSecrets } from './secrets.js';
 import { runWorker, workerModel } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
@@ -23,12 +30,9 @@ import { isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
 
 function dueWakes(doc: WorkstreamDoc): typeof doc.wakes {
-  const now = virtualNow().toISOString();
-  return doc.wakes.filter(
-    (w) =>
-      w.status === 'pending' &&
-      (w.condition.type === 'immediate' || w.condition.dueAtVirtual <= now),
-  );
+  const wallNow = new Date();
+  const virtual = virtualNow();
+  return doc.wakes.filter((wake) => wake.status === 'pending' && isWakeDue(wake.condition, wallNow, virtual));
 }
 
 /** Pause is typed lifecycle state, not merely a runner filter. Every
@@ -44,7 +48,7 @@ async function executeApprovedSends(slug: string): Promise<number> {
   if (doc.workstream.status !== 'active') return 0;
   let executed = 0;
   for (const int of doc.interactions.filter((i) => i.status === 'approved')) {
-    // Revalidate at egress: approval present, pinned content intact, budget alive.
+    // Revalidate at egress: approval present and pinned content intact.
     const del = doc.deliverables.find((d) => d.id === int.deliverableId);
     if (!del || !int.pinnedHash || del.adopted?.contentHash !== int.pinnedHash) {
       await arrive(slug, (d, event) => {
@@ -184,7 +188,11 @@ export async function deliverManagerNotices(slug: string): Promise<number> {
     }
   }
   for (const att of doc.attention) {
-    if (att.status !== 'open' || (att.kind !== 'blocker' && att.kind !== 'budget')) continue;
+    if (
+      att.status !== 'open' ||
+      isLegacyDollarBudgetAttention(att) ||
+      (att.kind !== 'blocker' && att.kind !== 'budget')
+    ) continue;
     const dedupKey = `attention:${att.id}`;
     if (existingKeys.has(dedupKey)) continue;
     candidates.push({
@@ -779,6 +787,9 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     let progressed = false;
 
     if ((await recoverCrashedAttempts(slug)) > 0) progressed = true;
+    // Compatibility repair happens before attention/manager delivery so an
+    // old lifetime-dollar card cannot remain a false human blocker.
+    if (await retireLegacyDollarBudgetCard(slug)) progressed = true;
     if ((await pilotApproveGatedActions(slug)) > 0) progressed = true;
     if ((await deliverManagerNotices(slug)) > 0) progressed = true;
     report.unknownsResolved += await resolveUnknownSends(slug);
@@ -823,83 +834,67 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     // from re-raising, so it must not spin the cycle loop.
     await flagDanglingDependencies(slug);
 
-    // Budget gates WORKERS, not just coordinator passes — a long research run
-    // must not be able to sail past maxCostUsd. Over budget: launch nothing,
-    // tell the human once, and let them top up or wind down.
-    const docBudget = await load(slug);
-    if (docBudget.spend.totalCostUsd >= docBudget.workstream.budget.maxCostUsd) {
-      const hasOpen = docBudget.attention.some((a) => a.kind === 'budget' && a.status === 'open');
-      if (!hasOpen) {
-        await arrive(slug, (d, event) => {
-          d.attention.push({
-            id: newId('att'),
-            kind: 'budget',
-            summary: `Budget exhausted ($${d.spend.totalCostUsd.toFixed(2)} of $${d.workstream.budget.maxCostUsd}) — nothing more will run. Top up with: weaver budget ${slug} --max-cost <usd>, or pause the workstream.`,
-            status: 'open',
-            createdAt: new Date().toISOString(),
-          });
-          event('budget.exhausted', `spend $${d.spend.totalCostUsd.toFixed(2)} ≥ cap $${d.workstream.budget.maxCostUsd}; workers gated`);
-        });
+    const runnable = runnableAssignments(await load(slug));
+    for (const id of runnable) {
+      // Recheck before every model-backed assignment: each successful claim
+      // changes the rolling position. Engine-authored deterministic actions
+      // run above and are intentionally outside this model-start guard.
+      if (await parkIfExecutionLimited(slug)) break cycles;
+      const beforeWorkerStatus = await workstreamStatus(slug);
+      if (beforeWorkerStatus !== 'active') {
+        if (beforeWorkerStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+        break cycles;
       }
-    } else {
-      const runnable = runnableAssignments(await load(slug));
-      for (const id of runnable) {
-        const beforeWorkerStatus = await workstreamStatus(slug);
-        if (beforeWorkerStatus !== 'active') {
-          if (beforeWorkerStatus === 'paused') report.skipped = 'workstream became paused during this tick';
-          break cycles;
-        }
-        // Repo-egress deconfliction gate: hold an action worker whose egress
-        // (push/merge/PR-open) would collide with another OPEN PR editing the
-        // same files, rather than launching a second competing write. Held
-        // actions stay queued+approved and re-run automatically once the
-        // collision clears; skip past this id without counting it as progress.
-        const runnableAsg = (await load(slug)).assignments.find((a) => a.id === id);
-        if (runnableAsg && !(await guardRepoEgress(slug, runnableAsg))) continue;
-        process.stderr.write(`[tick] running worker for ${id}…\n`);
-        const started = await runWorker(slug, id);
-        if (!started) break cycles;
-        report.workersRun.push(id);
-        // Action assignments: the worker's claim settles nothing — run the
-        // deterministic readback now so the reviewing pass sees verified truth.
-        const after = (await load(slug)).assignments.find((a) => a.id === id);
-        if (after?.kind === 'action' && after.exec) {
-          const ok = await verifyAction(slug, id);
-          process.stderr.write(`[tick] action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
-          const latest = (await load(slug)).assignments.find((a) => a.id === id);
-          const wait = latest?.attempts.at(-1)?.infrastructure;
-          // An action worker can lose model capacity after touching the world.
-          // Passing readback means the effect landed: stop before any retry and
-          // submit the verified fact for adoption. Failed readback leaves the
-          // approved idempotent act deferred until the typed retry boundary.
-          if (ok && wait && latest?.state === 'queued') {
-            await arrive(slug, (d, event) => {
-              const a2 = d.assignments.find((a) => a.id === id)!;
-              a2.state = 'awaiting_review';
-              a2.submission = {
-                summary: 'The worker lost Claude capacity after execution; deterministic readback confirmed the external effect landed.',
-              };
-              a2.adoption = { state: 'proposed' };
-              d.wakes.push({
-                id: newId('wake'),
-                reason: `action ${id} readback confirmed its effect after worker infrastructure backoff`,
-                condition: { type: 'immediate' },
-                status: 'pending',
-                createdAt: new Date().toISOString(),
-              });
-              event('action.recovered_by_readback', `${id} effect confirmed after ${wait.kind}; no retry`, [id]);
+      // Repo-egress deconfliction gate: hold an action worker whose egress
+      // (push/merge/PR-open) would collide with another OPEN PR editing the
+      // same files, rather than launching a second competing write. Held
+      // actions stay queued+approved and re-run automatically once the
+      // collision clears; skip past this id without counting it as progress.
+      const runnableAsg = (await load(slug)).assignments.find((a) => a.id === id);
+      if (runnableAsg && !(await guardRepoEgress(slug, runnableAsg))) continue;
+      process.stderr.write(`[tick] running worker for ${id}…\n`);
+      const started = await runWorker(slug, id);
+      if (!started) break cycles;
+      report.workersRun.push(id);
+      // Action assignments: the worker's claim settles nothing — run the
+      // deterministic readback now so the reviewing pass sees verified truth.
+      const after = (await load(slug)).assignments.find((a) => a.id === id);
+      if (after?.kind === 'action' && after.exec) {
+        const ok = await verifyAction(slug, id);
+        process.stderr.write(`[tick] action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
+        const latest = (await load(slug)).assignments.find((a) => a.id === id);
+        const wait = latest?.attempts.at(-1)?.infrastructure;
+        // An action worker can lose model capacity after touching the world.
+        // Passing readback means the effect landed: stop before any retry and
+        // submit the verified fact for adoption. Failed readback leaves the
+        // approved idempotent act deferred until the typed retry boundary.
+        if (ok && wait && latest?.state === 'queued') {
+          await arrive(slug, (d, event) => {
+            const a2 = d.assignments.find((a) => a.id === id)!;
+            a2.state = 'awaiting_review';
+            a2.submission = {
+              summary: 'The worker lost Claude capacity after execution; deterministic readback confirmed the external effect landed.',
+            };
+            a2.adoption = { state: 'proposed' };
+            d.wakes.push({
+              id: newId('wake'),
+              reason: `action ${id} readback confirmed its effect after worker infrastructure backoff`,
+              condition: { type: 'immediate' },
+              status: 'pending',
+              createdAt: new Date().toISOString(),
             });
-          }
+            event('action.recovered_by_readback', `${id} effect confirmed after ${wait.kind}; no retry`, [id]);
+          });
         }
-        progressed = true;
-        // The account/model failure is fleet capacity, not an assignment
-        // failure. Do not launch the rest of this precomputed batch into it.
-        if (after?.attempts.at(-1)?.infrastructure) break;
-        const afterWorkerStatus = await workstreamStatus(slug);
-        if (afterWorkerStatus !== 'active') {
-          if (afterWorkerStatus === 'paused') report.skipped = 'workstream became paused during this tick';
-          break cycles;
-        }
+      }
+      progressed = true;
+      // The account/model failure is fleet capacity, not an assignment
+      // failure. Do not launch the rest of this precomputed batch into it.
+      if (after?.attempts.at(-1)?.infrastructure) break;
+      const afterWorkerStatus = await workstreamStatus(slug);
+      if (afterWorkerStatus !== 'active') {
+        if (afterWorkerStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+        break cycles;
       }
     }
 
@@ -986,6 +981,9 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       !leaseLive &&
       report.passes.length < maxPasses
     ) {
+      // Leave every due organizational wake pending while the physical-time
+      // guard is closed. Its own typed wall wake will resume automatically.
+      if (await parkIfExecutionLimited(slug)) break cycles;
       const reasons = [...new Set(due.map((w) => w.reason))];
       // Mark fired BEFORE the pass (coalesced, at-least-once): a crash mid-pass
       // loses the wake but the projection's arrivals still carry the facts,
@@ -1004,7 +1002,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
         const outcome = await runCoordinatorPass(slug, reasons);
         report.passes.push(outcome);
       } catch (e) {
-        // The pass never started (lease race, budget ceiling): restore the
+        // The pass never started (lease race or concurrent guard claim): restore the
         // wakes so the arrival is not silently lost.
         await arrive(slug, (d, event) => {
           for (const w of d.wakes) {
@@ -1019,6 +1017,10 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
           if (stoppedStatus === 'paused') report.skipped = 'workstream became paused during this tick';
           break cycles;
         }
+        // A concurrent model claim can close the rolling window after the
+        // engine's precheck. The atomic claim parked its typed recovery wake;
+        // this tick is safely quiescent, not failed.
+        if (e instanceof ExecutionSafetyLimitedError) break cycles;
         throw e;
       }
       progressed = true;

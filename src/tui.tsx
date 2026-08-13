@@ -4,7 +4,7 @@
  * The design center is the NEEDS-YOU queue: the only turns a human should
  * spend on a workstream are judgment calls, so those are the first thing on
  * screen and every one is answerable with a single keypress. Everything else
- * (running workers, wakes, budgets) is glanceable context below.
+ * (running workers, wakes, activity age) is glanceable context below.
  *
  * All state shown is a projection of typed workstream state — no transcript
  * parsing, no liveness guessing. Human keypresses call the same first-class
@@ -17,6 +17,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, render, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { infrastructureWaitSummary } from './capacity.js';
+import { activitySummary } from './activity.js';
+import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
 import {
   approveAction,
@@ -62,6 +64,8 @@ interface StreamRow {
   nextReason?: string;
   /** Safe typed infrastructure position; raw provider errors never render. */
   infrastructureWait?: string;
+  /** Honest elapsed execution / decision age from durable timestamps. */
+  activity?: string;
   paused: boolean;
   details: string[];
   /** The task card ([enter] on the row): what this stream IS — its objective
@@ -246,7 +250,7 @@ async function snapshot(): Promise<Snapshot> {
     const commentary = new Map<string, string[]>();
     const seenRefs = new Set<string>();
     const seenSummaries = new Set<string>();
-    for (const a of doc.attention.filter((x) => x.status === 'open')) {
+    for (const a of doc.attention.filter((x) => x.status === 'open' && !isLegacyDollarBudgetAttention(x))) {
       if (a.refId && approvableIds.has(a.refId)) {
         commentary.set(a.refId, [...(commentary.get(a.refId) ?? []), a.summary]);
         continue;
@@ -338,13 +342,15 @@ async function snapshot(): Promise<Snapshot> {
     if (leaseHeld) { working++; details.push(`▶ coordinator pass in flight`); }
     const queued = doc.assignments.filter((x) => x.state === 'queued' || x.state === 'awaiting_review').length;
     if (queued) details.push(`… ${queued} assignment(s) queued/awaiting review`);
-    const nowV = virtualNow().toISOString();
+    const wallNow = new Date();
+    const virtual = virtualNow();
+    const nowV = virtual.toISOString();
     const pending = doc.wakes.filter((w) => w.status === 'pending');
     const infrastructure = [...new Set(
       Object.values(doc.capacity?.byModel ?? {})
         .map((entry) => infrastructureWaitSummary(entry.wait, doc.workstream.slug)),
     )];
-    const dueNow = pending.filter((w) => w.condition.type === 'immediate' || w.condition.dueAtVirtual <= nowV).length;
+    const dueNow = pending.filter((w) => isWakeDue(w.condition, wallNow, virtual)).length;
     if (dueNow && !working) details.push(`○ ${dueNow} wake(s) due — in line for the runner`);
     const last = doc.events[doc.events.length - 1];
     if (last) details.push(`  last [${last.at.slice(11, 19)}] ${last.type}: ${last.summary.slice(0, 90)}`);
@@ -408,15 +414,24 @@ async function snapshot(): Promise<Snapshot> {
           (b.condition as { dueAtVirtual: string }).dueAtVirtual,
         ),
       )[0];
+    const nextExecutionWake = pending
+      .filter((w) => w.executionSafety && w.condition.type === 'wall_time' && w.condition.dueAt > wallNow.toISOString())
+      .sort((a, b) =>
+        (a.condition as { dueAt: string }).dueAt.localeCompare((b.condition as { dueAt: string }).dueAt),
+      )[0];
     const nextWake = pending
-      .filter((w) => !w.infrastructure && w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
+      .filter((w) => !w.infrastructure && !w.executionSafety && w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
       .sort((a, b) =>
         (a.condition as { dueAtVirtual: string }).dueAtVirtual.localeCompare(
           (b.condition as { dueAtVirtual: string }).dueAtVirtual,
         ),
       )[0];
-    const displayedWake = nextInfrastructureWake ?? nextWake;
-    const nextRun = displayedWake ? (displayedWake.condition as { dueAtVirtual: string }).dueAtVirtual : undefined;
+    const displayedWake = nextInfrastructureWake ?? nextExecutionWake ?? nextWake;
+    const nextRun = displayedWake
+      ? displayedWake.condition.type === 'wall_time'
+        ? displayedWake.condition.dueAt
+        : (displayedWake.condition as { dueAtVirtual: string }).dueAtVirtual
+      : undefined;
     const concludedAtVirtual = ws.status === 'done'
       ? ws.conclusion?.atVirtual
         ?? [...doc.events].reverse().find((e) => e.type === 'workstream.concluded')?.at
@@ -432,8 +447,9 @@ async function snapshot(): Promise<Snapshot> {
       managedBy: ws.managedBy?.slug,
       depth: 0,
       nextRun,
-      nextReason: nextWake?.reason,
+      nextReason: displayedWake?.reason,
       infrastructureWait: infrastructure[0],
+      activity: activitySummary(doc, wallNow, virtual),
       paused: ws.status === 'paused',
       details,
       objective: ws.objective,
@@ -786,6 +802,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                 ) : (
                   <>
                     {st.paused ? <Text dimColor> [paused]</Text> : null}
+                    {st.activity ? <Text dimColor> {st.activity}</Text> : null}
                     {st.bucket === 2 && !st.queuedNow && st.nextRun ? (
                       <Text color="blue"> · in {until(st.nextRun)}{st.infrastructureWait ? `: ${st.infrastructureWait}` : st.nextReason ? `: ${waitLabel(st.nextReason)}` : ''}</Text>
                     ) : null}

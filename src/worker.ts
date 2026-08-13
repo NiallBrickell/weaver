@@ -27,6 +27,11 @@ import {
 import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
+import {
+  assertExecutionStartAllowed,
+  ExecutionSafetyLimitedError,
+  parkIfExecutionLimited,
+} from './executionSafety.js';
 import type { InfrastructureWait, WorkstreamDoc } from './types.js';
 import { secureMcpHeaderCredentials, type SecuredMcpConfiguration } from './mcpConfig.js';
 
@@ -251,7 +256,8 @@ export function consumeDueWorkerInfrastructureWakes(
       wake.status === 'pending' &&
       wake.infrastructure?.source === 'worker' &&
       wake.infrastructure.model === model &&
-      (wake.condition.type === 'immediate' || wake.condition.dueAtVirtual <= now)
+      (wake.condition.type === 'immediate' ||
+        (wake.condition.type === 'time' && wake.condition.dueAtVirtual <= now))
     ) {
       wake.status = 'cancelled';
     }
@@ -290,8 +296,12 @@ export async function runWorker(
   if (current.workstream.status !== 'active') return false;
   const currentAssignment = current.assignments.find((a) => a.id === assignmentId);
   if (currentAssignment?.state !== 'queued') return false;
+  const startedAt = new Date();
   try {
     await mutate(slug, current.revision, (d, event) => {
+      // One CAS both checks the fleet-independent rolling ceiling and records
+      // the attempt, so no direct/concurrent claim can slip through it.
+      assertExecutionStartAllowed(d, startedAt);
       const a = d.assignments.find((x) => x.id === assignmentId)!;
       const now = virtualNow().toISOString();
       // A due infrastructure wake is a retry permit, not separate intended
@@ -303,11 +313,15 @@ export async function runWorker(
         runId,
         model: workerModel(),
         runnerPid: process.pid,
-        startedAt: new Date().toISOString(),
+        startedAt: startedAt.toISOString(),
       });
       event('worker.started', `${assignmentId} attempt ${runId}`, [assignmentId]);
     });
   } catch (error) {
+    if (error instanceof ExecutionSafetyLimitedError) {
+      await parkIfExecutionLimited(slug, startedAt);
+      return false;
+    }
     if (error instanceof RevisionConflictError) return false;
     throw error;
   }
@@ -488,7 +502,7 @@ export async function runWorker(
       // 80 turns killed a routine clone-fix-test brief on a large repo before
       // it could submit (11 wasted minutes + a re-split). Repo-scale setup
       // alone eats dozens of turns; the real runaway bounds are the assignment
-      // budget and the engine's supervision, not a tight turn count.
+      // rolling start guard and the engine's supervision, not a tight turn count.
       maxTurns: Number(process.env.WEAVER_WORKER_MAX_TURNS) || 200,
       abort,
       onMessage: (message) => {

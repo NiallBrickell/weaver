@@ -8,13 +8,19 @@
  * Flat, not a tree (kernel rule 1): `managedBy` is a single pointer set once
  * at creation; nothing here ever resolves a chain (a manager's manager).
  * Directions are durable input, never authority (kernel rule 9): they carry
- * no ability to touch the target's assignments, budget, constraints, or
+ * no ability to touch the target's assignments, execution safety, constraints, or
  * approvals, and neither write path here touches humanInterventions.
  */
 
 import type { ManagerDirection, WorkstreamCore, WorkstreamDoc } from './types.js';
 import { arrive, createWorkstream, load, newId } from './store.js';
 import { virtualNow } from './clock.js';
+import {
+  executionSafetyConfig,
+  isLegacyDollarBudgetAttention,
+  newExecutionSafety,
+  type ExecutionSafetyConfig,
+} from './executionSafety.js';
 
 export class ManagedWorkstreamError extends Error {}
 
@@ -25,8 +31,8 @@ export interface CreateManagedWorkstreamArgs {
   successCriteria: string[];
   constraints: string[];
   tags: string[];
-  maxCoordinatorPasses?: number;
-  maxCostUsd?: number;
+  executionWindowSeconds?: number;
+  maxModelStarts?: number;
   sendsRequireApproval?: boolean;
   /** Stable identity of the external thing the new workstream stands for. */
   sourceKey?: string;
@@ -59,10 +65,10 @@ export async function createManagedWorkstream(callingSlug: string, args: CreateM
     constraints: args.constraints,
     ...(args.sourceKey ? { sourceKey: args.sourceKey } : {}),
     autonomy: { sendsRequireApproval: args.sendsRequireApproval ?? true },
-    budget: {
-      maxCoordinatorPasses: args.maxCoordinatorPasses ?? 500,
-      maxCostUsd: args.maxCostUsd ?? 1000,
-    },
+    executionSafety: newExecutionSafety({
+      ...(args.executionWindowSeconds !== undefined ? { windowSeconds: args.executionWindowSeconds } : {}),
+      ...(args.maxModelStarts !== undefined ? { maxModelStarts: args.maxModelStarts } : {}),
+    }),
     managedBy: { slug: callingSlug, sinceVirtual: virtualNow().toISOString() },
   };
   await createWorkstream(core);
@@ -88,8 +94,8 @@ export interface ManagedWorkstreamSummary {
   successCriteria: string[];
   constraints: string[];
   tags: string[];
-  budget: { maxCoordinatorPasses: number; maxCostUsd: number };
-  spend: { coordinatorPasses: number; totalCostUsd: number };
+  executionSafety: ExecutionSafetyConfig;
+  activity: { coordinatorPasses: number; sdkCostEstimateUsd: number };
   openAttention: { id: string; kind: string; summary: string }[];
   conclusion?: { summary: string; evidenceIds: string[]; atVirtual: string };
   recentEvents: { type: string; summary: string; atVirtual: string }[];
@@ -120,10 +126,10 @@ export async function inspectManagedWorkstream(callingSlug: string, targetSlug: 
     successCriteria: ws.successCriteria,
     constraints: ws.constraints,
     tags: ws.tags,
-    budget: { ...ws.budget },
-    spend: { coordinatorPasses: doc.spend.coordinatorPasses, totalCostUsd: doc.spend.totalCostUsd },
+    executionSafety: executionSafetyConfig(ws),
+    activity: { coordinatorPasses: doc.spend.coordinatorPasses, sdkCostEstimateUsd: doc.spend.totalCostUsd },
     openAttention: doc.attention
-      .filter((a) => a.status === 'open')
+      .filter((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a))
       .map((a) => ({ id: a.id, kind: a.kind, summary: a.summary })),
     ...(ws.conclusion
       ? { conclusion: { summary: ws.conclusion.summary, evidenceIds: [...ws.conclusion.evidenceIds], atVirtual: ws.conclusion.atVirtual } }
@@ -146,8 +152,8 @@ export async function inspectManagedWorkstream(callingSlug: string, targetSlug: 
  * Refuses unless the caller is the target's recorded manager. Writes ONLY
  * `message` as a ManagerDirection on the target — advisory text, exactly like
  * human Steering is advisory text: it cannot create assignments, adopt or
- * reject anything, or change the target's budget/constraints/approvals. The
- * target's own pass, under its own constraints and budget, decides whether
+ * reject anything, or change the target's execution safety/constraints/approvals. The
+ * target's own pass, under its own constraints, decides whether
  * and how to act on it. Target-first write (additive, no CAS needed); the
  * caller-side audit event is a separate revision-checked write the caller
  * (coordinator.ts) performs after this returns.

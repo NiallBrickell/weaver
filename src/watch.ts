@@ -11,6 +11,8 @@
  */
 
 import { infrastructureWaitSummary } from './capacity.js';
+import { activitySummary } from './activity.js';
+import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
@@ -106,7 +108,7 @@ export async function viewOf(slug: string): Promise<WsView> {
   const details: string[] = [];
 
   let needsYou = 0;
-  for (const a of doc.attention.filter((x) => x.status === 'open')) {
+  for (const a of doc.attention.filter((x) => x.status === 'open' && !isLegacyDollarBudgetAttention(x))) {
     needsYou++;
     const first = a.summary.split('\n')[0]!;
     details.push(`${RED}▸ [${a.kind}]${R} ${fit(first, 14 + a.kind.length)}`);
@@ -142,7 +144,9 @@ export async function viewOf(slug: string): Promise<WsView> {
   const queued = doc.assignments.filter((x) => x.state === 'queued' || x.state === 'awaiting_review').length;
   if (queued) details.push(`${DIM}▸ ${queued} assignment(s) queued/awaiting review — next tick${R}`);
 
-  const nowV = virtualNow().toISOString();
+  const wallNow = new Date();
+  const virtual = virtualNow();
+  const nowV = virtual.toISOString();
   const pendingWakes = doc.wakes.filter((w) => w.status === 'pending');
   const infrastructure = [...new Set(
     Object.values(doc.capacity?.byModel ?? {})
@@ -160,19 +164,21 @@ export async function viewOf(slug: string): Promise<WsView> {
   );
   const normalWakes = pendingWakes.filter((w) => !w.infrastructure);
   const dueNow = [...normalWakes, ...recoveredCapacityWakes].filter(
-    (w) => w.condition.type === 'immediate' || w.condition.dueAtVirtual <= nowV,
+    (w) => isWakeDue(w.condition, wallNow, virtual),
   ).length;
   const nextWake = normalWakes
-    .filter((w) => w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
+    .filter((w) =>
+      (w.condition.type === 'time' && w.condition.dueAtVirtual > nowV) ||
+      (w.condition.type === 'wall_time' && w.condition.dueAt > wallNow.toISOString()),
+    )
     .sort((a, b) =>
-      (a.condition as { dueAtVirtual: string }).dueAtVirtual.localeCompare(
-        (b.condition as { dueAtVirtual: string }).dueAtVirtual,
-      ),
+      (a.condition.type === 'wall_time' ? a.condition.dueAt : a.condition.type === 'time' ? a.condition.dueAtVirtual : '')
+        .localeCompare(b.condition.type === 'wall_time' ? b.condition.dueAt : b.condition.type === 'time' ? b.condition.dueAtVirtual : ''),
     )[0];
   if (dueNow && !working && !queued) details.push(`${BLUE}▸ ${dueNow} wake(s) due — runner will pick up${R}`);
   else if (nextWake && !working)
     details.push(
-      `${BLUE}▸ next wake ${(nextWake.condition as { dueAtVirtual: string }).dueAtVirtual.slice(0, 16)}${R} ${DIM}${fit(nextWake.reason, 40)}${R}`,
+      `${BLUE}▸ next wake ${(nextWake.condition.type === 'wall_time' ? nextWake.condition.dueAt : (nextWake.condition as { dueAtVirtual: string }).dueAtVirtual).slice(0, 16)}${R} ${DIM}${fit(nextWake.reason, 40)}${R}`,
     );
 
   const lastEvent = doc.events[doc.events.length - 1];
@@ -195,9 +201,11 @@ export async function viewOf(slug: string): Promise<WsView> {
   // Flat, one level only: this workstream's own `managedBy` pointer — never a
   // manager's manager, and never an expansion of what it in turn manages.
   const managedBy = ws.managedBy ? ` ${DIM}[managed by ${ws.managedBy.slug}]${R}` : '';
+  const activity = activitySummary(doc, wallNow, virtual);
   const row =
     `${BUCKET[bucket].word}${' '.repeat(Math.max(1, 11 - BUCKET[bucket].plain.length))}` +
-    `${paused}${managedBy}`;
+    `${paused}${managedBy}` +
+    `${activity ? ` ${DIM}${activity}${R}` : ''}`;
 
   return { slug, bucket, row, details };
 }

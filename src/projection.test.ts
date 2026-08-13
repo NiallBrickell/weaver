@@ -159,6 +159,13 @@ test('bounded projection still carries live work and standing commitments', () =
   assert.match(p, /LIVE candidate awaiting review/);
 });
 
+test('legacy dollar and lifetime pass caps never reach the coordinator as remaining authority', () => {
+  const p = buildProjection(routineDoc(50), []);
+  assert.doesNotMatch(p, /Remaining budget|passes so far|\$100000/);
+  assert.match(p, /Authority & execution safety/);
+  assert.match(p, /30 model starts in any rolling 60m/);
+});
+
 test('completed assignments are counted, not enumerated', () => {
   const p = buildProjection(routineDoc(50), []);
   assert.doesNotMatch(p, /UNIQUE_COMPLETED_MARKER/, 'completed assignments must not be listed');

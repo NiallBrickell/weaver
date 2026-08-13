@@ -2,6 +2,8 @@
 
 An honest account of the first end-to-end run of `hiring-demo.sh` (2026-08-03, real model passes), kept because the unplanned parts turned out to be stronger evidence than the script. Totals: **12 coordinator passes ($15.86), 8 worker runs, 16 virtual days, revision 138**, coordinators on **two different models** (opus for passes 1–5, sonnet for 6–12 after the environment started killing long processes — which turned the model-swap claim from a checkbox into a live necessity).
 
+> Historical note (2026-08-13): the lifetime pass/dollar ceiling described below was later retired. Indefinite routines made any lifetime ceiling a scheduled failure, and the SDK estimate was not provider billing. Weaver now uses a rolling physical-time model-start guard that self-parks and resumes; the original run remains recorded here unchanged as acceptance history.
+
 ## The scripted spine worked
 
 - **Pass A** (fresh workstream, empty state) recorded a sequencing decision — profile → JD → outreach, no invented company facts, every send human-approved — and dispatched three bounded assignments, then exited. No process stayed alive at any point in the run.

@@ -6,7 +6,7 @@
  *
  * The runner holds no state: it polls active workstreams and ticks them
  * (concurrently), and every guarantee lives in the tick itself (per-stream
- * cross-process locks, budget backstop, readback discipline). Kill and
+ * cross-process locks, rolling execution guard, readback discipline). Kill and
  * restart freely.
  */
 
