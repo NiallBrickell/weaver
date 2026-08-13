@@ -4,7 +4,7 @@
  */
 
 import { advanceClock, parseDuration, virtualNow } from './clock.js';
-import { KNOWN_COMMANDS, misroutedSubcommand } from './dispatch.js';
+import { KNOWN_COMMANDS, looksLikeUnknownSubcommand, misroutedSubcommand } from './dispatch.js';
 import { loadDotenv } from './env.js';
 import { tick } from './engine.js';
 import { executionSafetyConfig, newExecutionSafety } from './executionSafety.js';
@@ -155,6 +155,16 @@ async function runIntake(message: string, done?: string): Promise<void> {
     message = await readMultiline();
   }
   if (!message) fail('usage: weaver do "<what you want done>" ["<what done means>"] — or run `weaver do` with no args and type/paste the message');
+  // One command-shaped word aimed at a workstream that exists is a subcommand
+  // this CLI does not have, not a message. Onboarding it forks the fleet under
+  // a `<slug>-2` name while the operator believes they just managed a stream.
+  const tokens = message.split(/\s+/);
+  if (await looksLikeUnknownSubcommand(tokens, (s) => slugExists(s))) {
+    fail(
+      `'${tokens[0]}' is not a weaver command, and '${tokens[1]}' is an existing workstream — refusing to onboard this as a new one.\n` +
+      `       Run \`weaver help\` for the command list, or force intake with: weaver do "${message}"`,
+    );
+  }
   const { onboard } = await import('./onboard.js');
   const stopProgress = progress('deriving the workstream from your message (one model pass)');
   let d;

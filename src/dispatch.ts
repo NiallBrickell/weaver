@@ -18,7 +18,7 @@ export const KNOWN_COMMANDS = new Set([
   'do', 'ask', 'create', 'list', 'status', 'capacity', 'log', 'tail', 'show', 'steer', 'approve',
   'assign-action', 'constraint', 'approve-action', 'reject-action', 'reject-send', 'reply', 'observe',
   'adopt', 'budget', 'execution-safety', 'policies', 'backfill', 'secret', 'run', 'serve', 'resolve', 'tag', 'pause',
-  'resume', 'watch', 'inspect', 'printout', 'stats', 'advance', 'tick', 'help', '--help',
+  'resume', 'watch', 'inspect', 'printout', 'stats', 'advance', 'tick', 'help', '--help', 'priority',
 ]);
 
 // Subcommands whose first positional argument is a workstream slug. Used to tell
@@ -26,6 +26,7 @@ export const KNOWN_COMMANDS = new Set([
 // message that merely starts with the word "steer": only a REAL existing slug is
 // a confident signal.
 export const SLUG_FIRST_COMMANDS = new Set([
+  'priority',
   'steer', 'status', 'tick', 'pause', 'resume', 'tail', 'log', 'show', 'approve', 'reply', 'observe',
   'adopt', 'budget', 'execution-safety', 'tag', 'resolve', 'reject-send', 'constraint', 'approve-action', 'reject-action',
 ]);
@@ -42,6 +43,33 @@ export const DASHBOARD_COMMANDS = new Set(['watch', 'list', 'stats', 'inspect', 
  * injected so this stays a pure function over the dispatch tables — the caller
  * wires it to the store.
  */
+/**
+ * A mistyped or unreleased subcommand aimed at a workstream that EXISTS.
+ *
+ * Intake is deliberately the default — a first word that isn't a subcommand is
+ * a message to onboard — but that default has a sharp edge: a management verb
+ * the CLI doesn't know yet reads as a sentence, and `weaver priority <slug>
+ * high` quietly became eleven new workstreams named `<slug>-2` instead of an
+ * error. Nothing about that is recoverable by the person typing it; they think
+ * they ranked a stream and instead they forked the fleet.
+ *
+ * The signal is narrow on purpose: one bare command-shaped word (no spaces, no
+ * punctuation a sentence would carry) followed by the slug of a workstream that
+ * already exists. A real message almost never opens that way, and when it does
+ * the operator can say so — an error costs one retry, while a wrong workstream
+ * costs a cleanup nobody notices they need.
+ */
+export async function looksLikeUnknownSubcommand(
+  tokens: string[],
+  slugExists: (slug: string) => Promise<boolean>,
+): Promise<boolean> {
+  const [first, second] = tokens;
+  if (!first || !second) return false;
+  if (KNOWN_COMMANDS.has(first)) return false; // a real command never reaches intake
+  if (!/^[a-z][a-z0-9-]*$/.test(first)) return false; // command-shaped, not prose
+  return slugExists(second);
+}
+
 export async function misroutedSubcommand(
   tokens: string[],
   slugExists: (slug: string) => Promise<boolean>,

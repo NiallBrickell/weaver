@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { misroutedSubcommand } from './dispatch.js';
+import { looksLikeUnknownSubcommand, misroutedSubcommand } from './dispatch.js';
 
 const EXISTING = new Set(['investigate-t-287-error', 'edp-sync-health']);
 const slugExists = async (slug: string): Promise<boolean> => EXISTING.has(slug);
@@ -46,4 +46,23 @@ test('a no-arg dashboard command is redispatched only when it stands alone', asy
 test('a first word that is not a subcommand always onboards', async () => {
   assert.equal(await misroutedSubcommand(['fix', 'the', 'upload', 'bug'], slugExists), null);
   assert.equal(await misroutedSubcommand([], slugExists), null);
+});
+
+test('a command-shaped word aimed at an existing slug is a typo, never a new workstream', async () => {
+  const exists = async (s: string) => s === 'nobe-parc-feedback';
+  // The shape of the real incident: `weaver priority <slug> high` onboarded
+  // eleven workstreams named <slug>-2 because 'priority' was not a command yet.
+  // 'priority' is one now, so the case is written with a verb that still isn't
+  // — which is the point: the guard protects the NEXT unreleased verb too.
+  assert.equal(await looksLikeUnknownSubcommand(['rank', 'nobe-parc-feedback', 'high'], exists), true);
+  assert.equal(await looksLikeUnknownSubcommand(['deprioritise', 'nobe-parc-feedback'], exists), true);
+
+  // A real command never reaches intake, so it is never the caller's problem.
+  assert.equal(await looksLikeUnknownSubcommand(['steer', 'nobe-parc-feedback', 'go'], exists), false);
+  // An unknown slug is genuinely a new thing to onboard.
+  assert.equal(await looksLikeUnknownSubcommand(['rank', 'something-new', 'high'], exists), false);
+  // Ordinary prose survives, including prose that opens with a real slug.
+  assert.equal(await looksLikeUnknownSubcommand(['Fix', 'nobe-parc-feedback', 'copy'], exists), false);
+  assert.equal(await looksLikeUnknownSubcommand(['investigate:', 'nobe-parc-feedback'], exists), false);
+  assert.equal(await looksLikeUnknownSubcommand(['nobe-parc-feedback'], exists), false);
 });
