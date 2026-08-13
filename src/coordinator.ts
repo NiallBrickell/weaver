@@ -44,6 +44,7 @@ import {
   resolveCapacityAttention,
   SdkFailureTracker,
 } from './capacity.js';
+import { noteFleetRecovery } from './fleetCapacity.js';
 import {
   coordinatorCapacityTarget,
   coordinatorFallbackModel,
@@ -981,6 +982,12 @@ export async function runCoordinatorPass(
   if (infrastructure) {
     hadError = true;
     errorText = sdkFailure.diagnostic();
+  } else {
+    // This pass reached the provider, so that pool has capacity — a fact about
+    // the account, not about this stream. Recorded once for the whole fleet so
+    // streams still holding an older park on the same target are released by
+    // the runner instead of each waiting out its own stale timer.
+    noteFleetRecovery(coordinatorCapacityTarget(passModel), new Date().toISOString());
   }
 
   // Finalize provenance regardless of how the model behaved. This is an
