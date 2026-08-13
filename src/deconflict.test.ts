@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { blockingCollisions, collisionKey, collisionReconciled, detectRepoCollisions, isRepoEgressAction, type OpenPr } from './deconflict.js';
+import { collisionKey, detectRepoCollisions, isRepoEgressAction, type OpenPr } from './deconflict.js';
 import type { Assignment } from './types.js';
 
 // The pure detector is the proof of the repo-egress deconfliction invariant
@@ -27,22 +27,19 @@ test('overlapping open PR is detected with exactly the intersecting files', () =
     headRefName: 'teammate/theirs',
     author: 'teammate',
     files: ['src/b.ts'],
-    sameBranch: false, // a teammate's own branch — reported, never blocking
   });
 });
 
-test('a PR on the action own head branch is the one collision that blocks', () => {
-  // This used to be excluded as "not a competing arrival". It is the opposite:
-  // a second open PR on our own ref means a push discards commits instead of
-  // merging them — the only shape here that can lose work.
+test('a PR on the action own head branch is our own PR, not a competing arrival', () => {
+  // Pushing to an existing PR looks exactly like this. Treating it as a second
+  // writer held legitimate work; a genuinely moved remote is caught by
+  // `git push --force-with-lease`, which this gate cannot see anyway.
   const collisions = detectRepoCollisions(
     'feat/mine',
     ['src/a.ts'],
     [pr(2010, 'feat/mine', 'weaver-bot', ['src/a.ts'])],
   );
-  assert.equal(collisions.length, 1);
-  assert.equal(collisions[0]!.sameBranch, true);
-  assert.deepEqual(blockingCollisions(collisions).map((c) => c.number), [2010]);
+  assert.deepEqual(collisions, []);
 });
 
 test('a non-overlapping open PR is ignored', () => {
@@ -68,24 +65,20 @@ test('multiple colliding PRs are each reported with their own intersecting files
     'feat/mine',
     ['src/a.ts', 'src/b.ts', 'src/d.ts'],
     [
-      pr(2010, 'feat/mine', 'self', ['src/a.ts']), // own branch — the blocking one
+      pr(2010, 'feat/mine', 'self', ['src/a.ts']), // our own PR — excluded
       pr(1993, 'human/pr', 'teammate', ['src/a.ts', 'src/e.ts']),
       pr(2012, 'bot/pr', 'weaver-bot', ['src/b.ts', 'src/d.ts']),
       pr(2013, 'unrelated', 'someone', ['src/z.ts']), // no overlap — ignored
     ],
   );
-  assert.equal(collisions.length, 3);
+  assert.equal(collisions.length, 2);
   assert.deepEqual(
     collisions.map((c) => [c.number, c.files]),
     [
-      [2010, ['src/a.ts']],
       [1993, ['src/a.ts']],
       [2012, ['src/b.ts', 'src/d.ts']],
     ],
   );
-  // All three are reported so the author knows who else is in these files;
-  // only the same-ref one holds the action.
-  assert.deepEqual(blockingCollisions(collisions).map((c) => c.number), [2010]);
 });
 
 // --- isRepoEgressAction: the predicate that decides which actions the gate
@@ -152,72 +145,22 @@ test('isRepoEgressAction ignores non-egress and non-action assignments', () => {
 // The reconciliation predicate closes the gate's loop with the human: the hold
 // fails closed TO the human, so their resolved card for the SAME collision set
 // must count as the answer — and only for that exact set.
-test('collisionReconciled honors a resolved card for the exact collision set only', () => {
-  const token = '[repo-collision asg_1:1988,1993]';
-  // Human resolved the card carrying this token → reconciled, proceed.
-  assert.equal(
-    collisionReconciled([{ status: 'resolved', summary: `held … reconcile … ${token}` }], token),
-    true,
-  );
-  // Card still open → not reconciled, keep holding.
-  assert.equal(
-    collisionReconciled([{ status: 'open', summary: `held … ${token}` }], token),
-    false,
-  );
-  // Resolution for a DIFFERENT collision set (new PR joined) → still holds.
-  assert.equal(
-    collisionReconciled(
-      [{ status: 'resolved', summary: 'held … [repo-collision asg_1:1988]' }],
-      token,
-    ),
-    false,
-  );
-  // No attention at all → holds.
-  assert.equal(collisionReconciled([], token), false);
-});
 
-test('a new colliding PR over already-contended files is not a new question', () => {
-  const files = ['backend/voice/service_widget.go'];
-  // #2019 alone, then #2035 joins it over the same file: same key, so a human
-  // who reconciled once is not asked again. Keying on PR numbers asked three
-  // times in one evening.
-  assert.equal(collisionKey('asg_1', files), collisionKey('asg_1', files));
-  const resolved = [{ status: 'resolved', summary: `reconciled ${collisionKey('asg_1', files)}` }];
-  assert.equal(collisionReconciled(resolved, collisionKey('asg_1', files)), true);
 
-  // A collision pulling in a file nobody has ruled on IS new, and still holds.
-  const wider = [...files, 'backend/mcp/tools.go'];
-  assert.equal(collisionReconciled(resolved, collisionKey('asg_1', wider)), false);
-
-  // Order and duplicates never change the identity of the same file set.
-  assert.equal(collisionKey('asg_1', ['b.go', 'a.go', 'a.go']), collisionKey('asg_1', ['a.go', 'b.go']));
-  // And a different action asking about the same files is its own question.
-  assert.notEqual(collisionKey('asg_2', files), collisionKey('asg_1', files));
-});
-
-test('only a second writer on our OWN branch can lose work; parallel branches ship', () => {
+test('overlap is reported so the author knows who else is in the file, and never blocks', () => {
   const ours = ['backend/voice/service_widget.go'];
   const found = detectRepoCollisions('fix/mine', ours, [
     { number: 2019, headRefName: 'fix/theirs', author: 'someone', files: ours },
     { number: 2035, headRefName: 'fix/other', author: 'another', files: ours },
   ]);
-  // Both are seen — the author and reviewer are told who else is in the file…
-  assert.equal(found.length, 2);
-  // …but neither blocks: separate refs, git merges them, a real conflict shows
-  // up at merge time. Holding here asked a human to pre-approve normal work.
-  assert.deepEqual(blockingCollisions(found), []);
+  // Both are surfaced — that knowledge is what the #1993 incident needed…
+  assert.deepEqual(found.map((c) => c.number), [2019, 2035]);
+  // …but separate refs are ordinary parallel development: git merges them and
+  // a real textual conflict shows up at merge time.
+  assert.deepEqual(found.filter((c) => c.headRefName === 'fix/mine'), []);
 
-  // Someone else's PR on OUR head ref is the lost update: a push discards
-  // their commits instead of merging. That still fails closed.
-  const sameRef = detectRepoCollisions('fix/mine', ours, [
-    { number: 2040, headRefName: 'fix/mine', author: 'someone', files: ours },
-  ]);
-  assert.equal(sameRef.length, 1);
-  assert.equal(sameRef[0]!.sameBranch, true);
-  assert.deepEqual(blockingCollisions(sameRef).map((c) => c.number), [2040]);
-
-  // A PR sharing our branch but no files is still not a collision.
+  // A PR sharing our branch but no files is not a collision either.
   assert.deepEqual(detectRepoCollisions('fix/mine', ours, [
-    { number: 2041, headRefName: 'fix/mine', author: 'someone', files: ['docs/other.md'] },
+    { number: 2041, headRefName: 'other/ref', author: 'someone', files: ['docs/other.md'] },
   ]), []);
 });
