@@ -94,7 +94,7 @@ async function makeCase(
     successCriteria: input.acceptanceCriteria,
     constraints: ['Work only inside the declared evaluation workspace.'],
     autonomy: { sendsRequireApproval: true },
-    budget: { maxCoordinatorPasses: 1, maxCostUsd: 100 },
+    executionSafety: { maxModelStarts: 30, windowSeconds: 3600 },
   });
   await arrive(slug, (doc) => doc.assignments.push({
     id: assignmentId,

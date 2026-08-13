@@ -282,6 +282,7 @@ export interface CapacityState {
 
 export type WakeCondition =
   | { type: 'time'; dueAtVirtual: Iso }
+  | { type: 'wall_time'; dueAt: Iso }
   | { type: 'immediate' };
 
 export interface Wake {
@@ -294,6 +295,15 @@ export interface Wake {
   /** Typed provider wait. Human-readable `reason` is presentation only and
    * must never be parsed to decide recovery behavior. */
   infrastructure?: InfrastructureWait;
+  /** Harness-owned rolling runaway guard. Unlike the legacy lifetime dollar
+   * cap, this is a typed temporary wait: no billing claim, no human top-up,
+   * and the stored wake resumes the workstream when the window reopens. */
+  executionSafety?: {
+    blockedUntil: Iso;
+    observedStarts: number;
+    limit: number;
+    windowSeconds: number;
+  };
 }
 
 export interface Steering {
@@ -405,7 +415,7 @@ export interface ManagedBy {
  * (kernel rule 9): must never touch spend.humanInterventions, and must
  * render distinctly (projection §6) so a coordinator can't mistake it for
  * human authority. Advisory text only; it grants no authority over the
- * receiving workstream's assignments, budget, constraints, or approvals.
+ * receiving workstream's assignments, execution safety, constraints, or approvals.
  */
 export interface ManagerDirection {
   id: Id;
@@ -451,7 +461,15 @@ export interface WorkstreamCore {
     /** Outbound sends always need human approval when true. */
     sendsRequireApproval: boolean;
   };
-  budget: {
+  /** Harness-owned model-start rate limit. Fresh workstreams persist it;
+   * legacy documents without it use the fixed safe defaults. */
+  executionSafety?: {
+    windowSeconds: number;
+    maxModelStarts: number;
+  };
+  /** @deprecated Historical lifetime caps remain readable for state and
+   * printout lineage, but are never consulted for execution eligibility. */
+  budget?: {
     maxCoordinatorPasses: number;
     maxCostUsd: number;
   };
@@ -504,7 +522,7 @@ export interface WorkstreamDoc {
 export interface WorkstreamSpend {
     coordinatorPasses: number;
     totalCostUsd: number;
-    /** Human acts (steer/approve/adopt/reject/budget) — the numerator of the
+    /** Human acts (steer/approve/adopt/reject/config) — the numerator of the
      * interventions-per-successful-outcome metric the learning loop optimizes. */
     humanInterventions: number;
 }

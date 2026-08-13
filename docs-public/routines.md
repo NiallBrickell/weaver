@@ -19,7 +19,7 @@ A scheduled prompt can produce a fresh piece of work on a timer, but the respons
 - **Learned policies** — every correction you made in *any* matching workstream, already applied, still auditable.
 - **Verified history** — what it claims it did last cycle was confirmed by readback, so this cycle builds on facts.
 
-Cycle 30 inherits the decisions and corrections from cycles 1–29, then continues the outcome from there. The compact dashboard row shows the routine's current state and next wake, not a lifetime activity tally. [`weaver stats`](./stats.md) is where intervention load is compared across qualified outcomes with the context needed to judge whether supervision is actually moving away from you.
+Cycle 30 inherits the decisions and corrections from cycles 1–29, then continues the outcome from there. There is no lifetime pass/dollar ceiling waiting to kill a healthy routine. The [rolling execution guard](./execution-safety.md) pauses only rapid model-start churn and resumes automatically. The compact dashboard row shows current in-flight time, last-decision age, and next wake — not a lifetime activity tally. [`weaver stats`](./stats.md) is where intervention load is compared across qualified outcomes with the context needed to judge whether supervision is actually moving away from you.
 
 ## Mechanics
 

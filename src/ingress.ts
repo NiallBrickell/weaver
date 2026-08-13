@@ -19,6 +19,7 @@
 import { arrive, createWorkstream, findBySourceKey, listWorkstreams, load, newId, SourceKeyConflictError } from './store.js';
 import { sanitizeSlug } from './onboard.js';
 import { virtualNow } from './clock.js';
+import { newExecutionSafety } from './executionSafety.js';
 
 export interface CreateWorkstreamRequest {
   /** Stable identity of the external thing this workstream exists for, e.g.
@@ -31,8 +32,8 @@ export interface CreateWorkstreamRequest {
   tags?: string[];
   successCriteria?: string[];
   constraints?: string[];
-  maxPasses?: number;
-  maxCostUsd?: number;
+  executionWindowSeconds?: number;
+  maxModelStarts?: number;
 }
 
 export interface CreateOrGetResult {
@@ -67,10 +68,10 @@ export async function createOrGetWorkstream(req: CreateWorkstreamRequest): Promi
       successCriteria: req.successCriteria ?? [],
       constraints: req.constraints ?? [],
       autonomy: { sendsRequireApproval: true },
-      budget: {
-        maxCoordinatorPasses: req.maxPasses ?? 500,
-        maxCostUsd: req.maxCostUsd ?? 1000,
-      },
+      executionSafety: newExecutionSafety({
+        ...(req.executionWindowSeconds !== undefined ? { windowSeconds: req.executionWindowSeconds } : {}),
+        ...(req.maxModelStarts !== undefined ? { maxModelStarts: req.maxModelStarts } : {}),
+      }),
     });
     // Creation is the first wake: direction needs establishing. The resident
     // runner (`weaver run`) picks it up — this adapter never runs a model.

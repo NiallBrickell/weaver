@@ -23,6 +23,7 @@ import { writePrintoutIndex } from './printoutHtml.js';
 import { loadAllSecrets, redactSecrets } from './secrets.js';
 import { listManagedBy, listWorkstreams, load, weaverHome, workstreamDir } from './store.js';
 import type { Assignment, Decision, Deliverable, EventRecord, WorkstreamDoc } from './types.js';
+import { executionPosition, isLegacyDollarBudgetAttention } from './executionSafety.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -497,7 +498,7 @@ export function policiesForWorkstream(policies: PolicyRecord[], doc: WorkstreamD
 function taskSection(doc: WorkstreamDoc): string {
   const ws = doc.workstream;
   const latest = [...doc.decisions].reverse().find((d) => d.status === 'standing');
-  const open = doc.attention.filter((a) => a.status === 'open');
+  const open = doc.attention.filter((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a));
   const legacyConclusion =
     ws.status === 'done' ? [...doc.events].reverse().find((e) => e.type === 'workstream.concluded') : undefined;
   const conclusion = ws.status === 'done' && ws.conclusion
@@ -563,7 +564,7 @@ export function renderWorkstreamHtml(
   ].join('\n');
   return page(
     `${ws.title} — knowledge inspector`,
-    `${ws.slug} · ${ws.status} · revision ${doc.revision} · ${doc.spend.coordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}${managedBadge ? ` · ${managedBadge}` : ''}`,
+    `${ws.slug} · ${ws.status} · revision ${doc.revision} · ${doc.spend.coordinatorPasses} coordinator passes · ~$${doc.spend.totalCostUsd.toFixed(2)} SDK estimate${managedBadge ? ` · ${managedBadge}` : ''}`,
     body,
     // A workstream page is reachable directly (dashboard [i] on a selected
     // stream), so it always carries its own way back up to the fleet page.
@@ -600,6 +601,7 @@ export function renderOverviewHtml(
     const retired = doc.decisions.length - standing;
     const adopted = doc.deliverables.filter((d) => d.adopted).length;
     const candidates = doc.deliverables.length - adopted;
+    const safety = executionPosition(doc);
     // Flat, one level only: computed from the already-loaded fleet, so this
     // needs no extra store scan — but still never resolved past direct
     // children (a manager's manager is never shown here).
@@ -620,7 +622,8 @@ export function renderOverviewHtml(
 <tr><th>Deliverables</th><td>${adopted} adopted · ${candidates} candidate/rejected</td></tr>
 <tr><th>Actions</th><td>${doc.assignments.filter((a) => a.kind === 'action').length}</td></tr>
 <tr><th>Interventions</th><td>${doc.spend.humanInterventions}</td></tr>
-<tr><th>Spend</th><td>${doc.spend.coordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}</td></tr>
+<tr><th>Execution safety</th><td>${safety.count}/${safety.limit} model starts in rolling ${Math.round(safety.windowSeconds / 60)}m · automatic pause/resume</td></tr>
+<tr><th>Diagnostic activity</th><td>${doc.spend.coordinatorPasses} coordinator passes · ~$${doc.spend.totalCostUsd.toFixed(2)} SDK estimate</td></tr>
 <tr><th>Tags</th><td>${ws.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(' ') || '(none)'}</td></tr>
 ${(() => {
   const warnings = passIntegrityWarnings(doc);

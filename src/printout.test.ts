@@ -291,12 +291,12 @@ test('literal workstream field transitions are printed, not reduced to an entity
   await arrive('fields', (doc) => {
     doc.workstream.objective = 'middle objective';
     doc.workstream.constraints.push('first constraint');
-    doc.workstream.budget.maxCostUsd = 30;
+    doc.workstream.budget!.maxCostUsd = 30;
   });
   await arrive('fields', (doc) => {
     doc.workstream.objective = 'final objective';
     doc.workstream.constraints[0] = 'final constraint';
-    doc.workstream.budget.maxCostUsd = 40;
+    doc.workstream.budget!.maxCostUsd = 40;
   });
   const text = (await preparePrintout('fields')).text;
   assert.match(text, /\/objective "prove what fields actually accomplished" → "middle objective"/);

@@ -1,5 +1,7 @@
 # Weaver live-fleet review — 9 August 2026
 
+> Terminology note (2026-08-13): dollar values in this historical snapshot are Claude SDK-reported cost estimates, not Anthropic billing, plan usage, or spend. Later versions retain them only as diagnostic telemetry; they no longer gate execution.
+
 ## Implementation status — updated 10 August 2026
 
 The repair programme below has been implemented and merged to `main` (full

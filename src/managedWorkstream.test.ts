@@ -466,16 +466,26 @@ test('status/watch/inspect render managed-by/manages as flat one-liners, never a
   assert.match(midStatus, /Manages: 1 workstream\(s\): leaf-child/);
 });
 
-test('compact watch rows show organizational state, never activity telemetry as progress', async () => {
+test('compact watch rows show durable elapsed activity, never billing/activity counters as progress', async () => {
   await makeWorkstream('compact-row');
   const before = await load('compact-row');
   await mutate('compact-row', before.revision, (doc) => {
     doc.spend.totalCostUsd = 12.34;
     doc.spend.coordinatorPasses = 7;
     doc.spend.humanInterventions = 3;
+    doc.decisions.push({
+      id: 'dec_compact', title: 'Keep moving', rationale: 'Evidence', madeBy: 'coordinator',
+      status: 'standing', decidedAtVirtual: new Date(Date.now() - 60 * 60_000).toISOString(),
+    });
+    doc.assignments.push({
+      id: 'asg_compact', objective: 'work in flight', briefing: 'work', kind: 'work', acceptanceCriteria: [],
+      dependsOn: [], state: 'running', attempts: [{ runId: 'run_compact', model: 'sonnet', startedAt: new Date(Date.now() - 12 * 60_000).toISOString() }],
+      adoption: { state: 'none' }, createdAtVirtual: new Date().toISOString(),
+    });
   });
 
   const view = await viewOf('compact-row');
-  assert.match(view.row, /IDLE/);
-  assert.doesNotMatch(view.row, /\$|passes|interventions|you \d+×|▰|▱/);
+  assert.match(view.row, /WORKING/);
+  assert.match(view.row, /12m in flight · decision 1h ago/);
+  assert.doesNotMatch(view.row, /\$|passes|interventions|you \d+×|turns|▰|▱/);
 });

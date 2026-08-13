@@ -6,6 +6,11 @@
 import type { WorkstreamDoc } from './types.js';
 import { virtualNow } from './clock.js';
 import { infrastructureWaitSummary } from './capacity.js';
+import {
+  executionPosition,
+  isLegacyDollarBudgetAttention,
+  isWakeDue,
+} from './executionSafety.js';
 
 const MANAGES_SHOWN_MAX = 5;
 
@@ -79,10 +84,12 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   const out: string[] = [];
   out.push(`# ${ws.title} (${ws.slug}) — ${ws.status}`);
   out.push(`Objective: ${ws.objective}`);
+  const safety = executionPosition(doc);
   out.push(
-    `Virtual now: ${virtualNow().toISOString()} · revision ${doc.revision} · ` +
-      `${doc.spend.coordinatorPasses}/${ws.budget.maxCoordinatorPasses} passes · $${doc.spend.totalCostUsd.toFixed(2)}/$${ws.budget.maxCostUsd.toFixed(2)} · ${doc.spend.humanInterventions ?? 0} human interventions`,
+    `Virtual now: ${virtualNow().toISOString()} · revision ${doc.revision}`,
   );
+  out.push(`Execution safety: ${safety.count}/${safety.limit} model starts in rolling ${Math.round(safety.windowSeconds / 60)}m · automatic pause/resume`);
+  out.push(`Diagnostics: ${doc.spend.coordinatorPasses} coordinator passes · ~$${doc.spend.totalCostUsd.toFixed(2)} SDK estimate · ${doc.spend.humanInterventions ?? 0} human interventions`);
   if (ws.managedBy) {
     out.push(`Managed by: ${ws.managedBy.slug} (since ${ws.managedBy.sinceVirtual.slice(0, 16)})`);
   }
@@ -103,11 +110,13 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
     (wake) => wake.infrastructure && !doc.capacity?.byModel[wake.infrastructure.model],
   );
   const infrastructure = infrastructureWaits(doc);
-  const nowVirtual = virtualNow().toISOString();
+  const wallNow = new Date();
+  const virtual = virtualNow();
+  const nowVirtual = virtual.toISOString();
   const nowLines = [
     ...infrastructure.summaries.map((summary) => `WAITING — ${summary}`),
     ...recoveredCapacityWakes
-      .filter((wake) => wake.condition.type === 'immediate' || wake.condition.dueAtVirtual <= nowVirtual)
+      .filter((wake) => isWakeDue(wake.condition, wallNow, virtual))
       .map(() => 'READY — Claude capacity recovered; reconciliation is due now'),
     ...running.map((a) => `working: ${a.id} "${a.objective}"`),
     ...queued.map((a) => `queued: ${a.id} "${a.objective}"`),
@@ -132,7 +141,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   out.push('');
 
   // NEEDS YOU
-  const needs = doc.attention.filter((a) => a.status === 'open');
+  const needs = doc.attention.filter((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a));
   out.push(
     section(
       '## Needs you',
@@ -153,7 +162,9 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
     ...normalWakes.map((w) =>
       w.condition.type === 'time'
         ? `wake at ${w.condition.dueAtVirtual.slice(0, 16)}: ${w.reason}`
-        : `wake (immediate): ${w.reason}`,
+        : w.condition.type === 'wall_time'
+          ? `wake at wall time ${w.condition.dueAt.slice(0, 16)}: ${w.reason}`
+          : `wake (immediate): ${w.reason}`,
     ),
     ...queued.map((a) => `worker will run: ${a.id}`),
     ...doc.interactions

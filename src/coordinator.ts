@@ -28,6 +28,13 @@ import { sdkEnv } from './secrets.js';
 import { tailMessage } from './tail.js';
 import { armWall } from './wall.js';
 import {
+  assertExecutionStartAllowed,
+  ExecutionSafetyLimitedError,
+  isLegacyDollarBudgetAttention,
+  parkIfExecutionLimited,
+  retireLegacyDollarBudgetCard,
+} from './executionSafety.js';
+import {
   clearCapacityBackoff,
   ensureCapacityAttention,
   infrastructureWaitSummary,
@@ -106,7 +113,7 @@ Rules you operate under:
 8. Human steering is durable input: acknowledge it in your changes and act on it.
 9. Be economical: make the bounded progress this wake justifies, record why, and exit via finish_pass. Do not try to do everything in one pass.
 10. Learn from corrections, attributably. When human steering corrects a course you (or a prior pass) proposed — not merely supplies missing facts — distill the correction with propose_policy so the next matching workstream starts smarter. When you apply a learned policy, cite it in applied_policy_ids on the applying decision (dangling, superseded, or scope-mismatched ids are refused); when its point survives the workstream without further correction, record_policy_outcome naming that applying decision. A policy only becomes 'active' on an intervention-free outcome from a workstream OTHER than the one that proposed it, so evidence you record here certifies a policy learned elsewhere, not one born in this stream. A CONTESTED policy (shown under "under review") carries recorded negative evidence — do NOT treat it as active guidance; if you conclude it is wrong, supersede_policy it with a corrected replacement (lineage kept), never silently ignore it. Policies never widen authority.
-11. Escalate futility — persistence is not a virtue past the evidence. Before dispatching yet another attempt at an objective, look at the trail: if two or more DISTINCT approaches have already failed on adopted evidence (not one approach twice), or new evidence says the objective is infeasible as stated, outside the workstream's grantable authority, or plainly not worth its remaining budget, STOP. Record a decision summarizing what was tried, why each failed, and your recommendation (pivot / descope / conclude), then raise_attention kind 'blocker' putting that judgment call to the human. Grinding a doomed objective to the budget ceiling is the worst outcome: it costs the most and tells the human last.
+11. Escalate futility — persistence is not a virtue past the evidence. Before dispatching yet another attempt at an objective, look at the trail: if two or more DISTINCT approaches have already failed on adopted evidence (not one approach twice), or new evidence says the objective is infeasible as stated, outside the workstream's grantable authority, or plainly not worth continuing, STOP. Record a decision summarizing what was tried, why each failed, and your recommendation (pivot / descope / conclude), then raise_attention kind 'blocker' putting that judgment call to the human. Grinding a doomed objective until an execution guard pauses it is the worst outcome: it consumes the most activity and tells the human last.
 12. You have NO tools onto the outside world, by design — your durable input is this projection and your writes are typed. Anything you need to know about a system beyond this workstream (what an issue says now, whether an alert is still firing, what a page renders) is a work assignment: the worker has the ordinary Code toolset and the operator's MCP servers, and returns what it found as a submission you adopt. So never guess at external state, and never treat "I cannot see it from here" as a blocker — it is a dispatch. Briefs must name the source precisely (issue identifier, URL, dashboard) rather than paraphrasing it, and must tell the worker to LOOK AT THE IMAGES: screenshots and diagrams usually carry the specifics the prose leaves out, and a picture turned into someone's sentence about it has already lost the detail the work depends on.
 13. When something refuses you, judge the refusal before you route around it. A denied tool, an approval you cannot get, a fact the state has nowhere to hold — each is a fork, and building an elaborate path around a constraint that is simply wrong is worse than being blocked, because it hides the problem and everything after it inherits the detour. Ask first whether the constraint is right. If it is (authority ceilings, the approval gate, having no external tools of your own — these are right), take the plain supported path: dispatch a worker, request a human-approved action, or raise_attention. If it is not, say so in a decision and put it to the human rather than engineering past it.
 14. Prefer the concepts that already exist to new ones. The strongest plan usually adds no new machinery: a bounded piece of your own objective is an assignment, a distinct outcome with its own lifetime is a spawned workstream, a thing you need to happen later is a wake. Reach for a bespoke mechanism only when composing what exists genuinely cannot express the work — and say why in the decision when you do.
@@ -146,20 +153,12 @@ export async function runCoordinatorPass(
   wakeReasons: string[],
 ): Promise<PassOutcome> {
   let doc = await load(slug);
-  const ws = doc.workstream;
 
   // The engine normally filters paused streams, but the pass claim is the
   // final revision-checked boundary: a manual/direct caller cannot advance a
   // paused outcome, and a concurrent pause conflicts before a lease is born.
-  if (ws.status !== 'active') throw new Error(`workstream '${slug}' is ${ws.status}`);
-
-  // Budget is a hard ceiling.
-  if (doc.spend.coordinatorPasses >= ws.budget.maxCoordinatorPasses) {
-    throw new Error(`budget exhausted: ${doc.spend.coordinatorPasses} passes used`);
-  }
-  if (doc.spend.totalCostUsd >= ws.budget.maxCostUsd) {
-    throw new Error(`budget exhausted: $${doc.spend.totalCostUsd.toFixed(2)} spent`);
-  }
+  if (doc.workstream.status !== 'active') throw new Error(`workstream '${slug}' is ${doc.workstream.status}`);
+  if (await retireLegacyDollarBudgetCard(slug)) doc = await load(slug);
 
   // Single-flight lease.
   if (doc.lease && new Date(doc.lease.expiresAt).getTime() > Date.now()) {
@@ -171,23 +170,33 @@ export async function runCoordinatorPass(
   // classification, and capacity clearing must all speak about ONE model.
   const passModel = pickCoordinatorModel(doc, virtualNow().toISOString());
   const degraded = passModel !== coordinatorModel();
-  doc = await mutate(slug, doc.revision, (d, event) => {
-    d.lease = {
-      passId,
-      acquiredAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + LEASE_MS).toISOString(),
-    };
-    d.passes.push({
-      id: passId,
-      startedAt: new Date().toISOString(),
-      baseRevision: d.revision + 1,
-      wakeReasons: wakeReasons.map((r) => (r.length > 300 ? `${r.slice(0, 297)}…` : r)),
-      model: passModel,
-      changes: [],
-      outcome: 'running',
+  const startedAt = new Date();
+  try {
+    doc = await mutate(slug, doc.revision, (d, event) => {
+      // The check and start record share one revision-checked claim. A direct
+      // caller or concurrent worker therefore cannot cross the rolling limit.
+      if (d.workstream.status !== 'active') throw new Error(`workstream '${slug}' is ${d.workstream.status}`);
+      assertExecutionStartAllowed(d, startedAt);
+      d.lease = {
+        passId,
+        acquiredAt: startedAt.toISOString(),
+        expiresAt: new Date(startedAt.getTime() + LEASE_MS).toISOString(),
+      };
+      d.passes.push({
+        id: passId,
+        startedAt: startedAt.toISOString(),
+        baseRevision: d.revision + 1,
+        wakeReasons: wakeReasons.map((r) => (r.length > 300 ? `${r.slice(0, 297)}…` : r)),
+        model: passModel,
+        changes: [],
+        outcome: 'running',
+      });
+      event('pass.started', `Coordinator pass ${passId} started (${wakeReasons.join('; ') || 'manual'})${degraded ? ` — on fallback ${passModel} while ${coordinatorModel()} capacity recovers` : ''}`);
     });
-    event('pass.started', `Coordinator pass ${passId} started (${wakeReasons.join('; ') || 'manual'})${degraded ? ` — on fallback ${passModel} while ${coordinatorModel()} capacity recovers` : ''}`);
-  });
+  } catch (error) {
+    if (error instanceof ExecutionSafetyLimitedError) await parkIfExecutionLimited(slug, startedAt);
+    throw error;
+  }
 
   // The revision this pass writes against; advanced after each of its own writes.
   const rev = { value: doc.revision };
@@ -605,7 +614,7 @@ export async function runCoordinatorPass(
           change((d, event) => {
             const live = d.assignments.filter((x) => !['completed', 'failed', 'cancelled'].includes(x.state));
             if (live.length) throw new Error(`cannot conclude: ${live.map((x) => `${x.id}(${x.state})`).join(', ')} still live — resolve them first`);
-            const openAtt = d.attention.filter((x) => x.status === 'open');
+            const openAtt = d.attention.filter((x) => x.status === 'open' && !isLegacyDollarBudgetAttention(x));
             if (openAtt.length) throw new Error(`cannot conclude: open attention ${openAtt.map((x) => x.id).join(', ')} — the human's queue is never silently emptied by conclusion`);
             const pendingSends = d.interactions.filter((x) => x.status === 'awaiting_approval' || x.status === 'approved');
             if (pendingSends.length) throw new Error(`cannot conclude: interactions ${pendingSends.map((x) => x.id).join(', ')} not yet sent/resolved`);
@@ -770,7 +779,7 @@ export async function runCoordinatorPass(
 
       tool(
         'create_workstream',
-        'Create a brand-new, independent Workstream that THIS workstream manages — flat, not a tree: the new stream cannot itself see or reach this one except through the pointer you just created, and you can never manage your own manager\'s manager. Passes only what you put in these fields — nothing else about this workstream (its decisions, events, projection, or any other internal state) reaches the new one; it starts exactly as fresh as `weaver create` would leave it. Its budget is fully independent of yours — it is never drawn from or capped by your own remaining budget. Use this to delegate a genuinely separate outcome, not to split one assignment into two.',
+        'Create a brand-new, independent Workstream that THIS workstream manages — flat, not a tree: the new stream cannot itself see or reach this one except through the pointer you just created, and you can never manage your own manager\'s manager. Passes only what you put in these fields — nothing else about this workstream (its decisions, events, projection, or any other internal state) reaches the new one; it starts exactly as fresh as `weaver create` would leave it. Its rolling execution guard is independent of yours. Use this to delegate a genuinely separate outcome, not to split one assignment into two.',
         {
           slug: z.string().describe('unique slug for the new workstream'),
           title: z.string(),
@@ -782,11 +791,16 @@ export async function runCoordinatorPass(
           success_criteria: z.array(z.string()).default([]),
           constraints: z.array(z.string()).default([]),
           tags: z.array(z.string()).default([]).describe('scope tags for policy matching. Include \'routine\' whenever the objective is recurring (a cadence, "keep X healthy", periodic sweeps/intake) — the dashboard files routine streams in their own section, and an untagged recurring stream clutters the main board as if it were one-shot work'),
-          max_coordinator_passes: z.number().optional().describe('defaults to 500 if omitted, same as weaver create'),
-          max_cost_usd: z.number().optional().describe('defaults to 1000 if omitted, same as weaver create'),
+          execution_window_seconds: z.number().int().positive().optional().describe('rolling model-start window; defaults to 3600'),
+          max_model_starts: z.number().int().positive().optional().describe('model starts allowed in that rolling window; defaults to 30'),
+          max_coordinator_passes: z.number().optional().describe('removed legacy input; do not use'),
+          max_cost_usd: z.number().optional().describe('removed legacy input; use provider billing controls for API spend'),
           sends_require_approval: z.boolean().optional().describe('defaults to true if omitted, same as weaver create'),
         },
         async (a) => {
+          if (a.max_coordinator_passes !== undefined || a.max_cost_usd !== undefined) {
+            return err('lifetime pass/dollar caps were removed; use execution_window_seconds/max_model_starts, and provider billing controls for API spend');
+          }
           // At-least-once intake: looking again is free, and must stay free.
           // This is a benign idempotency fast-path, NOT the enforcement: the
           // store write enforces sourceKey uniqueness atomically (a concurrent
@@ -806,8 +820,8 @@ export async function runCoordinatorPass(
               constraints: a.constraints,
               tags: a.tags,
               ...(a.source_key ? { sourceKey: a.source_key } : {}),
-              ...(a.max_coordinator_passes !== undefined ? { maxCoordinatorPasses: a.max_coordinator_passes } : {}),
-              ...(a.max_cost_usd !== undefined ? { maxCostUsd: a.max_cost_usd } : {}),
+              ...(a.execution_window_seconds !== undefined ? { executionWindowSeconds: a.execution_window_seconds } : {}),
+              ...(a.max_model_starts !== undefined ? { maxModelStarts: a.max_model_starts } : {}),
               ...(a.sends_require_approval !== undefined ? { sendsRequireApproval: a.sends_require_approval } : {}),
             });
           } catch (e) {
@@ -824,7 +838,7 @@ export async function runCoordinatorPass(
 
       tool(
         'inspect_workstream',
-        'Read a bounded, typed summary of a workstream you manage: title/objective/status/successCriteria/constraints/tags/budget+spend/open attention/conclusion/last 10 events/directions you sent it/its own recent notices. Refuses if you are not its recorded manager. Never returns its raw decision log or a rendered projection — only these declared facts. Never resolves further than this one workstream (flat, not a tree): its own notices may reference workstreams IT manages, but those are not expanded here.',
+        'Read a bounded, typed summary of a workstream you manage: title/objective/status/successCriteria/constraints/tags/execution safety/activity/open attention/conclusion/last 10 events/directions you sent it/its own recent notices. Refuses if you are not its recorded manager. Never returns its raw decision log or a rendered projection — only these declared facts. Never resolves further than this one workstream (flat, not a tree): its own notices may reference workstreams IT manages, but those are not expanded here.',
         { slug: z.string() },
         async (a) => {
           try {
@@ -837,7 +851,7 @@ export async function runCoordinatorPass(
 
       tool(
         'direct_workstream',
-        'Send durable, ADVISORY text to a workstream you manage — exactly like human Steering is advisory text to you. It cannot create assignments, adopt or reject anything, or change the target\'s budget/constraints/approvals; only the target\'s own next pass, under its own authority, decides whether and how to act on it. Refuses if you are not its recorded manager.',
+        'Send durable, ADVISORY text to a workstream you manage — exactly like human Steering is advisory text to you. It cannot create assignments, adopt or reject anything, or change the target\'s execution safety/constraints/approvals; only the target\'s own next pass, under its own authority, decides whether and how to act on it. Refuses if you are not its recorded manager.',
         { slug: z.string(), message: z.string() },
         async (a) => {
           let direction;
@@ -1089,7 +1103,7 @@ export async function runCoordinatorPass(
       d.workstream.status === 'active' &&
       !d.wakes.some((w) => w.status === 'pending') &&
       !d.assignments.some((a) => !['completed', 'failed', 'cancelled'].includes(a.state)) &&
-      !d.attention.some((a) => a.status === 'open') &&
+      !d.attention.some((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a)) &&
       !d.interactions.some((i) => i.status === 'awaiting_approval')
     ) {
       d.wakes.push({

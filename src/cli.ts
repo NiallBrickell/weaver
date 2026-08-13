@@ -3,10 +3,11 @@
  * durability lives in the store, never in a process.
  */
 
-import { advanceClock, virtualNow } from './clock.js';
+import { advanceClock, parseDuration, virtualNow } from './clock.js';
 import { KNOWN_COMMANDS, misroutedSubcommand } from './dispatch.js';
 import { loadDotenv } from './env.js';
 import { tick } from './engine.js';
+import { executionSafetyConfig, newExecutionSafety } from './executionSafety.js';
 import { renderStatus } from './status.js';
 import {
   arrive,
@@ -90,7 +91,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver do ["<message>"] ["<done means>"]   start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied. Optional 2nd arg overrides the done-bar (e.g. "verified live on the web post-merge, read-only")
                                              NO ARGS = interactive: type/paste a multiline message, finish with Ctrl-D or a "." line — the safe path for long messages ($, quotes, newlines survive verbatim)
   weaver ask "<question>"                    interrogate the fleet's history: "did anything pick up X?", "what happened with Y?", "why wasn't Z done?" — answers cite decisions/events/deliverables from recorded state (read-only)
-  weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--source-key <k>] [--max-passes N] [--max-cost USD]
+  weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--source-key <k>] [--execution-window <duration>] [--max-model-starts N]
   weaver list
   weaver status <slug>
   weaver capacity retry <slug> [--model <model>]   make a parked provider wait due after you change Claude-side usage/auth settings; does not change billing or identity
@@ -129,6 +130,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver serve [--host H] [--port N]         HTTP ingress for external bots (needs WEAVER_SERVE_TOKEN); create-or-get workstreams, post observations, read status
   weaver pause [slug]                        pause every active workstream, or one named workstream (state is kept)
   weaver resume <slug>                       restart one paused workstream (state is kept)
+  weaver execution-safety <slug> [--window <duration>] [--max-starts N]   configure the rolling model-start guard; pauses and resumes automatically
   weaver resolve <slug> <attentionId> [note] mark an attention item handled (human act)
 `;
 
@@ -225,6 +227,13 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       // can never both create it. Uniqueness is enforced atomically at the
       // store write — no scan-then-create race — and surfaces as a
       // SourceKeyConflictError we render as a clean CLI failure.
+      if (rest.includes('--max-passes') || rest.includes('--max-cost')) {
+        fail('lifetime pass/dollar caps were removed; use --execution-window/--max-model-starts, and provider billing controls for API spend');
+      }
+      const executionWindow = opt(rest, 'execution-window');
+      const maxModelStarts = opt(rest, 'max-model-starts');
+      if (rest.includes('--execution-window') && !executionWindow) fail('--execution-window requires a duration');
+      if (rest.includes('--max-model-starts') && !maxModelStarts) fail('--max-model-starts requires a positive integer');
       const sourceKey = opt(rest, 'source-key');
       const doc = await createWorkstream({
         slug,
@@ -235,12 +244,14 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
         successCriteria: optAll(rest, 'success'),
         constraints: optAll(rest, 'constraint'),
         autonomy: { sendsRequireApproval: true },
-        budget: {
-          // Backstops against runaway loops, not spend management — high by
-          // default so the human never thinks about them in normal operation.
-          maxCoordinatorPasses: Number(opt(rest, 'max-passes') ?? 500),
-          maxCostUsd: Number(opt(rest, 'max-cost') ?? 1000),
-        },
+        executionSafety: newExecutionSafety({
+          windowSeconds: executionWindow
+            ? Math.ceil(parseDuration(executionWindow) / 1000)
+            : undefined,
+          maxModelStarts: maxModelStarts
+            ? Number(maxModelStarts)
+            : undefined,
+        }),
       }).catch((e) => {
         // A collision on a hand-set source key is a clean user error, not a
         // stack trace: name the workstream that already holds it and exit.
@@ -516,19 +527,27 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
     }
 
     case 'budget': {
-      // Budgets are operator-owned config: the human sets the ceiling, the
-      // harness enforces it. This is the only sanctioned way to widen one.
+      fail('lifetime dollar/pass caps were removed; use `weaver execution-safety <slug> --window 1h --max-starts 30`, and provider billing controls for API spend');
+      break;
+    }
+
+    case 'execution-safety': {
       const slug = rest[0] ?? fail('slug required');
-      const maxCost = opt(rest, 'max-cost');
-      const maxPasses = opt(rest, 'max-passes');
-      if (!maxCost && !maxPasses) fail('--max-cost and/or --max-passes required');
+      const window = opt(rest, 'window');
+      const maxStarts = opt(rest, 'max-starts');
+      if (rest.includes('--window') && !window) fail('--window requires a duration');
+      if (rest.includes('--max-starts') && !maxStarts) fail('--max-starts requires a positive integer');
+      if (!window && !maxStarts) fail('--window and/or --max-starts required');
       await arrive(slug, (d, event) => {
-        if (maxCost) d.workstream.budget.maxCostUsd = Number(maxCost);
-        if (maxPasses) d.workstream.budget.maxCoordinatorPasses = Number(maxPasses);
+        const prior = executionSafetyConfig(d.workstream);
+        d.workstream.executionSafety = newExecutionSafety({
+          windowSeconds: window ? Math.ceil(parseDuration(window) / 1000) : prior.windowSeconds,
+          maxModelStarts: maxStarts ? Number(maxStarts) : prior.maxModelStarts,
+        });
         d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
-        event('budget.updated', `config: ${(process.env.WEAVER_ACTOR ?? 'operator')} set budget to ${d.workstream.budget.maxCoordinatorPasses} passes / $${d.workstream.budget.maxCostUsd}`);
+        event('execution_safety.updated', `config: ${(process.env.WEAVER_ACTOR ?? 'operator')} set rolling guard to ${d.workstream.executionSafety.maxModelStarts} model starts / ${d.workstream.executionSafety.windowSeconds}s`);
       });
-      process.stdout.write(`budget updated\n`);
+      process.stdout.write(`execution safety guard updated\n`);
       break;
     }
 

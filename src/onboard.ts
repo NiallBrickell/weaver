@@ -17,6 +17,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { sdkEnv } from './secrets.js';
 import { arrive, createWorkstream, listWorkstreams, newId } from './store.js';
 import { workerModel } from './worker.js';
+import { newExecutionSafety } from './executionSafety.js';
 
 /** The machine's standing rules and repo knowledge, applied to every stream
  * this entry point creates. Overridden per machine by `house.json` under
@@ -181,7 +182,7 @@ export async function onboard(message: string, done?: string): Promise<Derived> 
     successCriteria: d.successCriteria,
     constraints: house.constraints,
     autonomy: { sendsRequireApproval: true },
-    budget: { maxCoordinatorPasses: 500, maxCostUsd: 1000 },
+    executionSafety: newExecutionSafety(),
   });
   await arrive(d.slug, (doc, event) => {
     doc.wakes.push({

@@ -5,7 +5,7 @@
 Weaver has no Linear integration. It has something better: a workstream can read
 the outside world through the MCP servers you already use, and open new
 workstreams for what it finds. Point one at your Linear backlog and every issue
-you label becomes a workstream of its own — with its own direction, budget and
+you label becomes a workstream of its own — with its own direction, execution policy and
 lifetime, reporting back to the issue when it has something to say.
 
 Nothing here is Linear-specific. If you have an MCP server for Jira, Google

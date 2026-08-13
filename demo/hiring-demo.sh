@@ -20,7 +20,7 @@ pause_if_interactive() { if [ -t 0 ] && [ "${DEMO_PAUSE:-0}" = "1" ]; then read 
 step "0. Clean slate"
 rm -rf "state/$SLUG"
 
-step "1. Human creates the workstream (outcome, constraints, budget)"
+step "1. Human creates the workstream (outcome, constraints, execution safety)"
 $W create --slug $SLUG \
   --title "Hire a founding engineer" \
   --objective "Hire one founding engineer for an early-stage startup: define the profile, produce the job description, run candidate outreach, and progress replies toward screens." \
@@ -28,8 +28,7 @@ $W create --slug $SLUG \
   --success "At least one outreach email is sent to a real candidate channel (simulated provider)" \
   --success "At least one candidate reply is evaluated and progressed or closed with a reason" \
   --constraint "All outbound communications require human approval before sending" \
-  --constraint "Be honest in outreach: no inflated claims about the company" \
-  --max-passes 12 --max-cost 10
+  --constraint "Be honest in outreach: no inflated claims about the company"
 pause_if_interactive
 
 step "2. Coordinator pass A: establishes direction, dispatches research + drafts, exits"

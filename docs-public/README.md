@@ -23,6 +23,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Secrets & access](./secrets-and-access.md) — models see names, shells get values, approved actions inherit your MCP servers and CLIs
 - [Configuration](./configuration.md) — machine-local settings (models, store, actions) in a `.env` file that only ever fills gaps
 - [Claude capacity & billing](./claude-capacity.md) — keeping durable work moving through Claude usage limits without changing billing or identity
+- [Execution safety](./execution-safety.md) — the rolling model-start guard that catches runaway churn and resumes automatically, without pretending SDK estimates are billing
 - [Team seeds](./team-seeds.md) — share your guardrails with your team, never your trust or your transcripts
 - [Hosted state](./hosted-state.md) — point `WEAVER_STORE` at SQLite or plain Postgres and the durable layer lives in one database
 - [Managed Workstreams](./managed-workstreams.md) — a coordinator can delegate a genuinely separate outcome to its own Workstream, flat, not a tree

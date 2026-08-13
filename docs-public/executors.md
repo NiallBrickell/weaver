@@ -39,6 +39,9 @@ Requirements:
   `host.docker.internal` — nothing durable is written by the container directly.
 - Each run gets a fresh session key; if the model ever echoes it into a
   submission, the harness redacts it before anything is stored.
+- **Provider billing is configured at the provider.** Weaver's rolling
+  model-start guard bounds rapid churn but is not a monetary stop. When this
+  executor uses API credits, set the real spending ceiling with that provider.
 
 ## What it does and does not guarantee today
 

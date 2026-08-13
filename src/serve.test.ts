@@ -56,6 +56,23 @@ test('a bot registers its workstream idempotently on a source key', async () => 
   // Exactly one workstream landed.
   const doc = await load(b1.slug);
   assert.equal(doc.workstream.sourceKey, 'devbot:pr:1957');
+  assert.deepEqual(doc.workstream.executionSafety, { windowSeconds: 3600, maxModelStarts: 30 });
+});
+
+test('legacy lifetime cap inputs fail explicitly instead of becoming ignored safety theatre', async () => {
+  const response = await fetch(`${base}/workstreams`, auth({
+    source_key: 'legacy:cap', title: 'Legacy', objective: 'do work', max_cost_usd: 5,
+  }));
+  assert.equal(response.status, 400);
+  assert.match(JSON.stringify(await response.json()), /were removed.*provider billing controls/);
+});
+
+test('invalid rolling safety inputs fail instead of silently weakening the guard', async () => {
+  const response = await fetch(`${base}/workstreams`, auth({
+    source_key: 'bad:guard', title: 'Bad guard', objective: 'do work', max_model_starts: 0,
+  }));
+  assert.equal(response.status, 400);
+  assert.match(JSON.stringify(await response.json()), /must be positive integers/);
 });
 
 test('a workstream is created with an immediate wake so the runner picks it up', async () => {

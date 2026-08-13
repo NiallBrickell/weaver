@@ -74,6 +74,9 @@ function str(v: unknown): string | undefined {
 function strArr(v: unknown): string[] | undefined {
   return Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : undefined;
 }
+function positiveInt(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined;
+}
 
 async function handle(req: IncomingMessage, res: ServerResponse, token: string): Promise<void> {
   if (!authorized(req, token)) return send(res, 401, { error: 'unauthorized — send Authorization: Bearer <WEAVER_SERVE_TOKEN>' });
@@ -90,6 +93,17 @@ async function handle(req: IncomingMessage, res: ServerResponse, token: string):
     if (!sourceKey || !title || !objective) {
       return send(res, 400, { error: 'source_key, title and objective are required' });
     }
+    if (body.max_passes !== undefined || body.max_cost_usd !== undefined) {
+      return send(res, 400, {
+        error: 'max_passes/max_cost_usd were removed; use execution_window_seconds/max_model_starts, and provider billing controls for API spend',
+      });
+    }
+    if (
+      (body.execution_window_seconds !== undefined && positiveInt(body.execution_window_seconds) === undefined)
+      || (body.max_model_starts !== undefined && positiveInt(body.max_model_starts) === undefined)
+    ) {
+      return send(res, 400, { error: 'execution_window_seconds and max_model_starts must be positive integers' });
+    }
     const reqObj: CreateWorkstreamRequest = {
       sourceKey,
       title,
@@ -98,8 +112,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, token: string):
       tags: strArr(body.tags),
       successCriteria: strArr(body.success_criteria),
       constraints: strArr(body.constraints),
-      maxPasses: typeof body.max_passes === 'number' ? body.max_passes : undefined,
-      maxCostUsd: typeof body.max_cost_usd === 'number' ? body.max_cost_usd : undefined,
+      executionWindowSeconds: positiveInt(body.execution_window_seconds),
+      maxModelStarts: positiveInt(body.max_model_starts),
     };
     const result = await createOrGetWorkstream(reqObj);
     return send(res, result.created ? 201 : 200, result);
