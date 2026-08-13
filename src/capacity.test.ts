@@ -307,6 +307,45 @@ test('capacity presentation distinguishes fallback degradation from a real block
   }
 });
 
+test('a block says whether recovery is a persons move or a timers', () => {
+  const previousFallback = process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
+  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = process.env.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5';
+  try {
+    const build = (wait: ReturnType<SdkFailureTracker['classify']>) => {
+      const doc = {
+        assignments: [], capacity: null, workstream: { slug: 'view' },
+        steering: [], managerDirections: [],
+        wakes: [{ status: 'pending', infrastructure: wait, condition: { type: 'time', dueAtVirtual: wait!.retryAt } }],
+      } as unknown as WorkstreamDoc;
+      recordCapacityBackoff(doc, wait!);
+      return capacityPresentation(doc, source.now.toISOString());
+    };
+
+    // A session limit clears on its own reset — nobody has anything to do.
+    const rateLimited = new SdkFailureTracker();
+    observe(rateLimited, { type: 'assistant', error: 'rate_limit' });
+    const auto = build(rateLimited.classify(source));
+    assert.equal(auto.blocking!.needsHuman, false);
+
+    // A usage limit sits there until a person enables credits or waits it out.
+    const outOfCredits = new SdkFailureTracker();
+    observe(outOfCredits, {
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'rejected', errorCode: 'credits_required',
+        overageDisabledReason: 'out_of_credits',
+        resetsAt: Date.parse('2026-08-07T09:00:00.000Z') / 1000,
+        rateLimitType: 'overage',
+      },
+    });
+    const human = build(outOfCredits.classify(source));
+    assert.equal(human.blocking!.needsHuman, true);
+  } finally {
+    if (previousFallback === undefined) delete process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
+    else process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = previousFallback;
+  }
+});
+
 test('an explicit retry makes typed waits due without claiming recovery', () => {
   const retryAt = '2026-08-07T09:00:00.000Z';
   const infrastructure = {

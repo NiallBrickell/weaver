@@ -408,7 +408,7 @@ export function providerCapacityHeadline(
 
 export interface CapacityPresentation {
   /** Present only when capacity prevents the next configured model transition. */
-  blocking?: { summary: string; retryAt: string; recovery: string };
+  blocking?: { summary: string; retryAt: string; recovery: string; needsHuman: boolean };
   details: string[];
   /** Latest stored waits that belong to a configured role with intended work. */
   relevantSourceIds: string[];
@@ -417,6 +417,16 @@ export interface CapacityPresentation {
 
 function activeWait(entry: CapacityBackoff | undefined, nowIso: string): InfrastructureWait | undefined {
   return entry?.wait.retryAt && entry.wait.retryAt > nowIso ? entry.wait : undefined;
+}
+
+/** Whether clearing this wait needs a person, or clears itself on a timer.
+ * The board colours on this rather than on the category, because the two read
+ * identically to an operator and mean opposite things: a session limit is the
+ * fleet resting until its reset, while a usage limit sits there until someone
+ * enables credits. Rendering both in the same blue is how "nothing is moving
+ * and nobody is coming" looks exactly like ordinary scheduled waiting. */
+function waitNeedsHuman(wait: InfrastructureWait): boolean {
+  return wait.recovery !== 'automatic_retry';
 }
 
 function waitPosition(wait: InfrastructureWait, role: string, now: Date): string {
@@ -501,6 +511,7 @@ export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): Capaci
         summary: waitPosition(blockingWait, blockingRole, now),
         retryAt: blockingWait.retryAt,
         recovery: infrastructureWaitSummary(blockingWait, doc.workstream.slug),
+        needsHuman: waitNeedsHuman(blockingWait),
       },
     } : {}),
     details,
