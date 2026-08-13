@@ -13,6 +13,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { runInspect, renderOverviewHtml, renderWorkstreamHtml, passIntegrityWarnings } from './inspect.js';
+import { inspectViewedPath, readInspectViewed, writeInspectViewed } from './inspectViewed.js';
+import type { InspectViewed } from './inspectViewed.js';
+import type { PolicyRecord } from './policies.js';
 import { loadPolicies, proposePolicy, recordPolicyOutcome } from './policies.js';
 import { setSecret } from './secrets.js';
 import { arrive, createWorkstream, load, newId, workstreamDir, weaverHome, writeArtifact } from './store.js';
@@ -208,7 +211,11 @@ test('overview renders all workstreams and the global policy store; empty sectio
   const html = fs.readFileSync(out, 'utf8');
   assert.match(html, /ws-one/);
   assert.match(html, /ws-two/);
-  assert.ok(html.includes(pol.id));
+  // A brand-new policy nothing has proven yet is on the page as a statement in
+  // the collapsed group, not as a card — the fleet page must stay readable.
+  assert.ok(html.includes('Always dry-run destructive commands first'));
+  assert.match(html, /Shadow, unproven \(1\)/);
+  assert.ok(!html.includes(pol.id), 'an unproven shadow policy renders as a line, not a card');
   assert.match(html, /href="printouts\/index\.html"[^>]*>Printouts/);
   assert.match(html, /Browse fleet printouts/);
   const printoutHub = path.join(weaverHome(), 'printouts', 'index.html');
@@ -312,6 +319,307 @@ test('escaping: state text cannot inject markup into the page', async () => {
   assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
   // The click-detail JSON block must not be terminated early by state text.
   assert.ok(!/<script type="application\/json"[^>]*>[^<]*<script>/.test(html));
+});
+
+// ---------------------------------------------------------------------------
+// The five questions on the fleet page.
+
+/** A policy record built directly: the renderers are pure over typed state, so
+ * grouping is provable without driving the whole learning loop to reach a
+ * status. Statuses and evidence are exactly what the store would hold. */
+function policyFixture(over: Partial<PolicyRecord> & Pick<PolicyRecord, 'id' | 'statement'>): PolicyRecord {
+  return {
+    scope: { tags: ['erdo'] },
+    effect: { kind: 'advisory', description: 'advises' },
+    widensAuthority: false,
+    status: 'shadow',
+    provenance: { source: 'seed', ref: 'a-teammate', interventionSummary: 'seeded practice' },
+    evidence: [],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...over,
+  };
+}
+
+function evidenceFixture(workstreamSlug: string, at = '2026-02-01T00:00:00.000Z') {
+  return { workstreamSlug, passId: 'pass_e', note: 'held up', interventionFree: true, at };
+}
+
+test('the policy store groups by what the fleet knows: proven policies get cards, unproven shadow gets one lines', () => {
+  const active = policyFixture({
+    id: 'pol_active',
+    statement: 'Confirm CI is green before merging',
+    status: 'active',
+    evidence: [evidenceFixture('ws-a'), evidenceFixture('ws-b')],
+  });
+  const provenShadow = policyFixture({
+    id: 'pol_proven',
+    statement: 'Read the provider back after an unknown send',
+    evidence: [evidenceFixture('ws-c')],
+  });
+  const unproven = policyFixture({ id: 'pol_unproven', statement: 'Name the dataset a read is for' });
+  const retired = policyFixture({
+    id: 'pol_retired',
+    statement: 'The rule that got replaced',
+    status: 'superseded',
+    supersededBy: 'pol_active',
+  });
+  const html = renderOverviewHtml([], [unproven, retired, provenShadow, active]);
+
+  // The header reconciles with the groups below it, computed not asserted-by-hand.
+  assert.match(html, /1 active · 2 shadow \(2 unproven\) · 1 superseded/);
+  assert.match(html, /4 advisory/);
+
+  // Proven policies keep their full cards; the unproven one has none at all.
+  assert.equal(html.match(/class="card policy/g)?.length, 2, 'the active one and the evidenced shadow one only');
+  assert.ok(html.includes('pol_active'));
+  assert.ok(html.includes('pol_proven'));
+  assert.ok(!html.includes('pol_unproven'), 'a one-liner carries no id — the card is what carries one');
+
+  // Active is rendered apart from, and ahead of, the shadow groups.
+  assert.ok(html.indexOf('Active (1)') < html.indexOf('Shadow, with evidence (1)'));
+  assert.ok(html.indexOf('Shadow, with evidence (1)') < html.indexOf('Shadow, unproven (1)'));
+
+  // The unproven statement is present — inside the collapsed group, after it.
+  assert.ok(html.includes('Name the dataset a read is for'));
+  assert.ok(html.indexOf('Shadow, unproven (1)') < html.indexOf('Name the dataset a read is for'));
+  assert.match(html, /<details><summary>Shadow, unproven \(1\)<\/summary>/);
+
+  // Superseded keeps its lineage, collapsed and one line each.
+  assert.match(html, /<details><summary>Superseded \(1\)<\/summary>/);
+  assert.ok(html.includes('superseded by <code>pol_active</code>'));
+
+  // Contested policies are their own group, whatever their status.
+  const contestedHtml = renderOverviewHtml([], [
+    policyFixture({
+      id: 'pol_contested',
+      statement: 'A rule a human pushed back on',
+      contested: { at: '2026-03-01T00:00:00.000Z', workstreamSlug: 'ws-d', note: 'needed a correction anyway' },
+    }),
+  ]);
+  assert.match(contestedHtml, /Contested \(1\)/);
+  assert.ok(contestedHtml.includes('pol_contested'));
+});
+
+test('a workstream page shows the policies that shaped IT, not everything sharing a tag', async () => {
+  await makeWorkstream('scoped-ws');
+  await arrive('scoped-ws', (d) => {
+    d.decisions.push({
+      id: 'dec_cite',
+      title: 'apply the cited policy',
+      rationale: 'it fits',
+      madeBy: 'coordinator',
+      passId: 'pass_1',
+      status: 'standing',
+      appliedPolicyIds: ['pol_applied'],
+      decidedAtVirtual: virtualNow().toISOString(),
+    });
+  });
+  const doc = await load('scoped-ws');
+  // The doc's tags are ['hiring'] (makeWorkstream), so a tag-only match is the
+  // case that used to put 351 of 371 policies on every page.
+  const tagOnly = policyFixture({
+    id: 'pol_tagonly',
+    statement: 'A rule that merely shares this stream tag',
+    scope: { tags: ['hiring'] },
+  });
+  const learnedHere = policyFixture({
+    id: 'pol_learned',
+    statement: 'A rule this stream taught the fleet',
+    provenance: { workstreamSlug: 'scoped-ws', passId: 'pass_1', interventionSummary: 'a correction here' },
+  });
+  const evidencedHere = policyFixture({
+    id: 'pol_evidenced',
+    statement: 'A rule this stream held up',
+    evidence: [evidenceFixture('scoped-ws')],
+  });
+  const appliedHere = policyFixture({ id: 'pol_applied', statement: 'A rule a decision here cited' });
+  const html = renderWorkstreamHtml(doc, [tagOnly, learnedHere, evidencedHere, appliedHere]);
+
+  assert.match(html, /Policies in play here/);
+  assert.ok(html.includes('pol_learned'), 'learned here');
+  assert.ok(html.includes('pol_evidenced'), 'evidenced here');
+  assert.ok(html.includes('pol_applied'), 'cited by a decision here');
+  assert.ok(!html.includes('pol_tagonly'), 'a shared tag is not evidence this stream was shaped by it');
+  // The wider, tag-scoped store stays one click away, with its real total.
+  assert.match(html, /href="\.\.\/inspect\.html#policies">Full policy store \(4\)/);
+
+  // A stream nothing has shaped yet says so, rather than borrowing the fleet's.
+  await makeWorkstream('untouched-ws');
+  const untouched = renderWorkstreamHtml(await load('untouched-ws'), [tagOnly, learnedHere]);
+  assert.match(untouched, /No policy has been learned here, applied here, or evidenced here yet/);
+});
+
+test('since you left: the window opens at the previous generation, and a first visit says so', async () => {
+  await makeWorkstream('since-ws');
+  const before = '2026-05-01T00:00:00.000Z';
+  const stamp = '2026-05-02T00:00:00.000Z';
+  const after = '2026-05-03T00:00:00.000Z';
+  await arrive('since-ws', (d) => {
+    d.decisions.push(
+      {
+        id: 'dec_before',
+        title: 'The course you already knew about',
+        rationale: 'decided while you were watching',
+        madeBy: 'coordinator',
+        status: 'superseded',
+        decidedAtVirtual: before,
+      },
+      {
+        id: 'dec_after',
+        title: 'The course that changed while you were away',
+        rationale: 'decided after you left',
+        madeBy: 'coordinator',
+        status: 'standing',
+        decidedAtVirtual: after,
+      },
+    );
+  });
+  const docs = [await load('since-ws')];
+  const viewed: InspectViewed = { schemaVersion: 1, wallAt: stamp, virtualAt: stamp };
+  const oldPolicy = policyFixture({ id: 'pol_old', statement: 'Known before you left', createdAt: before });
+  const newPolicy = policyFixture({ id: 'pol_new', statement: 'Learned while you were away', createdAt: after });
+
+  // Scoped to the section: the policy store below legitimately lists every
+  // policy ever learned, so "not in the window" means not in THIS section.
+  const sinceSection = (page: string): string => {
+    const from = page.indexOf('<h2>Since you left</h2>');
+    assert.notEqual(from, -1, 'the page has a since-you-left section');
+    return page.slice(from, page.indexOf('</section>', from));
+  };
+  const since = sinceSection(renderOverviewHtml(docs, [oldPolicy, newPolicy], [], viewed));
+  assert.ok(since.includes('The course that changed while you were away'));
+  assert.ok(!since.includes('The course you already knew about'), 'the window has a left edge');
+  assert.match(since, /Decisions made \(1\)/);
+  assert.match(since, /New policies \(1\)/);
+  assert.ok(since.includes('Learned while you were away'));
+  assert.ok(!since.includes('Known before you left'));
+
+  // No stamp at all is honest about being the first look, never "nothing changed".
+  const first = renderOverviewHtml(docs, [oldPolicy, newPolicy], [], null);
+  assert.match(first, /First visit — the next generation will know what changed/);
+  assert.ok(!first.includes('The course that changed while you were away'));
+
+  // A stamp with nothing after it says exactly that.
+  const quiet = renderOverviewHtml(docs, [], [], { schemaVersion: 1, wallAt: after, virtualAt: after });
+  assert.match(quiet, /Nothing has changed since you last looked/);
+});
+
+test('the fleet page leads with what needs a person, most urgent first', async () => {
+  await makeWorkstream('needy-ws');
+  await arrive('needy-ws', (d) => {
+    d.attention.push(
+      {
+        id: 'att_review',
+        kind: 'review',
+        summary: 'review the draft plan',
+        status: 'open',
+        createdAt: '2026-06-01T00:00:00.000Z',
+      },
+      {
+        id: 'att_block',
+        kind: 'blocker',
+        summary: 'the repo has a colliding open PR',
+        status: 'open',
+        createdAt: '2026-06-03T00:00:00.000Z',
+      },
+      {
+        id: 'att_resolved',
+        kind: 'blocker',
+        summary: 'already dealt with',
+        status: 'resolved',
+        createdAt: '2026-06-02T00:00:00.000Z',
+      },
+    );
+    d.assignments.push({
+      id: 'asg_gated',
+      objective: 'push the branch',
+      briefing: 'b',
+      kind: 'action',
+      exec: { cwd: '/tmp', verify: 'git log -1', ask: 'push the fix branch to origin' },
+      acceptanceCriteria: [],
+      dependsOn: [],
+      state: 'gated',
+      attempts: [],
+      adoption: { state: 'none' },
+      createdAtVirtual: '2026-06-02T00:00:00.000Z',
+    });
+  });
+  const html = renderOverviewHtml([await load('needy-ws')], []);
+
+  assert.match(html, /Needs you <span class="count">3<\/span>/);
+  assert.ok(html.indexOf('the repo has a colliding open PR') < html.indexOf('push the fix branch to origin'));
+  assert.ok(html.indexOf('push the fix branch to origin') < html.indexOf('review the draft plan'));
+  assert.ok(!html.includes('already dealt with'), 'a resolved item is not waiting for anyone');
+  // The fleet row reflects the same count and wears the state word for it.
+  assert.match(html, /<td class="state">needs you<\/td>\n<td>3<\/td>/);
+
+  // Nothing open is stated plainly rather than left as an empty table.
+  await makeWorkstream('calm-ws');
+  assert.match(renderOverviewHtml([await load('calm-ws')], []), /Nothing needs you\./);
+});
+
+test('the fleet table replaces the card wall: one row per stream, done streams collapsed', async () => {
+  await makeWorkstream('live-ws');
+  await makeWorkstream('finished-ws');
+  await arrive('live-ws', (d) => {
+    d.wakes.push({
+      id: 'wake_1',
+      reason: 'check the deploy has landed',
+      condition: { type: 'time', dueAtVirtual: new Date(virtualNow().getTime() + 7_200_000).toISOString() },
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+  });
+  await arrive('finished-ws', (d) => {
+    d.workstream.status = 'done';
+    d.workstream.conclusion = {
+      passId: 'pass_9',
+      atVirtual: '2026-07-01T00:00:00.000Z',
+      summary: 'shipped',
+      evidenceIds: ['dec_1'],
+    };
+  });
+  const html = renderOverviewHtml([await load('live-ws'), await load('finished-ws')], []);
+
+  assert.match(html, /<h2>Fleet <span class="count">1 live · 1 done<\/span><\/h2>/);
+  assert.match(html, /waiting · in 2h — check the deploy has landed/);
+  assert.match(html, /<details><summary>Done \(1\)<\/summary>/);
+  // The done stream is inside the collapsed group, not on the live table.
+  assert.ok(html.indexOf('Done (1)') < html.indexOf('finished-ws/inspect.html'));
+  // Both pages remain reachable, and an unreadable slug is still named.
+  assert.match(html, /href="live-ws\/inspect\.html"/);
+  const withBroken = renderOverviewHtml([await load('live-ws')], [], ['ws-broken']);
+  assert.match(withBroken, /Unreadable, no page generated/);
+});
+
+test('the viewed stamp round-trips, tolerates damage, and is written only after the pages are', async () => {
+  assert.equal(readInspectViewed(), null, 'no stamp before the first look');
+
+  const written = writeInspectViewed();
+  const readBack = readInspectViewed();
+  assert.deepEqual(readBack, written);
+  assert.equal(readBack!.schemaVersion, 1);
+  assert.ok(Number.isFinite(Date.parse(readBack!.wallAt)));
+  assert.ok(Number.isFinite(Date.parse(readBack!.virtualAt)));
+
+  // Anything unusable reads as "we don't know when you last looked" — which
+  // renders the honest first-visit line, never a false "nothing changed".
+  fs.writeFileSync(inspectViewedPath(), '{ not json');
+  assert.equal(readInspectViewed(), null);
+  fs.writeFileSync(inspectViewedPath(), JSON.stringify({ schemaVersion: 2, wallAt: 'x', virtualAt: 'y' }));
+  assert.equal(readInspectViewed(), null);
+  fs.writeFileSync(inspectViewedPath(), JSON.stringify({ schemaVersion: 1, wallAt: 'not-a-date', virtualAt: 'nope' }));
+  assert.equal(readInspectViewed(), null);
+
+  // End to end: generating the pages IS the human look, so the first run reads
+  // no stamp and the second one reads the first run's.
+  fs.rmSync(inspectViewedPath());
+  await makeWorkstream('stamped-ws');
+  const first = fs.readFileSync(await runInspect(), 'utf8');
+  assert.match(first, /First visit — the next generation will know what changed/);
+  assert.ok(readInspectViewed(), 'the generation stamped itself');
+  const second = fs.readFileSync(await runInspect(), 'utf8');
+  assert.match(second, /Nothing has changed since you last looked/);
 });
 
 test('passIntegrityWarnings flags a completed pass that has no summary', () => {

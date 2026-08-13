@@ -54,6 +54,39 @@ interface NeedsYouItem {
   refId: string;
   title: string;
   body: string;
+  /** Urgency class — see compareNeedsYou. Lower is more urgent. */
+  rank: number;
+  /** When it started waiting for a person. A send records no creation time. */
+  at?: string;
+}
+
+/** Attention urgency: a blocker is the fleet stopped, an approval is one
+ * keypress, a review can wait a beat, budget and capacity clear themselves or
+ * need a console rather than a decision. Keyed loosely so a kind stored by an
+ * older Weaver still ranks (as a review) instead of sorting as most urgent. */
+const ATTENTION_RANK: Record<string, number> = {
+  blocker: 0,
+  approval: 1,
+  review: 2,
+  budget: 3,
+  capacity: 3,
+};
+
+/**
+ * The queue's order: urgency first, then longest waiting.
+ *
+ * Alphabetical by slug was an accident of construction, and it buried a
+ * blocker under whatever stream happened to sort first. Items with no
+ * timestamp (a send) sort last WITHIN their rank rather than first — an absent
+ * age must never outrank something that has been waiting a week — and the slug
+ * remains the final tiebreak so the board doesn't shuffle between polls.
+ */
+export function compareNeedsYou(a: NeedsYouItem, b: NeedsYouItem): number {
+  return (
+    a.rank - b.rank ||
+    (a.at ? (b.at ? a.at.localeCompare(b.at) : -1) : b.at ? 1 : 0) ||
+    a.slug.localeCompare(b.slug)
+  );
 }
 
 interface StreamRow {
@@ -280,7 +313,11 @@ async function snapshot(): Promise<Snapshot> {
       needsYou++;
       items.push({
         key: `${slug}:${a.id}`, slug, kind: 'attention', refId: a.id,
-        title: a.summary.split('\n')[0]!.slice(0, 120),
+        rank: ATTENTION_RANK[a.kind] ?? 2,
+        at: a.createdAt,
+        // The kind is the fastest read of what a card is asking of you, and it
+        // was the one thing the row dropped.
+        title: `[${a.kind}] ${a.summary.split('\n')[0]!.slice(0, 120)}`,
         body: a.summary,
       });
     }
@@ -313,6 +350,8 @@ async function snapshot(): Promise<Snapshot> {
         : [...a.briefing.matchAll(/```(?:bash|sh|shell)?\n([\s\S]*?)```/g)].map((m) => m[1]!.trimEnd());
       items.push({
         key: `${slug}:${a.id}`, slug, kind: 'action', refId: a.id,
+        rank: 1,
+        at: a.createdAtVirtual,
         title: `approve? ${ask.slice(0, 115)}`,
         body: [
           ask,
@@ -336,6 +375,9 @@ async function snapshot(): Promise<Snapshot> {
       const notes = commentary.get(i.id);
       items.push({
         key: `${slug}:${i.id}`, slug, kind: 'send', refId: i.id,
+        // An interaction records approval and send times, never a creation
+        // one, so a pending send has no honest age to show.
+        rank: 1,
         title: `approve send? ${i.kind} to ${i.to} — "${i.subject}"`,
         body: `draft deliverable ${i.deliverableId} (weaver show ${slug} ${i.deliverableId})${notes ? `\n\ncoordinator says:\n${notes.join('\n---\n')}` : ''}`,
       });
@@ -480,7 +522,7 @@ async function snapshot(): Promise<Snapshot> {
     });
   }
   streams.sort((a, b) => a.bucket - b.bucket || a.slug.localeCompare(b.slug));
-  items.sort((a, b) => a.slug.localeCompare(b.slug));
+  items.sort(compareNeedsYou);
   const nested = nestUnderManagers(streams);
   // Finished work earns a few days on the board, then leaves it: the dashboard
   // is for what's moving or needs someone, and a wall of green rows buries
@@ -796,6 +838,9 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                   <Text color="red"> ● </Text>
                   <Text bold>{it.slug}</Text>
                   <Text>  {it.title}</Text>
+                  {/* How long it has been yours to answer — the queue is
+                      ordered by it, so the row has to show it. */}
+                  {it.at ? <Text dimColor>  {elapsed(it.at)}</Text> : null}
                 </Text>
                 {isSel && (() => {
                   // Single-row lines only (truncate-end): the height budget

@@ -17,13 +17,17 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { compactAge } from './activity.js';
+import { virtualNow } from './clock.js';
 import type { PolicyRecord } from './policies.js';
 import { loadPolicies } from './policies.js';
 import { writePrintoutIndex } from './printoutHtml.js';
 import { loadAllSecrets, redactSecrets } from './secrets.js';
 import { listManagedBy, listWorkstreams, load, weaverHome, workstreamDir } from './store.js';
 import type { Assignment, Decision, Deliverable, EventRecord, WorkstreamDoc } from './types.js';
-import { executionPosition, isLegacyDollarBudgetAttention } from './executionSafety.js';
+import { isLegacyDollarBudgetAttention } from './executionSafety.js';
+import type { InspectViewed } from './inspectViewed.js';
+import { readInspectViewed, writeInspectViewed } from './inspectViewed.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,6 +50,32 @@ function fmtVirtual(iso: string): string {
 
 function empty(msg: string): string {
   return `<p class="empty">${esc(msg)}</p>`;
+}
+
+/** First line of a stored summary, clipped — a row is a glance, not the record. */
+function firstLine(s: string, max: number): string {
+  const line = s.split('\n')[0]!.trim();
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/**
+ * How long until a scheduled wake fires, in the TUI board's vocabulary. Takes
+ * a duration rather than a timestamp because a wake may be dated on either
+ * clock, and the remaining time is the only thing the two have in common.
+ */
+function untilLabel(ms: number): string {
+  const m = Math.ceil(ms / 60_000);
+  if (m < 1) return 'now';
+  if (m < 60) return `${m}m`;
+  if (m < 48 * 60) return `${Math.round(m / 60)}h`;
+  return `${Math.round(m / (24 * 60))}d`;
+}
+
+/** Long lists are windowed, and the remainder is counted rather than dropped. */
+function cappedList(cls: string, rows: string[], max = 20): string {
+  const shown = rows.slice(0, max);
+  const more = rows.length - shown.length;
+  return `<ul class="${cls}">${shown.join('')}${more ? `<li class="empty">+${more} more</li>` : ''}</ul>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,9 +251,105 @@ ${contested}${evidence}${lineage}
 </article>`;
 }
 
-function policySection(policies: PolicyRecord[], heading: string, note: string): string {
-  const body = policies.length ? policies.map(policyCard).join('\n') : empty('No learned policies.');
-  return `<section><h2>${esc(heading)} <span class="count">${policies.length}</span></h2><p class="hint">${esc(note)}</p>${body}</section>`;
+function policySection(
+  policies: PolicyRecord[],
+  heading: string,
+  note: string,
+  opts: { emptyMsg?: string; footer?: string } = {},
+): string {
+  const body = policies.length
+    ? policies.map(policyCard).join('\n')
+    : empty(opts.emptyMsg ?? 'No learned policies.');
+  return `<section><h2>${esc(heading)} <span class="count">${policies.length}</span></h2><p class="hint">${esc(note)}</p>${body}${opts.footer ?? ''}</section>`;
+}
+
+/**
+ * One line per policy, for the groups a reader scans rather than studies —
+ * the 341 shadow policies nothing has yet proven. A full card each buried the
+ * handful that ARE load-bearing under a page nobody could read; the statement,
+ * its effect, and where it came from are what distinguishes one unproven
+ * candidate from another, and the full card is one click away in the store.
+ */
+function policyOneLiner(p: PolicyRecord): string {
+  const source =
+    'workstreamSlug' in p.provenance ? p.provenance.workstreamSlug : p.provenance.source;
+  const lineage = p.supersededBy ? ` <span class="dim">superseded by <code>${esc(p.supersededBy)}</code></span>` : '';
+  return `<li><span class="statement-line">${esc(firstLine(p.statement, 160))}</span> <span class="pill effect">${esc(p.effect.kind)}</span> <span class="dim">${esc(source)}</span>${lineage}</li>`;
+}
+
+function policyGroup(title: string, cards: string): string {
+  return `<h3>${esc(title)}</h3>${cards}`;
+}
+
+/**
+ * The fleet page's learning answer: what the fleet has learned, grouped by how
+ * much the fleet actually knows about it. Every policy lands in exactly one
+ * group — superseded first (resolved lineage), then contested, then by status
+ * and evidence — so the totals in the header reconcile with what is on screen.
+ */
+function learnedSection(policies: PolicyRecord[]): string {
+  if (!policies.length) {
+    return `<section id="policies"><h2>Learned <span class="count">0</span></h2>${empty('No learned policies.')}</section>`;
+  }
+  const superseded = policies.filter((p) => p.status === 'superseded');
+  const live = policies.filter((p) => p.status !== 'superseded');
+  const contested = live.filter((p) => p.contested);
+  const rest = live.filter((p) => !p.contested);
+  const active = rest.filter((p) => p.status === 'active');
+  const shadowProven = rest.filter((p) => p.status === 'shadow' && p.evidence.length > 0);
+  const shadowUnproven = rest.filter((p) => p.status === 'shadow' && p.evidence.length === 0);
+
+  const byEvidence = (a: PolicyRecord, b: PolicyRecord) =>
+    b.evidence.length - a.evidence.length || b.createdAt.localeCompare(a.createdAt);
+
+  const unproven = policies.filter((p) => p.evidence.length === 0).length;
+  const effectCounts = new Map<string, number>();
+  for (const p of policies) effectCounts.set(p.effect.kind, (effectCounts.get(p.effect.kind) ?? 0) + 1);
+  const effects = [...effectCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([kind, n]) => `${n} ${kind}`)
+    .join(' / ');
+  const statuses = [
+    `${policies.filter((p) => p.status === 'active').length} active`,
+    `${policies.filter((p) => p.status === 'shadow').length} shadow (${unproven} unproven)`,
+    `${superseded.length} superseded`,
+  ].join(' · ');
+
+  const groups = [
+    active.length
+      ? policyGroup(`Active (${active.length})`, [...active].sort(byEvidence).map(policyCard).join('\n'))
+      : '',
+    contested.length
+      ? policyGroup(
+          `Contested (${contested.length})`,
+          [...contested].sort(byEvidence).map(policyCard).join('\n'),
+        )
+      : '',
+    shadowProven.length
+      ? policyGroup(
+          `Shadow, with evidence (${shadowProven.length})`,
+          [...shadowProven].sort(byEvidence).map(policyCard).join('\n'),
+        )
+      : '',
+    shadowUnproven.length
+      ? `<details><summary>Shadow, unproven (${shadowUnproven.length})</summary><ul class="policy-lines">${shadowUnproven
+          .map(policyOneLiner)
+          .join('')}</ul></details>`
+      : '',
+    superseded.length
+      ? `<details><summary>Superseded (${superseded.length})</summary><ul class="policy-lines">${superseded
+          .map(policyOneLiner)
+          .join('')}</ul></details>`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return `<section id="policies">
+<h2>Learned <span class="count">${policies.length}</span></h2>
+<p class="hint">${esc(statuses)} — ${esc(effects)}</p>
+<p class="hint">Shadow policies shape plans but are cited on every application; promotion to active is earned by an intervention-free matching workstream. A policy can only add verification, narrow authority, or advise — authority is never learned.</p>
+${groups}
+</section>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -407,7 +533,6 @@ svg text { pointer-events: none; }
 .timeline li.tl-config { border-left-color: var(--muted, #666); opacity: .75; }
 .tl-when { color: var(--dim); font-size: 12px; font-family: ui-monospace, monospace; margin-right: 8px; }
 .dels { list-style: none; padding: 0; margin: 6px 0; } .dels li { padding: 4px 0; }
-.ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
 .page-nav { display:flex; gap:16px; margin:0 0 14px; font-size:13px; }
 .page-nav a { text-decoration:none; }
 a { color: var(--coord); }
@@ -415,6 +540,22 @@ footer { color: var(--dim); font-size: 12px; margin-top: 24px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
 th { color: var(--dim); font-weight: 600; }
+td.age { color: var(--dim); font-family: ui-monospace, monospace; white-space: nowrap; }
+td.state { white-space: nowrap; }
+.dim { color: var(--dim); }
+.pill.need-blocker { color: var(--bad); border-color: var(--bad); }
+.pill.need-action, .pill.need-approval, .pill.need-send { color: var(--warn); border-color: var(--warn); }
+.pill.routine { color: var(--coord); border-color: var(--coord); }
+.pill.bad { color: var(--bad); border-color: var(--bad); }
+tr.state-needs-you td.state { color: var(--bad); }
+tr.state-working td.state { color: var(--coord); }
+tr.state-waiting td.state { color: var(--dim); }
+tr.state-idle td.state, tr.state-paused td.state { color: var(--dim); font-style: italic; }
+details { margin: 10px 0; }
+details > summary { cursor: pointer; color: var(--dim); font-size: 13px; padding: 4px 0; }
+.since, .policy-lines { list-style: none; margin: 4px 0 12px; padding: 0; }
+.since li, .policy-lines li { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.statement-line { font-weight: 600; }
 `;
 
 /** Click-to-inspect for decision nodes; data comes from the embedded JSON. */
@@ -483,12 +624,24 @@ ${body}
 // ---------------------------------------------------------------------------
 // Renderers (pure over typed state — this is what the tests exercise)
 
-/** Policies relevant to one workstream: tag-matched or learned from it. */
+/**
+ * The policies that have actually SHAPED this workstream: learned here, cited
+ * by a decision here, or evidenced by an outcome here.
+ *
+ * Deliberately not the tag-scoped set. Tag scope answers a coordinator's
+ * question — which policies MAY apply to a stream it is about to plan — and
+ * one shared tag is enough to match, so `erdo` alone put 351 of 371 policies on
+ * every page. This page answers the human's question instead: which learning
+ * is on the record here. The full store, tag scope and all, is one link away.
+ */
 export function policiesForWorkstream(policies: PolicyRecord[], doc: WorkstreamDoc): PolicyRecord[] {
+  const slug = doc.workstream.slug;
+  const applied = new Set(doc.decisions.flatMap((d) => d.appliedPolicyIds ?? []));
   return policies.filter(
     (p) =>
-      ('workstreamSlug' in p.provenance && p.provenance.workstreamSlug === doc.workstream.slug) ||
-      p.scope.tags.some((t) => doc.workstream.tags.includes(t)),
+      ('workstreamSlug' in p.provenance && p.provenance.workstreamSlug === slug) ||
+      p.evidence.some((e) => e.workstreamSlug === slug) ||
+      applied.has(p.id),
   );
 }
 
@@ -555,8 +708,12 @@ export function renderWorkstreamHtml(
     decisionSection(doc),
     policySection(
       policiesForWorkstream(policies, doc),
-      'Learned policies',
-      'From the global store (state/policies.json): tag-matched or learned here. A policy can only add verification, narrow authority, or advise — authority is never learned.',
+      'Policies in play here',
+      'Learned here, cited by a decision here, or evidenced by an outcome here — what has actually shaped this workstream. Tag scope is wider: it selects what a coordinator MAY apply when planning, and lives in the full store. A policy can only add verification, narrow authority, or advise — authority is never learned.',
+      {
+        emptyMsg: 'No policy has been learned here, applied here, or evidenced here yet.',
+        footer: `<p class="hint"><a href="../inspect.html#policies">Full policy store (${policies.length}) →</a></p>`,
+      },
     ),
     interventionSection(doc),
     deliverableSection(doc),
@@ -590,65 +747,347 @@ export function passIntegrityWarnings(doc: WorkstreamDoc): string[] {
   return out;
 }
 
-export function renderOverviewHtml(
+// ---------------------------------------------------------------------------
+// The fleet page — the five questions (kernel rule 10), in order:
+// needs-me · since-I-left · now (the fleet table) · why (what it learned).
+
+/** One thing on the fleet that is waiting for a person, whichever surface it
+ * arrived on: an attention item, a gated action, or a send awaiting approval. */
+export interface FleetNeed {
+  slug: string;
+  kind: 'blocker' | 'approval' | 'review' | 'budget' | 'capacity' | 'action' | 'send';
+  /** When it started waiting. A send records no creation time, so it has none. */
+  at?: string;
+  /** Which clock `at` is on: attention is wall-stamped, an assignment virtual. */
+  clock?: 'wall' | 'virtual';
+  summary: string;
+}
+
+/**
+ * Urgency, not alphabet. A blocker is the fleet stopped; an approval, a gated
+ * action and a pending send are one keypress each; a review can wait a beat;
+ * budget and capacity clear themselves or need a console, never a decision.
+ */
+const NEED_RANK: Record<FleetNeed['kind'], number> = {
+  blocker: 0,
+  action: 1,
+  approval: 1,
+  send: 1,
+  review: 2,
+  budget: 3,
+  capacity: 3,
+};
+
+/** Everything on the fleet waiting for a person, most urgent then oldest. */
+export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
+  const needs: FleetNeed[] = [];
+  for (const doc of docs) {
+    const slug = doc.workstream.slug;
+    for (const a of doc.attention) {
+      if (a.status !== 'open' || isLegacyDollarBudgetAttention(a)) continue;
+      needs.push({ slug, kind: a.kind, at: a.createdAt, clock: 'wall', summary: a.summary });
+    }
+    for (const a of doc.assignments) {
+      // A gated action pilot has already approved is the runner's to execute,
+      // not the human's to decide — it is on its way out of the gate.
+      if (a.state !== 'gated' || a.exec?.pilotVerdict?.decision === 'approve') continue;
+      needs.push({
+        slug,
+        kind: 'action',
+        at: a.createdAtVirtual,
+        clock: 'virtual',
+        summary: a.exec?.ask ?? a.objective,
+      });
+    }
+    for (const i of doc.interactions) {
+      if (i.status !== 'awaiting_approval') continue;
+      needs.push({ slug, kind: 'send', summary: `send ${i.kind} to ${i.to} — “${i.subject}”` });
+    }
+  }
+  return needs.sort(
+    (a, b) =>
+      NEED_RANK[a.kind] - NEED_RANK[b.kind] ||
+      // Undated items (sends) sort last within their rank rather than first:
+      // an empty age must never outrank something that has waited a week.
+      (a.at ? (b.at ? a.at.localeCompare(b.at) : -1) : b.at ? 1 : 0) ||
+      a.slug.localeCompare(b.slug),
+  );
+}
+
+function needsYouSection(needs: FleetNeed[]): string {
+  if (!needs.length) {
+    return `<section><h2>Needs you</h2>${empty('Nothing needs you.')}</section>`;
+  }
+  const wall = new Date();
+  const virtual = virtualNow();
+  const rows = needs.map((n) => {
+    const age = n.at ? compactAge(n.at, n.clock === 'virtual' ? virtual : wall) : '';
+    return `<tr>
+<td><span class="pill need-${esc(n.kind)}">${esc(n.kind)}</span></td>
+<td class="age">${esc(age)}</td>
+<td><a href="${esc(n.slug)}/inspect.html">${esc(n.slug)}</a></td>
+<td>${esc(firstLine(n.summary, 160))}</td>
+</tr>`;
+  });
+  return `<section>
+<h2>Needs you <span class="count">${needs.length}</span></h2>
+<p class="hint">Most urgent first, then longest waiting. Answer them in the dashboard (<code>weaver watch</code>) — approving there IS the approval.</p>
+<table><tbody>${rows.join('\n')}</tbody></table>
+</section>`;
+}
+
+/**
+ * What moved while the human was away. The window opens at the previous
+ * generation of these pages, which is a human act by construction (`weaver
+ * inspect`, or [i] on the dashboard) — so "since the last generation" and
+ * "since you last looked" are the same moment.
+ *
+ * Organizational facts are compared against the virtual stamp and physical
+ * ones against the wall stamp; mixing them would mis-window the whole section
+ * the first time the demo clock is advanced.
+ */
+function sinceYouLeftSection(
   docs: WorkstreamDoc[],
   policies: PolicyRecord[],
-  unreadable: string[] = [],
+  viewed: InspectViewed | null,
 ): string {
-  const cards = docs.map((doc) => {
+  if (!viewed) {
+    return `<section>
+<h2>Since you left</h2>
+${empty('First visit — the next generation will know what changed.')}
+</section>`;
+  }
+  const li = (s: string) => `<li>${s}</li>`;
+  const wsLink = (slug: string) => `<a href="${esc(slug)}/inspect.html">${esc(slug)}</a>`;
+
+  const decisions = docs.flatMap((doc) =>
+    doc.decisions
+      .filter((d) => d.decidedAtVirtual > viewed.virtualAt)
+      .map((d) =>
+        li(
+          `${wsLink(doc.workstream.slug)} <strong>${esc(firstLine(d.title, 160))}</strong> <span class="dim">${esc(d.madeBy)} · ${esc(d.status)} · ${esc(fmtVirtual(d.decidedAtVirtual))}</span>`,
+        ),
+      ),
+  );
+  const adopted = docs.flatMap((doc) =>
+    doc.deliverables
+      .filter((d) => d.adopted && d.adopted.atVirtual > viewed.virtualAt)
+      .map((d) =>
+        li(
+          `${wsLink(doc.workstream.slug)} <strong>${esc(firstLine(d.title, 160))}</strong> <span class="dim">pinned <code>${esc(shortHash(d.adopted!.contentHash))}</code> · ${esc(fmtVirtual(d.adopted!.atVirtual))}</span>`,
+        ),
+      ),
+  );
+  const concluded = docs
+    .filter((doc) => doc.workstream.conclusion && doc.workstream.conclusion.atVirtual > viewed.virtualAt)
+    .map((doc) =>
+      li(
+        `${wsLink(doc.workstream.slug)} <span class="dim">${esc(fmtVirtual(doc.workstream.conclusion!.atVirtual))} · evidence ${esc(doc.workstream.conclusion!.evidenceIds.join(', ') || '(none cited)')}</span>`,
+      ),
+    );
+  // Status rides along per row: a send with an unknown provider result is a
+  // send that happened, and must not be listed as if it were confirmed.
+  const sends = docs.flatMap((doc) =>
+    doc.interactions
+      .filter((i) => i.sentAtVirtual && i.sentAtVirtual > viewed.virtualAt)
+      .map((i) =>
+        li(
+          `${wsLink(doc.workstream.slug)} <strong>${esc(firstLine(i.subject, 160))}</strong> → ${esc(i.to)} <span class="dim">${esc(i.status)} · ${esc(fmtVirtual(i.sentAtVirtual!))}</span>`,
+        ),
+      ),
+  );
+  const newPolicies = policies.filter((p) => p.createdAt > viewed.wallAt);
+  const newEvidence = policies.flatMap((p) => p.evidence.filter((e) => e.at > viewed.wallAt));
+
+  const groups: [string, string[]][] = [
+    [`Decisions made (${decisions.length})`, decisions],
+    [`Deliverables adopted (${adopted.length})`, adopted],
+    [`Workstreams concluded (${concluded.length})`, concluded],
+    [`Sends (${sends.length})`, sends],
+    [
+      `New policies (${newPolicies.length})`,
+      newPolicies.map((p) =>
+        li(
+          `<span class="statement-line">${esc(firstLine(p.statement, 160))}</span> <span class="pill effect">${esc(p.effect.kind)}</span> <span class="dim">${esc(p.status)}</span>`,
+        ),
+      ),
+    ],
+  ];
+  const body = groups
+    .filter(([, rows]) => rows.length)
+    .map(([title, rows]) => `<h3>${esc(title)}</h3>${cappedList('since', rows)}`)
+    .join('\n');
+  const evidenceLine = newEvidence.length
+    ? `<p class="meta">${newEvidence.length} new piece(s) of policy evidence — ${newEvidence.filter((e) => e.interventionFree).length} intervention-free.</p>`
+    : '';
+  return `<section>
+<h2>Since you left</h2>
+<p class="hint">Everything below happened after the last time these pages were generated (${esc(fmtVirtual(viewed.wallAt))} wall · ${esc(fmtVirtual(viewed.virtualAt))} virtual).</p>
+${body || evidenceLine ? `${body}\n${evidenceLine}` : empty('Nothing has changed since you last looked.')}
+</section>`;
+}
+
+/** The five state words a fleet row can wear, in the order they matter. */
+type FleetState = 'needs you' | 'working' | 'waiting' | 'idle' | 'paused';
+
+const STATE_RANK: Record<FleetState, number> = {
+  'needs you': 0,
+  working: 1,
+  waiting: 2,
+  idle: 3,
+  paused: 4,
+};
+
+/** The soonest pending wake still in the future, on whichever clock dates it. */
+function nextWake(
+  doc: WorkstreamDoc,
+  wallNow: Date,
+  virtual: Date,
+): { inMs: number; reason: string } | undefined {
+  let best: { inMs: number; reason: string } | undefined;
+  for (const w of doc.wakes) {
+    if (w.status !== 'pending') continue;
+    const inMs =
+      w.condition.type === 'time'
+        ? Date.parse(w.condition.dueAtVirtual) - virtual.getTime()
+        : w.condition.type === 'wall_time'
+          ? Date.parse(w.condition.dueAt) - wallNow.getTime()
+          : 0;
+    if (!Number.isFinite(inMs) || inMs <= 0) continue;
+    if (!best || inMs < best.inMs) best = { inMs, reason: w.reason };
+  }
+  return best;
+}
+
+/**
+ * The state word for one live stream. Deliberately simpler than the
+ * dashboard's: a static page cannot poll pilot or watch a lease tick over, so
+ * it says only what the stored document supports — needing a person outranks
+ * everything, then work in flight, then a scheduled wait, then nothing at all.
+ */
+function fleetState(
+  doc: WorkstreamDoc,
+  needsCount: number,
+  wallNow: Date,
+  virtual: Date,
+): { state: FleetState; note: string } {
+  if (needsCount) return { state: 'needs you', note: '' };
+  if (doc.workstream.status === 'paused') return { state: 'paused', note: '' };
+  const working =
+    doc.assignments.some((a) => a.state === 'running') ||
+    (!!doc.lease && Date.parse(doc.lease.expiresAt) > wallNow.getTime());
+  if (working) return { state: 'working', note: '' };
+  if (doc.wakes.some((w) => w.status === 'pending')) {
+    const next = nextWake(doc, wallNow, virtual);
+    return {
+      state: 'waiting',
+      note: next ? ` · in ${untilLabel(next.inMs)} — ${firstLine(next.reason, 60)}` : '',
+    };
+  }
+  return { state: 'idle', note: '' };
+}
+
+function fleetSection(docs: WorkstreamDoc[], needs: FleetNeed[], unreadable: string[]): string {
+  const wallNow = new Date();
+  const virtual = virtualNow();
+  const needCount = new Map<string, number>();
+  for (const n of needs) needCount.set(n.slug, (needCount.get(n.slug) ?? 0) + 1);
+
+  const cell = (doc: WorkstreamDoc): { link: string; tail: string } => {
     const ws = doc.workstream;
-    const standing = doc.decisions.filter((d) => d.status === 'standing').length;
-    const retired = doc.decisions.length - standing;
-    const adopted = doc.deliverables.filter((d) => d.adopted).length;
-    const candidates = doc.deliverables.length - adopted;
-    const safety = executionPosition(doc);
-    // Flat, one level only: computed from the already-loaded fleet, so this
-    // needs no extra store scan — but still never resolved past direct
-    // children (a manager's manager is never shown here).
-    const directChildren = docs.filter((other) => other.workstream.managedBy?.slug === ws.slug).length;
-    const managedRow = ws.managedBy || directChildren
-      ? `<tr><th>Managed</th><td>${
-          [
-            ws.managedBy ? `by ${esc(ws.managedBy.slug)}` : '',
-            directChildren ? `manages ${directChildren}` : '',
-          ].filter(Boolean).join(' · ')
-        }</td></tr>`
-      : '';
-    return `<article class="card">
-<header><a href="${esc(ws.slug)}/inspect.html"><strong>${esc(ws.title)}</strong></a> <span class="pill status-${ws.status === 'active' ? 'active' : 'shadow'}">${esc(ws.status)}</span></header>
-<p class="meta">${esc(ws.objective)}</p>
-<table><tbody>
-<tr><th>Decisions</th><td>${standing} standing · ${retired} retired</td></tr>
-<tr><th>Deliverables</th><td>${adopted} adopted · ${candidates} candidate/rejected</td></tr>
-<tr><th>Actions</th><td>${doc.assignments.filter((a) => a.kind === 'action').length}</td></tr>
-<tr><th>Interventions</th><td>${doc.spend.humanInterventions}</td></tr>
-<tr><th>Execution safety</th><td>${safety.count}/${safety.limit} model starts in rolling ${Math.round(safety.windowSeconds / 60)}m · automatic pause/resume</td></tr>
-<tr><th>Diagnostic activity</th><td>${doc.spend.coordinatorPasses} coordinator passes · ~$${doc.spend.totalCostUsd.toFixed(2)} SDK estimate</td></tr>
-<tr><th>Tags</th><td>${ws.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(' ') || '(none)'}</td></tr>
-${(() => {
-  const warnings = passIntegrityWarnings(doc);
-  return warnings.length ? `<tr><th>Integrity</th><td class="bad">${warnings.length} pass provenance anomaly(ies): ${esc(warnings[0]!)}${warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ''}</td></tr>` : '';
-})()}
-${managedRow}
-</tbody></table>
-</article>`;
-  });
-  // Skipped workstreams are named, never silently absent: a missing card must
+    const warnings = passIntegrityWarnings(doc);
+    const pills = [
+      ws.tags.includes('routine') ? `<span class="pill routine" title="a standing recurring loop">↻</span>` : '',
+      warnings.length
+        ? `<span class="pill bad" title="${esc(warnings.join(' · '))}">⚠ ${warnings.length}</span>`
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    return {
+      link: `<a href="${esc(ws.slug)}/inspect.html" title="${esc(ws.title)}">${esc(ws.slug)}</a>${pills ? ` ${pills}` : ''}`,
+      tail: `<td>${doc.decisions.filter((d) => d.status === 'standing').length}</td>
+<td>${doc.deliverables.filter((d) => d.adopted).length}</td>
+<td>${doc.spend.coordinatorPasses} · ~$${doc.spend.totalCostUsd.toFixed(2)}</td>
+<td>${doc.spend.humanInterventions ?? 0}</td>`,
+    };
+  };
+
+  const live = docs.filter((doc) => doc.workstream.status !== 'done');
+  const rows = live
+    .map((doc) => {
+      const n = needCount.get(doc.workstream.slug) ?? 0;
+      const { state, note } = fleetState(doc, n, wallNow, virtual);
+      const { link, tail } = cell(doc);
+      return {
+        state,
+        slug: doc.workstream.slug,
+        html: `<tr class="state-${state.replace(' ', '-')}">
+<td>${link}</td>
+<td class="state">${esc(state)}${esc(note)}</td>
+<td>${n || ''}</td>
+${tail}
+</tr>`,
+      };
+    })
+    .sort((a, b) => STATE_RANK[a.state] - STATE_RANK[b.state] || a.slug.localeCompare(b.slug))
+    .map((r) => r.html);
+
+  const concludedAt = (doc: WorkstreamDoc): string =>
+    doc.workstream.conclusion?.atVirtual ??
+    [...doc.events].reverse().find((e) => e.type === 'workstream.concluded')?.atVirtual ??
+    doc.workstream.createdAt;
+  const doneRows = docs
+    .filter((doc) => doc.workstream.status === 'done')
+    .sort((a, b) => concludedAt(b).localeCompare(concludedAt(a)))
+    .map((doc) => {
+      const { link } = cell(doc);
+      return `<tr>
+<td>${link}</td>
+<td>${esc(fmtVirtual(concludedAt(doc)))}</td>
+<td>${doc.deliverables.filter((d) => d.adopted).length} adopted</td>
+<td>${doc.spend.coordinatorPasses} passes</td>
+</tr>`;
+    });
+
+  // Skipped workstreams are named, never silently absent: a missing row must
   // not read as "no such workstream".
   const skipped = unreadable.length
     ? `<p class="hint bad">Unreadable, no page generated: ${unreadable.map((s) => `<code>${esc(s)}</code>`).join(' ')}</p>`
     : '';
-  const wsSection = `<section><h2>Workstreams <span class="count">${docs.length}</span></h2>${skipped}${
-    docs.length ? `<div class="ws-grid">${cards.join('\n')}</div>` : empty('No workstreams under this WEAVER_HOME.')
-  }</section>`;
+  const liveTable = rows.length
+    ? `<table>
+<thead><tr><th>Workstream</th><th>State</th><th>Needs you</th><th>Direction</th><th>Adopted</th><th>Passes · ~$</th><th>Interventions</th></tr></thead>
+<tbody>${rows.join('\n')}</tbody>
+</table>`
+    : empty(docs.length ? 'Every workstream is done.' : 'No workstreams under this WEAVER_HOME.');
+  const done = doneRows.length
+    ? `<details><summary>Done (${doneRows.length})</summary><table>
+<thead><tr><th>Workstream</th><th>Concluded</th><th>Adopted</th><th>Passes</th></tr></thead>
+<tbody>${doneRows.join('\n')}</tbody>
+</table></details>`
+    : '';
+  return `<section>
+<h2>Fleet <span class="count">${live.length} live · ${doneRows.length} done</span></h2>
+<p class="hint">One row per workstream: what it is doing now, and what it has committed to, adopted, and cost. Direction is standing decisions — the commitments a fresh coordinator continues.</p>
+${skipped}${liveTable}
+${done}
+</section>`;
+}
+
+export function renderOverviewHtml(
+  docs: WorkstreamDoc[],
+  policies: PolicyRecord[],
+  unreadable: string[] = [],
+  viewed: InspectViewed | null = null,
+): string {
+  const needs = fleetNeeds(docs);
   const body = [
+    needsYouSection(needs),
+    sinceYouLeftSection(docs, policies, viewed),
+    fleetSection(docs, needs, unreadable),
+    learnedSection(policies),
     printoutSection('printouts/index.html', 'fleet'),
-    wsSection,
-    policySection(
-      policies,
-      'Global policy store',
-      'Every learned policy across all workstreams, with provenance, evidence, and supersession lineage. Shadow policies shape plans but are cited on every application; promotion to active is earned by an intervention-free matching workstream.',
-    ),
   ].join('\n');
   return page(
     'Weaver — knowledge inspector',
@@ -670,11 +1109,17 @@ function writeRedacted(filePath: string, html: string, secrets: Record<string, s
  * page when `slug` is given, the fleet page otherwise. One generation path,
  * because pages link both ways: entering at a workstream must not leave the
  * "← all workstreams" link pointing at a stale or missing fleet page.
+ *
+ * Generating is itself the human act that "since you left" measures from, so
+ * the PREVIOUS stamp is read before rendering and the new one written after
+ * the pages land — a generation that fails renders no page and must not move
+ * the window past changes nobody has seen.
  */
 export async function runInspect(slug?: string): Promise<string> {
   // The requested workstream is the one failure that must be loud: asking for
   // a page we cannot render is an error, not an empty site.
   if (slug) await load(slug);
+  const viewed = readInspectViewed();
   const policies = (await loadPolicies()).policies;
   const docs: WorkstreamDoc[] = [];
   const allSecrets = loadAllSecrets();
@@ -693,7 +1138,8 @@ export async function runInspect(slug?: string): Promise<string> {
     writeRedacted(path.join(workstreamDir(s), 'inspect.html'), renderWorkstreamHtml(doc, policies, await listManagedBy(s)), allSecrets);
   }
   const overview = path.join(weaverHome(), 'inspect.html');
-  writeRedacted(overview, renderOverviewHtml(docs, policies, unreadable), allSecrets);
+  writeRedacted(overview, renderOverviewHtml(docs, policies, unreadable, viewed), allSecrets);
   await writePrintoutIndex();
+  writeInspectViewed();
   return slug ? path.join(workstreamDir(slug), 'inspect.html') : overview;
 }

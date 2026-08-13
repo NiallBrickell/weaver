@@ -192,6 +192,23 @@ test('fleet archives and knowledge pages redact colliding local secret names', a
     ref: 'security',
     interventionSummary: 'seeded before the values were registered',
   });
+  // Each workstream's own typed state also carries BOTH values, so every page
+  // is asked to redact the neighbouring workstream's colliding TOKEN as well
+  // as its own. (The seeded policy above covers the fleet page, which lists
+  // the whole store; a workstream page now shows only the policies that
+  // shaped it, so its leak has to come from its own state.)
+  for (const slug of ['alpha', 'beta']) {
+    await arrive(slug, (doc) => {
+      doc.decisions.push({
+        id: `dec_${slug}_token`,
+        title: 'Use the local token',
+        rationale: `tokens ${alphaValue} and ${betaValue} both work here`,
+        madeBy: 'coordinator',
+        status: 'standing',
+        decidedAtVirtual: new Date().toISOString(),
+      });
+    });
+  }
   setSecret('TOKEN', alphaValue, 'alpha');
   setSecret('TOKEN', betaValue, 'beta');
 
