@@ -588,7 +588,8 @@ async function recoverCrashedAttempts(slug: string): Promise<number> {
     if (attempt.runnerPid && attempt.runnerPid !== process.pid) {
       driverDead = !pidIsLive(attempt.runnerPid);
     }
-    if (!driverDead && Date.now() - new Date(attempt.startedAt).getTime() < staleMs) continue;
+    const ageMs = Date.now() - new Date(attempt.startedAt).getTime();
+    if (!driverDead && ageMs < staleMs) continue;
     const isAction = asg.kind === 'action';
     await arrive(slug, (d, event) => {
       const a2 = d.assignments.find((x) => x.id === asg.id)!;
@@ -600,7 +601,15 @@ async function recoverCrashedAttempts(slug: string): Promise<number> {
       if (a2.state === 'running') a2.state = isAction ? 'failed' : 'queued';
       event(
         'worker.crash_recovered',
-        `${asg.id} attempt ${attempt.runId} presumed crashed (stale ${Math.round(staleMs / 1000)}s); ${isAction ? 'action held for readback' : 're-queued'}`,
+        // WHICH check fired, and how long the attempt actually ran. Reporting
+        // the staleness CONSTANT for both made every restart-orphaned attempt
+        // read as a 45-minute stall in the log, which is the opposite of what
+        // happened: a dead driver is detected immediately, and the difference
+        // between "ran 45 minutes and hung" and "died 5 minutes in when its
+        // runner was replaced" is the whole diagnosis.
+        `${asg.id} attempt ${attempt.runId} ${driverDead
+          ? `orphaned — its runner (pid ${attempt.runnerPid}) is gone, ${Math.round(ageMs / 1000)}s in`
+          : `presumed crashed — no result after ${Math.round(ageMs / 1000)}s (limit ${Math.round(staleMs / 1000)}s)`}; ${isAction ? 'action held for readback' : 're-queued'}`,
         [asg.id],
       );
     });
