@@ -63,11 +63,6 @@ interface StreamRow {
   /** Safe typed infrastructure position; raw provider errors never render. */
   infrastructureWait?: string;
   paused: boolean;
-  spent: number;
-  maxCost: number;
-  passes: number;
-  maxPasses: number;
-  interventions: number;
   details: string[];
   /** The task card ([enter] on the row): what this stream IS — its objective
    * plus latest standing decision — so "what is this and what's it doing?"
@@ -233,8 +228,8 @@ async function snapshot(): Promise<Snapshot> {
       doc = await load(slug);
     } catch (e) {
       streams.push({
-        slug, bucket: 4, queuedNow: false, routine: false, paused: false, depth: 0, spent: 0, maxCost: 0, passes: 0, maxPasses: 0,
-        interventions: 0, details: [], objective: '', error: e instanceof Error ? e.message : String(e),
+        slug, bucket: 4, queuedNow: false, routine: false, paused: false, depth: 0,
+        details: [], objective: '', error: e instanceof Error ? e.message : String(e),
       });
       continue;
     }
@@ -403,7 +398,7 @@ async function snapshot(): Promise<Snapshot> {
       }
       const verifiedActs = doc.assignments.filter((x) => x.kind === 'action' && x.exec?.verified?.ok).length;
       const adopted = doc.deliverables.filter((x) => x.adopted).length;
-      details.push(`  ${verifiedActs} verified action(s) · ${adopted} adopted deliverable(s) · ${doc.spend.coordinatorPasses} passes · you ${doc.spend.humanInterventions ?? 0}× — [i] full record`);
+      details.push(`  ${verifiedActs} verified action(s) · ${adopted} adopted deliverable(s) · ${doc.spend.coordinatorPasses} passes · ${doc.spend.humanInterventions ?? 0} human interventions — [i] full record`);
     }
 
     const nextInfrastructureWake = pending
@@ -440,9 +435,6 @@ async function snapshot(): Promise<Snapshot> {
       nextReason: nextWake?.reason,
       infrastructureWait: infrastructure[0],
       paused: ws.status === 'paused',
-      spent: doc.spend.totalCostUsd, maxCost: ws.budget.maxCostUsd,
-      passes: doc.spend.coordinatorPasses, maxPasses: ws.budget.maxCoordinatorPasses,
-      interventions: doc.spend.humanInterventions ?? 0,
       details,
       objective: ws.objective,
       latestDecision: [...doc.decisions].reverse().find((x) => x.status === 'standing')?.title,
@@ -476,19 +468,6 @@ const DOT: Record<number, { color: string; word: string; glyph: string }> = {
   4: { color: 'red', word: 'UNREADABLE', glyph: '✗' },
   5: { color: 'green', word: 'DONE', glyph: '✓' },
 };
-
-function Bar({ spent, max }: { spent: number; max: number }): React.JSX.Element {
-  const cells = 8;
-  const frac = max > 0 ? Math.min(1, spent / max) : 0;
-  const filled = Math.round(frac * cells);
-  const color = frac > 0.9 ? 'red' : frac > 0.7 ? 'yellow' : 'cyan';
-  return (
-    <Text>
-      <Text color={color}>{'▰'.repeat(filled)}</Text>
-      <Text dimColor>{'▱'.repeat(cells - filled)}</Text>
-    </Text>
-  );
-}
 
 /** Hard-clear (incl. scrollback) — Ink's incremental repaint desyncs whenever
  * a frame ever wrapped or overflowed, so any layout change gets a clean slate. */
@@ -806,8 +785,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                   <Text color="red">{st.error}</Text>
                 ) : (
                   <>
-                    <Bar spent={st.spent} max={st.maxCost} />
-                    <Text dimColor> ~${st.spent.toFixed(2)} est · passes {st.passes} · you {st.interventions}×{st.paused ? ' [paused]' : ''}</Text>
+                    {st.paused ? <Text dimColor> [paused]</Text> : null}
                     {st.bucket === 2 && !st.queuedNow && st.nextRun ? (
                       <Text color="blue"> · in {until(st.nextRun)}{st.infrastructureWait ? `: ${st.infrastructureWait}` : st.nextReason ? `: ${waitLabel(st.nextReason)}` : ''}</Text>
                     ) : null}

@@ -45,14 +45,6 @@ function elapsed(iso: string): string {
   return `${Math.floor(m / 60)}h${m % 60 ? `${m % 60}m` : ''}`;
 }
 
-/** Budget bar: ▰▰▰▱▱▱▱▱, turning amber past 70% and red past 90%. */
-function bar(spent: number, max: number, cells = 8): string {
-  const frac = max > 0 ? Math.min(1, spent / max) : 0;
-  const filled = Math.round(frac * cells);
-  const color = frac > 0.9 ? RED : frac > 0.7 ? AMBER : CYAN;
-  return `${color}${'▰'.repeat(filled)}${DIM}${'▱'.repeat(cells - filled)}${R}`;
-}
-
 function width(): number {
   return Math.max(60, Math.min(process.stdout.columns ?? 120, 160));
 }
@@ -205,10 +197,7 @@ export async function viewOf(slug: string): Promise<WsView> {
   const managedBy = ws.managedBy ? ` ${DIM}[managed by ${ws.managedBy.slug}]${R}` : '';
   const row =
     `${BUCKET[bucket].word}${' '.repeat(Math.max(1, 11 - BUCKET[bucket].plain.length))}` +
-    `${bar(doc.spend.totalCostUsd, ws.budget.maxCostUsd)} ` +
-    `${DIM}$${doc.spend.totalCostUsd.toFixed(2)}/$${ws.budget.maxCostUsd}${R} ` +
-    `${DIM}· passes ${doc.spend.coordinatorPasses}/${ws.budget.maxCoordinatorPasses}` +
-    ` · you ${doc.spend.humanInterventions ?? 0}×${R}${paused}${managedBy}`;
+    `${paused}${managedBy}`;
 
   return { slug, bucket, row, details };
 }
