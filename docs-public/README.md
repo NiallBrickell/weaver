@@ -6,6 +6,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 
 - [Introduction](./introduction.md) — agents can do a task; Weaver manages the outcome until it is actually done
 - [What's actually new](./whats-new.md) — the outcome survives every agent run, verified outcomes, improvement you can audit
+- [How Weaver compares](./comparisons.md) — session managers, workflow engines, and memory layers persist different things; Weaver persists commitments
 
 ## Using Weaver
 
