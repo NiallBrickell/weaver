@@ -377,7 +377,7 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       const r = await setPriority(slug, level);
       process.stdout.write(
         r.changed
-          ? `${slug}: priority ${r.previous} → ${r.priority} — the runner grants slots by priority, then fairness within it\n`
+          ? `${slug}: priority ${r.previous} → ${r.priority} — a due high stream reserves most of the runner's slots; fairness decides the order within a band\n`
           : `${slug} is already ${r.priority}\n`,
       );
       break;

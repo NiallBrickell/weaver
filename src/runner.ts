@@ -172,6 +172,55 @@ export function byPriorityThenFairness(
     (lastTickedAt.get(a) ?? 0) - (lastTickedAt.get(b) ?? 0);
 }
 
+/**
+ * Which of the ordered due streams actually get slots this iteration.
+ *
+ * Ordering alone decides who is FIRST in the queue, and the runner then filled
+ * every remaining slot from that same queue — so with twenty active streams
+ * and ten slots a high stream took one and nine backstop polls took the rest.
+ * Every one of those slots is an SDK subprocess of a few hundred MB, so the
+ * urgent stream then did its multi-step work on a machine nine other ticks
+ * were competing for, which is the crawl priority was raised to prevent. A
+ * live client stream hit exactly that, and the only remedy to hand was pausing
+ * nineteen streams one by one — blunt, because it also stops legitimate
+ * background work, and somebody then has to remember to undo it.
+ *
+ * So a due high band RESERVES the budget rather than merely leading the queue:
+ * the high band may take everything except a floor, and that floor is what the
+ * rest of the fleet shares. Slots the high band has no due streams for are
+ * deliberately left ungranted — keeping the machine free is the whole point,
+ * and a stream with nothing to do would only hand its slot back seconds later.
+ * The floor is never zero, so a long-running high band cannot freeze the fleet
+ * behind it: 'low' keeps moving, more slowly, and the partition lifts entirely
+ * the moment no high stream is due, which is the behaviour every fleet without
+ * a ranked stream has always had.
+ *
+ * Expects `due` already ordered by `byPriorityThenFairness` and preserves that
+ * order within each band, so least-recently-ticked still decides who goes.
+ */
+export function allocateSlots(
+  due: readonly string[],
+  priority: ReadonlyMap<string, number>,
+  cap: number,
+): string[] {
+  if (cap <= 0) return [];
+  const isHigh = (slug: string) => (priority.get(slug) ?? priorityRank('normal')) === priorityRank('high');
+  const highDue = due.filter(isHigh);
+  if (!highDue.length) return due.slice(0, cap);
+  // A quarter of the budget, at least one slot: enough for the rest of the
+  // fleet to keep rotating its backstop polls (they are granted
+  // least-recently-ticked, so the floor rotates rather than favouring anyone)
+  // without putting the machine back under the load the reservation exists to
+  // lift.
+  const fleetFloor = Math.max(1, Math.floor(cap / 4));
+  // At a cap of one there is nothing to partition, and the ranking is what a
+  // human asking for high priority meant by it — so the high band is never
+  // reserved down to nothing either.
+  const highGranted = highDue.slice(0, Math.max(1, cap - fleetFloor));
+  const rest = due.filter((slug) => !isHigh(slug));
+  return highGranted.concat(rest.slice(0, Math.min(fleetFloor, cap - highGranted.length)));
+}
+
 function credentialsMtime(): number {
   try {
     const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
@@ -493,7 +542,12 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
           : `[run] load eased (${load1.toFixed(1)} on ${cores} cores) — parallel ticks back to ${cap}`);
         lastCap = cap;
       }
-      for (const slug of due) {
+      // Slots are granted from the allocation, not from the raw queue: when a
+      // high stream is due, most of the budget is held for its band instead of
+      // being filled first-come. The partition applies to what THIS iteration
+      // grants; ticks still running from earlier ones keep occupying the
+      // budget, and the break below remains what bounds the total.
+      for (const slug of allocateSlots(due, priority, cap)) {
         if (inFlight.size >= cap) break;
         inFlight.add(slug);
         lastTickedAt.set(slug, Date.now());
