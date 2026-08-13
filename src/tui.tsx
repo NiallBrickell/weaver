@@ -38,7 +38,7 @@ import { execFile } from 'node:child_process';
 import { runInspect } from './inspect.js';
 import { requestedPrintoutScope } from './printoutControls.js';
 import { publishPrintoutHtml } from './printoutHtml.js';
-import { acquireRunnerLock, liveRunnerPid, promoteOnRunnerVacancy, runLoop, runnerLoopHealthy } from './runner.js';
+import { acquireRunnerLock, liveRunnerPid, promoteOnRunnerVacancy, runLoop, runnerLoopHealthy, runnerSourceStale } from './runner.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
 import type { ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 
@@ -557,6 +557,10 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const [runnerState, setRunnerState] = useState<'embedded' | 'external' | 'stalled' | 'none'>(
     embeddedRunner ? 'embedded' : liveRunnerPid() !== null ? 'external' : 'none',
   );
+  // A runner executes the source it loaded at start, so a merged Weaver fix
+  // does nothing until it restarts — and a runner ticking happily on last
+  // hour's code is indistinguishable from a healthy one. Say it out loud.
+  const [sourceStale, setSourceStale] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [scroll, setScroll] = useState(0);
@@ -586,6 +590,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
       // Heartbeat truth, embedded or not: a live pid with a dead loop must
       // render STALLED, never ✓ — pid-aliveness lied to us once already.
       setRunnerState(runnerLoopHealthy() ? (embeddedRunner ? 'embedded' : 'external') : liveRunnerPid() !== null ? 'stalled' : 'none');
+      setSourceStale(runnerSourceStale());
     };
     void poll(); // first frame: same data path as every later one
     const t = setInterval(() => void poll(), 2000);
@@ -773,6 +778,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
             : runnerState === 'external' ? <Text color="green">runner ✓ ext</Text>
             : runnerState === 'stalled' ? <Text bold color="red">RUNNER STALLED — q and relaunch!</Text>
             : <Text bold color="red">NO RUNNER — nothing will advance!</Text>}
+          {sourceStale ? <Text bold color="yellow"> · CODE STALE — q and relaunch to load merged fixes</Text> : null}
           {snap.capacityHeadline ? <><Text dimColor> · </Text><Text color={snap.capacityHeadline.startsWith('⚠') ? 'yellow' : undefined} dimColor={!snap.capacityHeadline.startsWith('⚠')}>{snap.capacityHeadline}</Text></> : null}
           <Text dimColor> · {drift ? `virtual ${vNow.toISOString().slice(0, 16)} ` : ''}{now.toTimeString().slice(0, 8)}</Text>
         </Text>

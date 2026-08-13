@@ -10,9 +10,11 @@
  * restart freely.
  */
 
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { tick } from './engine.js';
 import { sdkEnv } from './secrets.js';
@@ -338,6 +340,46 @@ export function effectiveConcurrency(configured: number, load1: number, cores: n
   if (load1 <= cores) return configured;
   const scaled = Math.floor((configured * cores) / load1);
   return Math.max(1, Math.min(configured, scaled));
+}
+
+/**
+ * The commit this process's code was loaded from.
+ *
+ * The runner executes the checkout's source through tsx, so its behaviour is
+ * frozen at the moment it started: merging a Weaver fix changes nothing until
+ * somebody restarts it. That is invisible from the dashboard — a runner
+ * happily ticking on last hour's code looks exactly like a healthy one — and
+ * the cost lands on whoever owns the terminal, who has to be told. Three
+ * separate fixes tonight were merged, verified, and then re-raised by the
+ * running process because it had never reloaded them.
+ *
+ * Cheap enough to poll: one `git rev-parse HEAD` against the repo the module
+ * was loaded from, not the cwd, so a runner started from anywhere reports its
+ * own code. Returns null where git cannot answer, which reads as "unknown"
+ * and never as "stale".
+ */
+export function runnerSourceRevision(): string | null {
+  try {
+    const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repo, encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The revision this process started on — captured once, at module load. */
+const startedAtRevision = runnerSourceRevision();
+
+/**
+ * True when the checkout has moved since this process loaded its code, so what
+ * is running is not what is committed. The dashboard says so out loud rather
+ * than leaving a stale runner looking healthy.
+ */
+export function runnerSourceStale(): boolean {
+  const current = runnerSourceRevision();
+  return current !== null && startedAtRevision !== null && current !== startedAtRevision;
 }
 
 function heartbeatPath(): string {
