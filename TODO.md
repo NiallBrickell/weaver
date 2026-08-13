@@ -94,5 +94,11 @@ Remaining hardening (was "promotion gates", now post-promotion):
   substrate for cooperative work; supervised remote actions and an enforced (`managed-sandbox`)
   boundary remain the gates that widen that scope. Ongoing comparison of quality, latency, cost,
   operability, and capacity continues through the bakeoff among the surviving candidates.
+- [ ] Stand up the standing eval cadence: re-run the subscription-backed targets (`claude-sdk` via
+  the machine's Claude login, `codex-sdk` via the Codex login) on a schedule so the durable ledger
+  (`evals/ledger.jsonl`) accumulates a time series per model rather than one-off snapshots.
+- [ ] Derive a model-routing policy from the ledger: per-assignment model/executor selection, keyed
+  by assignment kind/tags and input modality and consumed at `selectExecutor` time, sourced from
+  `--history` aggregates instead of anecdote.
 
 See [`docs/harness-evals.md`](./docs/harness-evals.md) for commands and the result contract.

@@ -110,9 +110,40 @@ The example slugs are OpenRouter's current
 [GLM-5](https://openrouter.ai/z-ai/glm-5) identifiers; targets stay explicit because a moving
 "latest" alias would make results irreproducible.
 
-Each suite writes an ignored directory under `eval-results/` containing `results.json`, a stable
+Each suite writes a gitignored directory under `eval-results/` containing `results.json`, a stable
 schema with raw nullable telemetry and grader detail, and `report.md`, a human-readable vector
 report. Missing tokens or cost stay `null`/`—`; they are never reported as free.
+
+## Longitudinal ledger
+
+Per-suite directories are throwaway; the durable record is `evals/ledger.jsonl`, one JSON line per
+`EvalCaseResult`, owned by [`src/evals/ledger.ts`](../src/evals/ledger.ts). It is checked into git
+deliberately: the first generation of results died with a reclone on 10 Aug because nothing outside
+`eval-results/` accumulated. In the repo the ledger survives reclones, is shared across machines by
+ordinary pulls, and every eval run lands as a reviewable diff. `.gitattributes` marks it
+`merge=union`, so append-only lines from different machines never conflict.
+
+Every suite run appends its case results automatically (there is no flag to disable it; `--ledger
+<path>` redirects it). Two more entry points work without any model calls:
+
+```bash
+# Replay an existing suite's results.json into the ledger. Dedupe is on
+# (suiteRunId, target label, caseId, repetition), so re-ingesting is a no-op.
+yarn eval:harness --ingest eval-results/<run>/results.json
+
+# Aggregate the ledger per (executor:model) x case: runs, hard-gate pass rate,
+# null-safe mean score, median wall, summed known cost (marked when some runs
+# reported none), and last-run date.
+yarn eval:harness --history
+```
+
+The history aggregation is the evidence a future model-routing policy consumes; a missing score or
+cost stays excluded, never counted as zero.
+
+Cost policy for accumulating this evidence: the standing cadence runs on subscription-backed
+targets — `claude-sdk` through the machine's Claude Code login and `codex-sdk` through the Codex
+login — at zero marginal cost. OpenRouter targets are confined to cheap open-weight models (Kimi
+K3, GLM-5), and Claude-family models are never routed through OpenRouter.
 
 ## What this does not prove yet
 

@@ -1,12 +1,22 @@
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { HARNESS_EVAL_CASES, findEvalCase } from './cases.js';
+import {
+  aggregateLedger,
+  appendToLedger,
+  defaultLedgerPath,
+  loadLedger,
+  renderLedgerHistory,
+} from './ledger.js';
 import { runHarnessEvalSuite } from './runner.js';
-import { EVAL_EXECUTORS, type EvalExecutorId, type EvalTarget } from './types.js';
+import { EVAL_EXECUTORS, type EvalCaseResult, type EvalExecutorId, type EvalTarget } from './types.js';
 
 const USAGE = `Weaver harness eval
 
   yarn eval:harness --list
-  yarn eval:harness --target <executor>=<model> [--target ...] [--case <id>] [--repeat N] [--out <dir>]
+  yarn eval:harness --target <executor>=<model> [--target ...] [--case <id>] [--repeat N] [--out <dir>] [--ledger <path>]
+  yarn eval:harness --ingest <results.json> [--ledger <path>]
+  yarn eval:harness --history [--ledger <path>]
 
 Executors: ${EVAL_EXECUTORS.join(', ')}
 
@@ -15,7 +25,9 @@ Examples:
   yarn eval:harness --target opencode=openrouter/moonshotai/kimi-k3 --repeat 3
   WEAVER_MODEL_API_KEY=... yarn eval:harness --target openhands=openrouter/moonshotai/kimi-k3
 
-Every target is explicit. The suite never silently substitutes a model or falls back to another executor.`;
+Every target is explicit. The suite never silently substitutes a model or falls back to another executor.
+Every suite run also appends its case results to the durable ledger (default evals/ledger.jsonl,
+checked into git); --ingest replays an existing results.json into it and --history aggregates it.`;
 
 function values(args: string[], flag: string): string[] {
   const found: string[] = [];
@@ -66,6 +78,25 @@ async function main(): Promise<void> {
     return;
   }
 
+  const ledgerPath = resolve(value(args, '--ledger') ?? defaultLedgerPath());
+
+  const ingest = value(args, '--ingest');
+  if (ingest) {
+    const source = resolve(ingest);
+    const parsed = JSON.parse(readFileSync(source, 'utf8')) as EvalCaseResult[];
+    if (!Array.isArray(parsed) || parsed.some((item) => typeof item?.suiteRunId !== 'string' || typeof item?.caseId !== 'string' || typeof item?.target?.label !== 'string')) {
+      throw new Error(`${source} is not a harness eval results.json (expected an array of case results)`);
+    }
+    const outcome = appendToLedger(ledgerPath, parsed);
+    process.stdout.write(`Ingested ${source}: ${outcome.appended} appended, ${outcome.skipped} skipped (already in ledger)\nLedger: ${ledgerPath}\n`);
+    return;
+  }
+
+  if (args.includes('--history')) {
+    process.stdout.write(renderLedgerHistory(aggregateLedger(loadLedger(ledgerPath))));
+    return;
+  }
+
   const targets = values(args, '--target').map(parseTarget);
   if (!targets.length) throw new Error(`at least one --target is required\n\n${USAGE}`);
   const requestedCases = values(args, '--case');
@@ -80,6 +111,7 @@ async function main(): Promise<void> {
   const results = await runHarnessEvalSuite({
     suiteRunId,
     outputDir,
+    ledgerPath,
     targets,
     cases,
     repetitions,
@@ -89,7 +121,7 @@ async function main(): Promise<void> {
   });
   const passed = results.filter((result) => result.passedHardGates).length;
   process.stdout.write(`Harness eval complete: ${passed}/${results.length} runs passed every hard gate\n`);
-  process.stdout.write(`Report: ${outputDir}/report.md\nResults: ${outputDir}/results.json\n`);
+  process.stdout.write(`Report: ${outputDir}/report.md\nResults: ${outputDir}/results.json\nLedger: ${ledgerPath}\n`);
   if (passed !== results.length) process.exitCode = 1;
 }
 
