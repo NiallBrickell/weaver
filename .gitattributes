@@ -2,3 +2,6 @@
 /.yarn/releases/*    binary
 /.yarn/plugins/**/*  binary
 /.pnp.*              binary linguist-generated
+# The eval ledger is append-only JSONL; union merge keeps concurrent appends
+# from different machines from ever conflicting.
+evals/ledger.jsonl   merge=union

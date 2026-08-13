@@ -38,12 +38,41 @@ WEAVER_MODEL_API_KEY=... yarn eval:harness \
   --target openhands=openrouter/moonshotai/kimi-k3
 ```
 
-Results are written under `eval-results/` as machine-readable `results.json` and a readable
-`report.md`.
+Results are written under `eval-results/` (gitignored) as machine-readable `results.json` and a
+readable `report.md`.
 
 The examples pin OpenRouter's current [Kimi K3](https://openrouter.ai/moonshotai/kimi-k3-20260715)
 and [GLM-5](https://openrouter.ai/z-ai/glm-5) slugs. The suite avoids a moving "latest" alias so a
 result can be reproduced later.
+
+## Longitudinal ledger
+
+Suite directories are throwaway; the durable record is `evals/ledger.jsonl` — one JSON line per
+case result, checked into git so results survive reclones, travel between machines with the repo,
+and land as a reviewable diff. It is append-only, and a `merge=union` attribute keeps appends from
+different machines from ever conflicting.
+
+Every suite run appends its results automatically. Two commands work on the ledger without making
+any model calls:
+
+```bash
+# Replay an existing suite's results.json into the ledger; ingesting the same
+# file twice is a no-op (dedupe on suite run, target, case, and repetition).
+yarn eval:harness --ingest eval-results/<run>/results.json
+
+# Per (executor:model) x case history: runs, hard-gate pass rate, mean score,
+# median wall time, summed known cost, and last-run date.
+yarn eval:harness --history
+```
+
+Missing scores and costs stay excluded from the aggregates — a run whose provider reported no cost
+is marked, never counted as free. This accumulated history is what a future per-assignment
+model-routing policy will consume.
+
+Cost policy: the standing eval cadence runs on subscription-backed targets — `claude-sdk` through
+the machine's Claude Code login and `codex-sdk` through the Codex login — at zero marginal cost.
+OpenRouter targets are confined to cheap open-weight models (Kimi K3, GLM-5), and Claude-family
+models are never routed through OpenRouter.
 
 ## What passes
 

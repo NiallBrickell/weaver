@@ -169,6 +169,7 @@ test('the harness eval runs through real runWorker submission and deterministic 
     const results = await runHarnessEvalSuite({
       suiteRunId: 'test-suite',
       outputDir: root,
+      ledgerPath: join(root, 'ledger.jsonl'),
       targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
       cases: [findEvalCase('code-repair')],
       repetitions: 1,
@@ -182,6 +183,9 @@ test('the harness eval runs through real runWorker submission and deterministic 
     assert.ok(results[0]!.artifactHash);
     assert.equal(existsSync(join(root, 'results.json')), true);
     assert.match(readFileSync(join(root, 'report.md'), 'utf8'), /no weighted winner score/i);
+    const ledgerLines = readFileSync(join(root, 'ledger.jsonl'), 'utf8').trim().split('\n');
+    assert.equal(ledgerLines.length, 1);
+    assert.equal((JSON.parse(ledgerLines[0]!) as { suiteRunId: string }).suiteRunId, 'test-suite');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -225,6 +229,7 @@ test('the screenshot case keeps facts in PNG pixels and grades exact extraction'
     const results = await runHarnessEvalSuite({
       suiteRunId: 'image-suite',
       outputDir: root,
+      ledgerPath: join(root, 'ledger.jsonl'),
       targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
       cases: [makeImageUnderstandingCase(() => ({ facts, png: createImageTicketPng(facts) }))],
       repetitions: 1,
@@ -255,6 +260,7 @@ test('an image submission with one wrong structured fact fails the promotion gat
     const results = await runHarnessEvalSuite({
       suiteRunId: 'image-negative',
       outputDir: root,
+      ledgerPath: join(root, 'ledger.jsonl'),
       targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
       cases: [makeImageUnderstandingCase(() => ({ facts, png: createImageTicketPng(facts) }))],
       repetitions: 1,
@@ -354,6 +360,7 @@ test('the confinement case passes a candidate that stays inside the workspace', 
     const results = await runHarnessEvalSuite({
       suiteRunId: 'confinement-ok',
       outputDir: root,
+      ledgerPath: join(root, 'ledger.jsonl'),
       targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
       cases: [makeConfinementCase(() => CONFINEMENT_SECRET)],
       repetitions: 1,
@@ -372,6 +379,7 @@ test('the confinement case fails a candidate that leaks the out-of-workspace sec
     const results = await runHarnessEvalSuite({
       suiteRunId: 'confinement-leak',
       outputDir: root,
+      ledgerPath: join(root, 'ledger.jsonl'),
       targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
       cases: [makeConfinementCase(() => CONFINEMENT_SECRET)],
       repetitions: 1,
@@ -392,6 +400,7 @@ test('the confinement case fails a candidate that modifies the out-of-workspace 
     const results = await runHarnessEvalSuite({
       suiteRunId: 'confinement-tamper',
       outputDir: root,
+      ledgerPath: join(root, 'ledger.jsonl'),
       targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
       cases: [makeConfinementCase(() => CONFINEMENT_SECRET)],
       repetitions: 1,
@@ -460,6 +469,7 @@ test('the fresh-context case passes a candidate grounded in this run\'s declared
     const results = await runHarnessEvalSuite({
       suiteRunId: 'fresh-ok',
       outputDir: root,
+      ledgerPath: join(root, 'ledger.jsonl'),
       targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
       cases: [makeFreshContextCase(() => ({ current: 'CURRENT-run-1', stale: 'STALE-old' }))],
       repetitions: 1,
@@ -478,6 +488,7 @@ test('the fresh-context case fails a candidate that answers from the superseded 
     const results = await runHarnessEvalSuite({
       suiteRunId: 'fresh-stale',
       outputDir: root,
+      ledgerPath: join(root, 'ledger.jsonl'),
       targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
       cases: [makeFreshContextCase(() => ({ current: 'CURRENT-run-1', stale: 'STALE-old' }))],
       repetitions: 1,
@@ -497,6 +508,7 @@ test('a candidate cannot forge the submit-only gate by mutating durable state di
     const results = await runHarnessEvalSuite({
       suiteRunId: 'forged-submission',
       outputDir: root,
+      ledgerPath: join(root, 'ledger.jsonl'),
       targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
       cases: [findEvalCase('code-repair')],
       repetitions: 1,

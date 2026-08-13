@@ -16,10 +16,13 @@ import type {
   EvalTarget,
 } from './types.js';
 import type { HarnessEvalCase } from './cases.js';
+import { appendToLedger } from './ledger.js';
 
 export interface HarnessEvalSuiteOptions {
   suiteRunId: string;
   outputDir: string;
+  /** Durable longitudinal ledger; every case result is appended here after the suite report is written. */
+  ledgerPath: string;
   targets: EvalTarget[];
   cases: HarnessEvalCase[];
   repetitions: number;
@@ -274,6 +277,7 @@ export async function runHarnessEvalSuite(options: HarnessEvalSuiteOptions): Pro
 
   writeFileSync(join(options.outputDir, 'results.json'), JSON.stringify(results, null, 2) + '\n');
   writeFileSync(join(options.outputDir, 'report.md'), renderHarnessEvalReport(results));
+  appendToLedger(options.ledgerPath, results);
   return results;
 }
 

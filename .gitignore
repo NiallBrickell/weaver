@@ -8,3 +8,5 @@ dist/
 .yarn/
 secrets.env
 *.env
+# One suite directory per eval run; durable history lives in evals/ledger.jsonl instead.
+eval-results/
