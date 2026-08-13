@@ -209,12 +209,27 @@ export function isRepoEgressAction(asg: Assignment): boolean {
 }
 
 /**
- * True when a human has already reconciled THIS exact collision — the gate
- * fails closed TO THE HUMAN, so a resolved attention card carrying the same
- * dedup token (same action id + same sorted colliding-PR set) is the
- * reconciliation record the hold asked for. Re-holding on it would re-ask the
- * same answered question every tick, forever. Any change to the colliding-PR
- * set mints a different token, so a genuinely NEW collision still holds.
+ * The dedup identity of a collision hold: the action, plus the FILES it
+ * contends on — never the colliding PR numbers.
+ *
+ * Which PRs happen to be open is churn: a fifth PR touching a file two others
+ * already touch tells the human nothing new, but keying on the PR set made it a
+ * different token and therefore a fresh card. One held action asked the same
+ * question three times in an evening that way, and a queue that repeats itself
+ * is one a person stops reading. The files are the substance — a collision over
+ * a file nobody has ruled on IS new information and does earn a card.
+ */
+export function collisionKey(asgId: string, files: readonly string[]): string {
+  return `[repo-collision ${asgId}:${[...new Set(files)].sort().join(',')}]`;
+}
+
+/**
+ * True when a human has already reconciled this action's contention over these
+ * files — the gate fails closed TO THE HUMAN, so a resolved attention card
+ * carrying the same key is the reconciliation record the hold asked for.
+ * Re-holding on it would re-ask an answered question every tick, forever.
+ * A collision that pulls in a file outside the reconciled set mints a different
+ * key and still holds.
  */
 export function collisionReconciled(
   attention: ReadonlyArray<{ status: string; summary: string }>,
