@@ -22,6 +22,7 @@ import {
   providerCapacityHeadline,
 } from './capacity.js';
 import { activitySummary } from './activity.js';
+import { pendingSteering } from './steering.js';
 import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
 import {
@@ -73,6 +74,8 @@ interface StreamRow {
    * and "parked behind a provider limit" are different situations an operator
    * has to tell apart at a glance, and the board used to spell both WAITING. */
   capacityBlock?: { summary: string; needsHuman: boolean };
+  /** Human-set rank for the runner's scarce slots; absent means normal. */
+  priority?: 'high' | 'normal' | 'low';
   /** Honest elapsed execution / decision age from durable timestamps. */
   activity?: string;
   paused: boolean;
@@ -379,7 +382,7 @@ async function snapshot(): Promise<Snapshot> {
 
     // Steering must be VISIBLY acknowledged the moment it lands: an
     // unconsumed steer means "heard — the next coordinator pass acts on it".
-    const pendingSteers = doc.steering.filter((s) => !s.consumedByPass).length;
+    const pendingSteers = pendingSteering(doc.steering).length;
     if (pendingSteers) {
       details.unshift(`✉ steering received — coordinator acts on it next pass (${pendingSteers} pending)`);
     }
@@ -465,6 +468,7 @@ async function snapshot(): Promise<Snapshot> {
       // Only when capacity is what actually holds the stream — a stream with
       // work in flight has already routed around the limit and must not wear
       // the badge, however many stale per-model records it still carries.
+      priority: ws.priority,
       capacityBlock: capacity.blocking && !working
         ? { summary: capacity.blocking.summary, needsHuman: capacity.blocking.needsHuman }
         : undefined,
@@ -845,6 +849,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
               <Text inverse={isSel} wrap="truncate-end">
                 <Text color={d.color}> {d.glyph} </Text>
                 <Text bold>{`${st.depth ? `${'  '.repeat(st.depth - 1)}↳ ` : ''}${st.slug}`.padEnd(30)}</Text>
+                {st.priority === 'high' ? <Text bold color="magenta">▲ </Text> : st.priority === 'low' ? <Text dimColor>▽ </Text> : null}
                 <Text color={d.color}>{d.word.padEnd(11)}</Text>
                 {st.error ? (
                   <Text color="red">{st.error}</Text>

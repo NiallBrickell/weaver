@@ -338,6 +338,18 @@ export interface Steering {
   by?: string;
   at: Iso;
   consumedByPass?: Id;
+  /**
+   * Withdrawn before any pass read it. Typing a steer is the fastest way to
+   * change a stream's course and therefore the fastest way to send it the
+   * wrong one — a message written against a stale picture, or one that says
+   * something a single workstream cannot act on (it can see only itself, never
+   * the fleet). A withdrawn steer stops reaching the coordinator but stays on
+   * the record: what a human tried to say is history, not a mistake to erase.
+   * Only unconsumed steering can be withdrawn; once a pass has acted on it,
+   * the way back is another steer.
+   */
+  revokedAt?: Iso;
+  revokedBy?: string;
 }
 
 export interface AttentionItem {
@@ -497,6 +509,21 @@ export interface WorkstreamCore {
     maxCostUsd: number;
   };
   status: 'active' | 'paused' | 'done';
+  /**
+   * Which streams get the runner's slots when there are more due streams than
+   * slots. The runner is otherwise strictly fair — least-recently-ticked
+   * first — which is right when everything matters equally and wrong on the
+   * evening one client's amendments matter more than sixteen background
+   * sweeps. Fairness then means the urgent stream waits its turn behind them.
+   *
+   * Set by a human (`weaver priority`), never by a coordinator: a workstream
+   * can see only itself, so nothing inside one is in a position to judge what
+   * it should outrank. Absent means 'normal'. Ordering is by priority first,
+   * then the same least-recently-ticked fairness WITHIN a priority — so a
+   * high-priority stream never starves its peers, and 'low' still runs
+   * whenever the fleet is not saturated.
+   */
+  priority?: 'high' | 'normal' | 'low';
   /** Set only by create_workstream; absent means unmanaged. */
   managedBy?: ManagedBy;
   /** Durable outcome claim and its cited typed evidence. The referenced facts

@@ -45,6 +45,7 @@ import {
   SdkFailureTracker,
 } from './capacity.js';
 import { noteFleetRecovery } from './fleetCapacity.js';
+import { isPendingSteering } from './steering.js';
 import {
   coordinatorCapacityTarget,
   coordinatorFallbackModel,
@@ -886,7 +887,7 @@ export async function runCoordinatorPass(
               rec.endedAt = new Date().toISOString();
             }
             for (const s of d.steering) {
-              if (!s.consumedByPass) s.consumedByPass = passId;
+              if (isPendingSteering(s)) s.consumedByPass = passId;
             }
             // Directions are durable input, not steering, but they get the
             // same "seen by a pass" bookkeeping so the projection stops

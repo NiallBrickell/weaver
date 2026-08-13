@@ -100,6 +100,8 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
                                              (--all adds coordinator passes; sessionId provenance / \`claude --resume <id>\` is unaffected)
   weaver show <slug> <deliverableId>         print a deliverable's content
   weaver steer <slug> <message>              durable human steering (wakes the workstream)
+  weaver steer <slug> revoke [steerId]       withdraw steering no pass has read yet (default: your last)
+  weaver priority <slug> <high|normal|low>   rank a stream for the runner's slots when the fleet is saturated
   weaver approve <slug> <interactionId>      approve a pending send
   weaver reject-send <slug> <interactionId>  reject a pending send
   weaver approve-action <slug> <asgId>       approve a gated real-world action (runs on next tick, confirmed by readback)
@@ -339,10 +341,35 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
 
     case 'steer': {
       const slug = rest[0] ?? fail('slug required');
+      // `weaver steer <slug> revoke [steerId]` withdraws instead of adding.
+      // Same verb because it is the same conversation: taking back what you
+      // just said belongs next to saying it, not in a separate command.
+      if (rest[1] === 'revoke') {
+        const { revokeSteering } = await import('./humanActs.js');
+        const revoked = await revokeSteering(slug, rest[2]);
+        process.stdout.write(`withdrew ${revoked.id} — the coordinator never read it: "${revoked.body.slice(0, 70)}${revoked.body.length > 70 ? '…' : ''}"\n`);
+        break;
+      }
       const body = rest.slice(1).join(' ') || fail('message required');
       const { addSteering } = await import('./humanActs.js');
       await addSteering(slug, body);
       process.stdout.write(`steering recorded — run: weaver tick ${slug}\n`);
+      break;
+    }
+
+    case 'priority': {
+      const slug = rest[0] ?? fail('slug required');
+      const level = rest[1] ?? fail('usage: weaver priority <slug> <high|normal|low>');
+      if (level !== 'high' && level !== 'normal' && level !== 'low') {
+        fail(`unknown priority '${level}' (expected high, normal or low)`);
+      }
+      const { setPriority } = await import('./humanActs.js');
+      const r = await setPriority(slug, level);
+      process.stdout.write(
+        r.changed
+          ? `${slug}: priority ${r.previous} → ${r.priority} — the runner grants slots by priority, then fairness within it\n`
+          : `${slug} is already ${r.priority}\n`,
+      );
       break;
     }
 

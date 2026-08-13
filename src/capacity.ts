@@ -21,6 +21,7 @@ import type {
   ProviderCapacityObservation,
   WorkstreamDoc,
 } from './types.js';
+import { isPendingSteering } from './steering.js';
 import {
   coordinatorCapacityTarget,
   coordinatorFallbackModel,
@@ -459,7 +460,7 @@ export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): Capaci
   const details: string[] = [];
   const currentCoordinatorTargets = [primaryTarget, fallbackTarget];
   const coordinatorIntent =
-    doc.steering.some((steering) => !steering.consumedByPass) ||
+    doc.steering.some(isPendingSteering) ||
     (doc.managerDirections ?? []).some((direction) => !direction.consumedByPass) ||
     doc.assignments.some((assignment) => assignment.state === 'awaiting_review') ||
     doc.wakes.some((wake) => {
