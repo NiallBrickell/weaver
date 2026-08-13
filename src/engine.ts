@@ -308,12 +308,39 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
           verdict = { decision: 'approve', reason: body.decision === 'passthrough' ? 'operator Claude Code settings allow' : body.source ?? '' };
         }
       } else {
-        // Worker action: the worker's EVERY tool call is judged live by pilot
-        // at execution time (canUseTool supervisor) — so the gate only needs
-        // pilot to be alive. Pre-approving a plan would be weaker than this.
-        const res = await fetch(`${base}/status`, { signal: AbortSignal.timeout(5_000) });
+        // Worker action: its every tool call is judged live by pilot at
+        // execution time, so this gate used to check only that pilot was
+        // ALIVE. That leaned on per-command supervision catching anything
+        // serious — and it does not always, because the operator's own
+        // Claude Code settings can pass a command straight through before
+        // pilot's ruleset ever runs. An @erdoai/ui release reached npm that
+        // way with no human in the loop: the action pushed a version tag,
+        // CI did the publishing, and every individual command looked
+        // ordinary. So ask pilot about the ACT as well: the objective is
+        // what a human would have read on the card, and pilot's rules are
+        // written about effects — publishing a package, deleting hosted
+        // resources — which is exactly the level a single command hides.
+        const res = await fetch(`${base}/internal/evaluate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            runtime: 'claude',
+            tool_name: 'WeaverAction',
+            tool_input: JSON.stringify({ objective: asg.objective, cwd: asg.exec!.cwd }),
+            cwd: asg.exec!.cwd,
+            session_id: `weaver-${slug}`,
+          }),
+          signal: AbortSignal.timeout(30_000),
+        });
         if (!res.ok) throw new Error(`pilot HTTP ${res.status}`);
-        verdict = { decision: 'approve', reason: 'live per-command pilot supervision' };
+        const body = (await res.json()) as { decision?: string; reason?: string; source?: string };
+        if (body.decision === 'deny' || body.decision === 'ask') {
+          verdict = { decision: body.decision, reason: `${body.reason ?? ''} (action: ${asg.objective.slice(0, 70)})` };
+        } else {
+          // Approve or passthrough: live per-command supervision still applies
+          // to everything the worker then does.
+          verdict = { decision: 'approve', reason: 'live per-command pilot supervision' };
+        }
       }
     } catch {
       // Daemon unreachable/slow: leave gated for the human, and leave
