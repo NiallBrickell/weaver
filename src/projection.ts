@@ -12,6 +12,7 @@ import type { WorkstreamDoc, Deliverable } from './types.js';
 import type { PolicyRecord } from './policies.js';
 import { renderPoliciesForProjection } from './policies.js';
 import { secretNames } from './secrets.js';
+import { pendingSteering } from './steering.js';
 import { virtualNow } from './clock.js';
 import { capacityPresentation } from './capacity.js';
 import { executionSafetyConfig, isLegacyDollarBudgetAttention } from './executionSafety.js';
@@ -219,7 +220,7 @@ export function buildProjection(
 
   // 6. Unresolved approvals, steering, active interactions
   const openAttention = doc.attention.filter((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a));
-  const unconsumedSteering = doc.steering.filter((s) => !s.consumedByPass);
+  const unconsumedSteering = pendingSteering(doc.steering);
   const activeInteractions = doc.interactions.filter(
     (i) => i.status !== 'rejected',
   );

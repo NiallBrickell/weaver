@@ -40,6 +40,52 @@ function resolveRefAttention(d: any, refId: string): void {
   }
 }
 
+/**
+ * Withdraw steering the coordinator has not read yet.
+ *
+ * Steering is the fastest way to change a stream's course, which makes it the
+ * fastest way to send the wrong one — a message written against a stale
+ * picture, or one phrased for a fleet when a workstream can only ever see
+ * itself. Without a way back, the only remedy was a second steer explaining
+ * the first, which leaves the coordinator reconciling two instructions instead
+ * of following one.
+ *
+ * The withdrawn message stays on the record and the event log keeps both acts:
+ * what a human tried to say is history. Only unconsumed steering can be
+ * withdrawn — once a pass has acted on it the effect is already in the
+ * decisions, and pretending otherwise would make the record lie.
+ */
+export async function revokeSteering(
+  slug: string,
+  steerId?: string,
+): Promise<{ id: string; body: string }> {
+  let revoked: { id: string; body: string } | undefined;
+  await arrive(slug, (d, event) => {
+    const pending = d.steering.filter((s) => !s.consumedByPass && !s.revokedAt);
+    const target = steerId
+      ? d.steering.find((s) => s.id === steerId)
+      : pending.at(-1); // no id given: the last thing you said, the usual regret
+    if (!target) {
+      throw new Error(
+        steerId
+          ? `no steering '${steerId}' in ${slug}`
+          : `${slug} has no unread steering to withdraw`,
+      );
+    }
+    if (target.consumedByPass) {
+      throw new Error(
+        `${target.id} was already read by pass ${target.consumedByPass} — steer again to change course`,
+      );
+    }
+    if (target.revokedAt) throw new Error(`${target.id} is already withdrawn`);
+    target.revokedAt = new Date().toISOString();
+    target.revokedBy = actor();
+    revoked = { id: target.id, body: target.body };
+    event('steering.revoked', `[by ${actor()}] withdrew ${target.id} before any pass read it: "${target.body.slice(0, 80)}"`, [target.id]);
+  });
+  return revoked!;
+}
+
 export async function addSteering(
   slug: string,
   body: string,
@@ -224,6 +270,28 @@ export interface PauseAllWorkstreamsResult {
  * read-only no-op, and a concluded workstream stays concluded: resuming work
  * never silently erases its durable outcome claim.
  */
+/**
+ * Rank a workstream against the rest of the fleet for the runner's scarce
+ * slots. A human act on purpose: a coordinator sees only its own workstream,
+ * so nothing inside one can judge what it should outrank — and a stream that
+ * could raise itself would.
+ */
+export async function setPriority(
+  slug: string,
+  priority: 'high' | 'normal' | 'low',
+): Promise<{ slug: string; previous: string; priority: string; changed: boolean }> {
+  const before = (await load(slug)).workstream.priority ?? 'normal';
+  if (before === priority) return { slug, previous: before, priority, changed: false };
+  await arrive(slug, (d, event) => {
+    // 'normal' is the absence of a preference, so it is stored as absence —
+    // a doc carrying an explicit default would imply someone chose it.
+    if (priority === 'normal') delete d.workstream.priority;
+    else d.workstream.priority = priority;
+    event('workstream.priority_set', `${actor()} set priority ${before} → ${priority}`);
+  });
+  return { slug, previous: before, priority, changed: true };
+}
+
 export async function setPaused(slug: string, paused: boolean): Promise<SetPausedResult> {
   const requestedStatus = paused ? 'paused' : 'active';
   const attempts = 3;

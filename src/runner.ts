@@ -150,6 +150,26 @@ export async function fleetRecoveredSlugs(): Promise<Map<string, CapacityTarget[
   return out;
 }
 
+/**
+ * Slot ordering. Priority decides WHICH streams get scarce slots; within one
+ * priority the old least-recently-ticked fairness still decides the order, so
+ * raising one stream never starves its peers — it moves the whole band ahead
+ * of the bands below it. A stream with no priority set sits in 'normal', which
+ * is what every stream was before this existed.
+ */
+export function priorityRank(priority: 'high' | 'normal' | 'low' | undefined): number {
+  return priority === 'high' ? 0 : priority === 'low' ? 2 : 1;
+}
+
+export function byPriorityThenFairness(
+  priority: ReadonlyMap<string, number>,
+  lastTickedAt: ReadonlyMap<string, number>,
+): (a: string, b: string) => number {
+  return (a, b) =>
+    (priority.get(a) ?? 1) - (priority.get(b) ?? 1) ||
+    (lastTickedAt.get(a) ?? 0) - (lastTickedAt.get(b) ?? 0);
+}
+
 function credentialsMtime(): number {
   try {
     const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
@@ -408,15 +428,19 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
         lastCredMtime = credentialsMtime();
       }
       const due: string[] = [];
+      const priority = new Map<string, number>();
       for (const slug of await listWorkstreams()) {
         if (inFlight.has(slug)) continue;
         try {
-          if ((await load(slug)).workstream.status === 'active') due.push(slug);
+          const ws = (await load(slug)).workstream;
+          if (ws.status !== 'active') continue;
+          due.push(slug);
+          priority.set(slug, priorityRank(ws.priority));
         } catch {
           /* unreadable stream — its own tick reports it */
         }
       }
-      due.sort((a, b) => (lastTickedAt.get(a) ?? 0) - (lastTickedAt.get(b) ?? 0));
+      due.sort(byPriorityThenFairness(priority, lastTickedAt));
       // Load-aware cap: when the machine is oversubscribed, grant fewer slots
       // this iteration (in-flight ticks finish; none are added past the cap).
       const { load1, cores } = loadSample();
