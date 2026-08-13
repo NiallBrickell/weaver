@@ -30,6 +30,8 @@ An optional second argument overrides the done-bar when the default (fixed, merg
 
 For anything longer than a sentence, run **`weaver do` with no arguments**: it prompts for the message and reads it raw from stdin — type or paste freely across lines, finish with Ctrl-D (or a line containing only `.`). This is the safe path for real messages, because a shell-quoted argument is parsed by the shell first: `$36.69` inside double quotes becomes `.69`, an embedded quote ends the argument. Stdin has no such grammar — what you paste is what the brief preserves. Either way, derivation is one model pass (20–60s) with a progress spinner, so thinking never looks like a hang.
 
+Intake is the CLI's default action, so `weaver "…"` (and bare `weaver`, which drops into the same stdin prompt) is shorthand for `weaver do`. That makes a one-letter alias comfortable — `alias w=weaver` gives you `w` to capture, `w watch` to watch, and `w steer <slug> "<msg>"` to redirect, all dispatching to the real subcommand. Alias `w` to `weaver`, not `weaver do`: the latter swallows every subcommand as a message, so `w steer …` would silently onboard a *new* workstream instead of steering the one you named. (Weaver guards against that mistake — a management command that reaches intake with a real slug is redispatched, never onboarded — but the plain `weaver` alias avoids the ambiguity entirely.)
+
 ## Four shapes
 
 ### Build something
