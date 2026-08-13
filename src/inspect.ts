@@ -179,6 +179,9 @@ function decisionGraphSvg(decisions: Decision[]): string {
   return parts.join('\n');
 }
 
+/** Past this many decisions the lineage graph folds behind the standing list. */
+const BIG_LINEAGE = 16;
+
 function decisionSection(doc: WorkstreamDoc): string {
   const decisions = doc.decisions;
   if (!decisions.length) {
@@ -204,19 +207,40 @@ function decisionSection(doc: WorkstreamDoc): string {
     ]),
   );
   const json = JSON.stringify(details).replaceAll('<', '\\u003c');
-  const standing = decisions.filter((d) => d.status === 'standing').length;
+  const standingList = decisions.filter((d) => d.status === 'standing');
+  const standing = standingList.length;
   const closed = decisions.filter((d) => d.status === 'closed').length;
   const superseded = decisions.length - standing - closed;
-  return `<section>
-<h2>Decision lineage <span class="count">${standing} standing · ${superseded} superseded${closed ? ` · ${closed} closed` : ''}</span></h2>
-<p class="hint">Each row is one line of direction; arrows are explicit supersessions — a decision is never silently reversed. Click a node for its rationale and applied policies.</p>
-<div class="legend">
+  const graph = `<div class="legend">
   <span><i class="swatch human"></i>made by human</span>
   <span><i class="swatch coordinator"></i>made by coordinator</span>
   <span><i class="swatch superseded-swatch"></i>superseded (dashed)</span>
 </div>
 <div class="scroll-x">${decisionGraphSvg(decisions)}</div>
-<div id="decision-detail" class="detail"><p class="empty">Click a decision node to see its rationale and applied policies.</p></div>
+<div id="decision-detail" class="detail"><p class="empty">Click a decision node to see its rationale and applied policies.</p></div>`;
+  // A long history's graph stops being a glance and becomes an archive: past a
+  // screenful of nodes, the current course — the standing decisions a fresh
+  // coordinator continues — is answered as text first, and the full graph
+  // (every node, same click-to-inspect) folds away until asked for. Nothing is
+  // dropped; a small history keeps the graph in the open where it reads best.
+  const body =
+    decisions.length > BIG_LINEAGE
+      ? `<h3>Current course (${standing})</h3>${
+          standing
+            ? cappedList(
+                'since',
+                standingList.map(
+                  (d) =>
+                    `<li><strong>${esc(firstLine(d.title, 160))}</strong> <span class="dim">${esc(d.madeBy)} · ${esc(fmtVirtual(d.decidedAtVirtual))} · <code>${esc(d.id)}</code></span></li>`,
+                ),
+              )
+            : empty('No standing decisions — nothing currently commits this workstream.')
+        }<details><summary>Full lineage graph (${decisions.length} decisions)</summary>${graph}</details>`
+      : graph;
+  return `<section>
+<h2>Decision lineage <span class="count">${standing} standing · ${superseded} superseded${closed ? ` · ${closed} closed` : ''}</span></h2>
+<p class="hint">Each row is one line of direction; arrows are explicit supersessions — a decision is never silently reversed. Click a node for its rationale and applied policies.</p>
+${body}
 <script type="application/json" id="decision-data">${json}</script>
 </section>`;
 }
@@ -453,9 +477,13 @@ function actionCard(a: Assignment): string {
       : a.state === 'cancelled'
         ? '<span class="bad">rejected / cancelled</span>'
         : '<span class="warn">no approval recorded</span>';
+  // An engine-executed command IS the thing that was approved — it stays in
+  // the open. A worker briefing is context, often pages of it, and 90 cards'
+  // worth of open briefings is what made the audit unreadable: the full text
+  // keeps its place on the record, one click away.
   const executed = ex?.run
     ? `<p class="meta">engine-executed command:</p><pre>${esc(ex.run)}</pre>`
-    : `<p class="meta">worker briefing:</p><pre>${esc(a.briefing)}</pre>`;
+    : `<details><summary>full worker briefing</summary><pre>${esc(a.briefing)}</pre></details>`;
   const readback = ex?.verified
     ? `<p class="meta">readback <span class="${ex.verified.ok ? 'ok' : 'bad'}">${ex.verified.ok ? 'CONFIRMED' : 'FAILED'}</span> at ${esc(fmtVirtual(ex.verified.at))} via <code>${esc(ex.verify)}</code></p><pre>${esc(ex.verified.output.trim().slice(0, 400))}</pre>`
     : `<p class="meta">readback not yet run (verify: <code>${esc(ex?.verify ?? '?')}</code>)</p>`;
@@ -469,11 +497,37 @@ ${readback}
 </article>`;
 }
 
+/** How many settled actions stay in the open before the rest fold away. */
+const RECENT_ACTIONS = 10;
+
 function actionSection(doc: WorkstreamDoc): string {
   const actions = doc.assignments.filter((a) => a.kind === 'action');
-  const body = actions.length ? actions.map(actionCard).join('\n') : empty('No real-world actions in this workstream.');
-  return `<section><h2>Actions audit <span class="count">${actions.length}</span></h2>
+  if (!actions.length) {
+    return `<section><h2>Actions audit</h2>
 <p class="hint">Every real-world act: who approved it, what actually ran, and the deterministic readback that confirmed (or refuted) the effect — the worker's prose never counts.</p>
+${empty('No real-world actions in this workstream.')}</section>`;
+  }
+  // Anything still in motion is shown in full; settled history is newest
+  // first, windowed after a screenful. Nothing leaves the record — the fold
+  // holds every older card, complete.
+  const settled = new Set(['completed', 'failed', 'cancelled']);
+  const open = actions.filter((a) => !settled.has(a.state));
+  const rest = actions
+    .filter((a) => settled.has(a.state))
+    .sort((a, b) => b.createdAtVirtual.localeCompare(a.createdAtVirtual));
+  const recent = rest.slice(0, RECENT_ACTIONS);
+  const older = rest.slice(RECENT_ACTIONS);
+  const body = [
+    ...open.map(actionCard),
+    ...recent.map(actionCard),
+    older.length
+      ? `<details><summary>Older actions (${older.length})</summary>${older.map(actionCard).join('\n')}</details>`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return `<section><h2>Actions audit <span class="count">${actions.length}</span></h2>
+<p class="hint">Every real-world act: who approved it, what actually ran, and the deterministic readback that confirmed (or refuted) the effect — the worker's prose never counts. In motion first, then settled, newest first.</p>
 ${body}</section>`;
 }
 

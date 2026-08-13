@@ -634,3 +634,83 @@ test('passIntegrityWarnings flags a completed pass that has no summary', () => {
   assert.equal(warnings.length, 1);
   assert.match(warnings[0]!, /pass_bad: completed without a summary/);
 });
+
+test('a long decision history answers with the standing course first; the graph folds but keeps every node', async () => {
+  await makeWorkstream('long-lineage-ws');
+  await arrive('long-lineage-ws', (d) => {
+    for (let i = 0; i < 17; i++) {
+      d.decisions.push({
+        id: `dec_${i}`,
+        title: i === 16 ? 'The current heading' : `Course ${i}`,
+        rationale: 'r',
+        madeBy: 'coordinator',
+        passId: 'pass_1',
+        status: i === 16 ? 'standing' : 'superseded',
+        ...(i < 16 ? { supersededBy: `dec_${i + 1}` } : {}),
+        ...(i > 0 ? { supersedes: `dec_${i - 1}` } : {}),
+        decidedAtVirtual: virtualNow().toISOString(),
+      });
+    }
+  });
+  const html = renderWorkstreamHtml(await load('long-lineage-ws'), []);
+  assert.match(html, /Current course \(1\)/);
+  assert.ok(html.includes('The current heading'), 'the standing decision reads as text, before any graph');
+  assert.match(html, /<details><summary>Full lineage graph \(17 decisions\)<\/summary>/);
+  assert.ok(html.includes('dec_0'), 'the fold keeps every node — nothing leaves the record');
+
+  // A short history keeps its graph in the open, where it reads best.
+  await makeWorkstream('short-lineage-ws');
+  await arrive('short-lineage-ws', (d) => {
+    d.decisions.push({
+      id: 'dec_only',
+      title: 'One decision',
+      rationale: 'r',
+      madeBy: 'human',
+      status: 'standing',
+      decidedAtVirtual: virtualNow().toISOString(),
+    });
+  });
+  const short = renderWorkstreamHtml(await load('short-lineage-ws'), []);
+  assert.ok(!short.includes('Full lineage graph'), 'a small graph never folds');
+});
+
+test('the actions audit keeps motion in the open and folds settled history after a screenful', async () => {
+  await makeWorkstream('actions-ws');
+  await arrive('actions-ws', (d) => {
+    d.assignments.push({
+      id: 'asg_gated',
+      objective: 'a consequential act awaiting a person',
+      briefing: 'gated briefing text',
+      kind: 'action',
+      acceptanceCriteria: [],
+      dependsOn: [],
+      state: 'gated',
+      attempts: [],
+      adoption: { state: 'none' },
+      createdAtVirtual: new Date(Date.UTC(2026, 0, 2)).toISOString(),
+    });
+    for (let i = 0; i < 12; i++) {
+      d.assignments.push({
+        id: `asg_done_${i}`,
+        objective: `settled act ${i}`,
+        briefing: `briefing ${i}`,
+        kind: 'action',
+        acceptanceCriteria: [],
+        dependsOn: [],
+        state: 'completed',
+        attempts: [],
+        adoption: { state: 'accepted' },
+        createdAtVirtual: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(),
+      });
+    }
+  });
+  const html = renderWorkstreamHtml(await load('actions-ws'), []);
+  // A worker briefing is context, not the approved act: it folds per card.
+  assert.match(html, /<details><summary>full worker briefing<\/summary>/);
+  // 12 settled acts: ten stay in the open, the two oldest fold — complete.
+  assert.match(html, /Older actions \(2\)/);
+  assert.ok(html.includes('asg_done_0'), 'the fold holds the full card, nothing truncated away');
+  // In motion outranks settled, and settled reads newest first.
+  assert.ok(html.indexOf('asg_gated') < html.indexOf('asg_done_11'), 'gated first');
+  assert.ok(html.indexOf('asg_done_11') < html.indexOf('asg_done_9'), 'newest settled first');
+});
