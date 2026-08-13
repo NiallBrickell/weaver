@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { detectRepoCollisions, isRepoEgressAction, type OpenPr } from './deconflict.js';
+import { collisionReconciled, detectRepoCollisions, isRepoEgressAction, type OpenPr } from './deconflict.js';
 import type { Assignment } from './types.js';
 
 // The pure detector is the proof of the repo-egress deconfliction invariant
@@ -137,4 +137,31 @@ test('isRepoEgressAction ignores non-egress and non-action assignments', () => {
   work.kind = 'work';
   delete work.exec;
   assert.equal(isRepoEgressAction(work), false);
+});
+
+// The reconciliation predicate closes the gate's loop with the human: the hold
+// fails closed TO the human, so their resolved card for the SAME collision set
+// must count as the answer — and only for that exact set.
+test('collisionReconciled honors a resolved card for the exact collision set only', () => {
+  const token = '[repo-collision asg_1:1988,1993]';
+  // Human resolved the card carrying this token → reconciled, proceed.
+  assert.equal(
+    collisionReconciled([{ status: 'resolved', summary: `held … reconcile … ${token}` }], token),
+    true,
+  );
+  // Card still open → not reconciled, keep holding.
+  assert.equal(
+    collisionReconciled([{ status: 'open', summary: `held … ${token}` }], token),
+    false,
+  );
+  // Resolution for a DIFFERENT collision set (new PR joined) → still holds.
+  assert.equal(
+    collisionReconciled(
+      [{ status: 'resolved', summary: 'held … [repo-collision asg_1:1988]' }],
+      token,
+    ),
+    false,
+  );
+  // No attention at all → holds.
+  assert.equal(collisionReconciled([], token), false);
 });

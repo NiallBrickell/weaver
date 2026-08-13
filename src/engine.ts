@@ -26,7 +26,7 @@ import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import { pidIsLive } from './processLock.js';
-import { isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
+import { collisionReconciled, isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
 
 function dueWakes(doc: WorkstreamDoc): typeof doc.wakes {
@@ -419,6 +419,8 @@ async function guardRepoEgress(slug: string, asg: Assignment): Promise<boolean> 
   // Stable dedup token embedded in the summary: same action + same colliding PR
   // set ⇒ one open card, re-checked (and re-raised) only when the set changes.
   const dedupToken = `[repo-collision ${asg.id}:${prNumbers.join(',')}]`;
+  const doc = await load(slug);
+  if (collisionReconciled(doc.attention, dedupToken)) return true;
   const detail = collisions
     .map((c) => `#${c.number} (@${c.author}, ${c.headRefName}) — overlaps ${c.files.join(', ')}`)
     .join('; ');

@@ -207,3 +207,18 @@ export function isRepoEgressAction(asg: Assignment): boolean {
   if (asg.kind !== 'action' || !asg.exec) return false;
   return matchesRepoEgress(asg.exec.run ?? '') || matchesRepoEgress(asg.exec.verify ?? '');
 }
+
+/**
+ * True when a human has already reconciled THIS exact collision — the gate
+ * fails closed TO THE HUMAN, so a resolved attention card carrying the same
+ * dedup token (same action id + same sorted colliding-PR set) is the
+ * reconciliation record the hold asked for. Re-holding on it would re-ask the
+ * same answered question every tick, forever. Any change to the colliding-PR
+ * set mints a different token, so a genuinely NEW collision still holds.
+ */
+export function collisionReconciled(
+  attention: ReadonlyArray<{ status: string; summary: string }>,
+  dedupToken: string,
+): boolean {
+  return attention.some((a) => a.status === 'resolved' && a.summary.includes(dedupToken));
+}
