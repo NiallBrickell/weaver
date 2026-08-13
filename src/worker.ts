@@ -25,6 +25,7 @@ import {
   resolveCapacityAttention,
   SdkFailureTracker,
 } from './capacity.js';
+import { noteFleetRecovery } from './fleetCapacity.js';
 import {
   workerCapacityTarget,
   workerExecutorName,
@@ -195,6 +196,11 @@ export async function finalizeWorkerRun(
   },
 ): Promise<void> {
   const target = outcome.capacityTarget ?? workerCapacityTarget();
+  // Reaching the provider at all — submitted or not — proves that pool has
+  // capacity, which is an account-level fact every parked stream can use. An
+  // ordinary work failure still clears capacity below; only an infrastructure
+  // wait means we never got through.
+  if (!outcome.infrastructure) noteFleetRecovery(target, new Date().toISOString());
   await arrive(slug, (d, event) => {
     recordProviderCapacityObservations(d, outcome.capacityObservations ?? []);
     const a = d.assignments.find((x) => x.id === assignmentId)!;

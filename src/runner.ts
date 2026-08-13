@@ -19,12 +19,14 @@ import { sdkEnv } from './secrets.js';
 import { arrive, listWorkstreams, load, weaverHome } from './store.js';
 import { virtualNow } from './clock.js';
 import {
+  capacityBackoffFor,
   clearCapacityBackoff,
   isClaudeSdkWait,
   resolveCapacityAttention,
   retryCapacityTargetNow,
 } from './capacity.js';
-import { coordinatorCapacityTarget, type CapacityTarget } from './modelConfig.js';
+import { readFleetCapacity, supersededByFleetRecovery } from './fleetCapacity.js';
+import { coordinatorCapacityTarget, targetOfWait, type CapacityTarget } from './modelConfig.js';
 import { acquireProcessLock, liveProcessLockPid } from './processLock.js';
 
 function lockDir(): string {
@@ -112,6 +114,37 @@ export async function infraBackoffSlugs(): Promise<string[]> {
       )) {
         out.push(slug);
       }
+    } catch { /* unreadable stream — its own tick reports it */ }
+  }
+  return out;
+}
+
+/**
+ * Streams still parked on a target the fleet has since proved healthy, with
+ * the targets to release them on. Recovery is an account-level fact — one
+ * stream's successful call is proof for every stream parked on the same pool —
+ * so a stream whose own retryAt sits further out must not go on waiting for a
+ * limit that demonstrably ended. Comparing against the wait's DETECTION time
+ * (not its retry time) is what makes the release safe: a limit recorded after
+ * the recovery is a new one, and holds.
+ */
+export async function fleetRecoveredSlugs(): Promise<Map<string, CapacityTarget[]>> {
+  const ledger = readFleetCapacity();
+  const out = new Map<string, CapacityTarget[]>();
+  if (!Object.keys(ledger.recovered).length) return out;
+  const now = virtualNow().toISOString();
+  for (const slug of await listWorkstreams()) {
+    try {
+      const d = await load(slug);
+      if (d.workstream.status !== 'active') continue;
+      const targets: CapacityTarget[] = [];
+      for (const entry of Object.values(d.capacity?.byModel ?? {})) {
+        if (entry.wait.retryAt <= now) continue; // already due — its own tick retries
+        const target = targetOfWait(entry.wait);
+        if (!target) continue; // ambiguous legacy wait: never guess a pool
+        if (supersededByFleetRecovery(ledger, target, entry.wait.detectedAt)) targets.push(target);
+      }
+      if (targets.length) out.set(slug, targets);
     } catch { /* unreadable stream — its own tick reports it */ }
   }
   return out;
@@ -206,6 +239,50 @@ export async function expediteBackoffWakes(
       });
       log(`[run] ${slug}: infra-backoff wake expedited — provider recovered${recoveredModel ? ` for ${recoveredModel}` : ''}`);
     } catch { /* stream's own tick will retry on schedule */ }
+  }
+}
+
+/**
+ * Release parks the fleet has already disproved. Unlike the credential probe,
+ * nothing is spent here: another stream's successful call is the evidence, and
+ * the targets are known exactly rather than derived from a model name, so a
+ * worker pool and a coordinator pool on the same model never release each
+ * other. Making the waits due (rather than deleting them) keeps the recovery
+ * honest — the next real attempt is still what proves the pool, and a fresh
+ * rejection simply records a new, later wait.
+ */
+export async function releaseFleetRecovered(
+  recovered: Map<string, CapacityTarget[]>,
+  log: (l: string) => void,
+): Promise<void> {
+  const now = virtualNow().toISOString();
+  for (const [slug, targets] of recovered) {
+    try {
+      await arrive(slug, (d, event) => {
+        const released: string[] = [];
+        for (const target of targets) {
+          if (!capacityBackoffFor(d, target)) continue; // cleared since the scan
+          retryCapacityTargetNow(d, now, target);
+          clearCapacityBackoff(d, target);
+          resolveCapacityAttention(d, target, 'fleet-capacity');
+          released.push(target.model);
+        }
+        if (released.length) {
+          event(
+            'capacity.fleet_recovered',
+            `park released for ${[...new Set(released)].sort().join(', ')} — another workstream's call proved the pool recovered`,
+            [],
+          );
+        }
+      });
+      log(`[run] ${slug}: park released — fleet proved ${targets.map((t) => t.model).join(', ')} recovered`);
+    } catch (e) {
+      // Never silent: a release that fails leaves the stream parked behind a
+      // limit the fleet has disproved, and the whole point of this sweep is
+      // that nobody has to notice that by hand. The stored wait still stands,
+      // so its own timer remains the backstop.
+      log(`[run] ${slug}: park release FAILED (${e instanceof Error ? e.message : e}) — stream stays on its own retry timer`);
+    }
   }
 }
 
@@ -306,6 +383,10 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       // Auth recovery: one probe (never concurrently) when credential-file
       // metadata changes. Usage/rate recovery waits for the stored wake or an
       // explicit `weaver capacity retry`; blind probes only consume capacity.
+      // Free recovery first: any stream still parked on a pool another stream
+      // has since used successfully is released without spending a call.
+      const fleetRecovered = await fleetRecoveredSlugs();
+      if (fleetRecovered.size) await releaseFleetRecovered(fleetRecovered, log);
       const backedOff = probing ? [] : await infraBackoffSlugs();
       if (backedOff.length) {
         const credMtime = credentialsMtime();
