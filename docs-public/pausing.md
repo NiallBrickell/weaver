@@ -17,6 +17,27 @@ weaver pause
 
 Already paused and done workstreams are left as they are. A workstream created after the fleet pause starts active; there is no ambient global pause mode. Resume paused workstreams individually with `weaver resume <slug>`.
 
+## When you meant "this one matters more"
+
+Pausing the fleet to get one urgent outcome moving is the blunt version of a
+rank. The runner grants a fixed number of slots per poll, so a saturated fleet
+makes the urgent stream queue behind background sweeps — but pausing them stops
+legitimate work too, and somebody has to remember to resume each one.
+
+```bash
+weaver priority nobe-parc-feedback high
+```
+
+A stream ranked `high` does not merely go first: while it is due, the runner
+reserves most of its slots for the high band, so the urgent stream's own
+multi-step work is not competing with a full width of background polls for the
+machine. The rest of the fleet keeps a floor of slots rather than none, so a
+`low` stream still progresses — more slowly — and nothing is left permanently
+starved behind work that runs for hours. The reservation lifts by itself the
+moment no high stream is due, which is why ranking is worth reaching for before
+pausing: there is nothing to undo. Ranking is a human act — `weaver priority
+<slug> normal` returns a stream to the ordinary band.
+
 ## What pause preserves
 
 Pause changes the workstream's durable lifecycle state. It does not cancel or discard its assignments, submissions, decisions, waits, due wakes, or needs-you items. On resume, the runner reads that typed position and continues from it with fresh coordinator and worker runs. No model context, Agent SDK session, or sleeping process is retained to bridge the pause.

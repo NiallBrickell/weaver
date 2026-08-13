@@ -522,6 +522,12 @@ export interface WorkstreamCore {
    * then the same least-recently-ticked fairness WITHIN a priority — so a
    * high-priority stream never starves its peers, and 'low' still runs
    * whenever the fleet is not saturated.
+   *
+   * Ordering alone only decided who went first, which left the ranked stream
+   * doing its work on a machine every other due stream was ticking on, so a
+   * due 'high' band now also reserves most of the runner's slot budget
+   * (`allocateSlots`). The rest of the fleet keeps a floor of slots, never
+   * zero: 'low' still progresses while high work is in flight, just slowly.
    */
   priority?: 'high' | 'normal' | 'low';
   /** Set only by create_workstream; absent means unmanaged. */
