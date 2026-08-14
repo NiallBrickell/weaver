@@ -67,9 +67,22 @@ export function appendToLedger(path: string, results: EvalCaseResult[]): LedgerA
 export interface LedgerAggregateRow {
   /** `executor:model` — the routing identity, independent of the run's display label. */
   target: string;
+  /** Complete experimental cohort; routing commitments cite this identity so
+   * a passing rerun never averages away a failed environment. */
+  suiteRunId: string;
+  /** Adapter/runtime contract epoch. Schema 1 rows are deliberately `unknown`:
+   * their recorded package label did not reliably distinguish Weaver bridge
+   * changes, so treating it as routing evidence would mix incompatible runs. */
+  harnessVersion: string;
   caseId: string;
+  /** Deterministic fixture/grader contract. Schema 1 rows map to version 0. */
+  caseVersion: number;
   runs: number;
   hardGatePasses: number;
+  /** Per-grade pass vector. `runs` is the whole aggregate size, so a grade
+   * absent from an errored run counts honestly as not passed rather than
+   * disappearing from the denominator. */
+  gradePasses: LedgerGradePass[];
   /** Mean of per-run mean grade scores; null-safe — runs with no scored grades are excluded, never counted as zero. */
   meanScore: number | null;
   medianDurationMs: number;
@@ -78,6 +91,13 @@ export interface LedgerAggregateRow {
   /** True when at least one run's cost was unavailable, so the sum is a floor, not a total. */
   costIncomplete: boolean;
   lastRunAt: string;
+}
+
+export interface LedgerGradePass {
+  id: string;
+  hardGate: boolean;
+  passes: number;
+  runs: number;
 }
 
 function resultScore(result: EvalCaseResult): number | null {
@@ -94,27 +114,75 @@ function median(values: number[]): number {
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
-/** Per-(executor:model) × case aggregation — the evidence a model-routing policy consumes. */
+function caseVersion(result: EvalCaseResult): number {
+  return result.schemaVersion === 2 && Number.isInteger(result.caseVersion) && result.caseVersion! > 0
+    ? result.caseVersion!
+    : 0;
+}
+
+function harnessVersion(result: EvalCaseResult): string {
+  return result.schemaVersion === 2
+    ? (result.execution?.harnessVersion ?? 'unknown')
+    : 'unknown';
+}
+
+function aggregateGradePasses(group: EvalCaseResult[]): LedgerGradePass[] {
+  const grades = new Map<string, { id: string; hardGate: boolean; passes: number }>();
+  for (const result of group) {
+    const resultPasses = new Map<string, boolean>();
+    for (const grade of result.grades) {
+      const key = `${grade.hardGate ? 'hard' : 'quality'}\u0000${grade.id}`;
+      const current = grades.get(key) ?? {
+        id: grade.id,
+        hardGate: grade.hardGate,
+        passes: 0,
+      };
+      grades.set(key, current);
+      // A malformed result that repeats one grade cannot contribute more than
+      // one pass. If the duplicates disagree, retain the failure.
+      resultPasses.set(key, (resultPasses.get(key) ?? true) && grade.passed);
+    }
+    for (const [key, passed] of resultPasses) {
+      if (passed) grades.get(key)!.passes += 1;
+    }
+  }
+  return [...grades.values()]
+    .map((grade) => ({ ...grade, runs: group.length }))
+    .sort((a, b) => Number(b.hardGate) - Number(a.hardGate) || a.id.localeCompare(b.id));
+}
+
+/** Per-cohort × (executor:model:harnessVersion) × case@version aggregation —
+ * the versioned evidence a model-routing policy consumes. */
 export function aggregateLedger(results: EvalCaseResult[]): LedgerAggregateRow[] {
   const groups = new Map<string, EvalCaseResult[]>();
   for (const result of results) {
-    const key = `${result.target.executor}:${result.target.model}\u0000${result.caseId}`;
+    const key = [
+      `${result.target.executor}:${result.target.model}`,
+      result.suiteRunId,
+      harnessVersion(result),
+      result.caseId,
+      String(caseVersion(result)),
+    ].join('\u0000');
     const group = groups.get(key);
     if (group) group.push(result);
     else groups.set(key, [result]);
   }
   const rows: LedgerAggregateRow[] = [];
   for (const [key, group] of groups) {
-    const [target, caseId] = key.split('\u0000') as [string, string];
+    const [target, suiteRunId, epoch, caseId, version] = key.split('\u0000') as [string, string, string, string, string];
     const scores = group.map(resultScore).filter((score): score is number => score !== null);
     const knownCosts = group
       .map((result) => result.execution?.costUsd ?? null)
       .filter((cost): cost is number => cost !== null);
     rows.push({
       target,
+      suiteRunId,
+      harnessVersion: epoch,
       caseId,
+      caseVersion: Number(version),
       runs: group.length,
       hardGatePasses: group.filter((result) => result.passedHardGates).length,
+      gradePasses: aggregateGradePasses(group),
       meanScore: scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null,
       medianDurationMs: median(group.map((result) => result.durationMs)),
       knownCostUsd: knownCosts.length ? knownCosts.reduce((sum, cost) => sum + cost, 0) : null,
@@ -122,17 +190,28 @@ export function aggregateLedger(results: EvalCaseResult[]): LedgerAggregateRow[]
       lastRunAt: group.map((result) => result.endedAt).sort().at(-1)!,
     });
   }
-  return rows.sort((a, b) => a.target.localeCompare(b.target) || a.caseId.localeCompare(b.caseId));
+  return rows.sort((a, b) =>
+    a.target.localeCompare(b.target) ||
+    a.suiteRunId.localeCompare(b.suiteRunId) ||
+    a.harnessVersion.localeCompare(b.harnessVersion) ||
+    a.caseId.localeCompare(b.caseId) ||
+    a.caseVersion - b.caseVersion,
+  );
 }
 
 export function renderLedgerHistory(rows: LedgerAggregateRow[]): string {
   if (!rows.length) return 'The ledger is empty — run the suite or ingest a results.json first.\n';
-  const header = ['Target', 'Case', 'Runs', 'Gates', 'Score', 'Median wall', 'Cost', 'Last run'];
+  const header = ['Target', 'Cohort', 'Harness', 'Case', 'Runs', 'Gates', 'Grade passes', 'Score', 'Median wall', 'Cost', 'Last run'];
   const body = rows.map((row) => [
     row.target,
-    row.caseId,
+    row.suiteRunId,
+    row.harnessVersion,
+    `${row.caseId}@v${row.caseVersion}`,
     String(row.runs),
     `${row.hardGatePasses}/${row.runs} (${Math.round((row.hardGatePasses / row.runs) * 100)}%)`,
+    row.gradePasses
+      .map((grade) => `${grade.hardGate ? 'H' : 'Q'}:${grade.id}=${grade.passes}/${grade.runs}`)
+      .join(', ') || '—',
     row.meanScore === null ? '—' : row.meanScore.toFixed(2),
     `${(row.medianDurationMs / 1000).toFixed(1)}s`,
     row.knownCostUsd === null ? '—' : `$${row.knownCostUsd.toFixed(4)}${row.costIncomplete ? ' (+unknown)' : ''}`,

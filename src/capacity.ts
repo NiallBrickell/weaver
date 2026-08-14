@@ -26,9 +26,9 @@ import {
   coordinatorCapacityTarget,
   coordinatorFallbackCapacityTarget,
   targetOfWait,
-  workerCapacityTarget,
   type CapacityTarget,
 } from './modelConfig.js';
+import { workerTargetForAssignment } from './modelRouting.js';
 
 const DEFAULT_RETRY_MS = 15 * 60_000;
 // A plan-usage cap ('usage_limit'/'sdk_credit_exhausted') does not clear in the
@@ -448,15 +448,12 @@ export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): Capaci
   const now = new Date(nowIso);
   const primaryTarget = coordinatorCapacityTarget();
   const fallbackTarget = coordinatorFallbackCapacityTarget();
-  const workerTarget = workerCapacityTarget();
   const primaryEntry = capacityBackoffFor(doc, primaryTarget);
   const fallbackEntry = capacityBackoffFor(doc, fallbackTarget);
-  const workerEntry = capacityBackoffFor(doc, workerTarget);
   const primary = activeWait(primaryEntry, nowIso);
   const fallback = sameTarget(primaryTarget, fallbackTarget)
     ? primary
     : activeWait(fallbackEntry, nowIso);
-  const worker = activeWait(workerEntry, nowIso);
   const details: string[] = [];
   const currentCoordinatorTargets = [primaryTarget, fallbackTarget];
   const coordinatorIntent =
@@ -480,10 +477,28 @@ export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): Capaci
     primary && (sameTarget(primaryTarget, fallbackTarget) || !!fallback) ? primary : undefined;
   if (coordinatorBlocked) details.push(waitPosition(coordinatorBlocked, 'coordinator', now));
 
-  const queuedWorkerWork = doc.assignments.some((assignment) =>
+  const queuedWorkerAssignments = doc.assignments.filter((assignment) =>
     assignment.state === 'queued' && !assignment.exec?.run,
   );
-  if (worker && queuedWorkerWork) details.push(waitPosition(worker, 'worker', now));
+  const uniqueWorkerTargets = new Map<string, CapacityTarget>();
+  for (const assignment of queuedWorkerAssignments) {
+    const target = workerTargetForAssignment(assignment);
+    uniqueWorkerTargets.set(capacityTargetKey(target), target);
+  }
+  const workerEntries: Array<readonly [string, CapacityBackoff | undefined]> =
+    [...uniqueWorkerTargets.values()].map((target) => [
+      `worker ${target.model}`,
+      capacityBackoffFor(doc, target),
+    ] as const);
+  const activeWorkerWaits = workerEntries
+    .map(([, entry]) => activeWait(entry, nowIso))
+    .filter((wait): wait is InfrastructureWait => wait !== undefined);
+  for (const wait of activeWorkerWaits) details.push(waitPosition(wait, 'worker', now));
+  const everyQueuedWorkerBlocked = queuedWorkerAssignments.length > 0 &&
+    queuedWorkerAssignments.every((assignment) =>
+      activeWait(capacityBackoffFor(doc, workerTargetForAssignment(assignment)), nowIso) !== undefined,
+    );
+  const workerBlocked = everyQueuedWorkerBlocked ? activeWorkerWaits[0] : undefined;
 
   const coordinatorEntries = sameTarget(primaryTarget, fallbackTarget)
     ? [['coordinator', primaryEntry] as const]
@@ -493,7 +508,7 @@ export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): Capaci
       ];
   const relevantEntries = [
     ...(coordinatorIntent ? coordinatorEntries : []),
-    ...(queuedWorkerWork ? [['worker', workerEntry] as const] : []),
+    ...workerEntries,
   ];
   const retryEligibleSourceIds: string[] = [];
   for (const [role, entry] of relevantEntries) {
@@ -504,8 +519,8 @@ export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): Capaci
     }
   }
 
-  const blockingWait = worker && queuedWorkerWork ? worker : coordinatorBlocked;
-  const blockingRole = worker && queuedWorkerWork ? 'worker' : 'coordinator';
+  const blockingWait = workerBlocked ?? coordinatorBlocked;
+  const blockingRole = workerBlocked ? 'worker' : 'coordinator';
   return {
     ...(blockingWait ? {
       blocking: {

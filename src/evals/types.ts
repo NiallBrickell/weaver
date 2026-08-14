@@ -45,9 +45,13 @@ export interface EvalGrade {
 }
 
 export interface EvalCaseResult {
-  schemaVersion: 1;
+  /** Schema 1 ledger rows predate case/adapter evidence epochs. New runs write
+   * schema 2 and carry an explicit case version; readers retain schema 1 as
+   * case version 0 under the synthetic `unknown` harness epoch. */
+  schemaVersion: 1 | 2;
   suiteRunId: string;
   caseId: string;
+  caseVersion?: number;
   repetition: number;
   target: EvalTarget;
   startedAt: string;

@@ -88,6 +88,11 @@ function AssignmentCard({ card }: { card: AssignmentBoardCard }) {
             ))}
           </p>
         ) : null}
+        {card.executionRequirements ? (
+          <p className="text-zinc-500">
+            Route requirements · {card.executionRequirements.profile} · {card.executionRequirements.modalities.join(' + ')}
+          </p>
+        ) : null}
         {card.action ? (
           <div className="space-y-3">
             <div className="flex flex-wrap gap-1.5">
@@ -116,7 +121,9 @@ function AssignmentCard({ card }: { card: AssignmentBoardCard }) {
               {[...card.attempts].reverse().map((attempt) => (
                 <article key={attempt.runId} className="space-y-1 border-t border-zinc-800 py-2 first:border-t-0 first:pt-0">
                   <p>Attempt {card.attempts.indexOf(attempt) + 1}</p>
-                  <p>{attempt.model ?? 'model unknown'}</p>
+                  <p>{attempt.executor && attempt.provider
+                    ? `${attempt.executor} / ${attempt.provider} / ${attempt.model ?? 'model unknown'}`
+                    : (attempt.model ?? 'model unknown')}</p>
                   <p>{attempt.terminalReason ?? (attempt.endedAt ? 'ended' : 'in flight')}</p>
                   <time dateTime={attempt.startedAt}>{formatTimestamp(attempt.startedAt)}</time>
                 </article>

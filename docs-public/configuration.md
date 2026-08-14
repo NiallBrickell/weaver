@@ -46,7 +46,7 @@ pending (see [Claude capacity & billing](./claude-capacity.md)).
 | `WEAVER_COORDINATOR_EXECUTOR` | `local-sdk` | Runtime for the primary coordinator: `local-sdk` (Claude) or `codex-sdk` (Codex) |
 | `WEAVER_COORDINATOR_FALLBACK_MODEL` | `claude-opus-5` | The model it degrades to when the primary pool is limited |
 | `WEAVER_COORDINATOR_FALLBACK_EXECUTOR` | primary executor | Runtime for the fallback coordinator; may differ from the primary |
-| `WEAVER_WORKER_MODEL` | `sonnet` | The model workers run on |
+| `WEAVER_WORKER_MODEL` | `sonnet` | Fallback model for general/unmatched work; reviewed typed routes may select another exact target |
 | `WEAVER_ASK_MODEL` | `sonnet` | The model behind `weaver do`/`weaver ask` intake |
 
 ### Storage
@@ -61,12 +61,18 @@ pending (see [Claude capacity & billing](./claude-capacity.md)).
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `WEAVER_EXECUTOR` | `local-sdk` | Where a worker's model loop runs — `local-sdk` (Claude), `codex-sdk` (local Codex), or `openhands` (pinned container). See [Where workers run](./executors.md) |
+| `WEAVER_ACTION_EXECUTOR` | `local-sdk` | Separate Pilot-supervised action runtime; automatic model routes never apply to actions |
+| `WEAVER_ACTION_MODEL` | `sonnet` | Model for declared action workers |
 | `WEAVER_MODEL_API_KEY` | *(unset)* | Provider key the OpenHands container uses for the model (falls back to `LLM_API_KEY`); required when `WEAVER_EXECUTOR=openhands` |
 | `WEAVER_OPENHANDS_BASE_URL` | *(unset)* | Optional provider base URL for the OpenHands model (e.g. an OpenRouter-compatible endpoint) |
 | `WEAVER_PILOT_URL` | `http://localhost:9721` | The operator's pilot daemon that gates external actions |
 
-An unknown `WEAVER_EXECUTOR` fails hard before any attempt starts — a silent
-local fallback would make a misconfigured remote fleet look healthy.
+An unknown work or action executor fails hard before any attempt starts — a
+silent local fallback would make a misconfigured remote fleet look healthy.
+
+New work stores a typed execution profile and modalities. Weaver checks the
+reviewed route registry first and uses `WEAVER_EXECUTOR` / `WEAVER_WORKER_MODEL`
+when no proven route matches. See [Where workers run](./executors.md).
 
 The global `weaver` command reads `.env` from the repo it resolves to, so these
 apply no matter which directory you run from.

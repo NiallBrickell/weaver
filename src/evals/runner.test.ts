@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { WorkerExecutionOutcome, WorkerExecutionRequest } from '../executor/types.js';
 import { arrive, writeArtifact } from '../store.js';
-import { findEvalCase, makeConfinementCase, makeFreshContextCase, makeImageUnderstandingCase } from './cases.js';
+import { HARNESS_EVAL_CASES, findEvalCase, makeConfinementCase, makeFreshContextCase, makeImageUnderstandingCase } from './cases.js';
 import { createImageTicketPng, type ImageTicketFacts } from './imageTicket.js';
 import { renderHarnessEvalReport, runHarnessEvalSuite, safeEvalSegment } from './runner.js';
 import type { EvalExecutionTelemetry, EvalExecutor } from './types.js';
@@ -163,6 +163,11 @@ class ForgingExecutor implements EvalExecutor {
   }
 }
 
+test('every current deterministic case starts in evidence version 1', () => {
+  assert.ok(HARNESS_EVAL_CASES.length > 0);
+  assert.ok(HARNESS_EVAL_CASES.every((evalCase) => evalCase.version === 1));
+});
+
 test('the harness eval runs through real runWorker submission and deterministic graders', async () => {
   const root = mkdtempSync(join(tmpdir(), 'weaver-harness-eval-'));
   try {
@@ -176,13 +181,17 @@ test('the harness eval runs through real runWorker submission and deterministic 
       createExecutor: () => new ScriptedExecutor(),
     });
     assert.equal(results.length, 1);
+    assert.equal(results[0]!.schemaVersion, 2);
+    assert.equal(results[0]!.caseVersion, 1);
     assert.equal(results[0]!.submitted, true);
     assert.equal(results[0]!.adoptionState, 'proposed');
     assert.equal(results[0]!.passedHardGates, true);
     assert.ok(results[0]!.grades.every((grade) => grade.passed));
     assert.ok(results[0]!.artifactHash);
     assert.equal(existsSync(join(root, 'results.json')), true);
-    assert.match(readFileSync(join(root, 'report.md'), 'utf8'), /no weighted winner score/i);
+    const report = readFileSync(join(root, 'report.md'), 'utf8');
+    assert.match(report, /no weighted winner score/i);
+    assert.match(report, /code-repair@v1/);
     const ledgerLines = readFileSync(join(root, 'ledger.jsonl'), 'utf8').trim().split('\n');
     assert.equal(ledgerLines.length, 1);
     assert.equal((JSON.parse(ledgerLines[0]!) as { suiteRunId: string }).suiteRunId, 'test-suite');

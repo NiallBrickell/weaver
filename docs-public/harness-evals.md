@@ -60,16 +60,18 @@ any model calls:
 # file twice is a no-op (dedupe on suite run, target, case, and repetition).
 yarn eval:harness --ingest eval-results/<run>/results.json
 
-# Per (executor:model) x case history: runs, hard-gate pass rate, mean score,
-# median wall time, summed known cost, and last-run date.
+# Per cohort x exact adapter epoch x case version: runs, hard-gate pass rate,
+# named grade vectors, median wall time, known cost, and last-run date.
 yarn eval:harness --history
 ```
 
 Missing scores and costs stay excluded from the aggregates — a run whose provider reported no cost
 is marked, never counted as free. This table is descriptive, not an automatic routing gate: the
 append-only ledger intentionally retains pre-fix failures, and a mean can erase which exact gate
-failed. A production routing commitment must use versioned adapter/case evidence and exact gate
-vectors with repeated clean runs.
+failed. A production routing commitment uses raw versioned adapter/case evidence, at least three
+exact repetitions from one cited cohort, and complete hard-gate plus named-quality vectors. That
+commitment is a reviewed checked-in registry entry; appending ledger rows alone never changes
+routing.
 
 Cost policy: the standing eval cadence runs on subscription-backed targets — `claude-sdk` through
 the machine's Claude Code login and `codex-sdk` through the Codex login — at zero marginal cost.

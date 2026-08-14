@@ -208,7 +208,14 @@ export function buildProjection(
     // error_max_turns means "split the brief", not "retry the same shape".
     const lastReason = a.attempts[a.attempts.length - 1]?.terminalReason;
     const died = a.state === 'failed' && lastReason ? ` last-attempt:${lastReason}` : '';
-    return `${a.id} [${a.state}/adoption:${a.adoption.state}] (${a.kind}) "${a.objective}"${dep} attempts=${attempts}${died}${sub}${act}`;
+    const requirements = a.executionRequirements
+      ? ` requirements:${a.executionRequirements.profile}/${a.executionRequirements.modalities.join('+')}`
+      : a.kind === 'work' ? ' requirements:general/text' : '';
+    const latest = a.attempts.at(-1);
+    const target = latest?.executor && latest.provider && latest.model
+      ? ` latest-target:${latest.executor}/${latest.provider}/${latest.model}`
+      : latest?.model ? ` latest-model:${latest.model}` : '';
+    return `${a.id} [${a.state}/adoption:${a.adoption.state}] (${a.kind}) "${a.objective}"${dep}${requirements} attempts=${attempts}${target}${died}${sub}${act}`;
   });
   const s5 = [
     `## 5. Assignments`,

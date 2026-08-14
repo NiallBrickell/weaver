@@ -3,7 +3,9 @@
 A Weaver worker is disposable: one fresh run advances one bounded assignment,
 publishes a result through Weaver's `submit_result` surface, and exits. *Where*
 that run's model loop executes is a substrate choice — it does not change the
-durable Workstream contract. That seam is selected by `WEAVER_EXECUTOR`.
+durable Workstream contract. `WEAVER_EXECUTOR` is the explicit fallback for
+general work; reviewed capability routes may select a different exact target
+for an assignment whose typed requirements match proven eval evidence.
 
 The harness always keeps the durable half: it builds the brief, loads the
 environment, supervises declared actions, and accepts a submission only through
@@ -21,6 +23,26 @@ and the ordinary coding-agent tools.
 An unknown value fails hard before the attempt starts, on purpose: a silent
 fallback to local execution would make a misconfigured remote fleet look healthy.
 
+## Evidence-backed routing
+
+The coordinator declares a closed execution profile and input modalities on
+new work — requirements such as `bounded-code-repair` plus `text`, never a model
+name inferred from briefing prose. Weaver selects the target once before the
+attempt claim and stores executor, provider, and model on that attempt.
+
+The current reviewed route sends bounded text-only code repairs to
+`codex-sdk:gpt-5.6-sol`; general, image-bearing, evidence, and UI work retain the
+configured fallback. A route enters the checked-in registry only after at least
+three exact repetitions in one complete cohort pass every hard gate and every
+named quality check in the same adapter and case versions. The append-only
+ledger is evidence, not configuration: adding a result cannot silently change
+production routing.
+
+Capacity is scoped to that exact target. A Codex limit parks matching repairs
+without parking general work on Claude. Unknown provider cost remains unknown;
+route preference is an explicit reviewed choice, never a claim that missing
+cost telemetry means free.
+
 ## Running locally with Codex
 
 Codex can fill both disposable seats without using Claude-plan capacity for
@@ -33,6 +55,7 @@ WEAVER_COORDINATOR_FALLBACK_EXECUTOR=codex-sdk
 WEAVER_COORDINATOR_FALLBACK_MODEL=gpt-5.6-sol
 WEAVER_EXECUTOR=codex-sdk
 WEAVER_WORKER_MODEL=gpt-5.6-sol
+# Actions remain on the supervised defaults: local-sdk / sonnet.
 ```
 
 Run `codex login` once first. Weaver deliberately removes ambient OpenAI API
@@ -52,11 +75,12 @@ Claude coordinator, reached through a per-pass authenticated localhost bridge.
 brief-derivation call is unavailable. `weaver ask` remains a Claude-backed
 read-only helper; it is not part of the controller or worker execution path.
 
-> **Action limit:** Codex's current TypeScript SDK has no per-tool authority
-> callback. A `codex-sdk` worker therefore refuses an `action` assignment before
-> launch instead of running an irreversible effect without Pilot supervision.
-> Ordinary `work` assignments and coordinator passes are supported. Keep action
-> workers on `local-sdk` until that SDK surface exists.
+> **Action boundary:** performance routes never match `action`. Actions use
+> `WEAVER_ACTION_EXECUTOR` / `WEAVER_ACTION_MODEL`, defaulting to supervised
+> `local-sdk` / `sonnet`, independently of the volume-work fallback. Codex's
+> current TypeScript SDK has no per-tool authority callback and refuses an
+> action before launch if explicitly selected; it never runs irreversible
+> egress without Pilot supervision.
 
 ## Running workers in OpenHands
 
@@ -94,12 +118,11 @@ Requirements:
   This is the right isolation for a cooperating worker; it is not yet a
   multi-tenant or adversarial sandbox. That harder guarantee is tracked as a
   future managed-sandbox target.
-- **Actions fail closed outside the Claude worker.** A declared action needs live,
+- **Actions use a separate supervised target.** A declared action needs live,
   per-call Pilot supervision, which Codex and the container path cannot route
-  yet. Under `WEAVER_EXECUTOR=codex-sdk` or `openhands` an action assignment
-  refuses rather than running an
-  unsupervised external effect — capability is never authority. Run action
-  workstreams on `local-sdk` until supervised remote actions land.
+  yet. The default action target remains local Claude regardless of the work
+  fallback or performance routes. Explicitly selecting an unsupported action
+  executor fails closed — capability is never authority.
 
 The evidence path behind this choice — the same assignment and adoption
 boundary, run against several candidate runtimes under deterministic durability,

@@ -61,6 +61,19 @@ deterministic probes:
 
 There is no model judge and no composite winner score. Safety and durability are hard gates;
 quality remains a vector so that one failure cannot be hidden by unrelated strengths.
+New results carry both an adapter contract epoch and a deterministic case version. Production never
+reads this ledger at runtime. `src/modelRouting.ts` is the reviewed commitment layer: each route names
+its exact cohort and evidence epoch, requires at least three clean runs and named quality grades,
+and is audited against the raw checked-in rows in deterministic tests. Old schema-1 rows remain
+history under the synthetic `unknown` / case-v0 epoch and can never qualify a route.
+
+- **Codex's macOS workspace sandbox does not compose inside another Codex macOS sandbox.** Running
+  the live Codex eval from an already sandboxed Codex session made every inner shell/file operation
+  fail before launch with `sandbox_apply: Operation not permitted`; the model correctly submitted a
+  blocker and the complete cohort remains as failed ledger evidence (`20260814T114138Z`). Run the
+  production executor/eval from the normal host boundary (or grant the outer session permission to
+  do so), leaving the inner `workspace-write` sandbox intact. Never “fix” this by silently selecting
+  Codex's danger-full-access mode from a spoofable ambient variable.
 Image understanding is part of the base matrix, not a specialist bonus: Weaver regularly receives
 screenshots and image-bearing tickets, so exact extraction is a hard gate and a text-only candidate
 cannot be promoted.

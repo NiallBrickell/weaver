@@ -80,6 +80,7 @@ test('cards expose dependency acceptance and only the latest attempt', () => {
   const accepted = assignment('asg_dep_accepted', 'completed', 'accepted');
   const merelyCompleted = assignment('asg_dep_rejected', 'completed', 'rejected');
   const planned = assignment('asg_next', 'queued');
+  planned.executionRequirements = { profile: 'bounded-code-repair', modalities: ['text'] };
   planned.dependsOn = ['asg_dep_accepted', 'asg_dep_rejected', 'asg_missing'];
   planned.attempts = [
     {
@@ -91,7 +92,9 @@ test('cards expose dependency acceptance and only the latest attempt', () => {
     },
     {
       runId: 'run_latest',
-      model: 'sonnet',
+      executor: 'codex-sdk',
+      provider: 'openai',
+      model: 'gpt-5.6-sol',
       startedAt: '2026-08-14T08:05:00.000Z',
       endedAt: '2026-08-14T08:09:00.000Z',
       terminalReason: 'completed',
@@ -109,11 +112,16 @@ test('cards expose dependency acceptance and only the latest attempt', () => {
   assert.deepEqual(card.attempts.map((attempt) => attempt.runId), ['run_old', 'run_latest']);
   assert.deepEqual(card.adoption, { state: 'none' });
   assert.deepEqual(card.acceptanceCriteria, []);
+  assert.deepEqual(card.executionRequirements, {
+    profile: 'bounded-code-repair', modalities: ['text'],
+  });
   assert.deepEqual(card.latestAttempt, {
     runId: 'run_latest',
     startedAt: '2026-08-14T08:05:00.000Z',
     endedAt: '2026-08-14T08:09:00.000Z',
-    model: 'sonnet',
+    executor: 'codex-sdk',
+    provider: 'openai',
+    model: 'gpt-5.6-sol',
     terminalReason: 'completed',
   });
   assert.deepEqual(card.submission, {

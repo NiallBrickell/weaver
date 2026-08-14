@@ -93,10 +93,17 @@ function routineDoc(cycles: number): WorkstreamDoc {
     objective: 'LIVE queued work UNIQUE_LIVE_MARKER',
     briefing: 'b',
     kind: 'work',
+    executionRequirements: { profile: 'bounded-code-repair', modalities: ['text'] },
     acceptanceCriteria: [],
     dependsOn: [],
     state: 'awaiting_review',
-    attempts: [],
+    attempts: [{
+      runId: 'run_live',
+      executor: 'codex-sdk',
+      provider: 'openai',
+      model: 'gpt-5.6-sol',
+      startedAt: NOW,
+    }],
     adoption: { state: 'proposed' },
     submission: { summary: 'ready for your review', deliverableId: 'del_live' },
     createdAtVirtual: NOW,
@@ -157,6 +164,8 @@ test('bounded projection still carries live work and standing commitments', () =
   // Live unresolved work survives.
   assert.match(p, /UNIQUE_LIVE_MARKER/);
   assert.match(p, /LIVE candidate awaiting review/);
+  assert.match(p, /requirements:bounded-code-repair\/text/);
+  assert.match(p, /latest-target:codex-sdk\/openai\/gpt-5\.6-sol/);
 });
 
 test('legacy dollar and lifetime pass caps never reach the coordinator as remaining authority', () => {

@@ -45,7 +45,7 @@ describe('executor selection', () => {
 
   it('an unknown executor fails hard, naming the variable — never a silent local fallback', () => {
     withEnv('managed-agents', () =>
-      assert.throws(() => selectExecutor(), /WEAVER_EXECUTOR 'managed-agents'/),
+      assert.throws(() => selectExecutor(), /worker executor 'managed-agents'.*WEAVER_EXECUTOR/),
     );
   });
 });
@@ -150,6 +150,52 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
   }
 });
 
+test('a typed bounded repair pins its reviewed route on the disposable attempt', async () => {
+  const home = workerHome();
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-routed-worker-'));
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      assert.equal(req.model, 'gpt-5.6-sol');
+      const reply = await req.submit.submitResult({
+        summary: 'Applied the bounded repair and ran its deterministic verification.',
+        artifact: {
+          title: 'Bounded repair evidence', kind: 'report', file_name: 'repair.md',
+          content: `# Repair\n\n${'Verified the bounded repair against deterministic tests. '.repeat(6)}`,
+        },
+      });
+      assert.equal(reply.isError, undefined);
+      return { costUsd: 0, sessionId: 'routed-session' };
+    },
+  };
+  try {
+    await createWorkstream({
+      slug: 'routed-worker', title: 'Routed worker', objective: 'repair one defect',
+      tags: [], successCriteria: [], constraints: [],
+      autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('routed-worker', (d) => d.assignments.push({
+      id: 'asg_routed', objective: 'repair one selector', briefing: 'Fix and verify it.',
+      kind: 'work',
+      executionRequirements: { profile: 'bounded-code-repair', modalities: ['text'] },
+      readDirs: [workspace], acceptanceCriteria: ['tests pass'], dependsOn: [],
+      state: 'queued', attempts: [], adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await runWorker('routed-worker', 'asg_routed', executor);
+    const attempt = (await load('routed-worker')).assignments[0]!.attempts[0]!;
+    assert.deepEqual({
+      executor: attempt.executor, provider: attempt.provider, model: attempt.model,
+    }, {
+      executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
+    });
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test('a declared action uses the same Code surface with Pilot supervision', async () => {
   const home = workerHome();
   const actionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-action-worker-'));
@@ -212,6 +258,10 @@ test('a declared action uses the same Code surface with Pilot supervision', asyn
     assert.match(request.systemPrompt.append, /human-approved real-world ACTION/);
     assert.match(request.systemPrompt.append, /containment only/);
     assert.match(request.systemPrompt.append, /does not fix the upstream failure/);
+    const attempt = (await load('worker-action-surface')).assignments[0]!.attempts[0]!;
+    assert.equal(attempt.executor, 'local-sdk');
+    assert.equal(attempt.provider, 'anthropic');
+    assert.equal(attempt.model, 'sonnet');
   } finally {
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });

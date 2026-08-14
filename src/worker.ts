@@ -33,6 +33,7 @@ import {
   workerModel,
   type CapacityTarget,
 } from './modelConfig.js';
+import { workerTargetForAssignment } from './modelRouting.js';
 import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
@@ -63,7 +64,7 @@ export function selectExecutor(name = workerExecutorName()): WorkerExecutor {
   if (name === 'local-sdk') return new LocalSdkExecutor();
   if (name === 'codex-sdk') return new CodexExecutor();
   if (name === 'openhands') return new OpenHandsExecutor();
-  throw new Error(`unknown WEAVER_EXECUTOR '${name}' — supported: local-sdk, codex-sdk, openhands`);
+  throw new Error(`unknown worker executor '${name}' from WEAVER_EXECUTOR/WEAVER_ACTION_EXECUTOR — supported: local-sdk, codex-sdk, openhands`);
 }
 
 /**
@@ -297,16 +298,20 @@ export async function runWorker(
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg) throw new Error(`no assignment ${assignmentId}`);
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
-  // A misconfigured WEAVER_EXECUTOR fails here, before any state moves.
-  const configuredExecutor = workerExecutorName();
-  const executor = providedExecutor ?? selectExecutor(configuredExecutor);
+  // Requirements choose one exact target before state moves. An explicitly
+  // injected executor (the eval harness and deterministic tests) remains an
+  // explicit target rather than being silently re-routed.
+  const routedTarget = workerTargetForAssignment(asg);
+  const executorName = providedExecutor?.id ?? routedTarget.executor;
+  const executor = providedExecutor ?? selectExecutor(executorName);
   // Pinned for the whole disposable attempt: the durable record, launch,
   // failure classification, and capacity clearing must describe one target,
   // even if a long-lived process changes its environment while the run is in
   // flight. Custom/injected executors inherit the configured identity only
   // when they do not publish their own stable id.
-  const targetModel = workerModel();
-  const capacityTarget = workerCapacityTarget(targetModel, executor.id ?? configuredExecutor);
+  const capacityTarget = providedExecutor?.id
+    ? workerCapacityTarget(workerModel(), executorName)
+    : routedTarget;
 
   // Declared inputs: ADOPTED deliverables of dependency assignments only — a
   // rejected candidate never becomes another worker's input.
@@ -501,7 +506,7 @@ export async function runWorker(
         preset: 'claude_code',
         append: isAction ? ACTION_SYSTEM : WORKER_SYSTEM,
       },
-      model: targetModel,
+      model: capacityTarget.model,
       tools: { type: 'preset', preset: 'claude_code' },
       // Ephemeral MCP header credentials ride the subprocess env with the
       // action secrets — never SDK process arguments, never durable state.
@@ -566,7 +571,7 @@ export async function runWorker(
   const capacitySource = {
     source: 'worker',
     sourceId: runId,
-    model: targetModel,
+    model: capacityTarget.model,
     executor: capacityTarget.executor,
     provider: capacityTarget.provider,
     now: virtualNow(),

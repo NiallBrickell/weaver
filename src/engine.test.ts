@@ -408,6 +408,46 @@ test('a typed worker-model wait parks assignments without parsing prose', async 
   assert.deepEqual(runnableAssignments(doc), ['asg_first', 'asg_second']);
 });
 
+test('a routed Codex wait parks only matching work while the fallback remains runnable', async () => {
+  await createWorkstream({
+    slug: 'routed-capacity',
+    title: 'Routed capacity',
+    objective: 'keep independent pools moving',
+    tags: [], successCriteria: [], constraints: [],
+    autonomy: { sendsRequireApproval: true },
+  });
+  const retryAt = new Date(virtualNow().getTime() + 60_000).toISOString();
+  await arrive('routed-capacity', (d) => {
+    d.assignments.push(
+      asg({
+        id: 'asg_codex',
+        executionRequirements: { profile: 'bounded-code-repair', modalities: ['text'] },
+      }),
+      asg({
+        id: 'asg_general',
+        executionRequirements: { profile: 'general', modalities: ['text'] },
+      }),
+    );
+    d.capacity = {
+      state: 'backoff',
+      byModel: {
+        'codex-sdk:openai:gpt-5.6-sol': {
+          wait: {
+            kind: 'rate_limit', recovery: 'automatic_retry', source: 'worker',
+            sourceId: 'run_codex', executor: 'codex-sdk', provider: 'openai',
+            model: 'gpt-5.6-sol', detectedAt: virtualNow().toISOString(), retryAt,
+          },
+          consecutiveBackoffs: 1,
+          firstBackoffAtVirtual: virtualNow().toISOString(),
+          lastBackoffAtVirtual: virtualNow().toISOString(),
+        },
+      },
+    };
+  });
+
+  assert.deepEqual(runnableAssignments(await load('routed-capacity')), ['asg_general']);
+});
+
 // ---------------------------------------------------------------------------
 // Dependency satisfaction: a downstream assignment runs only when its upstream
 // both finished AND was adopted — the same rule worker.ts uses to decide which

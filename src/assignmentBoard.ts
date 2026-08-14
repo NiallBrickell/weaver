@@ -7,7 +7,13 @@
  * does that.
  */
 
-import type { Assignment, AssignmentKind, Attempt, WorkstreamDoc } from './types.js';
+import type {
+  Assignment,
+  AssignmentExecutionRequirements,
+  AssignmentKind,
+  Attempt,
+  WorkstreamDoc,
+} from './types.js';
 
 export type AssignmentBoardLane = 'planned' | 'working' | 'review' | 'accepted';
 export type AssignmentState = Assignment['state'];
@@ -25,6 +31,8 @@ export interface AssignmentBoardAttempt {
   startedAt: string;
   endedAt?: string;
   model?: string;
+  executor?: string;
+  provider?: string;
   terminalReason?: string;
 }
 
@@ -61,6 +69,7 @@ export interface AssignmentBoardCard {
   id: string;
   objective: string;
   kind: AssignmentKind;
+  executionRequirements?: AssignmentExecutionRequirements;
   acceptanceCriteria: string[];
   assignmentState: AssignmentState;
   adoptionState: AdoptionState;
@@ -112,6 +121,8 @@ function attemptView(attempt: Attempt): AssignmentBoardAttempt {
     startedAt: attempt.startedAt,
     ...(attempt.endedAt ? { endedAt: attempt.endedAt } : {}),
     ...(attempt.model ? { model: attempt.model } : {}),
+    ...(attempt.executor ? { executor: attempt.executor } : {}),
+    ...(attempt.provider ? { provider: attempt.provider } : {}),
     ...(attempt.terminalReason ? { terminalReason: attempt.terminalReason } : {}),
   };
 }
@@ -147,6 +158,9 @@ function card(assignment: Assignment, assignmentsById: Map<string, Assignment>):
     id: assignment.id,
     objective: assignment.objective,
     kind: assignment.kind,
+    ...(assignment.executionRequirements
+      ? { executionRequirements: assignment.executionRequirements }
+      : {}),
     acceptanceCriteria: [...assignment.acceptanceCriteria],
     assignmentState: assignment.state,
     adoptionState: assignment.adoption.state,
