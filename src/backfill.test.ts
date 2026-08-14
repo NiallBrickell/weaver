@@ -11,7 +11,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { backfillRules, extractUserMessages, parseRulesFile } from './backfill.js';
+import { backfillRules, extractUserMessages, parseRulesFile, planRulesRefresh, renderBackfillReport } from './backfill.js';
 import { loadPolicies, matchPolicies } from './policies.js';
 
 let tmp: string;
@@ -177,4 +177,186 @@ test('seed roundtrip: sanitized export, shadow import, dedup, authority refused,
   const again = await importSeed(withAuthority, { refuseAuthority: grantsAuthority });
   assert.equal(again.imported, 0);
   assert.equal(again.skippedDuplicate, 2);
+});
+
+// ---------------------------------------------------------------------------
+// Refresh: a rules file is edited, and the store follows it.
+
+const EDITED_RULES = `# Team rules
+
+Intro prose that is not a rule and must not become one.
+
+## Working style
+
+- Always run the full test suite and verify it passes before pushing, and read every failure.
+- Keep responses concise; prefer bullet points for status updates.
+
+**Close every loop.** A change is done when the outcome is confirmed, not when the diff exists.
+`;
+
+test('re-running after an edited rule updates that policy in place, keeps its id, and leaves its siblings alone', async () => {
+  const rulesPath = writeRules();
+  const first = await backfillRules([rulesPath], ['myapp'], false);
+  assert.equal(first.created.length, 3);
+  const before = first.created.find((p) => p.statement.includes('full test suite'))!;
+  const untouched = first.created.find((p) => p.statement.includes('concise'))!;
+
+  fs.writeFileSync(rulesPath, EDITED_RULES);
+  const second = await backfillRules([rulesPath], ['myapp'], false);
+
+  assert.equal(second.created.length, 0, 'an edited rule is the same rule, not a new one');
+  assert.equal(second.refreshed.length, 1);
+  assert.equal(second.refreshed[0]!.id, before.id, 'identity survives the edit');
+  assert.match(second.refreshed[0]!.after, /read every failure/);
+  assert.equal(second.duplicates.length, 2, 'the unedited rules are still a no-op');
+
+  const stored = (await loadPolicies()).policies;
+  assert.equal(stored.length, 3, 'refresh updates rather than accumulating a second copy');
+  const updated = stored.find((p) => p.id === before.id)!;
+  assert.match(updated.statement, /read every failure/);
+  assert.equal(updated.createdAt, before.createdAt);
+  assert.equal(stored.find((p) => p.id === untouched.id)!.statement, untouched.statement);
+});
+
+test('a refreshed rule contests the learned policies scoped to it, so nothing keeps guiding under wording the operator abandoned', async () => {
+  const { proposePolicy } = await import('./policies.js');
+  const rulesPath = writeRules();
+  await backfillRules([rulesPath], ['myapp'], false);
+  const learned = await proposePolicy({
+    statement: 'Run only the tests near the change when the suite is slow',
+    tags: ['myapp'], effectKind: 'advisory', effectDescription: 'x',
+    workstreamSlug: 'ws-src', passId: 'pass_1', interventionSummary: 'i',
+  });
+
+  fs.writeFileSync(rulesPath, EDITED_RULES);
+  const report = await backfillRules([rulesPath], ['myapp'], false);
+  assert.deepEqual(report.refreshed[0]!.contested, [learned.id]);
+
+  const stored = (await loadPolicies()).policies.find((p) => p.id === learned.id)!;
+  assert.equal(stored.contested?.byPolicyId, report.refreshed[0]!.id);
+  assert.match(stored.contested!.note, /refreshed doctrine/);
+
+  const rendered = renderBackfillReport(report, false);
+  assert.match(rendered, /rule text updated in place/);
+  assert.match(rendered, /contested 1 learned policy/);
+});
+
+test('a deleted section retires its policies with the reason; a bullet that merely stopped parsing does not', async () => {
+  const rulesPath = writeRules();
+  const first = await backfillRules([rulesPath], ['myapp'], false);
+  const inStyle = first.created.filter((p) => 'ref' in p.provenance && p.provenance.ref.includes('Working style'));
+  assert.equal(inStyle.length, 3);
+
+  // The whole section is gone: those rules are gone with it.
+  fs.writeFileSync(rulesPath, `# Team rules\n\n## Release process\n\n- Tag the release before announcing it anywhere.\n`);
+  const second = await backfillRules([rulesPath], ['myapp'], false);
+  assert.equal(second.retired.length, 3);
+  assert.ok(second.retired.every((r) => r.reason.includes('no longer exists')));
+  const stored = (await loadPolicies()).policies;
+  for (const p of inStyle) {
+    const now = stored.find((x) => x.id === p.id)!;
+    assert.equal(now.status, 'superseded');
+    assert.equal(now.supersededBy, undefined);
+  }
+
+  // The section survives but one bullet no longer parses as a rule (here: too
+  // short). That is our heuristics changing their mind, not the operator
+  // deleting a rule, so nothing is retired.
+  const kept = (await loadPolicies()).policies.find((p) => p.statement.includes('Tag the release'))!;
+  fs.writeFileSync(rulesPath, `# Team rules\n\n## Release process\n\n- Tag it.\n`);
+  const third = await backfillRules([rulesPath], ['myapp'], false);
+  assert.equal(third.retired.length, 0);
+  assert.equal((await loadPolicies()).policies.find((p) => p.id === kept.id)!.status, 'shadow');
+});
+
+test('--dry-run shows the refresh and the contest blast radius before anything is written', async () => {
+  const { proposePolicy } = await import('./policies.js');
+  const rulesPath = writeRules();
+  await backfillRules([rulesPath], ['myapp'], false);
+  const learned = await proposePolicy({
+    statement: 'Run only the tests near the change when the suite is slow',
+    tags: ['myapp'], effectKind: 'advisory', effectDescription: 'x',
+    workstreamSlug: 'ws-src', passId: 'pass_1', interventionSummary: 'i',
+  });
+  const snapshot = JSON.stringify((await loadPolicies()).policies);
+
+  fs.writeFileSync(rulesPath, EDITED_RULES);
+  const report = await backfillRules([rulesPath], ['myapp'], true);
+  assert.equal(report.refreshed.length, 1);
+  assert.deepEqual(report.refreshed[0]!.contested, [learned.id]);
+  assert.match(renderBackfillReport(report, true), /would contest 1 learned policy/);
+  assert.equal(JSON.stringify((await loadPolicies()).policies), snapshot, '--dry-run writes nothing');
+});
+
+test('planRulesRefresh pairs an edited rule with its policy only when each is the other\'s closest match', () => {
+  const ref = '/repo/CLAUDE.md § Working style';
+  const stored = [
+    {
+      id: 'pol_tests', statement: 'Always run the full test suite before pushing',
+      scope: { tags: ['myapp'] }, effect: { kind: 'add_verification' as const, description: 'x' },
+      widensAuthority: false as const, status: 'shadow' as const,
+      provenance: { source: 'backfill:rules' as const, ref, interventionSummary: 'i' },
+      evidence: [], createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'pol_concise', statement: 'Keep responses concise and prefer bullet points',
+      scope: { tags: ['myapp'] }, effect: { kind: 'advisory' as const, description: 'x' },
+      widensAuthority: false as const, status: 'shadow' as const,
+      provenance: { source: 'backfill:rules' as const, ref, interventionSummary: 'i' },
+      evidence: [], createdAt: '2026-01-01T00:00:00.000Z',
+    },
+  ];
+  const candidate = (statement: string) => ({
+    statement, effectKind: 'advisory' as const, effectDescription: 'x',
+    source: 'backfill:rules' as const, ref, interventionSummary: 'i',
+  });
+
+  // Reworded → update; unrelated → create; untouched → unchanged.
+  const plan = planRulesRefresh(
+    [
+      candidate('Always run the full test suite before pushing, and read every failure'),
+      candidate('Keep responses concise and prefer bullet points'),
+      candidate('Name the workspace directory in every brief'),
+    ],
+    [{ path: '/repo/CLAUDE.md', sections: [ref] }],
+    stored,
+  );
+  assert.deepEqual(plan.updates.map((u) => u.id), ['pol_tests']);
+  assert.deepEqual(plan.unchanged.map((u) => u.id), ['pol_concise']);
+  assert.deepEqual(plan.creates.map((c) => c.statement), ['Name the workspace directory in every brief']);
+  assert.equal(plan.retires.length, 0);
+
+  // A rewrite that keeps too little of the original is a new rule, not an edit
+  // — the conservative direction: an extra candidate to supersede beats
+  // overwriting a rule the operator still holds.
+  const rewritten = planRulesRefresh(
+    [candidate('Ship behind a flag and roll it out to staff first')],
+    [{ path: '/repo/CLAUDE.md', sections: [ref] }],
+    stored,
+  );
+  assert.equal(rewritten.updates.length, 0);
+  assert.equal(rewritten.creates.length, 1);
+});
+
+test('a renamed heading moves the rule instead of deleting it — the operator still has the rule, so the store must too', async () => {
+  const rulesPath = writeRules();
+  const first = await backfillRules([rulesPath], ['myapp'], false);
+  const concise = first.created.find((p) => p.statement.includes('concise'))!;
+
+  // Same three rules, same words, one renamed section.
+  fs.writeFileSync(
+    rulesPath,
+    RULES_MD.replace('## Working style', '## How we work'),
+  );
+  const second = await backfillRules([rulesPath], ['myapp'], false);
+
+  assert.equal(second.retired.length, 0, 'a rename is not a deletion');
+  assert.equal(second.created.length, 0, 'and it is not three new rules either');
+  assert.equal(second.moved.length, 3);
+  const stored = (await loadPolicies()).policies;
+  assert.equal(stored.length, 3);
+  const kept = stored.find((p) => p.id === concise.id)!;
+  assert.equal(kept.status, 'shadow');
+  assert.ok('ref' in kept.provenance && kept.provenance.ref.includes('How we work'), 'the ref follows the text');
+  assert.match(renderBackfillReport(second, false), /under a different section/);
 });

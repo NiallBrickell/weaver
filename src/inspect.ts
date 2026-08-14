@@ -20,7 +20,7 @@ import * as path from 'node:path';
 import { compactAge } from './activity.js';
 import { virtualNow } from './clock.js';
 import type { PolicyRecord } from './policies.js';
-import { loadPolicies } from './policies.js';
+import { isDoctrine, loadPolicies } from './policies.js';
 import { writePrintoutIndex } from './printoutHtml.js';
 import { loadAllSecrets, redactSecrets } from './secrets.js';
 import { listManagedBy, listWorkstreams, load, weaverHome, workstreamDir } from './store.js';
@@ -258,13 +258,26 @@ function policyCard(p: PolicyRecord): string {
         .join('')}</ul>`
     : `<p class="empty">No evidence yet — unproven.</p>`;
   const lineage = p.supersededBy ? `<p class="lineage">superseded by <code>${esc(p.supersededBy)}</code></p>` : '';
+  // A contest names its source: a workstream whose run produced negative
+  // evidence, or the doctrine rule whose text the operator has since rewritten.
+  const contestSource = p.contested?.workstreamSlug
+    ? `in <code>${esc(p.contested.workstreamSlug)}</code>`
+    : p.contested?.byPolicyId
+      ? `by refreshed doctrine <code>${esc(p.contested.byPolicyId)}</code>`
+      : 'source not recorded';
   const contested = p.contested
-    ? `<p class="meta"><span class="pill warn">contested — under review</span> ${esc(p.contested.note)} (in <code>${esc(p.contested.workstreamSlug)}</code>)</p>`
+    ? `<p class="meta"><span class="pill warn">contested — under review</span> ${esc(p.contested.note)} (${contestSource})</p>`
+    : '';
+  const doctrine = isDoctrine(p)
+    ? ` <span class="pill doctrine" title="the operator's own words — binds without evidence and outranks learned policies where their scopes overlap">doctrine</span>`
+    : '';
+  const mechanism = p.mechanism
+    ? `<p class="meta">mechanism (revisable, not the rule): <code>${esc(p.mechanism)}</code></p>`
     : '';
   return `<article class="card policy ${p.status}${p.contested ? ' contested' : ''}">
-<header><code>${esc(p.id)}</code> <span class="pill status-${p.status}">${p.status}</span> <span class="pill effect">${esc(p.effect.kind)}</span></header>
+<header><code>${esc(p.id)}</code> <span class="pill status-${p.status}">${p.status}</span> <span class="pill effect">${esc(p.effect.kind)}</span>${doctrine}</header>
 <p class="statement">${esc(p.statement)}</p>
-<p class="meta">effect: ${esc(p.effect.description)}</p>
+${mechanism}<p class="meta">effect: ${esc(p.effect.description)}</p>
 <p class="meta">scope tags: ${p.scope.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(' ') || '(none)'}</p>
 <p class="meta">${
     'workstreamSlug' in p.provenance
@@ -308,15 +321,26 @@ function policyGroup(title: string, cards: string): string {
 /**
  * The fleet page's learning answer: what the fleet has learned, grouped by how
  * much the fleet actually knows about it. Every policy lands in exactly one
- * group — superseded first (resolved lineage), then contested, then by status
- * and evidence — so the totals in the header reconcile with what is on screen.
+ * group — superseded first (resolved lineage), then doctrine, then contested,
+ * then by status and evidence — so the totals in the header reconcile with what
+ * is on screen.
+ *
+ * Doctrine gets its own group ahead of the rest because the evidence-based
+ * grouping tells the wrong story about it: the operator's own rules are mostly
+ * unproven, not because nothing supports them but because nothing has had cause
+ * to test them, and filing them under "shadow, unproven" reads as a fleet that
+ * has learned nothing from its own rulebook. Contested doctrine surfaces as
+ * full cards there, since a rule the fleet has argued with is worth the
+ * operator's attention.
  */
 function learnedSection(policies: PolicyRecord[]): string {
   if (!policies.length) {
     return `<section id="policies"><h2>Learned <span class="count">0</span></h2>${empty('No learned policies.')}</section>`;
   }
   const superseded = policies.filter((p) => p.status === 'superseded');
-  const live = policies.filter((p) => p.status !== 'superseded');
+  const liveAll = policies.filter((p) => p.status !== 'superseded');
+  const doctrine = liveAll.filter(isDoctrine);
+  const live = liveAll.filter((p) => !isDoctrine(p));
   const contested = live.filter((p) => p.contested);
   const rest = live.filter((p) => !p.contested);
   const active = rest.filter((p) => p.status === 'active');
@@ -339,7 +363,19 @@ function learnedSection(policies: PolicyRecord[]): string {
     `${superseded.length} superseded`,
   ].join(' · ');
 
+  const doctrineContested = doctrine.filter((p) => p.contested);
+  const doctrineRest = doctrine.filter((p) => !p.contested);
   const groups = [
+    doctrine.length
+      ? policyGroup(
+          `Doctrine — your own rules (${doctrine.length})`,
+          `<p class="hint">Taken from the rules files you maintain and the directives you gave. These bind without evidence and outrank learned policies where their scopes overlap; re-running <code>weaver backfill</code> refreshes them from the current file.</p>` +
+            [...doctrineContested].sort(byEvidence).map(policyCard).join('\n') +
+            (doctrineRest.length
+              ? `<details><summary>All doctrine (${doctrineRest.length})</summary><ul class="policy-lines">${doctrineRest.map(policyOneLiner).join('')}</ul></details>`
+              : ''),
+        )
+      : '',
     active.length
       ? policyGroup(`Active (${active.length})`, [...active].sort(byEvidence).map(policyCard).join('\n'))
       : '',
@@ -553,6 +589,7 @@ pre { background: var(--panel2); border: 1px solid var(--line); border-radius: 8
 .pill.status-active { color: var(--ok); border-color: var(--ok); }
 .pill.status-shadow { color: var(--warn); border-color: var(--warn); }
 .pill.status-superseded { color: var(--dim); text-decoration: line-through; }
+.pill.doctrine { color: var(--coord); border-color: var(--coord); }
 .tag { display:inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--panel2); }
 .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
 .card { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 10px 0; }

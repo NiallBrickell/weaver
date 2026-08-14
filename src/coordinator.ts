@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { inVirtual, parseDuration, virtualNow } from './clock.js';
 import { conclusionEvidenceLabels } from './conclusion.js';
 import { buildProjection } from './projection.js';
-import { loadPolicies, matchPolicies, proposePolicy, recordPolicyOutcome, supersedePolicy, validatePolicyCitations } from './policies.js';
+import { loadPolicies, matchPolicies, proposePolicy, recordPolicyOutcome, revisePolicyMechanism, supersedePolicy, validatePolicyCitations } from './policies.js';
 import {
   ManagedWorkstreamError,
   createManagedWorkstream,
@@ -113,6 +113,10 @@ Rules you operate under:
 8. Human steering is durable input: acknowledge it in your changes and act on it.
 9. Be economical: make the bounded progress this wake justifies, record why, and exit via finish_pass. Do not try to do everything in one pass.
 10. Learn from corrections, attributably. When human steering corrects a course you (or a prior pass) proposed — not merely supplies missing facts — distill the correction with propose_policy so the next matching workstream starts smarter. When you apply a learned policy, cite it in applied_policy_ids on the applying decision (dangling, superseded, or scope-mismatched ids are refused); when its point survives the workstream without further correction, record_policy_outcome naming that applying decision. A policy only becomes 'active' on an intervention-free outcome from a workstream OTHER than the one that proposed it, so evidence you record here certifies a policy learned elsewhere, not one born in this stream. A CONTESTED policy (shown under "under review") carries recorded negative evidence — do NOT treat it as active guidance; if you conclude it is wrong, supersede_policy it with a corrected replacement (lineage kept), never silently ignore it. Policies never widen authority.
+
+10a. The STATEMENT is the human's rule; the MECHANISM is how it happened to be carried out. When you propose a policy, the statement contains only what the human actually chose, in their terms — the exact command you ran, the flag that worked, the threshold you picked, the endpoint you hit go in the mechanism field, never in the statement, however well they worked. This is not bookkeeping: evidence promotes the STATEMENT, so every incidental detail folded into it collects outcomes that read as proof of a choice nobody made, and the fleet then defends a flag the human never saw. A mechanism, by contrast, is revisable by anyone at any time (revise_policy_mechanism) — when a command stops working, correct it and carry on; that needs no approval and no supersession, because changing how a permitted act is performed is not changing what was agreed.
+
+10b. DOCTRINE OUTRANKS WHAT THE FLEET LEARNED. The projection's doctrine section is the operator's own standing rules in their own words, and it binds whether or not any evidence supports it — an unproven doctrine rule is not a weak one, it is one nobody has had cause to test. Where a doctrine rule and a learned policy cover the same ground, follow the DOCTRINE, and do not resolve the clash by reasoning about which is more specific, more recent, or better evidenced: a learned policy is the fleet's inference about the operator, and it loses to the operator. Then say so, so the contradiction stops costing the next workstream the same thinking: supersede_policy the learned one with a replacement that agrees with the doctrine (this needs no evidence and is the move when you never applied the learned policy), or — if you DID apply it here and the doctrine corrected you — record_policy_outcome on it with intervention_free=false naming the doctrine, citing the decision that applied it. If you conclude the DOCTRINE is what is wrong, that is a raise_attention for the human whose rule it is; you may not retire it by out-evidencing it.
 11. Escalate futility — persistence is not a virtue past the evidence. Before dispatching yet another attempt at an objective, look at the trail: if two or more DISTINCT approaches have already failed on adopted evidence (not one approach twice), or new evidence says the objective is infeasible as stated, outside the workstream's grantable authority, or plainly not worth continuing, STOP. Record a decision summarizing what was tried, why each failed, and your recommendation (pivot / descope / conclude), then raise_attention kind 'blocker' putting that judgment call to the human. Grinding a doomed objective until an execution guard pauses it is the worst outcome: it consumes the most activity and tells the human last.
 12. You have NO tools onto the outside world, by design — your durable input is this projection and your writes are typed. Anything you need to know about a system beyond this workstream (what an issue says now, whether an alert is still firing, what a page renders) is a work assignment: the worker has the ordinary Code toolset and the operator's MCP servers, and returns what it found as a submission you adopt. So never guess at external state, and never treat "I cannot see it from here" as a blocker — it is a dispatch. Briefs must name the source precisely (issue identifier, URL, dashboard) rather than paraphrasing it, and must tell the worker to LOOK AT THE IMAGES: screenshots and diagrams usually carry the specifics the prose leaves out, and a picture turned into someone's sentence about it has already lost the detail the work depends on.
 13. When something refuses you, judge the refusal before you route around it. A denied tool, an approval you cannot get, a fact the state has nowhere to hold — each is a fork, and building an elaborate path around a constraint that is simply wrong is worse than being blocked, because it hides the problem and everything after it inherits the detour. Ask first whether the constraint is right. If it is (authority ceilings, the approval gate, having no external tools of your own — these are right), take the plain supported path: dispatch a worker, request a human-approved action, or raise_attention. If it is not, say so in a decision and put it to the human rather than engineering past it.
@@ -637,23 +641,35 @@ export async function runCoordinatorPass(
         'propose_policy',
         'When human steering CORRECTED your proposed course this pass, distill the correction into a scoped policy candidate so the next matching workstream starts smarter. Policies can only add verification, narrow authority, or advise — never widen what a workstream may do. The policy starts in shadow status.',
         {
-          statement: z.string().describe('plain-language rule, in the terms the human used'),
+          statement: z.string().describe('the rule in the terms the HUMAN used, and nothing more. Put no execution detail here that they did not choose — no exact commands, flags, paths, thresholds, or tool names (those go in `mechanism`). Evidence promotes this sentence, so anything smuggled into it accumulates proof for a choice nobody made'),
+          mechanism: z.string().optional().describe('the how, if you have one: the exact command, flag, threshold or endpoint that carried this out. Revisable by anyone later without approval, and never itself proven by an outcome — which is exactly why it must not live in the statement'),
           tags: z.array(z.string()).min(1).describe('scope: workstream tags this applies to'),
           effect_kind: z.enum(['add_verification', 'narrow_authority', 'advisory']),
           effect_description: z.string(),
-          steering_id: z.string().optional().describe('the steering record that is this policy\'s source intervention'),
+          steering_id: z.string().optional().describe('the steering record that is this policy\'s source intervention. When your statement simply restates what that steering said, the store records the human\'s own words with it and the policy counts as DOCTRINE — their rule, binding without evidence — so cite the steering whenever it is the source'),
           intervention_summary: z.string().describe('what you proposed, and how the human corrected it'),
         },
         async (a) => {
           try {
+            // The human's own words, taken from the cited steering record
+            // rather than from the caller: this is what lets the store check
+            // for itself whether the statement restates the directive
+            // (doctrine) or builds on it (an inference of the fleet's own).
+            // Passing it through the tool arguments would let a pass assert
+            // doctrine simply by quoting itself.
+            const directiveQuote = a.steering_id
+              ? (await load(slug)).steering.find((s) => s.id === a.steering_id)?.body
+              : undefined;
             const policy = await proposePolicy({
               statement: a.statement,
+              ...(a.mechanism ? { mechanism: a.mechanism } : {}),
               tags: a.tags,
               effectKind: a.effect_kind,
               effectDescription: a.effect_description,
               workstreamSlug: slug,
               passId,
               ...(a.steering_id ? { steeringId: a.steering_id } : {}),
+              ...(directiveQuote ? { directiveQuote } : {}),
               interventionSummary: a.intervention_summary,
             });
             // Record the proposal on the workstream's own event tail too.
@@ -707,6 +723,7 @@ export async function runCoordinatorPass(
           reason: z.string().describe('why the old policy was wrong / what the replacement fixes'),
           replacement_policy_id: z.string().optional().describe('link an EXISTING policy as the replacement instead of writing a new one'),
           replacement_statement: z.string().optional(),
+          replacement_mechanism: z.string().optional().describe('the replacement\'s execution detail (command, flag, threshold), kept out of its statement'),
           replacement_tags: z.array(z.string()).optional(),
           replacement_effect_kind: z.enum(['add_verification', 'narrow_authority', 'advisory']).optional(),
           replacement_effect_description: z.string().optional(),
@@ -722,6 +739,7 @@ export async function runCoordinatorPass(
               }
               next = await supersedePolicy(a.old_policy_id, {
                 statement: a.replacement_statement,
+                ...(a.replacement_mechanism ? { mechanism: a.replacement_mechanism } : {}),
                 tags: a.replacement_tags,
                 effectKind: a.replacement_effect_kind,
                 effectDescription: a.replacement_effect_description,
@@ -735,6 +753,27 @@ export async function runCoordinatorPass(
               return `superseded ${a.old_policy_id} → ${next!.id} (shadow)`;
             });
             return noted;
+          } catch (e) {
+            return err(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+
+      tool(
+        'revise_policy_mechanism',
+        'Correct the HOW of a policy — the exact command, flag, threshold, or endpoint it currently names — when the world has moved and the old one no longer works. This needs no approval and no supersession: the rule itself is unchanged, and mechanisms are not what evidence proves. Use it instead of superseding a policy whose statement is still right, and instead of quietly working around a mechanism that fails. Pass an empty mechanism to clear one.',
+        {
+          policy_id: z.string(),
+          mechanism: z.string().describe('the mechanism as it should now read (empty string clears it)'),
+          reason: z.string().describe('what changed — what stopped working, and how you know the new one does'),
+        },
+        async (a) => {
+          try {
+            const policy = await revisePolicyMechanism(a.policy_id, a.mechanism);
+            return await change((d, event) => {
+              event('policy.mechanism', `${policy.id} mechanism now: ${policy.mechanism ?? '(none)'} — ${a.reason}`, [policy.id]);
+              return `revised ${policy.id} mechanism (statement and evidence untouched)`;
+            });
           } catch (e) {
             return err(e instanceof Error ? e.message : String(e));
           }
