@@ -26,9 +26,10 @@ Two rules make it safe to rely on:
 - **A missing `.env` is a no-op.** The file is optional; without it Weaver uses
   the built-in defaults below.
 
-`.env` is for *config*, not secrets. Per-workstream secrets belong in the store
-via `weaver secret set <NAME> --ws <slug>`, where models see the name and only
-approved shells ever see the value — see [Secrets & access](./secrets-and-access.md).
+`.env` is for *config*, not secrets. Per-workstream action secrets belong in the
+store via `weaver secret set <NAME> --ws <slug>`; model-provider keys use
+`weaver secret set <NAME> --executor`, whose names and values are both hidden
+from workers — see [Secrets & access](./secrets-and-access.md).
 
 ## Settings
 
@@ -63,12 +64,17 @@ pending (see [Claude capacity & billing](./claude-capacity.md)).
 | `WEAVER_EXECUTOR` | `local-sdk` | Where a worker's model loop runs — `local-sdk` (Claude), `codex-sdk` (local Codex), or `openhands` (pinned container). See [Where workers run](./executors.md) |
 | `WEAVER_ACTION_EXECUTOR` | `local-sdk` | Separate Pilot-supervised action runtime; automatic model routes never apply to actions |
 | `WEAVER_ACTION_MODEL` | `sonnet` | Model for declared action workers |
-| `WEAVER_MODEL_API_KEY` | *(unset)* | Provider key the OpenHands container uses for the model (falls back to `LLM_API_KEY`); required when `WEAVER_EXECUTOR=openhands` |
-| `WEAVER_OPENHANDS_BASE_URL` | *(unset)* | Optional provider base URL for the OpenHands model (e.g. an OpenRouter-compatible endpoint) |
+| `WEAVER_OPENHANDS_BASE_URL` | OpenRouter's official endpoint for `openrouter/*` | OpenAI-compatible upstream used by the host credential proxy; required for other OpenHands providers |
 | `WEAVER_PILOT_URL` | `http://localhost:9721` | The operator's pilot daemon that gates external actions |
 
 An unknown work or action executor fails hard before any attempt starts — a
 silent local fallback would make a misconfigured remote fleet look healthy.
+
+OpenHands provider credentials are values, not settings. Store OpenRouter's as
+`OPENROUTER_API_KEY` with `weaver secret set ... --executor`; Weaver reloads it
+for every attempt without restarting the runner. The older transient
+`WEAVER_MODEL_API_KEY` / `LLM_API_KEY` environment inputs remain compatible,
+but never belong in `.env`.
 
 New work stores a typed execution profile and modalities. Weaver checks the
 reviewed route registry first and uses `WEAVER_EXECUTOR` / `WEAVER_WORKER_MODEL`

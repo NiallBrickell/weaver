@@ -34,7 +34,7 @@ import {
   readLatestPrintoutCheckpoint,
   writePrintoutCheckpoint,
 } from './printoutJournal.js';
-import { loadAllSecrets, loadSecrets, redactSecrets } from './secrets.js';
+import { loadAllSecrets, loadRedactionSecrets, redactSecrets } from './secrets.js';
 import { listWorkstreams, load, printoutJournalDir, workstreamDir } from './store.js';
 import { withoutSdkEstimate, type TailEvent } from './tail.js';
 
@@ -331,7 +331,7 @@ export function renderWorkstreamPrintout(
   }
   if (!substantive) {
     out.push('', '## Since the last printout', 'Nothing new was recorded.');
-    return redactSecrets(out.join('\n'), loadSecrets(doc.workstream.slug));
+    return redactSecrets(out.join('\n'), loadRedactionSecrets(doc.workstream.slug));
   }
   if (actionValues.length) out.push('', '## External actions at the boundary', ...actionValues.flatMap((value) => ['', ...renderAction(value)]));
   if (workValues.length) out.push('', '## Work, research, and evidence at the boundary', ...workValues.flatMap((value) => ['', ...renderWork(value)]));
@@ -360,7 +360,7 @@ export function renderWorkstreamPrintout(
     '## Surviving pre-journal activity',
     ...doc.events.map((event: EventRecord) => `- ${event.at} [${event.type}] ${flat(event.summary)}`),
   );
-  return redactSecrets(out.join('\n'), loadSecrets(doc.workstream.slug));
+  return redactSecrets(out.join('\n'), loadRedactionSecrets(doc.workstream.slug));
 }
 
 async function prepareOne(slug: string): Promise<WorkstreamPrintout> {
@@ -452,7 +452,7 @@ export async function preparePrintout(slug?: string): Promise<PrintoutReport> {
         ...(policies ? ['', '---', '', policies.text] : ['', '## Unreadable global policy store', `- ${errors.find((error) => error.slug === 'global-policies')?.message ?? 'unknown error'}`]),
         ...(errors.some((error) => error.slug !== 'global-policies') ? ['', '## Unreadable workstreams', ...errors.filter((error) => error.slug !== 'global-policies').map((error) => `- ${error.slug}: ${error.message}`)] : []),
       ].join('\n');
-  return { scope, text: redactSecrets(text, slug ? loadSecrets(slug) : loadAllSecrets()), through, workstreams: reports, ...(policies ? { policies } : {}), errors };
+  return { scope, text: redactSecrets(text, slug ? loadRedactionSecrets(slug) : loadAllSecrets()), through, workstreams: reports, ...(policies ? { policies } : {}), errors };
 }
 
 /** Acknowledge only after the frozen text has been delivered to the operator. */

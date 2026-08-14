@@ -30,13 +30,18 @@ Every target is explicit. Weaver never falls back to another model or runtime wh
 start. OpenCode uses its normal provider login; subscription-backed Codex and Claude use their
 existing local logins.
 
-The local OpenHands target invokes the pinned official Agent Server image and needs Docker plus an
-explicit model-provider key:
+The local OpenHands target invokes the pinned official Agent Server image through a Docker-compatible
+runtime (OrbStack on macOS) and needs an executor-only model-provider key:
 
 ```bash
-WEAVER_MODEL_API_KEY=... yarn eval:harness \
+weaver secret set OPENROUTER_API_KEY --executor
+yarn eval:harness \
   --target openhands=openrouter/moonshotai/kimi-k3
 ```
+
+The real key remains behind an ephemeral host proxy; the container receives only a random per-run
+inference bearer. OpenHands telemetry calls a model resolved only when the upstream response itself
+reports that model id — requested configuration alone is not identity evidence.
 
 Results are written under `eval-results/` (gitignored) as machine-readable `results.json` and a
 readable `report.md`.
@@ -77,6 +82,12 @@ Cost policy: the standing eval cadence runs on subscription-backed targets — `
 the machine's Claude Code login and `codex-sdk` through the Codex login — at zero marginal cost.
 OpenRouter targets are confined to cheap open-weight models (Kimi K3, GLM-5), and Claude-family
 models are never routed through OpenRouter.
+
+The first production-shaped Kimi K3 code-repair cohort (`20260814T125803Z`) passed every hard gate
+and named quality check in two of three repetitions. In the failed repetition Kimi repaired the code
+and passed the hidden tests, but exited without calling `submit_result`; the run therefore had no
+candidate deliverable to adopt. That complete cohort remains negative routing evidence: Kimi is
+available as an explicit OpenHands target, but the reviewed bounded-repair route stays on Codex.
 
 ## What passes
 

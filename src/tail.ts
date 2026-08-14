@@ -14,7 +14,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { loadSecrets, redactSecrets } from './secrets.js';
+import { loadRedactionSecrets, redactSecrets } from './secrets.js';
 import { workstreamDir } from './store.js';
 
 export interface TailEvent {
@@ -83,7 +83,7 @@ export function emitTail(
       source,
       ref,
       kind,
-      detail: redactSecrets(detail, { ...loadSecrets(slug), ...extraSecrets }),
+      detail: redactSecrets(detail, { ...loadRedactionSecrets(slug), ...extraSecrets }),
     };
     fs.appendFileSync(p, JSON.stringify(event) + '\n');
   } catch {

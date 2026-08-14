@@ -27,7 +27,7 @@
 // Circular at module level (secrets.ts uses this file's path helpers), but
 // both sides only call functions at runtime, so ESM resolves it fine.
 import type { PolicyStore } from './policies.js';
-import { assertNoSecretValues, loadSecrets, redactSecrets } from './secrets.js';
+import { assertNoSecretValues, loadRedactionSecrets, redactSecrets } from './secrets.js';
 import { FsStore, artifactsDir, newId, printoutJournalDir, sha256, weaverHome, workstreamDir } from './store/fs.js';
 import { PgStore } from './store/pg.js';
 import { SqliteStore } from './store/sqlite.js';
@@ -134,7 +134,7 @@ function checkedMutator(slug: string, fn: Mutator): Mutator {
     // change (events included); serialize and refuse BEFORE the backend
     // persists anything. Only the revision bump happens after this point, and
     // a bare integer cannot embed a secret value.
-    assertNoSecretValues(JSON.stringify(doc, null, 2), loadSecrets(slug));
+    assertNoSecretValues(JSON.stringify(doc, null, 2), loadRedactionSecrets(slug));
   };
 }
 
@@ -178,7 +178,7 @@ export async function createWorkstream(
   // constraints, criteria) comes from `core`; generated ids/timestamps cannot
   // carry a value — so asserting on the serialized core preserves the "no doc
   // write can persist a secret" guarantee for creation on every backend.
-  assertNoSecretValues(JSON.stringify(core, null, 2), loadSecrets(core.slug));
+  assertNoSecretValues(JSON.stringify(core, null, 2), loadRedactionSecrets(core.slug));
   try {
     return await getStore().create(core);
   } catch (e) {
@@ -206,7 +206,7 @@ export async function writeArtifact(
   fileName: string,
   rawContent: string,
 ): Promise<{ relPath: string; hash: string }> {
-  const content = redactSecrets(rawContent, loadSecrets(slug));
+  const content = redactSecrets(rawContent, loadRedactionSecrets(slug));
   const hash = sha256(content);
   const safe = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   const relPath = `${hash.slice(0, 8)}-${safe}`;
@@ -250,6 +250,6 @@ export async function mutatePolicies(fn: (store: PolicyStore) => void): Promise<
     refuseAsyncMutator(fn(store) as unknown);
     // Only the backend's revision bump happens after this point, and a bare
     // integer cannot embed a secret value.
-    assertNoSecretValues(JSON.stringify(store, null, 2), loadSecrets());
+    assertNoSecretValues(JSON.stringify(store, null, 2), loadRedactionSecrets());
   });
 }

@@ -84,23 +84,39 @@ read-only helper; it is not part of the controller or worker execution path.
 
 ## Running workers in OpenHands
 
-Set the executor and give the container a provider key for the model:
+Store the provider key in Weaver's executor-only scope, then select the target:
 
 ```bash
-WEAVER_EXECUTOR=openhands
-WEAVER_MODEL_API_KEY=…        # or LLM_API_KEY
-WEAVER_OPENHANDS_BASE_URL=…       # optional, for an OpenRouter-style endpoint
+weaver secret set OPENROUTER_API_KEY --executor  # value is read from stdin
+export WEAVER_EXECUTOR=openhands
+export WEAVER_WORKER_MODEL=openrouter/moonshotai/kimi-k3
 ```
+
+OpenRouter uses its official `https://openrouter.ai/api/v1` endpoint by
+default. Set `WEAVER_OPENHANDS_BASE_URL` only for another OpenAI-compatible
+endpoint. `--executor` is deliberately different from a global or
+workstream secret: its name and value are never projected to a coordinator,
+worker, action, or exec shell.
 
 Requirements:
 
-- **Docker** must be available; Weaver pulls and runs the pinned Agent Server
-  image and cleans it up after every assignment.
+- **A Docker-compatible container runtime** must be available. On macOS the
+  supported local path is OrbStack; Weaver uses its compatible `docker` CLI to
+  run the pinned Agent Server image and cleans it up after every assignment.
 - The worker reaches Weaver's submission surface over an ephemeral,
   bearer-authenticated HTTP bridge advertised to the container as
   `host.docker.internal` — nothing durable is written by the container directly.
-- Each run gets a fresh session key; if the model ever echoes it into a
-  submission, the harness redacts it before anything is stored.
+- The durable provider key never enters the container. A host-side proxy holds
+  it in memory and gives the run a random, inference-only bearer, then closes
+  with the container. The proxy accepts only chat-completion/response calls for
+  the selected model, caps calls to the run's turn budget plus two, aborts live
+  upstream calls during teardown, scrubs provider responses, and records the
+  model id stated by the actual
+  upstream response; missing identity evidence fails qualification instead of
+  treating requested configuration as resolved fact.
+- Each run also gets fresh Agent Server and submission keys. All per-run keys
+  and every executor-only value join submission, tail, artifact, printout,
+  telemetry-error, and typed-store redaction before anything is persisted.
 - **Provider billing is configured at the provider.** Weaver's rolling
   model-start guard bounds rapid churn but is not a monetary stop. When this
   executor uses API credits, set the real spending ceiling with that provider.
@@ -118,6 +134,12 @@ Requirements:
   This is the right isolation for a cooperating worker; it is not yet a
   multi-tenant or adversarial sandbox. That harder guarantee is tracked as a
   future managed-sandbox target.
+- **Agent Server credentials stay conversation-local.** Weaver never writes a
+  provider credential into an OpenHands settings/profile store. The pinned
+  server redacts a conversation's LLM key from its API, but its session bearer
+  is otherwise a trusted server client; the host proxy means even a terminal
+  that inspects every local API and runtime file can recover only a disposable
+  inference bearer, never the durable OpenRouter key.
 - **Actions use a separate supervised target.** A declared action needs live,
   per-call Pilot supervision, which Codex and the container path cannot route
   yet. The default action target remains local Claude regardless of the work
