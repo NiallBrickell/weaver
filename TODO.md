@@ -92,18 +92,29 @@ Remaining hardening (was "promotion gates", now post-promotion):
 - [ ] Run at least three repetitions of both a matched-model matrix (same provider/model through
   OpenHands and OpenCode where supported) and each harness's strongest natural stack. Include
   OpenRouter Kimi K3 and GLM-5 targets alongside Codex and the Claude baseline.
+- [ ] Run the same production-shaped cohort for GLM-5.3 as soon as it has a real API model id.
+  Z.ai's 14 Aug launch documentation exposes it only through the Coding Plan and says API access is
+  coming soon; OpenRouter did not list it on launch day. Never relabel GLM-5/5.2 evidence as 5.3.
 - [x] Promote a production executor. OpenHands is wired into `selectExecutor` as the first remote
   substrate for cooperative work; supervised remote actions and an enforced (`managed-sandbox`)
   boundary remain the gates that widen that scope. Ongoing comparison of quality, latency, cost,
   operability, and capacity continues through the bakeoff among the surviving candidates.
+- [ ] Before an automatic route can select OpenHands, preserve the ordinary worker surface across
+  the remote seam: proxy the operator's configured MCP servers with their existing read/write
+  semantics and support every declared source directory. The current single-mount, Weaver-MCP-only
+  container remains an explicit cooperative-work target; model-quality evidence alone cannot waive
+  the kernel capability contract.
 - [ ] Stand up the standing eval cadence: re-run the subscription-backed targets (`claude-sdk` via
   the machine's Claude login, `codex-sdk` via the Codex login) on a schedule so the durable ledger
   (`evals/ledger.jsonl`) accumulates a time series per model rather than one-off snapshots.
 - [x] Derive a reviewed model-routing policy from versioned ledger evidence: assignments carry a
   closed execution profile and input modalities, attempts pin the selected executor/provider/model,
   and the checked-in registry cites complete versioned cohorts with exact hard-gate and quality
-  vectors. The first Codex route was withdrawn when its worker sandbox boundary changed; the `.3`
-  full-access adapter and cheaper candidates must qualify before a replacement is checked in.
-  Appending eval rows alone never changes production routing.
+  vectors. The first Codex route was withdrawn when its worker sandbox boundary changed; a fresh
+  10/10 `.3` full-access cohort now backs its replacement for text-only bounded code repair.
+  It applies only when `codex-sdk` is already the configured worker substrate, so a stock local-SDK
+  runner cannot strand work and process-local config cannot create a cross-executor preference race.
+  Appending eval rows alone never changes production routing, and OpenHands model evidence cannot
+  activate until that executor carries the ordinary worker surface across the remote seam.
 
 See [`docs/harness-evals.md`](./docs/harness-evals.md) for commands and the result contract.

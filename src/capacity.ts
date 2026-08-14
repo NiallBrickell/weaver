@@ -14,6 +14,7 @@ import type {
   SDKRateLimitInfo,
 } from '@anthropic-ai/claude-agent-sdk';
 import type {
+  Assignment,
   CapacityBackoff,
   CapacityCategory,
   InfrastructureRecovery,
@@ -28,7 +29,7 @@ import {
   targetOfWait,
   type CapacityTarget,
 } from './modelConfig.js';
-import { workerTargetForAssignment } from './modelRouting.js';
+import { runnerExecutorCapabilities, workerTargetsForAssignment } from './modelRouting.js';
 
 const DEFAULT_RETRY_MS = 15 * 60_000;
 // A plan-usage cap ('usage_limit'/'sdk_credit_exhausted') does not clear in the
@@ -414,10 +415,42 @@ export interface CapacityPresentation {
   /** Latest stored waits that belong to a configured role with intended work. */
   relevantSourceIds: string[];
   retryEligibleSourceIds: string[];
+  /** Process-local launchability is not provider capacity. Keep it separate
+   * so the UI can be honest without inventing a retry timestamp. */
+  executorUnavailable?: { summary: string };
 }
 
 function activeWait(entry: CapacityBackoff | undefined, nowIso: string): InfrastructureWait | undefined {
   return entry?.wait.retryAt && entry.wait.retryAt > nowIso ? entry.wait : undefined;
+}
+
+/** Scheduler and five-question presentation must agree on whether a worker
+ * can make a real transition. A dependency is satisfied only by completed,
+ * accepted work: adoption pins the artifact the downstream worker receives.
+ * Rejected/cancelled/unknown dependencies provide no input and stay blocked. */
+export function assignmentDependenciesSatisfied(doc: WorkstreamDoc, assignment: Assignment): boolean {
+  return assignment.dependsOn.every((dependencyId) => {
+    const dependency = doc.assignments.find((candidate) => candidate.id === dependencyId);
+    return dependency?.state === 'completed' && dependency.adoption.state === 'accepted';
+  });
+}
+
+/** First globally available target in reviewed order. A typed wait degrades
+ * to the next target; a missing capability does not. Otherwise whichever host
+ * wins the tick lock could silently defeat the reviewed preference. */
+export function selectWorkerCapacityTarget(
+  doc: WorkstreamDoc,
+  assignment: Assignment,
+  nowIso: string,
+  executorCapabilities?: ReadonlySet<string>,
+): CapacityTarget | undefined {
+  const selected = workerTargetsForAssignment(assignment).find((target) =>
+    activeWait(capacityBackoffFor(doc, target), nowIso) === undefined,
+  );
+  if (selected && executorCapabilities && !executorCapabilities.has(selected.executor)) {
+    return undefined;
+  }
+  return selected;
 }
 
 /** Whether clearing this wait needs a person, or clears itself on a timer.
@@ -444,7 +477,11 @@ function waitPosition(wait: InfrastructureWait, role: string, now: Date): string
  * overdue, and unconfigured model records never turn a workstream into
  * WAITING. A limited primary with a usable fallback is degradation, not a
  * block. */
-export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): CapacityPresentation {
+export function capacityPresentation(
+  doc: WorkstreamDoc,
+  nowIso: string,
+  executorCapabilities: ReadonlySet<string> = runnerExecutorCapabilities(),
+): CapacityPresentation {
   const now = new Date(nowIso);
   const primaryTarget = coordinatorCapacityTarget();
   const fallbackTarget = coordinatorFallbackCapacityTarget();
@@ -473,17 +510,39 @@ export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): Capaci
   if (coordinatorIntent && primary && !sameTarget(primaryTarget, fallbackTarget) && !fallback) {
     details.push(`${waitPosition(primary, 'coordinator primary', now)} · fallback ${fallbackTarget.model} available`);
   }
-  const coordinatorBlocked: InfrastructureWait | undefined = coordinatorIntent &&
-    primary && (sameTarget(primaryTarget, fallbackTarget) || !!fallback) ? primary : undefined;
-  if (coordinatorBlocked) details.push(waitPosition(coordinatorBlocked, 'coordinator', now));
+  const coordinatorBlockingWaits: InfrastructureWait[] = sameTarget(primaryTarget, fallbackTarget)
+    ? (primary ? [primary] : [])
+    : (primary && fallback ? [primary, fallback] : []);
+  coordinatorBlockingWaits.sort((a, b) => a.retryAt.localeCompare(b.retryAt));
+  const coordinatorBlocked = coordinatorIntent ? coordinatorBlockingWaits[0] : undefined;
+  if (coordinatorIntent) {
+    for (const wait of coordinatorBlockingWaits) {
+      details.push(waitPosition(wait, 'coordinator', now));
+    }
+  }
+  const selectedCoordinatorTarget = !primary
+    ? primaryTarget
+    : (!sameTarget(primaryTarget, fallbackTarget) && !fallback ? fallbackTarget : undefined);
+  const executorWaits: string[] = [];
+  const coordinatorExecutorWait = (
+    coordinatorIntent &&
+    selectedCoordinatorTarget &&
+    !coordinatorBlocked &&
+    !executorCapabilities.has(selectedCoordinatorTarget.executor)
+  )
+    ? `coordinator ${selectedCoordinatorTarget.model} waits for a runner declaring ${selectedCoordinatorTarget.executor}`
+    : undefined;
 
   const queuedWorkerAssignments = doc.assignments.filter((assignment) =>
-    assignment.state === 'queued' && !assignment.exec?.run,
+    assignment.state === 'queued' &&
+    !assignment.exec?.run &&
+    assignmentDependenciesSatisfied(doc, assignment),
   );
   const uniqueWorkerTargets = new Map<string, CapacityTarget>();
   for (const assignment of queuedWorkerAssignments) {
-    const target = workerTargetForAssignment(assignment);
-    uniqueWorkerTargets.set(capacityTargetKey(target), target);
+    for (const target of workerTargetsForAssignment(assignment)) {
+      uniqueWorkerTargets.set(capacityTargetKey(target), target);
+    }
   }
   const workerEntries: Array<readonly [string, CapacityBackoff | undefined]> =
     [...uniqueWorkerTargets.values()].map((target) => [
@@ -494,11 +553,37 @@ export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): Capaci
     .map(([, entry]) => activeWait(entry, nowIso))
     .filter((wait): wait is InfrastructureWait => wait !== undefined);
   for (const wait of activeWorkerWaits) details.push(waitPosition(wait, 'worker', now));
-  const everyQueuedWorkerBlocked = queuedWorkerAssignments.length > 0 &&
-    queuedWorkerAssignments.every((assignment) =>
-      activeWait(capacityBackoffFor(doc, workerTargetForAssignment(assignment)), nowIso) !== undefined,
-    );
-  const workerBlocked = everyQueuedWorkerBlocked ? activeWorkerWaits[0] : undefined;
+  const selectedWorkerTargets = queuedWorkerAssignments.map((assignment) =>
+    selectWorkerCapacityTarget(doc, assignment, nowIso),
+  );
+  const everyQueuedWorkerBlocked = selectedWorkerTargets.length > 0 &&
+    selectedWorkerTargets.every((target) => target === undefined);
+  const workerBlocked = everyQueuedWorkerBlocked
+    ? [...activeWorkerWaits].sort((a, b) => a.retryAt.localeCompare(b.retryAt))[0]
+    : undefined;
+  const unsupportedWorkerTargets = selectedWorkerTargets.filter(
+    (target): target is CapacityTarget => !!target && !executorCapabilities.has(target.executor),
+  );
+  const everyQueuedWorkerHeldHere = selectedWorkerTargets.length > 0 &&
+    selectedWorkerTargets.every((target) => !target || !executorCapabilities.has(target.executor));
+  const someWorkerRunnableHere = selectedWorkerTargets.some(
+    (target) => !!target && executorCapabilities.has(target.executor),
+  );
+  const coordinatorRunnableHere = !!(
+    coordinatorIntent &&
+    selectedCoordinatorTarget &&
+    !coordinatorBlocked &&
+    executorCapabilities.has(selectedCoordinatorTarget.executor)
+  );
+  if (coordinatorExecutorWait && !someWorkerRunnableHere) executorWaits.push(coordinatorExecutorWait);
+  if (everyQueuedWorkerHeldHere && unsupportedWorkerTargets.length && !coordinatorRunnableHere) {
+    const target = unsupportedWorkerTargets[0]!;
+    executorWaits.push(`worker ${target.model} waits for a runner declaring ${target.executor}`);
+  }
+  const executorUnavailable = executorWaits.length
+    ? { summary: [...new Set(executorWaits)].join('; ') }
+    : undefined;
+  if (executorUnavailable) details.push(executorUnavailable.summary);
 
   const coordinatorEntries = sameTarget(primaryTarget, fallbackTarget)
     ? [['coordinator', primaryEntry] as const]
@@ -519,8 +604,14 @@ export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): Capaci
     }
   }
 
-  const blockingWait = workerBlocked ?? coordinatorBlocked;
-  const blockingRole = workerBlocked ? 'worker' : 'coordinator';
+  const blockingCandidates = [
+    ...(workerBlocked && !coordinatorRunnableHere ? [{ wait: workerBlocked, role: 'worker' }] : []),
+    ...(coordinatorBlocked && !someWorkerRunnableHere
+      ? [{ wait: coordinatorBlocked, role: 'coordinator' }]
+      : []),
+  ].sort((a, b) => a.wait.retryAt.localeCompare(b.wait.retryAt));
+  const blockingWait = blockingCandidates[0]?.wait;
+  const blockingRole = blockingCandidates[0]?.role ?? 'worker';
   return {
     ...(blockingWait ? {
       blocking: {
@@ -533,6 +624,7 @@ export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): Capaci
     details,
     relevantSourceIds: [...new Set(relevantEntries.flatMap(([, entry]) => entry ? [entry.wait.sourceId] : []))],
     retryEligibleSourceIds: [...new Set(retryEligibleSourceIds)],
+    ...(executorUnavailable ? { executorUnavailable } : {}),
   };
 }
 

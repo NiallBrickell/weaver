@@ -53,6 +53,7 @@ import {
   coordinatorModel,
   type CapacityTarget,
 } from './modelConfig.js';
+import { runnerExecutorCapabilities } from './modelRouting.js';
 import {
   selectCoordinatorExecutor,
   type CoordinatorExecutor,
@@ -91,6 +92,19 @@ export function pickCoordinatorTarget(doc: WorkstreamDoc, nowIso: string): Capac
   if (!primaryWait || primaryWait.retryAt <= nowIso) return primary;
   const fallbackWait = capacityBackoffFor(doc, fallback)?.wait;
   return !fallbackWait || fallbackWait.retryAt <= nowIso ? fallback : primary;
+}
+
+/** Capacity chooses the preferred/fallback target globally, then launch-time
+ * capability decides whether this host may claim it. An incapable host leaves
+ * the wakes pending for a matching Postgres runner instead of substituting a
+ * less-preferred target through a tick-lock race. */
+export function pickCoordinatorTargetForExecutors(
+  doc: WorkstreamDoc,
+  nowIso: string,
+  executorCapabilities: ReadonlySet<string>,
+): CapacityTarget | null {
+  const selected = pickCoordinatorTarget(doc, nowIso);
+  return executorCapabilities.has(selected.executor) ? selected : null;
 }
 
 /** Backward-compatible model-only view used by existing presentation/tests. */
@@ -177,7 +191,10 @@ export async function runCoordinatorPass(
   slug: string,
   wakeReasons: string[],
   providedExecutor?: CoordinatorExecutor,
+  executorCapabilities?: ReadonlySet<string>,
 ): Promise<PassOutcome> {
+  const declaredExecutors = executorCapabilities ??
+    (providedExecutor ? undefined : runnerExecutorCapabilities());
   let doc = await load(slug);
 
   // The engine normally filters paused streams, but the pass claim is the
@@ -194,7 +211,16 @@ export async function runCoordinatorPass(
   const passId = newId('pass');
   // Pinned for the whole pass: the record, model loop, failure
   // classification, and capacity clearing must all speak about ONE target.
-  const passTarget = pickCoordinatorTarget(doc, virtualNow().toISOString());
+  const passNow = virtualNow().toISOString();
+  const selectedPassTarget = pickCoordinatorTarget(doc, passNow);
+  const passTarget = declaredExecutors
+    ? pickCoordinatorTargetForExecutors(doc, passNow, declaredExecutors)
+    : selectedPassTarget;
+  if (!passTarget) {
+    throw new Error(
+      `runner does not declare selected coordinator executor '${selectedPassTarget.executor}'`,
+    );
+  }
   const passModel = passTarget.model;
   const primaryTarget = coordinatorCapacityTarget();
   const degraded = passTarget.executor !== primaryTarget.executor ||
@@ -214,6 +240,9 @@ export async function runCoordinatorPass(
       // The check and start record share one revision-checked claim. A direct
       // caller or concurrent worker therefore cannot cross the rolling limit.
       if (d.workstream.status !== 'active') throw new Error(`workstream '${slug}' is ${d.workstream.status}`);
+      if (declaredExecutors && !declaredExecutors.has(passTarget.executor)) {
+        throw new Error(`runner does not declare coordinator executor '${passTarget.executor}'`);
+      }
       assertExecutionStartAllowed(d, startedAt);
       d.lease = {
         passId,

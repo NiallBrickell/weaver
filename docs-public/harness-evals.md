@@ -57,8 +57,11 @@ case result, checked into git so results survive reclones, travel between machin
 and land as a reviewable diff. It is append-only, and a `merge=union` attribute keeps appends from
 different machines from ever conflicting.
 
-Every suite run appends its results automatically. Two commands work on the ledger without making
-any model calls:
+Every fully graded repetition atomically replaces each suite file and appends its ledger row before
+the next run starts. If a long cohort is interrupted, its completed prefix remains valid and
+ingestable instead of disappearing. Those three writes are deliberately not described as one
+cross-file transaction: `results.json` is written first and is the repair source for `--ingest` if
+ledger persistence itself is interrupted. Two commands work on the ledger without making any model calls:
 
 ```bash
 # Replay an existing suite's results.json into the ledger; ingesting the same
@@ -81,17 +84,34 @@ exact repetitions from one cited cohort, and complete hard-gate plus named-quali
 commitment is a reviewed checked-in registry entry; appending ledger rows alone never changes
 routing.
 
-Cost policy: the standing eval cadence runs on subscription-backed targets — `claude-sdk` through
-the machine's Claude Code login and `codex-sdk` through the Codex login — at zero marginal cost.
-OpenRouter targets are confined to cheap open-weight models (Kimi K3, GLM-5), and Claude-family
-models are never routed through OpenRouter.
+Cost policy: the standing eval cadence runs subscription-backed targets through the machine's
+existing Claude Code and Codex logins rather than per-token API billing. Their ledger cost remains
+unknown unless the SDK reports it. OpenRouter targets are confined to cheap open-weight models, and
+Claude-family models are never routed through OpenRouter.
 
-The first production-shaped Kimi K3 code-repair cohort (`20260814T125803Z`) passed every hard gate
-and named quality check in two of three repetitions. In the failed repetition Kimi repaired the code
-and passed the hidden tests, but exited without calling `submit_result`; the run therefore had no
-candidate deliverable to adopt. That complete cohort remains negative routing evidence: Kimi is
-available as an explicit OpenHands target. The earlier bounded-repair route is temporarily removed
-while Codex's full-access worker epoch and the cheaper candidates are requalified.
+The current bounded code-repair comparison is outcome-aware; failed-run spend stays in cost per
+successful result:
+
+| Exact target and cohort | Hard-gate passes | Median / p95 wall | Total cost | Cost per pass | Failure spend |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `codex-sdk:gpt-5.6-sol` `.3` (`20260814T145942Z`) | 10/10 | 114.0s / 166.9s | — | — | — |
+| `openhands:openrouter/z-ai/glm-5.2` (`20260814T145843Z`) | 10/10 | 33.3s / 42.5s | $0.3025 | $0.0303 | — |
+| `openhands:openrouter/z-ai/glm-5` (`20260814T133601Z`) | 10/10 | 75.7s / 82.1s | $0.3240 | $0.0324 | — |
+| `openhands:openrouter/moonshotai/kimi-k2.6` (`20260814T133601Z`) | 10/10 | 81.8s / 126.9s | $0.3164 | $0.0316 | — |
+| `openhands:openrouter/moonshotai/kimi-k2.7-code` (`20260814T145842Z`) | 8/10 | 58.1s / 95.3s | $0.3551 | $0.0444 | $0.1094 |
+| `openhands:openrouter/moonshotai/kimi-k3` (`20260814T125803Z`) | 2/3 | 111.9s / 382.0s | $0.4144 | $0.2072 | $0.2517 |
+
+Codex does not expose per-run subscription cost, so its `—` is unknown rather than zero. GLM-5.2
+is the fastest and cheapest fully clean OpenRouter cohort in this case. Kimi K2.7 Code and Kimi K3
+both repaired code in failed repetitions but exited without a valid `submit_result`; those complete
+cohorts remain negative routing evidence.
+
+The Codex `.3` cohort qualifies the reviewed text-only bounded-repair route when Codex is already
+the configured worker substrate. OpenHands remains available as an explicit cooperative-work target,
+but no OpenRouter model is automatically routed until the adapter carries every declared source
+directory and the operator's configured MCP surface.
+GLM-5.3 is not represented by any of these rows: its launch-day Coding Plan availability did not
+include an OpenRouter model id, so Weaver will run a separate exact cohort when one exists.
 
 ## What passes
 
@@ -121,9 +141,9 @@ data is reported as unavailable, never as zero.
 
 > **A local task-quality result is not proof of production containment.** Host-process candidates
 > rely on the environment that launched Weaver, and a local OpenHands container is not a managed
-> multi-tenant sandbox. OpenHands is the chosen production remote executor
+> multi-tenant sandbox. OpenHands is an available production remote executor
 > (`WEAVER_EXECUTOR=openhands`, see [Where workers run](./executors.md)), but that promotion is
-> scoped to cooperative work assignments: its container mounts only the assignment workspace, and an
+> scoped to explicitly configured cooperative work assignments: its container mounts only the assignment workspace, and an
 > action assignment fails closed there. Enforced multi-tenant isolation and supervised remote actions
 > are what the still-open confinement and supervised-action gates widen it to.
 

@@ -765,12 +765,17 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
 
     case 'run': {
       const { acquireRunnerLock, liveRunnerPid, runLoop } = await import('./runner.js');
+      const { runnerExecutorCapabilities } = await import('./modelRouting.js');
       const interval = Number(opt(rest, 'interval') ?? '30') * 1000;
       const concurrency = Math.max(1, Number(opt(rest, 'concurrency') ?? '10'));
+      const executorCapabilities = runnerExecutorCapabilities();
       const release = acquireRunnerLock();
       if (!release) fail(`a runner is already live (pid ${liveRunnerPid()}) — one runner per state dir`);
-      process.stdout.write(`weaver run — ticking active workstreams every ${interval / 1000}s, ${concurrency} in parallel (Ctrl-C to stop)\n`);
-      await runLoop({ intervalMs: interval, concurrency });
+      process.stdout.write(
+        `weaver run — ticking active workstreams every ${interval / 1000}s, ${concurrency} in parallel; ` +
+        `executors=${[...executorCapabilities].join(',')} (Ctrl-C to stop)\n`,
+      );
+      await runLoop({ intervalMs: interval, concurrency, executorCapabilities });
       break;
     }
     case 'serve': {
@@ -916,7 +921,11 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
     case 'tick': {
       const slug = rest[0] ?? fail('slug required');
       const maxPasses = opt(rest, 'max-passes');
-      const report = await tick(slug, maxPasses ? { maxPasses: Number(maxPasses) } : {});
+      const { runnerExecutorCapabilities } = await import('./modelRouting.js');
+      const report = await tick(slug, {
+        ...(maxPasses ? { maxPasses: Number(maxPasses) } : {}),
+        executorCapabilities: runnerExecutorCapabilities(),
+      });
       process.stdout.write(
         `tick done: ${report.cycles} cycle(s), ${report.sendsExecuted} send(s), ` +
           `${report.unknownsResolved} readback(s), workers=[${report.workersRun.join(', ')}], ` +

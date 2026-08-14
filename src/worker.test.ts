@@ -202,13 +202,13 @@ test('generic worker capture scrubs executor-only values from every submission f
   }
 });
 
-test('a typed bounded repair pins the configured Codex fallback while routes requalify', async () => {
+test('a typed bounded repair pins the reviewed Codex route on its disposable attempt', async () => {
   const home = workerHome();
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-routed-worker-'));
   const previousExecutor = process.env.WEAVER_EXECUTOR;
   const previousModel = process.env.WEAVER_WORKER_MODEL;
   process.env.WEAVER_EXECUTOR = 'codex-sdk';
-  process.env.WEAVER_WORKER_MODEL = 'gpt-5.6-sol';
+  process.env.WEAVER_WORKER_MODEL = 'gpt-5.5';
   const executor: WorkerExecutor = {
     async execute(req) {
       assert.equal(req.model, 'gpt-5.6-sol');
@@ -334,6 +334,49 @@ function workerHome(): string {
   process.env.WEAVER_HOME = dir;
   return dir;
 }
+
+test('a runner cannot claim an explicitly selected executor it did not declare', async () => {
+  const home = workerHome();
+  let executed = false;
+  const executor: WorkerExecutor = {
+    id: 'codex-sdk',
+    async execute() {
+      executed = true;
+      return { costUsd: 0 };
+    },
+  };
+  try {
+    await createWorkstream({
+      slug: 'worker-capability-claim',
+      title: 'worker-capability-claim',
+      objective: 'leave unsupported work unclaimed',
+      tags: [], successCriteria: [], constraints: [],
+      autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-capability-claim', (d) => d.assignments.push({
+      id: 'asg_capability', objective: 'produce evidence', briefing: 'n/a', kind: 'work',
+      acceptanceCriteria: ['n/a'], dependsOn: [], state: 'queued', attempts: [],
+      adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    assert.equal(
+      await runWorker(
+        'worker-capability-claim',
+        'asg_capability',
+        executor,
+        new Set(['local-sdk']),
+      ),
+      false,
+    );
+    const assignment = (await load('worker-capability-claim')).assignments[0]!;
+    assert.equal(executed, false);
+    assert.equal(assignment.state, 'queued');
+    assert.deepEqual(assignment.attempts, []);
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
 
 async function runningWorker(slug: string): Promise<void> {
   await createWorkstream({

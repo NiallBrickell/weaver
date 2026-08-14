@@ -25,6 +25,9 @@ Two rules make it safe to rely on:
   never overrides what you set for this invocation.
 - **A missing `.env` is a no-op.** The file is optional; without it Weaver uses
   the built-in defaults below.
+- **Resident processes snapshot it at launch.** Restart `weaver run` or
+  `weaver watch` after changing model/executor settings. Executor-only provider
+  secrets are the exception: adapters reload those for every attempt.
 
 `.env` is for *config*, not secrets. Per-workstream action secrets belong in the
 store via `weaver secret set <NAME> --ws <slug>`; model-provider keys use
@@ -62,6 +65,7 @@ pending (see [Claude capacity & billing](./claude-capacity.md)).
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `WEAVER_EXECUTOR` | `local-sdk` | Where a worker's model loop runs — `local-sdk` (Claude), `codex-sdk` (local Codex), or `openhands` (pinned container). See [Where workers run](./executors.md) |
+| `WEAVER_RUNNER_EXECUTORS` | configured coordinator, worker, and action executors | Comma-separated substrates this process may claim. Add reviewed route executors such as `openhands` explicitly on a capable host |
 | `WEAVER_ACTION_EXECUTOR` | `local-sdk` | Separate Pilot-supervised action runtime; automatic model routes never apply to actions |
 | `WEAVER_ACTION_MODEL` | `sonnet` | Model for declared action workers |
 | `WEAVER_OPENHANDS_BASE_URL` | OpenRouter's official endpoint for `openrouter/*` | OpenAI-compatible upstream used by the host credential proxy; required for other OpenHands providers |
@@ -76,9 +80,13 @@ for every attempt without restarting the runner. The older transient
 `WEAVER_MODEL_API_KEY` / `LLM_API_KEY` environment inputs remain compatible,
 but never belong in `.env`.
 
-New work stores a typed execution profile and modalities. Weaver checks the
-reviewed route registry first and uses `WEAVER_EXECUTOR` / `WEAVER_WORKER_MODEL`
-when no proven route matches. See [Where workers run](./executors.md).
+New work stores a typed execution profile and modalities. Weaver checks matching
+reviewed routes inside the configured `WEAVER_EXECUTOR` substrate, then advances
+past a target only while that exact model pool has an active typed backoff. The
+first available target is reserved for a runner that declares its substrate; an
+incapable host does not turn the configured fallback into a race.
+`WEAVER_WORKER_MODEL` remains the final ordered fallback. See
+[Where workers run](./executors.md).
 
 The global `weaver` command reads `.env` from the repo it resolves to, so these
 apply no matter which directory you run from.

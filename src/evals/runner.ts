@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { closeStore, load, verifyArtifact } from '../store.js';
 import { runWorker } from '../worker.js';
@@ -22,13 +22,32 @@ import { appendToLedger } from './ledger.js';
 export interface HarnessEvalSuiteOptions {
   suiteRunId: string;
   outputDir: string;
-  /** Durable longitudinal ledger; every case result is appended here after the suite report is written. */
+  /** Durable longitudinal ledger; every fully graded case result is appended here before the next run starts. */
   ledgerPath: string;
   targets: EvalTarget[];
   cases: HarnessEvalCase[];
   repetitions: number;
   onProgress?: (message: string) => void;
   createExecutor?: (target: EvalTarget) => EvalExecutor;
+}
+
+function writeFileAtomically(path: string, content: string): void {
+  const temporaryPath = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporaryPath, content);
+    renameSync(temporaryPath, path);
+  } finally {
+    if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+  }
+}
+
+function persistEvalProgress(options: HarnessEvalSuiteOptions, results: EvalCaseResult[]): void {
+  writeFileAtomically(
+    join(options.outputDir, 'results.json'),
+    JSON.stringify(results, null, 2) + '\n',
+  );
+  writeFileAtomically(join(options.outputDir, 'report.md'), renderHarnessEvalReport(results));
+  appendToLedger(options.ledgerPath, [results.at(-1)!]);
 }
 
 interface SubmissionObservation {
@@ -212,6 +231,7 @@ export async function runHarnessEvalSuite(options: HarnessEvalSuiteOptions): Pro
         const startedMs = Date.now();
         const startedAt = new Date(startedMs).toISOString();
         let error: string | null = null;
+        let result: EvalCaseResult | null = null;
         const candidate = options.createExecutor?.(target) ?? createEvalExecutor(target);
         const { executor, observation } = observeSubmissions(candidate);
 
@@ -228,7 +248,7 @@ export async function runHarnessEvalSuite(options: HarnessEvalSuiteOptions): Pro
             const assignment = doc.assignments.find((item) => item.id === prepared.assignmentId);
             const artifact = artifactFacts(doc, prepared.assignmentId);
             const endedMs = Date.now();
-            results.push({
+            result = {
               schemaVersion: 2,
               suiteRunId: options.suiteRunId,
               caseId: evalCase.id,
@@ -248,7 +268,7 @@ export async function runHarnessEvalSuite(options: HarnessEvalSuiteOptions): Pro
               artifactPath: artifact.path,
               artifactHash: artifact.hash,
               error: null,
-            });
+            };
           });
         } catch (caught) {
           error = caught instanceof Error ? caught.message : String(caught);
@@ -260,7 +280,7 @@ export async function runHarnessEvalSuite(options: HarnessEvalSuiteOptions): Pro
           const grades = [{
             id: 'eval-execution', hardGate: true, passed: false, score: null, detail: error,
           }];
-          results.push({
+          result = {
             schemaVersion: 2,
             suiteRunId: options.suiteRunId,
             caseId: evalCase.id,
@@ -278,14 +298,19 @@ export async function runHarnessEvalSuite(options: HarnessEvalSuiteOptions): Pro
             artifactPath: null,
             artifactHash: null,
             error,
-          });
+          };
         }
+
+        if (!result) throw new Error('eval run completed without a graded result');
+        results.push(result);
+        persistEvalProgress(options, results);
       }
     }
   }
 
-  writeFileSync(join(options.outputDir, 'results.json'), JSON.stringify(results, null, 2) + '\n');
-  writeFileSync(join(options.outputDir, 'report.md'), renderHarnessEvalReport(results));
+  // Preserve whole-suite ingestion as an idempotent consistency check: every
+  // result was already appended at its grading boundary, so this is normally
+  // a no-op.
   appendToLedger(options.ledgerPath, results);
   return results;
 }

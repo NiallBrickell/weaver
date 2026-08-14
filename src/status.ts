@@ -100,8 +100,11 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
     : undefined;
   const nowLines = [
     ...(capacity.blocking ? [`WAITING — ${capacity.blocking.summary}. ${capacity.blocking.recovery}`] : []),
+    ...(capacity.executorUnavailable ? [`WAITING — ${capacity.executorUnavailable.summary}`] : []),
     ...capacity.details
-      .filter((detail) => detail !== capacity.blocking?.summary)
+      .filter((detail) =>
+        detail !== capacity.blocking?.summary && detail !== capacity.executorUnavailable?.summary,
+      )
       .map((detail) => `capacity: ${detail}`),
     ...recoveredCapacityWakes
       .filter((wake) => isWakeDue(wake.condition, wallNow, virtual))
@@ -157,7 +160,9 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
           ? `wake at wall time ${w.condition.dueAt.slice(0, 16)}: ${w.reason}`
           : `wake (immediate): ${w.reason}`,
     ),
-    ...queued.map((a) => `worker will run: ${a.id}`),
+    ...(capacity.executorUnavailable
+      ? [`waiting for executor: ${capacity.executorUnavailable.summary}`]
+      : queued.map((a) => `worker will run: ${a.id}`)),
     ...doc.interactions
       .filter((i) => i.status === 'awaiting_approval')
       .map((i) => `blocked on your approval: send ${i.id} "${i.subject}"`),

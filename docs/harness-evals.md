@@ -145,9 +145,24 @@ The example slugs are OpenRouter's current
 [GLM-5](https://openrouter.ai/z-ai/glm-5) identifiers; targets stay explicit because a moving
 "latest" alias would make results irreproducible.
 
+GLM-5.3 was announced on 14 Aug 2026, but Z.ai's
+[launch material](https://z.ai/blog/glm-5) currently limits access to the Coding Plan, and
+OpenRouter's live catalog has no 5.3 id.
+It is therefore recorded as unavailable for this executor, not run under a guessed alias or credited
+with GLM-5/5.2 results. The cohort becomes eligible only when a real API target can preserve exact
+requested and provider-resolved identity.
+
 Each suite writes a gitignored directory under `eval-results/` containing `results.json`, a stable
 schema with raw nullable telemetry and grader detail, and `report.md`, a human-readable vector
 report. Missing tokens or cost stay `null`/`—`; they are never reported as free.
+
+Each fully graded repetition is a durability boundary: Weaver atomically replaces each suite result
+and report file and appends that one row to the ledger before the next model run begins. An
+interrupted ten-run cohort therefore retains its completed prefix instead of losing every prior
+result. The three writes are not a fictional cross-file transaction: `results.json` lands first,
+remains authoritative if the derived report lags, and is the explicit `--ingest` repair source if
+ledger persistence itself is interrupted; final whole-suite ingestion remains an idempotent
+consistency check/no-op.
 
 ## Longitudinal ledger
 
@@ -179,9 +194,12 @@ The production Codex adapter emitted the `codex-sdk-0.147.0-weaver.2` epoch afte
 repair so new evidence could not silently join that old population. It now emits
 `codex-sdk-0.147.0-weaver.3` for the corrected host-process/full-access worker boundary, keeping
 future runs separate from `.2` workspace-write evidence. The `.2` routing commitment is withdrawn;
-only a new complete, reviewed `.3` cohort can qualify the changed adapter. A routing commitment must
-additionally preserve case/adapter versions and
-exact gate vectors rather than consuming this mean. Missing score or cost stays excluded, never
+the complete `.3` cohort `20260814T145942Z` requalified the changed adapter with 10/10 clean runs and
+now backs the reviewed text-only bounded-repair route when Codex is already the configured worker
+substrate. Routes do not cross executors: that preference requires durable Workstream execution
+policy, not an environment value that can differ across runners. A routing commitment must additionally
+preserve case/adapter versions and exact gate vectors rather than consuming this mean.
+Missing score or cost stays excluded, never
 counted as zero.
 
 Economics are outcome-aware: cost per pass divides the complete cohort spend by hard-gate-passing
@@ -189,10 +207,27 @@ submissions, so an expensive no-submission run cannot disappear from a cheap mod
 The value is `—` unless every run reported cost. Failure cost separately exposes spend consumed by
 hard-gate failures, and p95 wall time keeps a long failed attempt visible beside the median.
 
-Cost policy for accumulating this evidence: the standing cadence runs on subscription-backed
-targets — `claude-sdk` through the machine's Claude Code login and `codex-sdk` through the Codex
-login — at zero marginal cost. OpenRouter targets are confined to cheap open-weight models (Kimi
-K3, GLM-5), and Claude-family models are never routed through OpenRouter.
+Cost policy for accumulating this evidence: the standing cadence runs subscription-backed targets
+through the machine's existing Claude Code and Codex logins rather than per-token API billing. Their
+ledger cost remains unknown unless the SDK reports it. OpenRouter targets are confined to cheap
+open-weight models, and Claude-family models are never routed through OpenRouter.
+
+The current exact bounded code-repair economics are:
+
+| Target / cohort | Hard-gate passes | Median / p95 wall | Total cost | Cost/pass | Failure cost |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `codex-sdk:gpt-5.6-sol` `.3` / `20260814T145942Z` | 10/10 | 114.0s / 166.9s | — | — | — |
+| `openhands:openrouter/z-ai/glm-5.2` / `20260814T145843Z` | 10/10 | 33.3s / 42.5s | $0.3025 | $0.0303 | — |
+| `openhands:openrouter/z-ai/glm-5` / `20260814T133601Z` | 10/10 | 75.7s / 82.1s | $0.3240 | $0.0324 | — |
+| `openhands:openrouter/moonshotai/kimi-k2.6` / `20260814T133601Z` | 10/10 | 81.8s / 126.9s | $0.3164 | $0.0316 | — |
+| `openhands:openrouter/moonshotai/kimi-k2.7-code` / `20260814T145842Z` | 8/10 | 58.1s / 95.3s | $0.3551 | $0.0444 | $0.1094 |
+| `openhands:openrouter/moonshotai/kimi-k3` / `20260814T125803Z` | 2/3 | 111.9s / 382.0s | $0.4144 | $0.2072 | $0.2517 |
+
+Codex's subscription-backed adapter reports no dollar telemetry, so its missing value remains
+unknown rather than being presented as free. GLM-5.2 is the fastest and cheapest fully clean
+OpenRouter cohort for this case. Kimi K2.7 Code failed the submission boundary twice; Kimi K3 failed
+it once and incurred a very long tail. Both remain negative routing evidence even though their
+hidden repairs passed.
 
 The first exact production-shaped Kimi K3 code-repair cohort (`20260814T125803Z`,
 `openhands-agent-server-1.41.0-weaver.2`) passed the complete vector in repetitions 1 and 3 but not
@@ -202,6 +237,13 @@ terminal state, but never called `submit_result`. Its 3/6 hard-gate and 1/2 qual
 time, and $0.2517 cost remain in the ledger beside the two passes. The full cohort cost $0.4144.
 Because evidence is audited per complete suite, the two successful rows cannot be cherry-picked;
 no Kimi route is active.
+
+Model qualification and executor qualification are separate gates. A clean OpenRouter model cohort
+proves behavior through the tested OpenHands surface; it does not prove that the adapter carries the
+kernel's full ordinary worker capability contract. The current container mounts only one working
+directory and exposes Weaver's submission MCP, so automatic OpenHands routing waits for the
+operator's configured MCP servers and every declared source directory to cross the remote seam.
+Explicit OpenHands trials remain available in the meantime.
 
 ## What this does not prove yet
 

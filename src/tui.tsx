@@ -417,7 +417,7 @@ async function snapshot(): Promise<Snapshot> {
     const bucket: StreamRow['bucket'] =
       ws.status === 'paused' && !needsYou ? 3
       : needsYou ? 0
-      : capacity.blocking && !working ? 2
+      : (capacity.blocking || capacity.executorUnavailable) && !working ? 2
       : working || queued ? 1
       : ws.status === 'active' && operationalPending.length ? 2
       : 3;

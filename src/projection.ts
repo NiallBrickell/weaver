@@ -141,8 +141,8 @@ export function buildProjection(
     `Candidate work products awaiting review:`,
     fmtList(candLines, 'none'),
     ``,
-    `Current provider capacity:`,
-    fmtList(capacityLines, 'no active configured-provider backoff observed'),
+    `Current execution availability:`,
+    fmtList(capacityLines, 'no active configured-provider backoff or executor wait observed'),
   ].join('\n');
 
   // 4. Standing decisions with lineage. Standing decisions are the live

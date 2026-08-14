@@ -47,10 +47,31 @@ export function auditRouteEvidence(
       result.target.model === route.evidence.model &&
       result.execution?.harnessVersion === route.evidence.harnessVersion,
     );
-    if (matching.length < route.evidence.minRuns) {
+    const repetitionCounts = new Map<number, number>();
+    for (const result of matching) {
+      repetitionCounts.set(result.repetition, (repetitionCounts.get(result.repetition) ?? 0) + 1);
+    }
+    const duplicateRepetitions = [...repetitionCounts]
+      .filter(([, count]) => count > 1)
+      .map(([repetition]) => repetition)
+      .sort((a, b) => a - b);
+    if (duplicateRepetitions.length) {
       failures.push({
         routeId: route.id,
-        message: `${requiredCase.id}@${requiredCase.version} has ${matching.length}/${route.evidence.minRuns} exact runs`,
+        message: `${requiredCase.id}@${requiredCase.version} has duplicate repetitions ${duplicateRepetitions.join(', ')}`,
+      });
+    }
+    const missingRequiredRepetitions = Array.from(
+      { length: route.evidence.minRuns },
+      (_, index) => index + 1,
+    ).filter((repetition) => !repetitionCounts.has(repetition));
+    if (repetitionCounts.size < route.evidence.minRuns || missingRequiredRepetitions.length) {
+      failures.push({
+        routeId: route.id,
+        message: `${requiredCase.id}@${requiredCase.version} has ${repetitionCounts.size}/${route.evidence.minRuns} distinct exact runs` +
+          (missingRequiredRepetitions.length
+            ? `; missing repetitions ${missingRequiredRepetitions.join(', ')}`
+            : ''),
       });
       continue;
     }

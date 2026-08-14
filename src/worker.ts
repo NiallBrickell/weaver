@@ -24,6 +24,7 @@ import {
   recordCapacityBackoff,
   recordProviderCapacityObservations,
   resolveCapacityAttention,
+  selectWorkerCapacityTarget,
   SdkFailureTracker,
 } from './capacity.js';
 import { noteFleetRecovery } from './fleetCapacity.js';
@@ -33,7 +34,7 @@ import {
   workerModel,
   type CapacityTarget,
 } from './modelConfig.js';
-import { workerTargetForAssignment } from './modelRouting.js';
+import { runnerExecutorCapabilities } from './modelRouting.js';
 import { loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
@@ -292,7 +293,10 @@ export async function runWorker(
   slug: string,
   assignmentId: string,
   providedExecutor?: WorkerExecutor,
+  executorCapabilities?: ReadonlySet<string>,
 ): Promise<boolean> {
+  const declaredExecutors = executorCapabilities ??
+    (providedExecutor ? undefined : runnerExecutorCapabilities());
   const doc = await load(slug);
   if (doc.workstream.status !== 'active') return false;
   const asg = doc.assignments.find((a) => a.id === assignmentId);
@@ -301,17 +305,18 @@ export async function runWorker(
   // Requirements choose one exact target before state moves. An explicitly
   // injected executor (the eval harness and deterministic tests) remains an
   // explicit target rather than being silently re-routed.
-  const routedTarget = workerTargetForAssignment(asg);
+  const routedTarget = providedExecutor?.id
+    ? workerCapacityTarget(workerModel(), providedExecutor.id)
+    : selectWorkerCapacityTarget(doc, asg, virtualNow().toISOString(), declaredExecutors);
+  if (!routedTarget) return false;
   const executorName = providedExecutor?.id ?? routedTarget.executor;
-  const executor = providedExecutor ?? selectExecutor(executorName);
+  if (declaredExecutors && !declaredExecutors.has(executorName)) return false;
   // Pinned for the whole disposable attempt: the durable record, launch,
   // failure classification, and capacity clearing must describe one target,
   // even if a long-lived process changes its environment while the run is in
   // flight. Custom/injected executors inherit the configured identity only
   // when they do not publish their own stable id.
-  const capacityTarget = providedExecutor?.id
-    ? workerCapacityTarget(workerModel(), executorName)
-    : routedTarget;
+  const capacityTarget = routedTarget;
 
   // Declared inputs: ADOPTED deliverables of dependency assignments only — a
   // rejected candidate never becomes another worker's input.
@@ -332,11 +337,29 @@ export async function runWorker(
   if (current.workstream.status !== 'active') return false;
   const currentAssignment = current.assignments.find((a) => a.id === assignmentId);
   if (currentAssignment?.state !== 'queued') return false;
+  const currentTarget = providedExecutor?.id
+    ? capacityTarget
+    : selectWorkerCapacityTarget(
+        current,
+        currentAssignment,
+        virtualNow().toISOString(),
+        declaredExecutors,
+      );
+  if (
+    !currentTarget ||
+    currentTarget.executor !== capacityTarget.executor ||
+    currentTarget.provider !== capacityTarget.provider ||
+    currentTarget.model !== capacityTarget.model
+  ) return false;
+  const executor = providedExecutor ?? selectExecutor(executorName);
   const startedAt = new Date();
   try {
     await mutate(slug, current.revision, (d, event) => {
       // One CAS both checks the fleet-independent rolling ceiling and records
       // the attempt, so no direct/concurrent claim can slip through it.
+      if (declaredExecutors && !declaredExecutors.has(capacityTarget.executor)) {
+        throw new Error(`runner does not declare worker executor '${capacityTarget.executor}'`);
+      }
       assertExecutionStartAllowed(d, startedAt);
       const a = d.assignments.find((x) => x.id === assignmentId)!;
       const now = virtualNow().toISOString();

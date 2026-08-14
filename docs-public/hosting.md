@@ -60,6 +60,16 @@ Start simple: **one runner, one serve, one Postgres.** Add runners on more hosts
 only when one can't keep up; the fleet stays correct because the database, not
 the process, is the source of truth.
 
+When hosts have different execution substrates, set
+`WEAVER_RUNNER_EXECUTORS` on each one (for example `openhands` on a container
+host and `codex-sdk,local-sdk` on a logged-in workstation). The runner reserves
+the first capacity-available model target for a host declaring that substrate
+and rechecks the declaration in the attempt/lease claim, so an incapable host
+never wins a Postgres lock and silently substitutes a less-preferred model.
+Reviewed automatic routes select models only within the configured worker
+substrate. Cross-executor preference waits for durable Workstream execution
+policy rather than trusting process-local environment agreement.
+
 ## Deploying on Railway
 
 Railway fits this cleanly — a Postgres plugin and two services in one project.

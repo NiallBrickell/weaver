@@ -4,7 +4,9 @@ import type { Assignment } from './types.js';
 import type { EvalCaseResult } from './evals/types.js';
 import { defaultLedgerPath, loadLedger } from './evals/ledger.js';
 import {
+  runnerExecutorCapabilities,
   workerTargetForAssignment,
+  workerTargetsForAssignment,
   WORK_MODEL_ROUTES,
   type WorkModelRoute,
 } from './modelRouting.js';
@@ -56,6 +58,10 @@ const TEST_ROUTE: WorkModelRoute = {
     minRuns: 3,
   },
 };
+
+const ACTIVE_CODEX_ROUTE = WORK_MODEL_ROUTES.find(
+  (route) => route.id === 'codex-5-6-sol-bounded-code-repair',
+)!;
 
 function cleanResult(
   repetition: number,
@@ -119,20 +125,61 @@ function cleanResult(
 }
 
 describe('reviewed worker routes', () => {
-  test('only typed bounded text repair selects the preferred Codex target', () => {
+  test('the active bounded repair route is ordered ahead of the configured fallback', () => {
+    const previousExecutor = process.env.WEAVER_EXECUTOR;
+    const previousModel = process.env.WEAVER_WORKER_MODEL;
+    process.env.WEAVER_EXECUTOR = 'codex-sdk';
+    process.env.WEAVER_WORKER_MODEL = 'gpt-5.5';
+    try {
+      assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair')), [
+        { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
+        { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5' },
+      ]);
+      assert.equal(ACTIVE_CODEX_ROUTE.evidence.harnessVersion, 'codex-sdk-0.147.0-weaver.3');
+      assert.equal(ACTIVE_CODEX_ROUTE.evidence.minRuns, 10);
+    } finally {
+      if (previousExecutor === undefined) delete process.env.WEAVER_EXECUTOR;
+      else process.env.WEAVER_EXECUTOR = previousExecutor;
+      if (previousModel === undefined) delete process.env.WEAVER_WORKER_MODEL;
+      else process.env.WEAVER_WORKER_MODEL = previousModel;
+    }
+  });
+
+  test('automatic routes cannot cross the configured worker substrate and strand a stock runner', () => {
     const previousExecutor = process.env.WEAVER_EXECUTOR;
     const previousModel = process.env.WEAVER_WORKER_MODEL;
     process.env.WEAVER_EXECUTOR = 'local-sdk';
     process.env.WEAVER_WORKER_MODEL = 'sonnet';
     try {
+      assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair')), [
+        { executor: 'local-sdk', provider: 'anthropic', model: 'sonnet' },
+      ]);
+    } finally {
+      if (previousExecutor === undefined) delete process.env.WEAVER_EXECUTOR;
+      else process.env.WEAVER_EXECUTOR = previousExecutor;
+      if (previousModel === undefined) delete process.env.WEAVER_WORKER_MODEL;
+      else process.env.WEAVER_WORKER_MODEL = previousModel;
+    }
+  });
+
+  test('only typed bounded text repair selects the preferred Codex target', () => {
+    const previousExecutor = process.env.WEAVER_EXECUTOR;
+    const previousModel = process.env.WEAVER_WORKER_MODEL;
+    process.env.WEAVER_EXECUTOR = 'codex-sdk';
+    process.env.WEAVER_WORKER_MODEL = 'gpt-5.5';
+    try {
       assert.deepEqual(workerTargetForAssignment(assignment('bounded-code-repair'), [TEST_ROUTE]), {
         executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
       });
+      assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair'), [TEST_ROUTE]), [
+        { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
+        { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5' },
+      ]);
       assert.deepEqual(workerTargetForAssignment(assignment('general'), [TEST_ROUTE]), {
-        executor: 'local-sdk', provider: 'anthropic', model: 'sonnet',
+        executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5',
       });
       assert.deepEqual(workerTargetForAssignment(assignment('bounded-code-repair', ['text', 'image']), [TEST_ROUTE]), {
-        executor: 'local-sdk', provider: 'anthropic', model: 'sonnet',
+        executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5',
       });
     } finally {
       if (previousExecutor === undefined) delete process.env.WEAVER_EXECUTOR;
@@ -158,6 +205,39 @@ describe('reviewed worker routes', () => {
       else process.env.WEAVER_WORKER_MODEL = previousModel;
     }
   });
+
+  test('runner capabilities default to configured seats and explicit declarations fail closed', () => {
+    const names = [
+      'WEAVER_RUNNER_EXECUTORS',
+      'WEAVER_EXECUTOR',
+      'WEAVER_ACTION_EXECUTOR',
+      'WEAVER_COORDINATOR_EXECUTOR',
+      'WEAVER_COORDINATOR_FALLBACK_EXECUTOR',
+    ] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      delete process.env.WEAVER_RUNNER_EXECUTORS;
+      process.env.WEAVER_EXECUTOR = 'codex-sdk';
+      process.env.WEAVER_ACTION_EXECUTOR = 'local-sdk';
+      process.env.WEAVER_COORDINATOR_EXECUTOR = 'codex-sdk';
+      process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR = 'codex-sdk';
+      assert.deepEqual([...runnerExecutorCapabilities()], ['codex-sdk', 'local-sdk']);
+
+      process.env.WEAVER_RUNNER_EXECUTORS = ' openhands, codex-sdk,openhands ';
+      assert.deepEqual([...runnerExecutorCapabilities()], ['openhands', 'codex-sdk']);
+      process.env.WEAVER_RUNNER_EXECUTORS = 'managed-agents';
+      assert.throws(() => runnerExecutorCapabilities(), /unknown runner executor 'managed-agents'/);
+      process.env.WEAVER_RUNNER_EXECUTORS = ' , ';
+      assert.throws(() => runnerExecutorCapabilities(), /must declare at least one executor/);
+
+    } finally {
+      for (const name of names) {
+        const value = previous[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
 });
 
 describe('route evidence audit', () => {
@@ -166,7 +246,7 @@ describe('route evidence audit', () => {
   test('requires three exact, versioned repetitions and complete quality vectors', () => {
     const clean = [cleanResult(1), cleanResult(2), cleanResult(3)];
     assert.deepEqual(auditRouteEvidence(route, clean), []);
-    assert.match(auditRouteEvidence(route, clean.slice(0, 2))[0]!.message, /2\/3 exact runs/);
+    assert.match(auditRouteEvidence(route, clean.slice(0, 2))[0]!.message, /2\/3 distinct exact runs/);
 
     const hardFailure = cleanResult(3, { passedHardGates: false });
     assert.match(auditRouteEvidence(route, [clean[0]!, clean[1]!, hardFailure])[0]!.message, /hard gate/);
@@ -190,7 +270,7 @@ describe('route evidence audit', () => {
     const staleAdapter = cleanResult(3, {
       execution: { ...cleanResult(3).execution!, harnessVersion: 'codex-sdk-old' },
     });
-    assert.match(auditRouteEvidence(route, [legacy, staleCase, staleAdapter])[0]!.message, /0\/3 exact runs/);
+    assert.match(auditRouteEvidence(route, [legacy, staleCase, staleAdapter])[0]!.message, /0\/3 distinct exact runs/);
 
     const unknownCosts = [cleanResult(1), cleanResult(2), cleanResult(3)];
     assert.ok(unknownCosts.every((result) => result.execution?.costUsd === null));
@@ -203,6 +283,21 @@ describe('route evidence audit', () => {
       target: { executor: 'openhands', provider: 'openrouter', model: route.target.model },
     };
     assert.match(auditRouteEvidence(mismatched, [cleanResult(1), cleanResult(2), cleanResult(3)])[0]!.message, /does not exactly match/);
+  });
+
+  test('duplicate or non-contiguous repetitions cannot manufacture a qualifying cohort', () => {
+    const duplicate = [cleanResult(1), cleanResult(1), cleanResult(1)];
+    assert.ok(
+      auditRouteEvidence(route, duplicate).some((failure) => /duplicate repetitions 1/.test(failure.message)),
+    );
+    assert.ok(
+      auditRouteEvidence(route, duplicate).some((failure) => /1\/3 distinct exact runs/.test(failure.message)),
+    );
+
+    const gapped = [cleanResult(1), cleanResult(3), cleanResult(4)];
+    assert.ok(
+      auditRouteEvidence(route, gapped).some((failure) => /missing repetitions 2/.test(failure.message)),
+    );
   });
 
   test('every checked-in route cites a complete clean cohort in the durable ledger', () => {

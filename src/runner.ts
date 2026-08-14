@@ -29,6 +29,7 @@ import {
 } from './capacity.js';
 import { readFleetCapacity, supersededByFleetRecovery } from './fleetCapacity.js';
 import { targetOfWait, type CapacityTarget } from './modelConfig.js';
+import { runnerExecutorCapabilities } from './modelRouting.js';
 import { acquireProcessLock, liveProcessLockPid } from './processLock.js';
 
 function lockDir(): string {
@@ -377,6 +378,9 @@ export interface RunnerOptions {
   /** System-load sampler for load-aware slot throttling; injectable for tests.
    * Defaults to the OS 1-minute load average and logical core count. */
   loadSample?: () => { load1: number; cores: number };
+  /** Exact substrates this process may claim. Defaults to the configured
+   * seats; heterogeneous hosts opt into additional executors explicitly. */
+  executorCapabilities?: ReadonlySet<string>;
 }
 
 /**
@@ -476,6 +480,7 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   const log = opts.log ?? ((l: string) => process.stdout.write(l + '\n'));
   const logError = opts.logError ?? ((l: string) => process.stderr.write(l + '\n'));
   const loadSample = opts.loadSample ?? (() => ({ load1: os.loadavg()[0]!, cores: os.cpus().length }));
+  const executorCapabilities = opts.executorCapabilities ?? runnerExecutorCapabilities();
   // Last announced slot cap, so a throttle/recovery is logged on transition
   // only — never silently, and never once per iteration.
   let lastCap = opts.concurrency;
@@ -565,7 +570,7 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
             inFlight.delete(slug);
           }
         }, SLOT_TIMEOUT_MS);
-        void tick(slug, {})
+        void tick(slug, { executorCapabilities })
           .then((report) => {
             if (report.workersRun.length || report.passes.length || report.sendsExecuted || report.unknownsResolved) {
               log(
