@@ -115,6 +115,9 @@ export interface Assignment {
   exec?: {
     cwd: string;
     verify: string;
+    /** Which durable authority may clear this action's gate. Legacy records
+     * omit the field and retain the original pilot-or-human behavior. */
+    approvalMode?: 'pilot-or-human' | 'human-only';
     /** Plain-language decision summary FOR THE HUMAN: what approving allows,
      * why it's wanted, and the blast radius. Rendered as the approval card —
      * the briefing is for the worker, this is for the person. */

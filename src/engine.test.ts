@@ -978,6 +978,38 @@ test('pilot alive → a WORKER action auto-approves (live per-command supervisio
   });
 });
 
+test('a human-only action never enters Pilot auto-approval', async () => {
+  await withPilotStub(() => 'approve', async (requests) => {
+    await makeActionWorkstream('human-only-action-ws', {
+      ...GATED_WITH_CMDS,
+      exec: {
+        ...GATED_WITH_CMDS.exec,
+        cwd: process.env.WEAVER_HOME!,
+        approvalMode: 'human-only',
+      },
+    });
+    await tick('human-only-action-ws', { maxPasses: 0 });
+    const asg = (await load('human-only-action-ws')).assignments.find((a) => a.id === 'asg_act')!;
+    assert.equal(asg.state, 'gated');
+    assert.equal(asg.exec!.approval, undefined);
+    assert.equal(asg.exec!.pilotVerdict, undefined);
+    assert.deepEqual(requests, []);
+
+    // Defense in depth: even a stale/corrupt Pilot approval cannot satisfy the
+    // persisted human-only mode at scheduling or readback.
+    await arrive('human-only-action-ws', (d) => {
+      const current = d.assignments.find((a) => a.id === 'asg_act')!;
+      current.state = 'queued';
+      current.exec!.approval = { by: 'pilot', at: new Date().toISOString() };
+    });
+    assert.ok(!runnableAssignments(await load('human-only-action-ws')).includes('asg_act'));
+    await assert.rejects(
+      verifyAction('human-only-action-ws', 'asg_act'),
+      /not approved by the required authority/,
+    );
+  });
+});
+
 test('a WORKER action pilot refuses on its objective stays gated for the human', async () => {
   await withPilotStub(() => 'deny', async () => {
     await makeActionWorkstream('pilot-act-deny-ws', {
