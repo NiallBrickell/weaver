@@ -83,6 +83,12 @@ the machine's Claude Code login and `codex-sdk` through the Codex login — at z
 OpenRouter targets are confined to cheap open-weight models (Kimi K3, GLM-5), and Claude-family
 models are never routed through OpenRouter.
 
+The first production-shaped Kimi K3 code-repair cohort (`20260814T125803Z`) passed every hard gate
+and named quality check in two of three repetitions. In the failed repetition Kimi repaired the code
+and passed the hidden tests, but exited without calling `submit_result`; the run therefore had no
+candidate deliverable to adopt. That complete cohort remains negative routing evidence: Kimi is
+available as an explicit OpenHands target, but the reviewed bounded-repair route stays on Codex.
+
 ## What passes
 
 Every scenario creates a normal Weaver assignment and accepts the candidate's answer only through

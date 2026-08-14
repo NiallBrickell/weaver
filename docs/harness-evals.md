@@ -185,6 +185,15 @@ targets — `claude-sdk` through the machine's Claude Code login and `codex-sdk`
 login — at zero marginal cost. OpenRouter targets are confined to cheap open-weight models (Kimi
 K3, GLM-5), and Claude-family models are never routed through OpenRouter.
 
+The first exact production-shaped Kimi K3 code-repair cohort (`20260814T125803Z`,
+`openhands-agent-server-1.41.0-weaver.2`) passed the complete vector in repetitions 1 and 3 but not
+2. The miss is model behavior rather than an adapter failure: the run resolved the requested
+provider/model, repaired `src/select.mjs`, passed the hidden tests, and reached a clean Agent Server
+terminal state, but never called `submit_result`. Its 3/6 hard-gate and 1/2 quality vector, 382s wall
+time, and $0.2517 cost remain in the ledger beside the two passes. The full cohort cost $0.4144.
+Because evidence is audited per complete suite, the two successful rows cannot be cherry-picked;
+no Kimi route is active.
+
 ## What this does not prove yet
 
 Local Agent Server isolation means one fresh OpenHands container with only the evaluation workspace
