@@ -86,10 +86,19 @@ export interface LedgerAggregateRow {
   /** Mean of per-run mean grade scores; null-safe — runs with no scored grades are excluded, never counted as zero. */
   meanScore: number | null;
   medianDurationMs: number;
+  /** Nearest-rank p95 across every run, so a long failed attempt remains
+   * visible instead of disappearing behind the median. */
+  p95DurationMs: number;
   /** Sum of the costs that were reported; null when no run in the group reported a cost. */
   knownCostUsd: number | null;
   /** True when at least one run's cost was unavailable, so the sum is a floor, not a total. */
   costIncomplete: boolean;
+  /** Total cohort spend divided by hard-gate-passing submissions. This is
+   * null unless every run reported cost and at least one run passed. */
+  costPerHardGatePassUsd: number | null;
+  /** Spend consumed by hard-gate-failing runs. Null when any failed run has
+   * unknown cost; zero means the cohort had no failures (or known zero-cost failures). */
+  failureCostUsd: number | null;
   lastRunAt: string;
 }
 
@@ -112,6 +121,12 @@ function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+function nearestRankPercentile(values: number[], percentile: number): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const rank = Math.max(1, Math.ceil(percentile * sorted.length));
+  return sorted[rank - 1]!;
 }
 
 function caseVersion(result: EvalCaseResult): number {
@@ -174,6 +189,15 @@ export function aggregateLedger(results: EvalCaseResult[]): LedgerAggregateRow[]
     const knownCosts = group
       .map((result) => result.execution?.costUsd ?? null)
       .filter((cost): cost is number => cost !== null);
+    const hardGatePasses = group.filter((result) => result.passedHardGates).length;
+    const totalKnownCost = knownCosts.length
+      ? knownCosts.reduce((sum, cost) => sum + cost, 0)
+      : null;
+    const costIncomplete = knownCosts.length < group.length;
+    const failed = group.filter((result) => !result.passedHardGates);
+    const failedCosts = failed
+      .map((result) => result.execution?.costUsd ?? null)
+      .filter((cost): cost is number => cost !== null);
     rows.push({
       target,
       suiteRunId,
@@ -181,12 +205,19 @@ export function aggregateLedger(results: EvalCaseResult[]): LedgerAggregateRow[]
       caseId,
       caseVersion: Number(version),
       runs: group.length,
-      hardGatePasses: group.filter((result) => result.passedHardGates).length,
+      hardGatePasses,
       gradePasses: aggregateGradePasses(group),
       meanScore: scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null,
       medianDurationMs: median(group.map((result) => result.durationMs)),
-      knownCostUsd: knownCosts.length ? knownCosts.reduce((sum, cost) => sum + cost, 0) : null,
-      costIncomplete: knownCosts.length < group.length,
+      p95DurationMs: nearestRankPercentile(group.map((result) => result.durationMs), 0.95),
+      knownCostUsd: totalKnownCost,
+      costIncomplete,
+      costPerHardGatePassUsd: !costIncomplete && totalKnownCost !== null && hardGatePasses > 0
+        ? totalKnownCost / hardGatePasses
+        : null,
+      failureCostUsd: failedCosts.length === failed.length
+        ? failedCosts.reduce((sum, cost) => sum + cost, 0)
+        : null,
       lastRunAt: group.map((result) => result.endedAt).sort().at(-1)!,
     });
   }
@@ -201,7 +232,7 @@ export function aggregateLedger(results: EvalCaseResult[]): LedgerAggregateRow[]
 
 export function renderLedgerHistory(rows: LedgerAggregateRow[]): string {
   if (!rows.length) return 'The ledger is empty — run the suite or ingest a results.json first.\n';
-  const header = ['Target', 'Cohort', 'Harness', 'Case', 'Runs', 'Gates', 'Grade passes', 'Score', 'Median wall', 'Cost', 'Last run'];
+  const header = ['Target', 'Cohort', 'Harness', 'Case', 'Runs', 'Gates', 'Grade passes', 'Score', 'Median wall', 'P95 wall', 'Cost', 'Cost/pass', 'Failure cost', 'Last run'];
   const body = rows.map((row) => [
     row.target,
     row.suiteRunId,
@@ -214,7 +245,12 @@ export function renderLedgerHistory(rows: LedgerAggregateRow[]): string {
       .join(', ') || '—',
     row.meanScore === null ? '—' : row.meanScore.toFixed(2),
     `${(row.medianDurationMs / 1000).toFixed(1)}s`,
+    `${(row.p95DurationMs / 1000).toFixed(1)}s`,
     row.knownCostUsd === null ? '—' : `$${row.knownCostUsd.toFixed(4)}${row.costIncomplete ? ' (+unknown)' : ''}`,
+    row.costPerHardGatePassUsd === null ? '—' : `$${row.costPerHardGatePassUsd.toFixed(4)}`,
+    row.hardGatePasses === row.runs || row.failureCostUsd === null
+      ? '—'
+      : `$${row.failureCostUsd.toFixed(4)}`,
     row.lastRunAt.slice(0, 10),
   ]);
   const table = [header, ...body];

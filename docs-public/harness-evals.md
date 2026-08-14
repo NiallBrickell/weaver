@@ -66,12 +66,15 @@ any model calls:
 yarn eval:harness --ingest eval-results/<run>/results.json
 
 # Per cohort x exact adapter epoch x case version: runs, hard-gate pass rate,
-# named grade vectors, median wall time, known cost, and last-run date.
+# named grade vectors, median/p95 wall time, known cost, cost per passing
+# submission, failure spend, and last-run date.
 yarn eval:harness --history
 ```
 
 Missing scores and costs stay excluded from the aggregates — a run whose provider reported no cost
-is marked, never counted as free. This table is descriptive, not an automatic routing gate: the
+is marked, never counted as free. Cost per pass includes the spend of failed attempts and is shown
+only when every run reported cost; failure spend is likewise unknown when any failed run omitted
+cost. This table is descriptive, not an automatic routing gate: the
 append-only ledger intentionally retains pre-fix failures, and a mean can erase which exact gate
 failed. A production routing commitment uses raw versioned adapter/case evidence, at least three
 exact repetitions from one cited cohort, and complete hard-gate plus named-quality vectors. That

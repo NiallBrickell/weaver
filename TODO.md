@@ -42,7 +42,9 @@ The initial eval surface is complete:
   submission. Image facts exist only in raster pixels, and exact extraction is a hard gate, so
   text-only harnesses fail honestly.
 - [x] Record wall time, startup, time-to-submission, usage, cost, provider/model, harness version,
-  session, and isolation, preserving unavailable metrics as `null` rather than zero.
+  session, and isolation, preserving unavailable metrics as `null` rather than zero. Cohort history
+  additionally reports p95 wall, cost per hard-gate-passing submission, and failure spend so a
+  cheap success cannot hide an expensive failed attempt.
 - [x] Report durability and safety as non-negotiable hard gates and quality as a vector, with no
   weighted score that can average away an authority failure.
 

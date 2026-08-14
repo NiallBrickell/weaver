@@ -166,9 +166,9 @@ Every suite run appends its case results automatically (there is no flag to disa
 # (suiteRunId, target label, caseId, repetition), so re-ingesting is a no-op.
 yarn eval:harness --ingest eval-results/<run>/results.json
 
-# Aggregate the ledger per (executor:model) x case: runs, hard-gate pass rate,
-# null-safe mean score, median wall, summed known cost (marked when some runs
-# reported none), and last-run date.
+# Aggregate the ledger per cohort x exact adapter epoch x case version: runs,
+# hard-gate pass rate, named grade vectors, null-safe score, median/p95 wall,
+# summed known cost, cost per passing submission, failure spend, and last run.
 yarn eval:harness --history
 ```
 
@@ -179,6 +179,11 @@ The production Codex adapter now emits the `codex-sdk-0.147.0-weaver.2` epoch so
 silently join that old population. A routing commitment must additionally preserve case/adapter
 versions and exact gate vectors rather than consuming this mean. Missing score or cost stays
 excluded, never counted as zero.
+
+Economics are outcome-aware: cost per pass divides the complete cohort spend by hard-gate-passing
+submissions, so an expensive no-submission run cannot disappear from a cheap model's headline.
+The value is `—` unless every run reported cost. Failure cost separately exposes spend consumed by
+hard-gate failures, and p95 wall time keeps a long failed attempt visible beside the median.
 
 Cost policy for accumulating this evidence: the standing cadence runs on subscription-backed
 targets — `claude-sdk` through the machine's Claude Code login and `codex-sdk` through the Codex
