@@ -378,7 +378,7 @@ export async function runCoordinatorPass(
 
       tool(
         'create_assignment',
-        'Dispatch one bounded assignment to a fresh regular coding-agent worker. The worker sees ONLY the briefing plus the deliverables of depends_on assignments — write the briefing accordingly — but it has the normal coding-agent toolset: shell, file editing, web tools, and the operator\'s configured MCP servers, used freely READ and WRITE. Kind is a lifecycle, not a weaker runtime. Use kind "work" for anything reversible — investigation, code changes in a worktree, and keeping the systems the brief names in sync over MCP (moving a tracker issue\'s status, commenting, labelling) all count as work and need no approval; no MCP tool is special-cased. Capability is not authority: reserve kind "action" for one IRREVERSIBLE egress to the outside world — sending a message to a person, spending, or pushing/merging/deploying code. An action starts GATED until approved, every call is Pilot-supervised, and the effect is confirmed only by exec_verify (a deterministic shell readback the harness runs — the worker\'s own claim of success is never trusted). Actions must be idempotent-by-design: name a stable external key in the briefing so a re-run cannot duplicate the effect. Whether an act is within authority comes from the workstream\'s constraints and standing decisions, never this tool.',
+        'Dispatch one bounded assignment to a fresh regular coding-agent worker. The worker sees ONLY the briefing plus the deliverables of depends_on assignments — write the briefing accordingly — but it has the normal coding-agent toolset: shell, file editing, web tools, and the operator\'s configured MCP servers, used freely READ and WRITE. Kind is a lifecycle, not a weaker runtime. Use kind "work" for anything reversible — investigation, code changes in a worktree, and keeping the systems the brief names in sync over MCP (moving a tracker issue\'s status, commenting, labelling) all count as work and need no approval; no MCP tool is special-cased. Capability is not authority: reserve kind "action" for one IRREVERSIBLE egress to the outside world — sending a message to a person, spending, or pushing/merging/deploying code. An action starts GATED until approved, every call is Pilot-supervised, and the effect is confirmed only by exec_verify (a deterministic shell readback the harness runs — the worker\'s own claim of success is never trusted). Set approval_mode="human-only" whenever the workstream or operator explicitly reserves the act for founder/manual approval, or no standing delegated authority covers it; Pilot cannot clear that gate. Actions must be idempotent-by-design: name a stable external key in the briefing so a re-run cannot duplicate the effect. Whether an act is within authority comes from the workstream\'s constraints and standing decisions, never this tool.',
         {
           objective: z.string(),
           briefing: z.string().describe('complete self-contained brief for the worker'),
@@ -391,6 +391,7 @@ export async function runCoordinatorPass(
           exec_cwd: z.string().optional().describe('REQUIRED for kind "action": absolute working directory the worker\'s Bash runs in'),
           exec_verify: z.string().optional().describe('REQUIRED for kind "action": shell command run by the harness (never the worker) whose exit 0 confirms the real-world effect happened, e.g. `gh pr list --head <branch> --json url --jq ".[0].url" | grep .`'),
           approval_ask: z.string().optional().describe('REQUIRED for kind "action": 1-3 plain sentences addressed to the busy HUMAN who must approve this — what approving allows, why the workstream wants it, and the blast radius (what can and cannot change as a result). Product language, no file paths or jargon unless essential. This is the approval card they see; the briefing is not shown to them.'),
+          approval_mode: z.enum(['pilot-or-human', 'human-only']).optional().describe('For kind "action". Defaults to pilot-or-human. Use human-only when the objective/constraints explicitly require founder or manual approval, or when no standing delegated authority covers the act. Pilot still supervises calls after human approval but cannot clear this gate.'),
           exec_run: z.string().optional().describe('OPTIONAL for kind "action": the EXACT shell command the engine executes verbatim — no worker, no model in the execution loop. Reserve for precise, deterministically-verifiable one-liners whose authority the workstream\'s constraints explicitly grant (e.g. merging a PR under the standing merge bar: a compound one-liner that resolves the head SHA, asserts a completed DevBot Review at that SHA whose summary affirms zero findings — conclusion success alone is not clean — asserts zero unresolved review threads on the PR (address and resolve each before merging), asserts no failing/running checks, then `gh pr merge N --merge --repo erdoai/<repo>`; the bare merge with no in-command precheck is denied). The operator\'s pilot evaluates this literal command before it may run; if pilot escalates, the human decides. Never use it to smuggle multi-step work past worker supervision.'),
         },
         async (a) =>
@@ -435,7 +436,13 @@ export async function runCoordinatorPass(
               } : {}),
               ...(a.read_dirs?.length ? { readDirs: a.read_dirs } : {}),
               ...(a.kind === 'action'
-                ? { exec: { cwd: a.exec_cwd!, verify: a.exec_verify!, ask: a.approval_ask!.trim(), ...(a.exec_run ? { run: a.exec_run } : {}) } }
+                ? { exec: {
+                    cwd: a.exec_cwd!,
+                    verify: a.exec_verify!,
+                    ask: a.approval_ask!.trim(),
+                    approvalMode: a.approval_mode ?? 'pilot-or-human',
+                    ...(a.exec_run ? { run: a.exec_run } : {}),
+                  } }
                 : {}),
               acceptanceCriteria: a.acceptance_criteria,
               dependsOn: a.depends_on ?? [],
@@ -455,8 +462,9 @@ export async function runCoordinatorPass(
                 status: 'open',
                 createdAt: new Date().toISOString(),
               });
-              event('assignment.gated', `${id} (action) "${a.objective}" — GATED pending human approval`, [id]);
-              return `created GATED action ${id} — it will not run until a human approves it`;
+              const authority = a.approval_mode === 'human-only' ? 'human approval' : 'Pilot or human approval';
+              event('assignment.gated', `${id} (action) "${a.objective}" — GATED pending ${authority}`, [id]);
+              return `created GATED action ${id} — it will not run until ${authority} is recorded`;
             }
             event('assignment.created', `${id} (${a.kind}) "${a.objective}"`, [id]);
             return `created assignment ${id}`;

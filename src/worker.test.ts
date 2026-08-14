@@ -442,6 +442,31 @@ test('a declared action uses the same Code surface with Pilot supervision', asyn
     assert.equal(attempt.executor, 'local-sdk');
     assert.equal(attempt.provider, 'anthropic');
     assert.equal(attempt.model, 'sonnet');
+
+    request = undefined;
+    await arrive('worker-action-surface', (d) => d.assignments.push({
+      id: 'asg_human_only',
+      objective: 'perform one founder-reserved external action',
+      briefing: 'Do not run without founder approval.',
+      kind: 'action',
+      acceptanceCriteria: ['no execution under Pilot-only authority'],
+      dependsOn: [],
+      state: 'queued',
+      attempts: [],
+      adoption: { state: 'none' },
+      exec: {
+        cwd: actionDir,
+        verify: 'true',
+        approvalMode: 'human-only',
+        approval: { by: 'pilot', at: new Date().toISOString() },
+      },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+    await runWorker('worker-action-surface', 'asg_human_only', executor);
+    assert.equal(request, undefined, 'wrong approval authority must fail before executor launch');
+    const refused = (await load('worker-action-surface')).assignments.find((a) => a.id === 'asg_human_only')!;
+    assert.equal(refused.state, 'failed');
+    assert.match(refused.attempts[0]!.terminalReason ?? '', /without the required approval authority/);
   } finally {
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });

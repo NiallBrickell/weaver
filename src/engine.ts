@@ -56,6 +56,12 @@ function actionShell(): string | undefined {
   return existsSync('/bin/bash') ? '/bin/bash' : undefined;
 }
 
+function actionHasMatchingApproval(asg: Assignment): boolean {
+  const approval = asg.exec?.approval;
+  return !!approval
+    && (asg.exec?.approvalMode !== 'human-only' || approval.by === 'human');
+}
+
 
 function dueWakes(doc: WorkstreamDoc): typeof doc.wakes {
   const wallNow = new Date();
@@ -279,7 +285,12 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
   if (doc.workstream.status !== 'active') return 0;
   let approved = 0;
   const gated = doc.assignments.filter(
-    (a) => a.kind === 'action' && a.state === 'gated' && a.exec && !a.exec.approval && !a.exec.pilotVerdict,
+    (a) => a.kind === 'action'
+      && a.state === 'gated'
+      && a.exec
+      && a.exec.approvalMode !== 'human-only'
+      && !a.exec.approval
+      && !a.exec.pilotVerdict,
   );
   for (const asg of gated) {
     let verdict: { decision: string; reason: string } | null = null;
@@ -409,8 +420,8 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
   // execution substrate; that belongs to the WorkerExecutor seam. Until then
   // this gate + the post-approval-only invariant is the documented boundary —
   // see docs/harness.md.)
-  if (!asg.exec.approval) {
-    throw new Error(`${assignmentId} verify refused: action is not approved (state ${asg.state}) — readback runs only after an approved act`);
+  if (!actionHasMatchingApproval(asg)) {
+    throw new Error(`${assignmentId} verify refused: action is not approved by the required authority (state ${asg.state}) — readback runs only after a correctly approved act`);
   }
   if (asg.attempts.length === 0) {
     throw new Error(`${assignmentId} verify refused: no execution attempt to read back`);
@@ -512,7 +523,7 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
       a.kind === 'action' &&
       a.state === 'queued' &&
       a.exec?.run &&
-      a.exec.approval &&
+      actionHasMatchingApproval(a) &&
       // Actions the repo-egress deconfliction gate held are excluded here so
       // this function's own re-derived due list cannot execute what the gate
       // blocked in tickLocked.
@@ -527,7 +538,7 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
     try {
       await mutate(slug, current.revision, (d, event) => {
         const a2 = d.assignments.find((x) => x.id === asg.id);
-        if (!a2 || a2.state !== 'queued' || !a2.exec?.run || !a2.exec.approval) {
+        if (!a2 || a2.state !== 'queued' || !a2.exec?.run || !actionHasMatchingApproval(a2)) {
           throw new Error(`${asg.id} is no longer an approved queued engine action`);
         }
         a2.state = 'running';
@@ -680,7 +691,7 @@ async function recoverCrashedAttempts(slug: string): Promise<number> {
             summary: 'Worker crashed mid-run but readback CONFIRMED the effect landed; submitted by crash recovery for review.',
           };
           event('action.crash_effect_landed', `${asg.id} readback confirmed despite crash — awaiting review`, [asg.id]);
-        } else if (a2.exec?.approval && a2.attempts.length < MAX_ACTION_ATTEMPTS) {
+        } else if (actionHasMatchingApproval(a2) && a2.attempts.length < MAX_ACTION_ATTEMPTS) {
           a2.state = 'queued';
           event('action.requeued_after_crash', `${asg.id} readback shows no effect — re-running the approved idempotent act (attempt ${a2.attempts.length + 1}/${MAX_ACTION_ATTEMPTS})`, [asg.id]);
         } else {
@@ -708,6 +719,9 @@ export function runnableAssignments(
   const now = virtualNow().toISOString();
   return doc.assignments
     .filter((a) => a.state === 'queued')
+    // A persisted human-only gate cannot be satisfied by a stale/corrupt Pilot
+    // approval. Re-check at scheduling, not only when the gate was cleared.
+    .filter((a) => a.kind !== 'action' || actionHasMatchingApproval(a))
     // A provider outage never erases intended work, but it must defer the
     // next disposable attempt on that exact target. A reviewed fallback is
     // selected only when earlier pools are backed off; host capability then
@@ -869,7 +883,7 @@ async function tickLocked(
     // colliding open PR holds the action for the human rather than executing a
     // second competing write into the same files (invariant 8 across the seam).
     const engineActCandidates = (await load(slug)).assignments.filter(
-      (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.exec.approval,
+      (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && actionHasMatchingApproval(a),
     );
     const engineActs: string[] = [];
     for (const a of engineActCandidates) {

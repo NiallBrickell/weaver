@@ -573,8 +573,11 @@ export async function runWorker(
   try {
     if (isAction) {
       // Structural gate, independent of the engine's scheduling: an action
-      // worker must never start without its recorded human approval.
-      if (!asg.exec?.approval) throw new Error(`${assignmentId} is an action without human approval — refusing to run`);
+      // worker must never start without the authority its durable mode names.
+      const approval = asg.exec?.approval;
+      if (!approval || (asg.exec?.approvalMode === 'human-only' && approval.by !== 'human')) {
+        throw new Error(`${assignmentId} is an action without the required approval authority — refusing to run`);
+      }
     }
     // The worker cwd MUST exist before the SDK spawns the child process: a
     // non-existent cwd fails the spawn with ENOENT, which the SDK surfaces as

@@ -277,6 +277,36 @@ test('create_assignment persists typed requirements without choosing a model', a
   assert.equal(assignment.attempts.length, 0, 'durable requirements do not preselect a disposable target');
 });
 
+test('create_assignment persists a founder-reserved action as human-only', async () => {
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const create = req.tools.find((definition) => definition.name === 'create_assignment');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(create && finish);
+      const created = await create.handler({
+        objective: 'delete one exact test row after founder approval',
+        briefing: 'Fail closed unless the exact row and revision preconditions match.',
+        kind: 'action',
+        acceptance_criteria: ['exact row absent and every sibling row unchanged'],
+        exec_cwd: home,
+        exec_verify: 'test ! -f exact-row',
+        approval_ask: 'Approve deletion of exactly one named test row. No other row may change.',
+        approval_mode: 'human-only',
+      }, {});
+      assert.equal(created.isError, undefined);
+      await finish.handler({ summary: 'Recorded the founder-only gate.', acknowledged_steering: true }, {});
+      return { costUsd: 0 };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const assignment = (await load('coordinator-capacity')).assignments[0]!;
+  assert.equal(assignment.state, 'gated');
+  assert.equal(assignment.exec?.approvalMode, 'human-only');
+});
+
 test('create_assignment refuses a dependency already settled without acceptance', async () => {
   await arrive('coordinator-capacity', (doc) => {
     doc.assignments.push({
