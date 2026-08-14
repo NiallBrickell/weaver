@@ -307,7 +307,7 @@ test('capacity presentation distinguishes fallback degradation from a real block
   }
 });
 
-test('capacity presentation reports a limited route without calling the whole worker fleet blocked', () => {
+test('capacity presentation ignores a stale wait for a withdrawn route and blocks on the configured fallback', () => {
   const now = source.now.toISOString();
   const retryAt = new Date(source.now.getTime() + 60_000).toISOString();
   const assignment = (id: string, profile: 'general' | 'bounded-code-repair') => ({
@@ -331,7 +331,7 @@ test('capacity presentation reports a limited route without calling the whole wo
 
   const degraded = capacityPresentation(doc, now);
   assert.equal(degraded.blocking, undefined);
-  assert.match(degraded.details.join('\n'), /worker OpenAI gpt-5\.6-sol rate limited/);
+  assert.doesNotMatch(degraded.details.join('\n'), /gpt-5\.6-sol/);
 
   recordCapacityBackoff(doc, {
     ...wait, sourceId: 'run_general', executor: 'local-sdk', provider: 'anthropic', model: 'sonnet',

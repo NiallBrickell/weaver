@@ -202,9 +202,13 @@ test('generic worker capture scrubs executor-only values from every submission f
   }
 });
 
-test('a typed bounded repair pins its reviewed route on the disposable attempt', async () => {
+test('a typed bounded repair pins the configured Codex fallback while routes requalify', async () => {
   const home = workerHome();
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-routed-worker-'));
+  const previousExecutor = process.env.WEAVER_EXECUTOR;
+  const previousModel = process.env.WEAVER_WORKER_MODEL;
+  process.env.WEAVER_EXECUTOR = 'codex-sdk';
+  process.env.WEAVER_WORKER_MODEL = 'gpt-5.6-sol';
   const executor: WorkerExecutor = {
     async execute(req) {
       assert.equal(req.model, 'gpt-5.6-sol');
@@ -242,6 +246,10 @@ test('a typed bounded repair pins its reviewed route on the disposable attempt',
       executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
     });
   } finally {
+    if (previousExecutor === undefined) delete process.env.WEAVER_EXECUTOR;
+    else process.env.WEAVER_EXECUTOR = previousExecutor;
+    if (previousModel === undefined) delete process.env.WEAVER_WORKER_MODEL;
+    else process.env.WEAVER_WORKER_MODEL = previousModel;
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(workspace, { recursive: true, force: true });

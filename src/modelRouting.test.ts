@@ -30,6 +30,33 @@ function assignment(
   };
 }
 
+const TEST_ROUTE: WorkModelRoute = {
+  id: 'fixture-bounded-code-repair',
+  preference: 100,
+  match: { profiles: ['bounded-code-repair'], modalities: ['text'] },
+  target: { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
+  evidence: {
+    suiteRunId: '20260814T114654Z',
+    executor: 'codex-sdk',
+    model: 'gpt-5.6-sol',
+    harnessVersion: 'codex-sdk-0.147.0-weaver.2',
+    cases: [{
+      id: 'code-repair',
+      version: 1,
+      requiredHardGates: [
+        'weaver-submission',
+        'artifact-integrity',
+        'adoption-separation',
+        'target-identity',
+        'runtime-completion',
+        'workspace-scope',
+      ],
+      requiredGrades: ['hidden-tests', 'verification-evidence'],
+    }],
+    minRuns: 3,
+  },
+};
+
 function cleanResult(
   repetition: number,
   overrides: Partial<EvalCaseResult> = {},
@@ -98,13 +125,13 @@ describe('reviewed worker routes', () => {
     process.env.WEAVER_EXECUTOR = 'local-sdk';
     process.env.WEAVER_WORKER_MODEL = 'sonnet';
     try {
-      assert.deepEqual(workerTargetForAssignment(assignment('bounded-code-repair')), {
+      assert.deepEqual(workerTargetForAssignment(assignment('bounded-code-repair'), [TEST_ROUTE]), {
         executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
       });
-      assert.deepEqual(workerTargetForAssignment(assignment('general')), {
+      assert.deepEqual(workerTargetForAssignment(assignment('general'), [TEST_ROUTE]), {
         executor: 'local-sdk', provider: 'anthropic', model: 'sonnet',
       });
-      assert.deepEqual(workerTargetForAssignment(assignment('bounded-code-repair', ['text', 'image'])), {
+      assert.deepEqual(workerTargetForAssignment(assignment('bounded-code-repair', ['text', 'image']), [TEST_ROUTE]), {
         executor: 'local-sdk', provider: 'anthropic', model: 'sonnet',
       });
     } finally {
@@ -134,7 +161,7 @@ describe('reviewed worker routes', () => {
 });
 
 describe('route evidence audit', () => {
-  const route = WORK_MODEL_ROUTES[0]!;
+  const route = TEST_ROUTE;
 
   test('requires three exact, versioned repetitions and complete quality vectors', () => {
     const clean = [cleanResult(1), cleanResult(2), cleanResult(3)];

@@ -178,9 +178,9 @@ those rows originally shared one harness version; collapsing them produces a mis
 The production Codex adapter emitted the `codex-sdk-0.147.0-weaver.2` epoch after the MCP approval
 repair so new evidence could not silently join that old population. It now emits
 `codex-sdk-0.147.0-weaver.3` for the corrected host-process/full-access worker boundary, keeping
-future runs separate from `.2` workspace-write evidence. The checked-in Codex routing commitment
-still cites its immutable reviewed `.2` cohort; only a new complete, reviewed `.3` cohort can change
-that evidence citation. A routing commitment must additionally preserve case/adapter versions and
+future runs separate from `.2` workspace-write evidence. The `.2` routing commitment is withdrawn;
+only a new complete, reviewed `.3` cohort can qualify the changed adapter. A routing commitment must
+additionally preserve case/adapter versions and
 exact gate vectors rather than consuming this mean. Missing score or cost stays excluded, never
 counted as zero.
 
@@ -241,6 +241,11 @@ would invalidate the bakeoff.
   its per-run server entry. That explicit owner approval is safe precisely because the bridge only
   exposes Weaver's own enumerated submission or revision-checked mutation surface, never a widened
   outside-world authority.
+- Codex's `workspace-write` sandbox protects Git metadata even under declared project roots. A
+  headless worker using `approvalPolicy: never` then has no escalation path, so ordinary fresh-
+  branch/worktree/commit assignments fail on `.git/*.lock`. Local `work` runs use
+  `danger-full-access`, matching the local Claude worker's full coding surface and honestly retaining
+  `host-process` isolation; action runs are still refused before launch.
 - The Codex TypeScript SDK also exposes neither the other candidates' turn cap nor a distinct system
   prompt field. Its worker contract is appended to user input and the 40-minute Weaver wall is the
   outer bound; efficiency results are not normalized until that limitation is resolved or reported
