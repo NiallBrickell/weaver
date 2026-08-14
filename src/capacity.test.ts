@@ -159,17 +159,22 @@ test('allowed warnings and ordinary model failures are not infrastructure', () =
   assert.equal(ordinary.classify(source), null);
 });
 
-test('thrown compatibility errors and the hard wall classify without persisting raw text', () => {
+test('provider failures back off while worker walls remain ordinary attempt failures', () => {
   const thrown = new SdkFailureTracker();
   thrown.capture(new Error('API 529 overloaded; internal request id secret-request-value'));
   const provider = thrown.classify(source)!;
   assert.equal(provider.kind, 'other');
   assert.doesNotMatch(JSON.stringify(provider), /secret-request-value/);
 
-  const timedOut = new SdkFailureTracker();
-  const timeout = timedOut.classify({ ...source, wallFired: true })!;
-  assert.equal(timeout.kind, 'other');
-  assert.equal(timeout.recovery, 'automatic_retry');
+  const workerWall = new SdkFailureTracker();
+  workerWall.capture(new Error('The operation was aborted'));
+  assert.equal(workerWall.classify({ ...source, source: 'worker', wallFired: true }), null);
+
+  const coordinatorWall = new SdkFailureTracker();
+  coordinatorWall.capture(new Error('The operation was aborted'));
+  const retry = coordinatorWall.classify({ ...source, source: 'coordinator', wallFired: true })!;
+  assert.equal(retry.kind, 'other');
+  assert.equal(retry.recovery, 'automatic_retry');
 });
 
 test('the pure compatibility classifier is a categorized superset of the old regex', () => {
@@ -182,7 +187,7 @@ test('the pure compatibility classifier is a categorized superset of the old reg
   assert.equal(classifyCapacityFailure('529 overloaded'), 'other');
   assert.equal(classifyCapacityFailure('quota exceeded'), 'rate_limit');
   assert.equal(classifyCapacityFailure('ordinary model error'), null);
-  assert.equal(classifyCapacityFailure('', true), 'other');
+  assert.equal(classifyCapacityFailure('', true), null);
 });
 
 test('legacy SDK-credit state continues the same usage-limit backoff lineage', () => {
