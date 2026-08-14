@@ -121,6 +121,7 @@ test('eventless writes retain exact intermediate failed and passing readbacks', 
   })));
   await arrive('exact', (doc) => {
     doc.assignments[0]!.exec!.verified = { ok: true, output: 'version 42', at: '2026-08-06T09:01:00.000Z' };
+    doc.assignments[0]!.attempts.push({ runId: 'run_cost_only', startedAt: '2026-08-06T09:00:30.000Z', costUsd: 0.4 });
     doc.spend.totalCostUsd = 1.25;
   });
 
@@ -129,7 +130,20 @@ test('eventless writes retain exact intermediate failed and passing readbacks', 
   assert.match(report, /"ok":false[\s\S]*"output":"version 41"/);
   assert.match(report, /\/exec\/verified\/ok false → true/);
   assert.match(report, /\/exec\/verified\/output "version 41" → "version 42"/);
-  assert.match(report, /spend: \/totalCostUsd 0 → 1\.25/);
+  assert.doesNotMatch(report, /totalCostUsd|maxCostUsd|costUsd|SDK estimate|\$1\.25/);
+});
+
+test('an SDK estimate-only write does not become operator activity', async () => {
+  await make('estimate-only');
+  await delivered('estimate-only');
+  await arrive('estimate-only', (doc) => {
+    doc.spend.totalCostUsd = 2.5;
+  });
+
+  const report = (await preparePrintout('estimate-only')).text;
+  assert.match(report, /Nothing new was recorded/);
+  assert.doesNotMatch(report, /totalCostUsd|costUsd|SDK estimate|2\.5/);
+  assert.equal((await load('estimate-only')).spend.totalCostUsd, 2.5);
 });
 
 test('typed provider capacity changes survive eventless writes', async () => {
@@ -226,6 +240,7 @@ test('a legacy first print is honest about gaps and retains its surviving tail',
   fs.rmSync(path.join(printoutJournalDir('legacy'), 'revisions'), { recursive: true });
   await arrive('legacy', (doc, event) => {
     doc.workstream.title = 'Legacy changed after upgrade';
+    doc.spend.totalCostUsd = 8.75;
     event('legacy.new_change', 'new receipt after upgrade');
   });
   const report = (await preparePrintout('legacy')).text;
@@ -233,6 +248,7 @@ test('a legacy first print is honest about gaps and retains its surviving tail',
   assert.match(report, /Surviving pre-journal activity/);
   assert.match(report, /workstream\.created/);
   assert.match(report, /new receipt after upgrade/);
+  assert.doesNotMatch(report, /totalCostUsd|costUsd|SDK estimate|8\.75/);
 });
 
 test('append-only journal outlives the bounded 200-event projection tail', async () => {
@@ -303,7 +319,7 @@ test('literal workstream field transitions are printed, not reduced to an entity
   assert.match(text, /\/objective "middle objective" → "final objective"/);
   assert.match(text, /\/constraints\/0 absent → "first constraint"/);
   assert.match(text, /\/constraints\/0 "first constraint" → "final constraint"/);
-  assert.match(text, /\/budget\/maxCostUsd 30 → 40/);
+  assert.doesNotMatch(text, /\/budget\/maxCostUsd|30 → 40/);
 });
 
 test('a post-checkpoint journal gap shows current workstream and policy facts', async () => {

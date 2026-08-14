@@ -64,7 +64,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
     `Virtual now: ${virtualNow().toISOString()} · revision ${doc.revision}`,
   );
   out.push(`Execution safety: ${safety.count}/${safety.limit} model starts in rolling ${Math.round(safety.windowSeconds / 60)}m · automatic pause/resume`);
-  out.push(`Diagnostics: ${doc.spend.coordinatorPasses} coordinator passes · ~$${doc.spend.totalCostUsd.toFixed(2)} SDK estimate · ${doc.spend.humanInterventions ?? 0} human interventions`);
+  out.push(`Diagnostics: ${doc.spend.coordinatorPasses} coordinator passes · ${doc.spend.humanInterventions ?? 0} human interventions`);
   const providerCapacity = providerCapacityHeadline(doc.providerCapacity ?? []);
   out.push(`Provider capacity: ${providerCapacity ?? 'unknown — no fresh provider-reported plan window'}`);
   if (ws.managedBy) {

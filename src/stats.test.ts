@@ -163,7 +163,7 @@ test('interruptionLoad: top-3 actors chart, tail folds to other, totals stay unf
   assert.equal(load_.totals[0]!.byKind.steering, 3);
 });
 
-test('fleetDays: gap-filled, adoption dated by pin, rejection dated by its pass, costs summed', async () => {
+test('fleetDays: gap-filled, adoption dated by pin, rejection dated by its pass', async () => {
   await makeWorkstream();
   await arrive('stats-ws', (d) => {
     d.passes.push({ id: 'pass_1', startedAt: '2026-08-01T12:00:00.000Z', baseRevision: 1, wakeReasons: [], changes: [], outcome: 'completed', costUsd: 2 });
@@ -180,7 +180,6 @@ test('fleetDays: gap-filled, adoption dated by pin, rejection dated by its pass,
   const days = fleetDays([await load('stats-ws')], '2026-08-04');
   assert.deepEqual(days.map((d) => d.day), ['2026-08-01', '2026-08-02', '2026-08-03', '2026-08-04']);
   assert.equal(days[0]!.rejections, 1); // dated by pass_1's startedAt
-  assert.equal(days[0]!.costUsd, 2.5); // pass cost + attempt cost
   assert.equal(days[1]!.passes, 0); // gap day, zero-filled
   assert.equal(days[2]!.adoptions, 1); // dated by the adoption pin
 });
@@ -189,8 +188,8 @@ test('cumulativeRatio: outcome curve divides by conclusions, adopted is a separa
   const days = fleetDays([], '2026-08-01');
   assert.deepEqual(days, []);
   const series = cumulativeRatio([
-    { day: '2026-08-01', interventions: 3, conclusions: 0, adoptions: 2, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 1, costUsd: 0 },
-    { day: '2026-08-02', interventions: 1, conclusions: 2, adoptions: 2, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 1, costUsd: 0 },
+    { day: '2026-08-01', interventions: 3, conclusions: 0, adoptions: 2, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 1 },
+    { day: '2026-08-02', interventions: 1, conclusions: 2, adoptions: 2, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 1 },
   ]);
   // The outcome curve is null until the first qualified conclusion exists,
   // even while adopted work products already accumulate (adoption ≠ success).
@@ -391,9 +390,15 @@ test('outcome scoreboard: conclusions are success, adopted/backoff/conflicted/ac
   assert.notEqual(tot.successfulOutcomes, tot.adoptions, 'adopted work is never the success count');
   assert.equal(tot.interventionsPerOutcome, 3, '3 interventions / 1 conclusion');
   assert.equal(tot.interventionsPerAdopted, 1, '3 interventions / 3 adopted (leading indicator)');
-  // cost-per-successful-outcome uses the conclusion denominator; per-adopted differs.
-  assert.equal(tot.costPerOutcome, 10, '$10 total / 1 conclusion');
-  assert.equal(tot.costPerAdopted, 10 / 3, '$10 total / 3 adopted (leading indicator)');
+  // SDK dollar estimates stay stored for backward compatibility, but the
+  // operator scoreboard does not turn them into outcome or fleet metrics.
+  assert.ok(!('costUsd' in tot));
+  assert.ok(!('costPerOutcome' in tot));
+  assert.ok(!('costPerAdopted' in tot));
+  assert.ok(stats.days.every((day) => !('costUsd' in day)));
+  assert.ok(stats.rows.every((row) => !('costUsd' in row)));
+  const html = renderStatsHtml(stats);
+  assert.doesNotMatch(html, /SDK estimate|costUsd|\$10(?:\.00)?/);
 
   // (2) Provider backoff is not a logical failure; conflicted is neither.
   assert.equal(tot.passHealth.completed, 1);
