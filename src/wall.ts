@@ -16,8 +16,8 @@ export function armWall(
   abort: AbortController,
   ms: number,
   label: string,
+  tickMs = 30_000,
 ): { fired: () => boolean; disarm: () => void } {
-  const TICK = 30_000;
   let awakeMs = 0;
   let last = Date.now();
   let fired = false;
@@ -25,12 +25,12 @@ export function armWall(
     const now = Date.now();
     const delta = now - last;
     last = now;
-    if (delta < TICK * 3) awakeMs += delta;
+    if (delta < tickMs * 3) awakeMs += delta;
     if (awakeMs >= ms && !fired) {
       fired = true;
       abort.abort(new Error(`${label} wall (${Math.round(ms / 60_000)}m awake) — aborted; retry is free`));
     }
-  }, TICK);
+  }, tickMs);
   timer.unref?.();
   return { fired: () => fired, disarm: () => clearInterval(timer) };
 }

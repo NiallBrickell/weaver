@@ -508,6 +508,9 @@ export async function runCoordinatorPass(
             if (!asg) throw new Error(`no assignment ${a.assignment_id}`);
             if (asg.state !== 'awaiting_review' || !asg.submission) throw new Error(`${asg.id} has no submission awaiting review`);
             if (asg.adoption.state === 'accepted') throw new Error(`${asg.id} already adopted`);
+            if (asg.submission.completeness === 'checkpoint') {
+              throw new Error(`${asg.id} is an incomplete hard-wall checkpoint — it cannot be adopted; read it, reject it, and dispatch only the missing bounded work`);
+            }
             if (asg.kind === 'action') {
               // An action is real only if the deterministic readback said so.
               if (!asg.exec?.verified) throw new Error(`${asg.id} is an action whose readback has not run yet — it cannot be adopted`);

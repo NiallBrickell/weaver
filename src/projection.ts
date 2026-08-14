@@ -195,7 +195,7 @@ export function buildProjection(
     const attempts = a.attempts.length;
     const dep = a.dependsOn.length ? ` deps=[${a.dependsOn.join(',')}]` : '';
     const sub = a.submission
-      ? ` submission: "${a.submission.summary.slice(0, 120)}"${a.submission.deliverableId ? ` → ${a.submission.deliverableId}` : ''}`
+      ? ` ${a.submission.completeness === 'checkpoint' ? 'INCOMPLETE CHECKPOINT (cannot adopt)' : 'submission'}: "${a.submission.summary.slice(0, 120)}"${a.submission.deliverableId ? ` → ${a.submission.deliverableId}` : ''}`
       : '';
     const act = a.exec
       ? a.exec.verified
