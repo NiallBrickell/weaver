@@ -12,7 +12,11 @@
 
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
-import { pickCoordinatorTarget, runCoordinatorPass } from './coordinator.js';
+import {
+  pickCoordinatorTarget,
+  pickCoordinatorTargetForExecutors,
+  runCoordinatorPass,
+} from './coordinator.js';
 import {
   ExecutionSafetyLimitedError,
   isLegacyDollarBudgetAttention,
@@ -27,8 +31,12 @@ import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTi
 import { virtualNow } from './clock.js';
 import { pidIsLive } from './processLock.js';
 import { collisionKey, isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
-import { capacityBackoffFor } from './capacity.js';
-import { workerTargetForAssignment } from './modelRouting.js';
+import {
+  assignmentDependenciesSatisfied,
+  capacityBackoffFor,
+  selectWorkerCapacityTarget,
+} from './capacity.js';
+import { runnerExecutorCapabilities } from './modelRouting.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
 
 /**
@@ -691,23 +699,21 @@ async function recoverCrashedAttempts(slug: string): Promise<number> {
   return recovered;
 }
 
-export function runnableAssignments(doc: WorkstreamDoc): string[] {
+export function runnableAssignments(
+  doc: WorkstreamDoc,
+  executorCapabilities?: ReadonlySet<string>,
+): string[] {
   if (doc.workstream.status !== 'active') return [];
   const now = virtualNow().toISOString();
   return doc.assignments
     .filter((a) => a.state === 'queued')
-    // Capacity belongs to an exact executor/provider/model pool. A limited
-    // preferred route must not park independent work whose fallback is live.
-    .filter((a) => {
-      const target = workerTargetForAssignment(a);
-      const retryAt = capacityBackoffFor(doc, target)?.wait.retryAt;
-      return !retryAt || retryAt <= now;
-    })
     // A provider outage never erases intended work, but it must defer the
-    // next disposable attempt. Without this typed guard, one credit failure
-    // becomes a tight worker retry loop before its wake is due.
+    // next disposable attempt on that exact target. A reviewed fallback is
+    // selected only when earlier pools are backed off; host capability then
+    // gates that selected target without silently changing preference.
     .filter((a) => {
-      const target = workerTargetForAssignment(a);
+      const target = selectWorkerCapacityTarget(doc, a, now, executorCapabilities);
+      if (!target) return false;
       const wait = a.attempts.at(-1)?.infrastructure;
       return !wait ||
         wait.model !== target.model ||
@@ -717,28 +723,7 @@ export function runnableAssignments(doc: WorkstreamDoc): string[] {
     })
     // exec.run actions belong to the engine, never to a model worker
     .filter((a) => !a.exec?.run)
-    .filter((a) =>
-      a.dependsOn.every((dep) => {
-        const d = doc.assignments.find((x) => x.id === dep);
-        // A dependency is satisfied ONLY by an upstream that both reached
-        // 'completed' AND was ADOPTED ('accepted'). Adoption is what pins the
-        // artifact a worker actually receives (worker.ts injects accepted
-        // deliverables only), so the scheduler's satisfaction rule and the
-        // injection rule now agree: a runnable assignment receives every
-        // dependency artifact it expects.
-        //
-        // A rejected upstream is ALSO 'completed' (reject_submission sets
-        // completed+rejected) but produced no accepted artifact, and a
-        // cancelled upstream produced none either — so neither auto-satisfies
-        // anymore. If a downstream genuinely needs no accepted input, that is
-        // the coordinator's explicit act: it cancels or re-points the
-        // dependency. The scheduler never infers "settled without input" from a
-        // rejection or cancellation. An UNKNOWN dep id (no matching assignment)
-        // can never be satisfied — it blocks here, and flagDanglingDependencies
-        // raises the integrity signal so the stuck work is not silent.
-        return d ? d.state === 'completed' && d.adoption.state === 'accepted' : false;
-      }),
-    )
+    .filter((a) => assignmentDependenciesSatisfied(doc, a))
     .map((a) => a.id);
 }
 
@@ -788,9 +773,15 @@ export async function flagDanglingDependencies(slug: string): Promise<number> {
   return raised;
 }
 
-export function coordinatorBackoffActive(doc: WorkstreamDoc): boolean {
+export function coordinatorBackoffActive(
+  doc: WorkstreamDoc,
+  executorCapabilities?: ReadonlySet<string>,
+): boolean {
   const now = virtualNow().toISOString();
-  const selectedTarget = pickCoordinatorTarget(doc, now);
+  const selectedTarget = executorCapabilities
+    ? pickCoordinatorTargetForExecutors(doc, now, executorCapabilities)
+    : pickCoordinatorTarget(doc, now);
+  if (!selectedTarget) return false;
   const retryAt = capacityBackoffFor(doc, selectedTarget)?.wait.retryAt;
   return retryAt ? retryAt > now : false;
 }
@@ -807,9 +798,10 @@ export interface TickReport {
 
 export async function tick(
   slug: string,
-  opts: { maxPasses?: number } = {},
+  opts: { maxPasses?: number; executorCapabilities?: ReadonlySet<string> } = {},
 ): Promise<TickReport> {
   const maxPasses = opts.maxPasses ?? 3;
+  const executorCapabilities = opts.executorCapabilities ?? runnerExecutorCapabilities();
   const report: TickReport = {
     cycles: 0,
     sendsExecuted: 0,
@@ -826,13 +818,18 @@ export async function tick(
   try {
     const status = (await load(slug)).workstream.status;
     if (status !== 'active') return { ...report, skipped: `workstream is ${status}` };
-    return await tickLocked(slug, maxPasses, report);
+    return await tickLocked(slug, maxPasses, report, executorCapabilities);
   } finally {
     await releaseTick();
   }
 }
 
-async function tickLocked(slug: string, maxPasses: number, report: TickReport): Promise<TickReport> {
+async function tickLocked(
+  slug: string,
+  maxPasses: number,
+  report: TickReport,
+  executorCapabilities?: ReadonlySet<string>,
+): Promise<TickReport> {
 
   cycles: for (let cycle = 0; cycle < 12; cycle++) {
     const cycleStatus = await workstreamStatus(slug);
@@ -891,7 +888,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
     // from re-raising, so it must not spin the cycle loop.
     await flagDanglingDependencies(slug);
 
-    const runnable = runnableAssignments(await load(slug));
+    const runnable = runnableAssignments(await load(slug), executorCapabilities);
     for (const id of runnable) {
       // Recheck before every model-backed assignment: each successful claim
       // changes the rolling position. Engine-authored deterministic actions
@@ -905,7 +902,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       // The batch was computed before earlier workers ran. Re-evaluate this
       // assignment now so a new exact-target backoff suppresses only its
       // siblings while other routed pools can continue.
-      if (!runnableAssignments(beforeWorkerDoc).includes(id)) continue;
+      if (!runnableAssignments(beforeWorkerDoc, executorCapabilities).includes(id)) continue;
       // Repo-egress deconfliction gate: hold an action worker whose egress
       // (push/merge/PR-open) would collide with another OPEN PR editing the
       // same files, rather than launching a second competing write. Held
@@ -914,7 +911,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       const runnableAsg = (await load(slug)).assignments.find((a) => a.id === id);
       if (runnableAsg && !(await guardRepoEgress(slug, runnableAsg))) continue;
       process.stderr.write(`[tick] running worker for ${id}…\n`);
-      const started = await runWorker(slug, id);
+      const started = await runWorker(slug, id, undefined, executorCapabilities);
       if (!started) break cycles;
       report.workersRun.push(id);
       // Action assignments: the worker's claim settles nothing — run the
@@ -1032,13 +1029,17 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
 
     const preDoc = await load(slug);
     const due = dueWakes(preDoc);
+    const coordinatorTarget = executorCapabilities
+      ? pickCoordinatorTargetForExecutors(preDoc, virtualNow().toISOString(), executorCapabilities)
+      : pickCoordinatorTarget(preDoc, virtualNow().toISOString());
     // A live lease means no pass can start: leave the wakes PENDING for the
     // next tick rather than burning them against a pass that cannot run.
     const leaseLive = preDoc.lease && new Date(preDoc.lease.expiresAt).getTime() > Date.now();
     if (
       preDoc.workstream.status === 'active' &&
       due.length > 0 &&
-      !coordinatorBackoffActive(preDoc) &&
+      coordinatorTarget !== null &&
+      !coordinatorBackoffActive(preDoc, executorCapabilities) &&
       !leaseLive &&
       report.passes.length < maxPasses
     ) {
@@ -1060,7 +1061,7 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       });
       process.stderr.write(`[tick] coordinator pass (${brief.join('; ').slice(0, 200)})…\n`);
       try {
-        const outcome = await runCoordinatorPass(slug, reasons);
+        const outcome = await runCoordinatorPass(slug, reasons, undefined, executorCapabilities);
         report.passes.push(outcome);
       } catch (e) {
         // The pass never started (lease race or concurrent guard claim): restore the

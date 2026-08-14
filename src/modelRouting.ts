@@ -5,8 +5,11 @@ import type {
   AssignmentExecutionProfile,
 } from './types.js';
 import {
+  coordinatorExecutorName,
+  coordinatorFallbackExecutorName,
   providerForExecutor,
   workerCapacityTarget,
+  workerExecutorName,
   type CapacityTarget,
 } from './modelConfig.js';
 
@@ -51,7 +54,34 @@ export const DEFAULT_EXECUTION_REQUIREMENTS: AssignmentExecutionRequirements = {
 
 /** Reviewed routing commitments. Each active entry is audited against the
  * append-only ledger in modelRouting.test.ts. */
-export const WORK_MODEL_ROUTES: readonly WorkModelRoute[] = [];
+export const WORK_MODEL_ROUTES: readonly WorkModelRoute[] = [{
+  id: 'codex-5-6-sol-bounded-code-repair',
+  preference: 100,
+  match: { profiles: ['bounded-code-repair'], modalities: ['text'] },
+  target: { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
+  evidence: {
+    suiteRunId: '20260814T145942Z',
+    executor: 'codex-sdk',
+    model: 'gpt-5.6-sol',
+    harnessVersion: 'codex-sdk-0.147.0-weaver.3',
+    cases: [{
+      id: 'code-repair',
+      version: 1,
+      requiredHardGates: [
+        'weaver-submission',
+        'artifact-integrity',
+        'adoption-separation',
+        'target-identity',
+        'runtime-completion',
+        'workspace-scope',
+      ],
+      requiredGrades: ['hidden-tests', 'verification-evidence'],
+    }],
+    minRuns: 10,
+  },
+}];
+
+const KNOWN_EXECUTORS = new Set(['local-sdk', 'codex-sdk', 'openhands']);
 
 function normalizedRequirements(assignment: Assignment): AssignmentExecutionRequirements {
   return assignment.executionRequirements ?? DEFAULT_EXECUTION_REQUIREMENTS;
@@ -82,14 +112,65 @@ export function actionCapacityTarget(): CapacityTarget {
   return { executor, provider: providerForExecutor(executor, model), model };
 }
 
+/** Executors this process is willing to claim. The default is deliberately
+ * the configured seats only: a checked-in performance route must not make a
+ * host claim OpenHands work merely because that adapter exists in the build.
+ * A heterogeneous Postgres fleet declares any extra substrates explicitly. */
+export function runnerExecutorCapabilities(): ReadonlySet<string> {
+  const configured = [
+    workerExecutorName(),
+    actionExecutorName(),
+    coordinatorExecutorName(),
+    coordinatorFallbackExecutorName(),
+  ];
+  const raw = process.env.WEAVER_RUNNER_EXECUTORS;
+  const executors = raw === undefined
+    ? configured
+    : raw.split(',').map((value) => value.trim()).filter(Boolean);
+  if (!executors.length) {
+    throw new Error('WEAVER_RUNNER_EXECUTORS must declare at least one executor');
+  }
+  for (const executor of executors) {
+    if (!KNOWN_EXECUTORS.has(executor)) {
+      throw new Error(
+        `unknown runner executor '${executor}' from WEAVER_RUNNER_EXECUTORS — supported: ${[...KNOWN_EXECUTORS].join(', ')}`,
+      );
+    }
+  }
+  return new Set(executors);
+}
+
+function sameTarget(a: CapacityTarget, b: CapacityTarget): boolean {
+  return a.executor === b.executor && a.provider === b.provider && a.model === b.model;
+}
+
+/** Reviewed targets in preference order, followed by the operator-configured
+ * fallback. Requirements survive attempts; this ordered target list does not. */
+export function workerTargetsForAssignment(
+  assignment: Assignment,
+  routes: readonly WorkModelRoute[] = WORK_MODEL_ROUTES,
+): CapacityTarget[] {
+  if (assignment.kind === 'action') return [actionCapacityTarget()];
+  const requirements = normalizedRequirements(assignment);
+  const fallback = workerCapacityTarget();
+  const candidates = [...routes]
+    // Automatic routing changes the model within the configured worker
+    // substrate. Cross-executor preference needs a durable Workstream
+    // execution policy; a process-local opt-in would make model choice a
+    // Postgres tick-lock race during config skew.
+    .filter((candidate) => candidate.target.executor === fallback.executor)
+    .filter((candidate) => routeMatches(candidate, requirements))
+    .sort((a, b) => b.preference - a.preference || a.id.localeCompare(b.id))
+    .map((route) => route.target);
+  candidates.push(fallback);
+  return candidates.filter(
+    (target, index) => candidates.findIndex((candidate) => sameTarget(candidate, target)) === index,
+  );
+}
+
 export function workerTargetForAssignment(
   assignment: Assignment,
   routes: readonly WorkModelRoute[] = WORK_MODEL_ROUTES,
 ): CapacityTarget {
-  if (assignment.kind === 'action') return actionCapacityTarget();
-  const requirements = normalizedRequirements(assignment);
-  const route = [...routes]
-    .filter((candidate) => routeMatches(candidate, requirements))
-    .sort((a, b) => b.preference - a.preference || a.id.localeCompare(b.id))[0];
-  return route?.target ?? workerCapacityTarget();
+  return workerTargetsForAssignment(assignment, routes)[0]!;
 }

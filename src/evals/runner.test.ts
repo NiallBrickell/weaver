@@ -7,8 +7,9 @@ import type { WorkerExecutionOutcome, WorkerExecutionRequest } from '../executor
 import { arrive, writeArtifact } from '../store.js';
 import { HARNESS_EVAL_CASES, findEvalCase, makeConfinementCase, makeFreshContextCase, makeImageUnderstandingCase } from './cases.js';
 import { createImageTicketPng, type ImageTicketFacts } from './imageTicket.js';
+import { appendToLedger, loadLedger } from './ledger.js';
 import { renderHarnessEvalReport, runHarnessEvalSuite, safeEvalSegment } from './runner.js';
-import type { EvalExecutionTelemetry, EvalExecutor } from './types.js';
+import type { EvalCaseResult, EvalExecutionTelemetry, EvalExecutor } from './types.js';
 
 class ScriptedExecutor implements EvalExecutor {
   readonly id = 'codex-sdk' as const;
@@ -195,6 +196,70 @@ test('the harness eval runs through real runWorker submission and deterministic 
     const ledgerLines = readFileSync(join(root, 'ledger.jsonl'), 'utf8').trim().split('\n');
     assert.equal(ledgerLines.length, 1);
     assert.equal((JSON.parse(ledgerLines[0]!) as { suiteRunId: string }).suiteRunId, 'test-suite');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('completed repetitions survive a later suite interruption in results, report, and ledger', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'weaver-harness-eval-interrupted-'));
+  const ledgerPath = join(root, 'ledger.jsonl');
+  let executorCreations = 0;
+  try {
+    await assert.rejects(runHarnessEvalSuite({
+      suiteRunId: 'interrupted-suite',
+      outputDir: root,
+      ledgerPath,
+      targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
+      cases: [findEvalCase('code-repair')],
+      repetitions: 2,
+      createExecutor: () => {
+        executorCreations += 1;
+        if (executorCreations === 2) throw new Error('forced interruption before second run');
+        return new ScriptedExecutor();
+      },
+    }), /forced interruption before second run/);
+
+    const persisted = JSON.parse(readFileSync(join(root, 'results.json'), 'utf8')) as EvalCaseResult[];
+    assert.equal(persisted.length, 1);
+    assert.equal(persisted[0]!.repetition, 1);
+    assert.equal(persisted[0]!.passedHardGates, true);
+    assert.deepEqual(loadLedger(ledgerPath), persisted);
+
+    const report = readFileSync(join(root, 'report.md'), 'utf8');
+    assert.match(report, /code-repair@v1 · run 1/);
+    assert.doesNotMatch(report, /code-repair@v1 · run 2/);
+
+    assert.deepEqual(appendToLedger(ledgerPath, persisted), { appended: 0, skipped: 1 });
+    assert.deepEqual(loadLedger(ledgerPath), persisted);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('results.json is the explicit repair source if ledger persistence itself is interrupted', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'weaver-harness-eval-ledger-interrupted-'));
+  const blockedParent = join(root, 'not-a-directory');
+  writeFileSync(blockedParent, 'block ledger directory creation');
+  try {
+    await assert.rejects(runHarnessEvalSuite({
+      suiteRunId: 'ledger-interrupted-suite',
+      outputDir: root,
+      ledgerPath: join(blockedParent, 'ledger.jsonl'),
+      targets: [{ executor: 'codex-sdk', model: 'test-model', label: 'scripted:test-model' }],
+      cases: [findEvalCase('code-repair')],
+      repetitions: 1,
+      createExecutor: () => new ScriptedExecutor(),
+    }), /EEXIST|ENOTDIR/);
+
+    const persisted = JSON.parse(readFileSync(join(root, 'results.json'), 'utf8')) as EvalCaseResult[];
+    assert.equal(persisted.length, 1);
+    assert.equal(persisted[0]!.passedHardGates, true);
+    assert.match(readFileSync(join(root, 'report.md'), 'utf8'), /code-repair@v1 · run 1/);
+
+    const repairedLedger = join(root, 'repaired-ledger.jsonl');
+    assert.deepEqual(appendToLedger(repairedLedger, persisted), { appended: 1, skipped: 0 });
+    assert.deepEqual(loadLedger(repairedLedger), persisted);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

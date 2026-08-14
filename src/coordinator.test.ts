@@ -9,6 +9,7 @@ import {
   passOutcome,
   pickCoordinatorModel,
   pickCoordinatorTarget,
+  pickCoordinatorTargetForExecutors,
   recordCoordinatorCapacityBackoff,
   runCoordinatorPass,
 } from './coordinator.js';
@@ -179,6 +180,37 @@ test('a limited Anthropic primary can degrade to an exact Codex/OpenAI target', 
   assert.deepEqual(pickCoordinatorTarget(doc, now), {
     executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
   });
+  assert.deepEqual(pickCoordinatorTargetForExecutors(doc, now, new Set(['codex-sdk'])), {
+    executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
+  });
+  assert.equal(
+    pickCoordinatorTargetForExecutors(doc, now, new Set(['local-sdk'])),
+    null,
+    'a fallback-incapable runner must not claim the limited primary instead',
+  );
+  assert.equal(pickCoordinatorTargetForExecutors(doc, now, new Set(['openhands'])), null);
+
+  doc.capacity!.byModel['local-sdk:anthropic:claude-fable-5']!.wait.retryAt = now;
+  assert.deepEqual(pickCoordinatorTargetForExecutors(doc, now, new Set(['local-sdk'])), {
+    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+  });
+  assert.equal(
+    pickCoordinatorTargetForExecutors(doc, now, new Set(['codex-sdk'])),
+    null,
+    'a fallback-only runner must reserve a healthy primary for its capable host',
+  );
+});
+
+test('a runner without the selected coordinator executor cannot claim a pass lease', async () => {
+  const before = await load('coordinator-capacity');
+  await assert.rejects(
+    runCoordinatorPass('coordinator-capacity', ['manual'], undefined, new Set(['openhands'])),
+    /does not declare selected coordinator executor/,
+  );
+  const after = await load('coordinator-capacity');
+  assert.equal(after.revision, before.revision);
+  assert.equal(after.lease, null);
+  assert.equal(after.passes.length, 0);
 });
 
 test('a pass pins executor, provider, and model while a fake Codex loop finishes through the real tool closure', async () => {

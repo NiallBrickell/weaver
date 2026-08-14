@@ -269,6 +269,38 @@ test('worker and coordinator entry points independently refuse paused work', asy
   assert.deepEqual(unchanged.assignments[0]!.attempts, []);
 });
 
+test('a worker-only runner leaves coordinator wakes pending for a capable host', async () => {
+  await createWorkstream({
+    slug: 'worker-only-runner',
+    title: 'Worker-only runner',
+    objective: 'do not claim an unsupported coordinator lease',
+    tags: [], successCriteria: [], constraints: [],
+    autonomy: { sendsRequireApproval: true },
+  });
+  await arrive('worker-only-runner', (d) => d.wakes.push({
+    id: 'wake_worker_only',
+    reason: 'needs coordinator reconciliation',
+    condition: { type: 'immediate' },
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+  }));
+
+  const previousExecutors = process.env.WEAVER_RUNNER_EXECUTORS;
+  process.env.WEAVER_RUNNER_EXECUTORS = 'openhands';
+  let report: Awaited<ReturnType<typeof tick>>;
+  try {
+    report = await tick('worker-only-runner');
+  } finally {
+    if (previousExecutors === undefined) delete process.env.WEAVER_RUNNER_EXECUTORS;
+    else process.env.WEAVER_RUNNER_EXECUTORS = previousExecutors;
+  }
+  const doc = await load('worker-only-runner');
+  assert.equal(report.passes.length, 0);
+  assert.equal(doc.wakes.find((wake) => wake.id === 'wake_worker_only')!.status, 'pending');
+  assert.equal(doc.lease, null);
+  assert.equal(doc.passes.length, 0);
+});
+
 test('a stale running attempt is recovered: crash recorded, assignment re-queued', async () => {
   await createWorkstream({
     slug: 'crash-ws',
@@ -408,7 +440,12 @@ test('a typed worker-model wait parks assignments without parsing prose', async 
   assert.deepEqual(runnableAssignments(doc), ['asg_first', 'asg_second']);
 });
 
-test('a stale wait for a withdrawn route does not park work on the configured fallback', async () => {
+test('a limited preferred route leaves the declared configured fallback runnable', async () => {
+  const previousExecutor = process.env.WEAVER_EXECUTOR;
+  const previousModel = process.env.WEAVER_WORKER_MODEL;
+  process.env.WEAVER_EXECUTOR = 'codex-sdk';
+  process.env.WEAVER_WORKER_MODEL = 'gpt-5.5';
+  try {
   await createWorkstream({
     slug: 'routed-capacity',
     title: 'Routed capacity',
@@ -428,6 +465,18 @@ test('a stale wait for a withdrawn route does not park work on the configured fa
         executionRequirements: { profile: 'general', modalities: ['text'] },
       }),
     );
+  });
+
+  let doc = await load('routed-capacity');
+  assert.deepEqual(runnableAssignments(doc), ['asg_codex', 'asg_general']);
+  assert.deepEqual(
+    runnableAssignments(doc, new Set(['local-sdk'])),
+    [],
+    'an incapable host reserves healthy preferred work for a capable runner',
+  );
+  assert.deepEqual(runnableAssignments(doc, new Set(['openhands'])), []);
+
+  await arrive('routed-capacity', (d) => {
     d.capacity = {
       state: 'backoff',
       byModel: {
@@ -444,8 +493,34 @@ test('a stale wait for a withdrawn route does not park work on the configured fa
       },
     };
   });
+  doc = await load('routed-capacity');
+  assert.deepEqual(
+    runnableAssignments(doc, new Set(['codex-sdk'])),
+    ['asg_codex', 'asg_general'],
+    'a typed preferred-target backoff makes the configured fallback eligible',
+  );
 
-  assert.deepEqual(runnableAssignments(await load('routed-capacity')), ['asg_codex', 'asg_general']);
+  await arrive('routed-capacity', (d) => {
+    const codex = d.capacity!.byModel['codex-sdk:openai:gpt-5.6-sol']!;
+    d.capacity!.byModel['codex-sdk:openai:gpt-5.5'] = {
+      ...codex,
+      wait: {
+        ...codex.wait,
+        sourceId: 'run_sonnet',
+        executor: 'codex-sdk',
+        provider: 'openai',
+        model: 'gpt-5.5',
+      },
+    };
+  });
+  doc = await load('routed-capacity');
+  assert.deepEqual(runnableAssignments(doc), [], 'all reviewed targets are parked');
+  } finally {
+    if (previousExecutor === undefined) delete process.env.WEAVER_EXECUTOR;
+    else process.env.WEAVER_EXECUTOR = previousExecutor;
+    if (previousModel === undefined) delete process.env.WEAVER_WORKER_MODEL;
+    else process.env.WEAVER_WORKER_MODEL = previousModel;
+  }
 });
 
 // ---------------------------------------------------------------------------

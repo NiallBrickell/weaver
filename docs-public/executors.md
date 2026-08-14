@@ -30,18 +30,60 @@ new work — requirements such as `bounded-code-repair` plus `text`, never a mod
 name inferred from briefing prose. Weaver selects the target once before the
 attempt claim and stores executor, provider, and model on that attempt.
 
-The checked-in registry is temporarily empty while the full-access Codex worker
-epoch is requalified; all work therefore uses the configured fallback. A route
-enters the checked-in registry only after at least
+The checked-in registry contains a text-only `bounded-code-repair` preference
+for `codex-sdk:gpt-5.6-sol`, backed by a clean 10-run cohort from the full-access
+worker epoch. It applies when `codex-sdk` is already `WEAVER_EXECUTOR`; automatic
+routing changes models inside that configured substrate, never the substrate
+itself. This keeps a stock local-SDK runner from reserving Codex work and avoids
+making cross-executor preference depend on process-local configuration. General,
+image-bearing, and other unmatched work still uses the configured fallback.
+Matching targets form an explicit preference order followed by that fallback.
+A route enters the checked-in registry only after at least
 three exact repetitions in one complete cohort pass every hard gate and every
 named quality check in the same adapter and case versions. The append-only
 ledger is evidence, not configuration: adding a result cannot silently change
 production routing.
 
-Capacity is scoped to that exact target. A limited route parks matching work
-without parking unrelated targets. Unknown provider cost remains unknown;
-route preference is an explicit reviewed choice, never a claim that missing
-cost telemetry means free.
+Capacity is scoped to that exact target. If a preferred pool is limited, the
+next reviewed target can take a fresh attempt; the exact executor/provider/model
+it used is pinned on that attempt while the earlier wait remains honest history.
+Unknown provider cost remains unknown; route preference is an explicit reviewed
+choice, never a claim that missing cost telemetry means free.
+
+## Runner capability declaration
+
+A runner claims only work it says it can execute. Without
+`WEAVER_RUNNER_EXECUTORS`, that declaration is the union of its configured
+coordinator, fallback-coordinator, worker, and action executors. A performance
+route does not implicitly add a substrate merely because its adapter is present
+in the build.
+
+Declare extra capable substrates on a host explicitly:
+
+```dotenv
+WEAVER_RUNNER_EXECUTORS=codex-sdk,openhands,local-sdk
+```
+
+The declaration gates the first capacity-available target before dispatch and
+is checked again inside the revision-checked worker-attempt or coordinator-lease
+claim. Missing host capability never makes the next preference eligible;
+otherwise model choice would depend on which Postgres runner won the tick lock.
+A host without the selected substrate therefore leaves that target queued for
+another runner. Only a typed backoff on the preferred pool advances selection
+to the next reviewed target or configured fallback. Status shows the local
+executor wait separately from provider capacity because it has no honest retry
+timestamp. Unknown or empty declarations fail at runner startup.
+
+Passing model-quality gates is necessary but not sufficient for an automatic
+route. The current OpenHands adapter mounts one working directory and exposes
+Weaver's submission MCP, but it does not yet transport every operator-configured
+MCP server or multiple declared source directories. It remains an explicit
+cooperative-work target until that ordinary worker surface crosses the remote
+seam; the router does not infer that a narrowly scoped brief needs fewer tools.
+
+Cross-executor automatic preference remains closed until Weaver stores that
+execution policy durably with the Workstream. An environment-only switch would
+let configuration skew turn model choice into a Postgres tick-lock race.
 
 ## Running locally with Codex
 

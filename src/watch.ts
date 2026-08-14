@@ -207,7 +207,7 @@ export async function viewOf(slug: string): Promise<WsView> {
       ? 3
       : needsYou
         ? 0
-        : capacity.blocking && !working
+        : (capacity.blocking || capacity.executorUnavailable) && !working
           ? 2
         : working || queued
           ? 1

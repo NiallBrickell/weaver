@@ -288,7 +288,10 @@ test('capacity presentation distinguishes fallback degradation from a real block
   try {
     const tracker = new SdkFailureTracker();
     observe(tracker, { type: 'assistant', error: 'rate_limit' });
-    const primary = tracker.classify(source)!;
+    const primary = {
+      ...tracker.classify(source)!,
+      retryAt: new Date(source.now.getTime() + 60_000).toISOString(),
+    };
     const doc = {
       assignments: [], capacity: null, workstream: { slug: 'view' },
       steering: [], managerDirections: [],
@@ -299,17 +302,140 @@ test('capacity presentation distinguishes fallback degradation from a real block
     assert.equal(degraded.blocking, undefined);
     assert.match(degraded.details[0]!, /fallback claude-opus-5 available/);
 
-    recordCapacityBackoff(doc, { ...primary, sourceId: 'pass_fallback', model: 'claude-opus-5' });
-    assert.match(capacityPresentation(doc, source.now.toISOString()).blocking!.summary, /^coordinator /);
+    const fallbackRetryAt = new Date(source.now.getTime() + 30_000).toISOString();
+    recordCapacityBackoff(doc, {
+      ...primary,
+      sourceId: 'pass_fallback',
+      model: 'claude-opus-5',
+      retryAt: fallbackRetryAt,
+    });
+    const blocked = capacityPresentation(doc, source.now.toISOString()).blocking!;
+    assert.match(blocked.summary, /^coordinator /);
+    assert.equal(blocked.retryAt, fallbackRetryAt, 'fallback recovery is the next real transition');
   } finally {
     if (previousFallback === undefined) delete process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
     else process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = previousFallback;
   }
 });
 
-test('capacity presentation ignores a stale wait for a withdrawn route and blocks on the configured fallback', () => {
+test('capacity presentation chooses the earliest transition across roles and does not hide runnable coordination', () => {
+  const names = [
+    'WEAVER_EXECUTOR',
+    'WEAVER_WORKER_MODEL',
+    'WEAVER_COORDINATOR_EXECUTOR',
+    'WEAVER_COORDINATOR_MODEL',
+    'WEAVER_COORDINATOR_FALLBACK_EXECUTOR',
+    'WEAVER_COORDINATOR_FALLBACK_MODEL',
+  ] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  process.env.WEAVER_EXECUTOR = 'codex-sdk';
+  process.env.WEAVER_WORKER_MODEL = 'gpt-5.5';
+  process.env.WEAVER_COORDINATOR_EXECUTOR = 'local-sdk';
+  process.env.WEAVER_COORDINATOR_MODEL = 'claude-fable-5';
+  process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR = 'local-sdk';
+  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = 'claude-opus-5';
+  try {
+    const now = source.now.toISOString();
+    const assignment = {
+      id: 'asg_remote', objective: 'bounded repair', briefing: 'n/a', kind: 'work' as const,
+      executionRequirements: { profile: 'bounded-code-repair' as const, modalities: ['text' as const] },
+      acceptanceCriteria: ['done'], dependsOn: [] as string[], state: 'queued' as const,
+      attempts: [], adoption: { state: 'none' as const }, createdAtVirtual: now,
+    };
+    const runnableCoordinatorDoc = {
+      workstream: { slug: 'mixed-progress' }, assignments: [assignment], capacity: null,
+      steering: [], managerDirections: [],
+      wakes: [{ status: 'pending', condition: { type: 'immediate' } }],
+    } as unknown as WorkstreamDoc;
+    assert.equal(
+      capacityPresentation(runnableCoordinatorDoc, now, new Set(['local-sdk'])).executorUnavailable,
+      undefined,
+      'a due local coordinator transition keeps the workstream progressing on this host',
+    );
+
+    const workerRetryAt = new Date(source.now.getTime() + 60_000).toISOString();
+    const primaryRetryAt = new Date(source.now.getTime() + 45_000).toISOString();
+    const fallbackRetryAt = new Date(source.now.getTime() + 30_000).toISOString();
+    recordCapacityBackoff(runnableCoordinatorDoc, {
+      kind: 'rate_limit', recovery: 'automatic_retry', source: 'worker', sourceId: 'run_worker',
+      executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
+      detectedAt: now, retryAt: workerRetryAt,
+    });
+    recordCapacityBackoff(runnableCoordinatorDoc, {
+      kind: 'rate_limit', recovery: 'automatic_retry', source: 'worker', sourceId: 'run_worker_fallback',
+      executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5',
+      detectedAt: now, retryAt: new Date(source.now.getTime() + 50_000).toISOString(),
+    });
+    assert.equal(
+      capacityPresentation(
+        runnableCoordinatorDoc,
+        now,
+        new Set(['local-sdk', 'codex-sdk']),
+      ).blocking,
+      undefined,
+      'blocked workers do not make a due, runnable coordinator transition WAITING',
+    );
+    recordCapacityBackoff(runnableCoordinatorDoc, {
+      kind: 'rate_limit', recovery: 'automatic_retry', source: 'coordinator', sourceId: 'pass_primary',
+      executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+      detectedAt: now, retryAt: primaryRetryAt,
+    });
+    recordCapacityBackoff(runnableCoordinatorDoc, {
+      kind: 'rate_limit', recovery: 'automatic_retry', source: 'coordinator', sourceId: 'pass_fallback',
+      executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5',
+      detectedAt: now, retryAt: fallbackRetryAt,
+    });
+    const blocked = capacityPresentation(
+      runnableCoordinatorDoc,
+      now,
+      new Set(['local-sdk', 'codex-sdk']),
+    ).blocking!;
+    assert.match(blocked.summary, /^coordinator /);
+    assert.equal(blocked.retryAt, fallbackRetryAt);
+
+    clearCapacityBackoff(runnableCoordinatorDoc, {
+      executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
+    });
+    clearCapacityBackoff(runnableCoordinatorDoc, {
+      executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5',
+    });
+    assert.equal(
+      capacityPresentation(
+        runnableCoordinatorDoc,
+        now,
+        new Set(['local-sdk', 'codex-sdk']),
+      ).blocking,
+      undefined,
+      'blocked coordination does not make a runnable worker transition WAITING',
+    );
+    assignment.dependsOn = ['missing_dependency'];
+    assert.match(
+      capacityPresentation(
+        runnableCoordinatorDoc,
+        now,
+        new Set(['local-sdk', 'codex-sdk']),
+      ).blocking!.summary,
+      /^coordinator /,
+      'a dependency-blocked assignment cannot masquerade as runnable worker progress',
+    );
+  } finally {
+    for (const name of names) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test('capacity presentation ignores withdrawn targets, shows preferred-route degradation, and blocks only with no fallback', () => {
+  const previousExecutor = process.env.WEAVER_EXECUTOR;
+  const previousModel = process.env.WEAVER_WORKER_MODEL;
+  process.env.WEAVER_EXECUTOR = 'codex-sdk';
+  process.env.WEAVER_WORKER_MODEL = 'gpt-5.5';
+  try {
   const now = source.now.toISOString();
   const retryAt = new Date(source.now.getTime() + 60_000).toISOString();
+  const fallbackRetryAt = new Date(source.now.getTime() + 30_000).toISOString();
   const assignment = (id: string, profile: 'general' | 'bounded-code-repair') => ({
     id, objective: id, briefing: 'n/a', kind: 'work' as const,
     executionRequirements: { profile, modalities: ['text' as const] },
@@ -327,16 +453,47 @@ test('capacity presentation ignores a stale wait for a withdrawn route and block
     executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
     detectedAt: now, retryAt,
   };
+  recordCapacityBackoff(doc, {
+    ...wait,
+    sourceId: 'run_withdrawn',
+    executor: 'openhands',
+    provider: 'openrouter',
+    model: 'moonshotai/kimi-k3',
+  });
+  assert.doesNotMatch(capacityPresentation(doc, now).details.join('\n'), /kimi-k3/);
+
+  const reservedDoc = {
+    ...doc,
+    assignments: [doc.assignments.find((candidate) => candidate.id === 'asg_codex')!],
+  } as WorkstreamDoc;
+  const reserved = capacityPresentation(reservedDoc, now, new Set(['local-sdk']));
+  assert.equal(reserved.blocking, undefined);
+  assert.match(reserved.executorUnavailable!.summary, /gpt-5\.6-sol.*codex-sdk/);
+  assert.equal(
+    capacityPresentation(reservedDoc, now, new Set(['codex-sdk', 'local-sdk'])).executorUnavailable,
+    undefined,
+  );
+
   recordCapacityBackoff(doc, wait);
 
-  const degraded = capacityPresentation(doc, now);
+  const degraded = capacityPresentation(doc, now, new Set(['codex-sdk']));
   assert.equal(degraded.blocking, undefined);
-  assert.doesNotMatch(degraded.details.join('\n'), /gpt-5\.6-sol/);
+  assert.equal(degraded.executorUnavailable, undefined);
+  assert.match(degraded.details.join('\n'), /gpt-5\.6-sol/);
 
   recordCapacityBackoff(doc, {
-    ...wait, sourceId: 'run_general', executor: 'local-sdk', provider: 'anthropic', model: 'sonnet',
+    ...wait, sourceId: 'run_general', executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5',
+    retryAt: fallbackRetryAt,
   });
-  assert.match(capacityPresentation(doc, now).blocking!.summary, /^worker /);
+  const blocked = capacityPresentation(doc, now, new Set(['codex-sdk'])).blocking!;
+  assert.match(blocked.summary, /^worker OpenAI gpt-5\.5 /);
+  assert.equal(blocked.retryAt, fallbackRetryAt, 'the earliest target retry is the next real transition');
+  } finally {
+    if (previousExecutor === undefined) delete process.env.WEAVER_EXECUTOR;
+    else process.env.WEAVER_EXECUTOR = previousExecutor;
+    if (previousModel === undefined) delete process.env.WEAVER_WORKER_MODEL;
+    else process.env.WEAVER_WORKER_MODEL = previousModel;
+  }
 });
 
 test('a block says whether recovery is a persons move or a timers', () => {
