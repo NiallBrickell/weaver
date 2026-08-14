@@ -12,7 +12,7 @@ import * as path from 'node:path';
 
 import {
   coordinatorBackoffActive,
-  flagDanglingDependencies,
+  flagImpossibleDependencies,
   runnableAssignments,
   tick,
   verifyAction,
@@ -574,30 +574,37 @@ test('a dependency unblocks downstream ONLY when the upstream is completed AND a
   assert.deepEqual(runnableAssignments(dangling), [], 'unknown dependency id never satisfies');
 });
 
-test('a dangling dependency raises exactly one integrity blocker and never re-raises', async () => {
+test('missing and settled-without-acceptance dependencies each raise one integrity blocker', async () => {
   freshHome();
   await createWorkstream({
     slug: 'dangle-ws', title: 'Dangle', objective: 'o', tags: [], successCriteria: [], constraints: [],
     autonomy: { sendsRequireApproval: true }, budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
   await arrive('dangle-ws', (d) => {
-    d.assignments.push(asg({ id: 'asg_down', dependsOn: ['asg_missing'], state: 'queued' }));
+    d.assignments.push(
+      asg({ id: 'asg_cancelled', state: 'cancelled' }),
+      asg({ id: 'asg_down_missing', dependsOn: ['asg_missing'], state: 'queued' }),
+      asg({ id: 'asg_down_cancelled', dependsOn: ['asg_cancelled'], state: 'queued' }),
+    );
   });
 
-  // The scheduler blocks it, and the integrity sweep surfaces it once.
+  // The scheduler blocks both, and the integrity sweep surfaces each once.
   assert.deepEqual(runnableAssignments(await load('dangle-ws')), []);
-  assert.equal(await flagDanglingDependencies('dangle-ws'), 1);
+  assert.equal(await flagImpossibleDependencies('dangle-ws'), 2);
   const open = (await load('dangle-ws')).attention.filter(
-    (a) => a.kind === 'blocker' && a.status === 'open' && a.refId === 'asg_down',
+    (a) => a.kind === 'blocker' && a.status === 'open',
   );
-  assert.equal(open.length, 1);
-  assert.match(open[0]!.summary, /asg_missing/);
+  assert.equal(open.length, 2);
+  assert.match(open.find((a) => a.refId === 'asg_down_missing')!.summary, /asg_missing \(missing\)/);
+  assert.match(open.find((a) => a.refId === 'asg_down_cancelled')!.summary, /asg_cancelled \(cancelled\/none\)/);
 
-  // Deduped: a second sweep raises nothing and leaves exactly one signal.
-  assert.equal(await flagDanglingDependencies('dangle-ws'), 0);
+  // Deduped: a second sweep raises nothing and leaves the same two signals.
+  assert.equal(await flagImpossibleDependencies('dangle-ws'), 0);
   assert.equal(
-    (await load('dangle-ws')).attention.filter((a) => a.refId === 'asg_down').length,
-    1,
+    (await load('dangle-ws')).attention.filter(
+      (a) => a.refId === 'asg_down_missing' || a.refId === 'asg_down_cancelled',
+    ).length,
+    2,
   );
 });
 

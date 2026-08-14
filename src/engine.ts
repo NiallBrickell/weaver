@@ -32,6 +32,7 @@ import { virtualNow } from './clock.js';
 import { pidIsLive } from './processLock.js';
 import { collisionKey, isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
 import {
+  assignmentCannotBecomeAccepted,
   assignmentDependenciesSatisfied,
   capacityBackoffFor,
   selectWorkerCapacityTarget,
@@ -728,45 +729,51 @@ export function runnableAssignments(
 }
 
 /**
- * Raise a single, deduped integrity signal for every queued assignment that
- * depends on an id no assignment carries — a dangling dependency the scheduler
- * can never satisfy (runnableAssignments blocks it), so without this the work
- * would sit queued forever, invisible. Mirrors the budget attention: it checks
- * for an existing open signal before pushing, so a stuck assignment is
- * surfaced once, not on every tick. A dangling id is an integrity fault, not
- * routine work, so it reaches the human as a 'blocker'. Returns the number of
- * fresh signals raised.
+ * Raise a single, deduped integrity signal for every queued assignment whose
+ * dependency can never become accepted: either its id is missing or the known
+ * assignment settled as failed, cancelled, rejected, or superseded. Without
+ * this, runnableAssignments correctly blocks the work but it sits queued
+ * forever, invisible. Returns the number of fresh signals raised.
  */
-export async function flagDanglingDependencies(slug: string): Promise<number> {
+export async function flagImpossibleDependencies(slug: string): Promise<number> {
   const doc = await load(slug);
-  const known = new Set(doc.assignments.map((a) => a.id));
+  const byId = new Map(doc.assignments.map((a) => [a.id, a]));
   const candidates = doc.assignments.filter(
     (a) =>
       a.state === 'queued' &&
-      a.dependsOn.some((dep) => !known.has(dep)) &&
+      a.dependsOn.some((dep) => {
+        const dependency = byId.get(dep);
+        return !dependency || assignmentCannotBecomeAccepted(dependency);
+      }) &&
       !doc.attention.some((att) => att.kind === 'blocker' && att.status === 'open' && att.refId === a.id),
   );
   if (candidates.length === 0) return 0;
   let raised = 0;
   await arrive(slug, (d, event) => {
-    const knownIds = new Set(d.assignments.map((a) => a.id));
+    const currentById = new Map(d.assignments.map((a) => [a.id, a]));
     for (const candidate of candidates) {
       // Re-derive against the doc the write sees: a concurrent arrival may have
       // added the missing assignment, changed the state, or raised the signal.
       const asg = d.assignments.find((x) => x.id === candidate.id);
       if (!asg || asg.state !== 'queued') continue;
-      const missing = asg.dependsOn.filter((dep) => !knownIds.has(dep));
-      if (missing.length === 0) continue;
+      const impossible = asg.dependsOn.flatMap((dep) => {
+        const dependency = currentById.get(dep);
+        if (!dependency) return [`${dep} (missing)`];
+        return assignmentCannotBecomeAccepted(dependency)
+          ? [`${dep} (${dependency.state}/${dependency.adoption.state})`]
+          : [];
+      });
+      if (impossible.length === 0) continue;
       if (d.attention.some((att) => att.kind === 'blocker' && att.status === 'open' && att.refId === asg.id)) continue;
       d.attention.push({
         id: newId('att'),
         kind: 'blocker',
-        summary: `Assignment ${asg.id} depends on ${missing.join(', ')}, which no assignment provides — it can never become runnable until you cancel or re-point the dependency.`,
+        summary: `Assignment ${asg.id} depends on ${impossible.join(', ')}, which can never become accepted — cancel or re-point the dependency before retrying.`,
         refId: asg.id,
         status: 'open',
         createdAt: new Date().toISOString(),
       });
-      event('assignment.dangling_dependency', `${asg.id} blocked on unknown dependency ${missing.join(', ')}`, [asg.id]);
+      event('assignment.impossible_dependency', `${asg.id} blocked on impossible dependency ${impossible.join(', ')}`, [asg.id]);
       raised++;
     }
   });
@@ -883,10 +890,10 @@ async function tickLocked(
       break;
     }
 
-    // Surface any queued assignment stuck on a dependency id no assignment
-    // provides. Raising the signal is deliberately NOT progress: dedup keeps it
-    // from re-raising, so it must not spin the cycle loop.
-    await flagDanglingDependencies(slug);
+    // Surface queued work whose dependency is missing or has settled without
+    // acceptance. Raising the signal is deliberately NOT progress: dedup keeps
+    // it from re-raising, so it must not spin the cycle loop.
+    await flagImpossibleDependencies(slug);
 
     const runnable = runnableAssignments(await load(slug), executorCapabilities);
     for (const id of runnable) {

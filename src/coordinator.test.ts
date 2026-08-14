@@ -277,6 +277,39 @@ test('create_assignment persists typed requirements without choosing a model', a
   assert.equal(assignment.attempts.length, 0, 'durable requirements do not preselect a disposable target');
 });
 
+test('create_assignment refuses a dependency already settled without acceptance', async () => {
+  await arrive('coordinator-capacity', (doc) => {
+    doc.assignments.push({
+      id: 'asg_cancelled', objective: 'obsolete attempt', briefing: 'n/a', kind: 'work',
+      acceptanceCriteria: ['accepted input'], dependsOn: [], state: 'cancelled', attempts: [],
+      adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    });
+  });
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const create = req.tools.find((definition) => definition.name === 'create_assignment');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(create && finish);
+      const refused = await create.handler({
+        objective: 'consume an impossible input',
+        briefing: 'This must never remain silently queued.',
+        kind: 'work',
+        acceptance_criteria: ['input is accepted'],
+        depends_on: ['asg_cancelled'],
+      }, {});
+      assert.equal(refused.isError, true);
+      assert.match(JSON.stringify(refused), /asg_cancelled.*cancelled\/none.*can no longer become accepted/);
+      await finish.handler({ summary: 'Refused the impossible dependency.', acknowledged_steering: true }, {});
+      return { costUsd: 0 };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  assert.equal((await load('coordinator-capacity')).assignments.length, 1);
+});
+
 test('an incomplete hard-wall checkpoint is readable but cannot be adopted', async () => {
   const { relPath, hash } = await writeArtifact(
     'coordinator-capacity',
