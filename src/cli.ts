@@ -733,11 +733,12 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       switch (sub) {
         case 'set': {
           const name = f[0] && !f[0].startsWith('--') ? f[0] : fail('secret NAME required');
-          const { readFileSync } = await import('node:fs');
+          const { readSecretInput } = await import('./secretInput.js');
           if (process.stdin.isTTY) {
-            process.stderr.write(`paste the value for ${name} and press Ctrl-D:\n`);
+            process.stderr.write(`paste the value for ${name} and press Enter (input hidden): `);
           }
-          const value = readFileSync(0, 'utf8').trim();
+          const value = await readSecretInput();
+          if (process.stdin.isTTY) process.stderr.write('\n');
           if (executor) setExecutorSecret(name, value);
           else setSecret(name, value, ws);
           process.stdout.write(`secret ${name} stored (${executor ? 'executor-only' : ws ? `workstream ${ws}` : 'global'})\n`);
