@@ -442,6 +442,18 @@ export function assignmentDependenciesSatisfied(doc: WorkstreamDoc, assignment: 
   });
 }
 
+/** A dependency may be unfinished when downstream work is planned, but once
+ * it settles without an accepted result there is no future transition that can
+ * satisfy the edge. The coordinator must explicitly re-point or recreate the
+ * downstream assignment; the scheduler must never pretend the input exists. */
+export function assignmentCannotBecomeAccepted(assignment: Assignment): boolean {
+  return assignment.adoption.state === 'rejected' ||
+    assignment.adoption.state === 'superseded' ||
+    assignment.state === 'failed' ||
+    assignment.state === 'cancelled' ||
+    (assignment.state === 'completed' && assignment.adoption.state !== 'accepted');
+}
+
 /** First globally available target in reviewed order. A typed wait degrades
  * to the next target; a missing capability does not. Otherwise whichever host
  * wins the tick lock could silently defeat the reviewed preference. */

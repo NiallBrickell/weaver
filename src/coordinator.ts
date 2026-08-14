@@ -35,6 +35,7 @@ import {
   retireLegacyDollarBudgetCard,
 } from './executionSafety.js';
 import {
+  assignmentCannotBecomeAccepted,
   capacityBackoffFor,
   clearCapacityBackoff,
   ensureCapacityAttention,
@@ -396,7 +397,13 @@ export async function runCoordinatorPass(
           change((d, event) => {
             const id = newId('asg');
             for (const dep of a.depends_on ?? []) {
-              if (!d.assignments.find((x) => x.id === dep)) throw new Error(`unknown dependency ${dep}`);
+              const dependency = d.assignments.find((x) => x.id === dep);
+              if (!dependency) throw new Error(`unknown dependency ${dep}`);
+              if (assignmentCannotBecomeAccepted(dependency)) {
+                throw new Error(
+                  `dependency ${dep} is ${dependency.state}/${dependency.adoption.state} and can no longer become accepted — depend on an accepted or still-live assignment instead`,
+                );
+              }
             }
             if (a.kind === 'action' && (!a.exec_cwd || !a.exec_verify)) {
               throw new Error('kind "action" requires exec_cwd and exec_verify');
