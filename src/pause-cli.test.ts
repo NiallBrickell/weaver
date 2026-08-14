@@ -31,8 +31,17 @@ async function make(slug: string, status: 'active' | 'paused' | 'done' = 'active
     budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
   if (status !== 'active') {
-    await arrive(slug, (doc) => {
+    await arrive(slug, (doc, event) => {
       doc.workstream.status = status;
+      if (status === 'done') {
+        doc.workstream.conclusion = {
+          passId: 'pass_finished',
+          atVirtual: '2026-08-08T12:00:00.000Z',
+          summary: 'the original objective was met',
+          evidenceIds: ['del_finished'],
+        };
+        event('workstream.concluded', 'the original objective was met', ['del_finished']);
+      }
     });
   }
 }
@@ -87,7 +96,7 @@ test('pause without a slug pauses the active fleet and is idempotent', async () 
   assert.deepEqual(await revisions(slugs), afterFirst);
 });
 
-test('pause and resume with a slug remain targeted and never revive done work', async () => {
+test('pause remains targeted and resume explicitly reopens concluded work', async () => {
   await make('target');
   await make('untouched');
   await make('finished', 'done');
@@ -105,9 +114,21 @@ test('pause and resume with a slug remain targeted and never revive done work', 
 
   const doneRevision = (await load('finished')).revision;
   assert.equal(weaver('pause', 'finished'), 'finished is done; status unchanged\n');
-  assert.equal(weaver('resume', 'finished'), 'finished is done; status unchanged\n');
-  assert.equal((await load('finished')).workstream.status, 'done');
   assert.equal((await load('finished')).revision, doneRevision);
+
+  assert.equal(weaver('resume', 'finished'), 'finished is reopened and active\n');
+  const reopened = await load('finished');
+  assert.equal(reopened.workstream.status, 'active');
+  assert.equal(reopened.workstream.conclusion, undefined);
+  assert.equal(reopened.revision, doneRevision + 1);
+  assert.equal(reopened.wakes.filter((wake) => wake.status === 'pending').length, 1);
+  assert.equal(reopened.wakes.find((wake) => wake.status === 'pending')?.condition.type, 'immediate');
+  assert.match(reopened.events.at(-1)?.summary ?? '', /reopened the concluded workstream.*prior conclusion from pass_finished/);
+  assert.ok(reopened.events.some((event) => event.type === 'workstream.concluded'));
+
+  const reopenedRevision = reopened.revision;
+  assert.equal(weaver('resume', 'finished'), 'finished is already active; status unchanged\n');
+  assert.equal((await load('finished')).revision, reopenedRevision);
 });
 
 test('fleet pause changes healthy streams but fails loudly when one record is unreadable', async () => {

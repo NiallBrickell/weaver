@@ -2,12 +2,17 @@
 
 *Stop one workstream or the active fleet without losing its durable position*
 
-Pause one workstream when its outcome should stay intact but no new work should start:
+Pause one workstream when its outcome should stay intact but no new work should start. Resume also reopens a concluded outcome when later evidence shows that more work is required:
 
 ```bash
 weaver pause fix-onboarding
 weaver resume fix-onboarding
 ```
+
+Reopening is explicit and revision-checked. Weaver removes the current
+completion claim, retains the former conclusion and its evidence in history,
+and schedules an immediate fresh coordinator pass. A repeated resume while the
+stream is already active is a read-only no-op.
 
 Pause every workstream that is active when you run the command by omitting the slug:
 
@@ -15,7 +20,7 @@ Pause every workstream that is active when you run the command by omitting the s
 weaver pause
 ```
 
-Already paused and done workstreams are left as they are. A workstream created after the fleet pause starts active; there is no ambient global pause mode. Resume paused workstreams individually with `weaver resume <slug>`.
+Already paused and done workstreams are left as they are by the fleet-wide pause. A workstream created after the fleet pause starts active; there is no ambient global pause mode. Resume paused workstreams—or explicitly reopen a concluded one—individually with `weaver resume <slug>`.
 
 ## When you meant "this one matters more"
 

@@ -133,7 +133,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver run [--interval N]                  resident runner: tick every active workstream every N seconds (default 30)
   weaver serve [--host H] [--port N]         HTTP ingress for external bots (needs WEAVER_SERVE_TOKEN); create-or-get workstreams, post observations, read status
   weaver pause [slug]                        pause every active workstream, or one named workstream (state is kept)
-  weaver resume <slug>                       restart one paused workstream (state is kept)
+  weaver resume <slug>                       restart one paused or concluded workstream (state and conclusion lineage are kept)
   weaver execution-safety <slug> [--window <duration>] [--max-starts N]   configure the rolling model-start guard; pauses and resumes automatically
   weaver resolve <slug> <attentionId> [note] mark an attention item handled (human act)
 `;
@@ -851,6 +851,7 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       const { setPaused } = await import('./humanActs.js');
       const result = await setPaused(slug, false);
       if (result.outcome === 'done') process.stdout.write(`${slug} is done; status unchanged\n`);
+      else if (result.outcome === 'reopened') process.stdout.write(`${slug} is reopened and active\n`);
       else if (result.outcome === 'already-active') process.stdout.write(`${slug} is already active; status unchanged\n`);
       else process.stdout.write(`${slug} is now active\n`);
       break;

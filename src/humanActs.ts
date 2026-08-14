@@ -250,7 +250,7 @@ export interface SetPausedResult {
   previousStatus: WorkstreamStatus;
   status: WorkstreamStatus;
   changed: boolean;
-  outcome: 'paused' | 'resumed' | 'already-paused' | 'already-active' | 'done';
+  outcome: 'paused' | 'resumed' | 'reopened' | 'already-paused' | 'already-active' | 'done';
 }
 
 export interface PauseWorkstreamFailure {
@@ -267,8 +267,9 @@ export interface PauseAllWorkstreamsResult {
 
 /**
  * Revision-checked human pause/resume transition. A repeated request is a
- * read-only no-op, and a concluded workstream stays concluded: resuming work
- * never silently erases its durable outcome claim.
+ * read-only no-op. Pausing a concluded workstream preserves its outcome;
+ * explicitly resuming one reopens it, retains the old conclusion in event
+ * lineage, and wakes a fresh coordinator to reconcile the new position.
  */
 /**
  * Rank a workstream against the rest of the fleet for the runner's scarce
@@ -301,7 +302,7 @@ export async function setPaused(slug: string, paused: boolean): Promise<SetPause
     const current = await load(slug);
     const previousStatus = current.workstream.status;
 
-    if (previousStatus === 'done') {
+    if (previousStatus === 'done' && paused) {
       return { slug, requestedStatus, previousStatus, status: 'done', changed: false, outcome: 'done' };
     }
     if (previousStatus === requestedStatus) {
@@ -317,6 +318,18 @@ export async function setPaused(slug: string, paused: boolean): Promise<SetPause
 
     try {
       const updated = await mutate(slug, current.revision, (d, event) => {
+        if (previousStatus === 'done') {
+          const prior = d.workstream.conclusion;
+          delete d.workstream.conclusion;
+          d.workstream.status = 'active';
+          wake(d, `human reopened the concluded workstream`);
+          event(
+            'workstream.reopened',
+            `${actor()} reopened the concluded workstream${prior ? ` (prior conclusion from ${prior.passId}: ${prior.summary.slice(0, 120)})` : ''}`,
+            prior?.evidenceIds,
+          );
+          return;
+        }
         d.workstream.status = requestedStatus;
         event(paused ? 'workstream.paused' : 'workstream.resumed', `${actor()} ${paused ? 'paused' : 'resumed'} the workstream`);
       });
@@ -326,7 +339,7 @@ export async function setPaused(slug: string, paused: boolean): Promise<SetPause
         previousStatus,
         status: updated.workstream.status,
         changed: true,
-        outcome: paused ? 'paused' : 'resumed',
+        outcome: previousStatus === 'done' ? 'reopened' : paused ? 'paused' : 'resumed',
       };
     } catch (error) {
       if (!(error instanceof RevisionConflictError) || attempt === attempts) throw error;
