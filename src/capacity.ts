@@ -82,7 +82,10 @@ export function classifyCapacityFailure(
   errorText: string,
   wallFired = false,
 ): CapacityCategory | null {
-  if (wallFired) return 'other';
+  // A local safety wall is not evidence about provider capacity. The
+  // coordinator tracker handles its own wall separately because a hung
+  // controller pass must park and retry; worker walls remain work failures.
+  if (wallFired) return null;
   if (SESSION_TEXT.test(errorText)) return 'session_limit';
   if (USAGE_TEXT.test(errorText)) return 'usage_limit';
   if (RATE_TEXT.test(errorText)) return 'rate_limit';
@@ -174,7 +177,11 @@ export class SdkFailureTracker {
 
   classify(source: InfrastructureSource): InfrastructureWait | null {
     const now = source.now ?? new Date();
-    if (source.wallFired) return this.make('other', 'automatic_retry', source, now);
+    if (source.wallFired) {
+      return source.source === 'coordinator'
+        ? this.make('other', 'automatic_retry', source, now)
+        : null;
+    }
     if (!this.failed) return null;
 
     const text = `${this.texts.join(' ')} ${this.terminalReason ?? ''}`;

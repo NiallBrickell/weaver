@@ -630,6 +630,9 @@ export async function runWorker(
     wall.disarm();
   }
 
+  const wallFired = wall.fired();
+  if (wallFired && !submitted) resultSubtype = 'wall_timeout';
+
   const capacitySource = {
     source: 'worker',
     sourceId: runId,
@@ -638,7 +641,7 @@ export async function runWorker(
     provider: capacityTarget.provider,
     now: virtualNow(),
     wallNow: new Date(),
-    wallFired: wall.fired(),
+    wallFired,
   } as const;
   const infrastructure = sdkFailure.classify(capacitySource);
   const capacityObservations = sdkFailure.capacityObservations(capacitySource);

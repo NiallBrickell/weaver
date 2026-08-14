@@ -569,6 +569,28 @@ test('ordinary no-submission remains a failed assignment with immediate reconcil
   }
 });
 
+test('worker wall timeout is durable work failure, not provider capacity', async () => {
+  const home = workerHome();
+  try {
+    await runningWorker('worker-wall');
+    await finalizeWorkerRun('worker-wall', 'asg_worker', 'run_worker', {
+      submitted: false,
+      costUsd: 0,
+      infrastructure: null,
+      terminalReason: 'wall_timeout',
+    });
+    const doc = await load('worker-wall');
+    assert.equal(doc.assignments[0]!.state, 'failed');
+    assert.equal(doc.assignments[0]!.attempts[0]!.terminalReason, 'wall_timeout');
+    assert.equal(doc.capacity, null);
+    assert.equal(doc.wakes[0]!.condition.type, 'immediate');
+    assert.equal(doc.wakes[0]!.infrastructure, undefined);
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('a worker retry consumes worker capacity permits but preserves coordinator wakes', async () => {
   const home = workerHome();
   try {

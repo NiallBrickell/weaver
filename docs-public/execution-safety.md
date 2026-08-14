@@ -23,6 +23,8 @@ weaver execution-safety sentry-sweep --window 1h --max-starts 30
 
 This complements the existing per-run and per-tick bounds: worker/coordinator turn ceilings, sleep-aware wall limits, bounded tick cycles, concurrency control, and bounded action retries remain in force.
 
+Wall expiry is classified by role rather than mistaken for provider capacity. A worker that reaches its 40-minute wall records a failed `wall_timeout` attempt and wakes a fresh coordinator to retry, split, or revise the assignment. A coordinator wall parks that controller target for automatic retry, because the pass made no durable work judgment. Neither path keeps a model session alive across the wait.
+
 ## Billing remains the provider's job
 
 Weaver does not present SDK-reported dollar estimates: they are not a bill, a balance, or remaining plan usage. Old documents retain their stored field for backward compatibility, but it neither appears in operator views nor gates execution. If an executor uses API credits, configure the real spending limit with that model provider. Weaver never enables paid continuation or changes provider billing controls.
