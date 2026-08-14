@@ -603,9 +603,18 @@ test('worker wall preserves appended evidence as a typed, non-adoptable checkpoi
         `# Verified checkpoint\n\n${'Current-state evidence was read back and verified before the hard wall. '.repeat(8)}`,
       );
       assert.equal(reply.isError, undefined);
-      await new Promise<void>((resolve) => {
-        if (req.abort.signal.aborted) resolve();
-        else req.abort.signal.addEventListener('abort', () => resolve(), { once: true });
+      await new Promise<void>((resolve, reject) => {
+        // armWall intentionally unrefs its production timer so an idle runner
+        // can exit cleanly. Keep this synthetic executor alive while waiting
+        // for that timer; otherwise Node may end the test before the unref'd
+        // wall gets a chance to fire (as the Linux CI runner correctly did).
+        const guard = setTimeout(() => reject(new Error('worker wall did not fire')), 1_000);
+        const onAbort = () => {
+          clearTimeout(guard);
+          resolve();
+        };
+        if (req.abort.signal.aborted) onAbort();
+        else req.abort.signal.addEventListener('abort', onAbort, { once: true });
       });
       return { costUsd: 0.1, sessionId: 'checkpoint-session' };
     },
