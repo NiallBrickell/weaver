@@ -10,9 +10,10 @@ over the network ([Connecting bots](./bots.md)). The remaining question is *wher
 loop runs*, and this bakeoff is how a new runtime earns that place with evidence rather than
 anecdote.
 
-The initial bakeoff supports four explicit targets: the Claude SDK baseline, Codex SDK, OpenCode,
-and OpenHands. Running the suite never changes production configuration. Codex and OpenHands run
-through the same executor classes available to real Workstreams; OpenCode remains eval-only.
+The bakeoff supports six explicit targets: the Claude SDK baseline, Codex SDK, OpenCode,
+OpenHands, Pi, and Prime Agent. Running the suite never changes production configuration. Codex
+and OpenHands run through the same executor classes available to real Workstreams; OpenCode, Pi,
+and Prime Agent remain eval-only.
 
 ## Run the suite
 
@@ -22,13 +23,32 @@ yarn eval:harness --list
 yarn eval:harness \
   --target codex-sdk=gpt-5.6-sol \
   --target opencode=openrouter/moonshotai/kimi-k3 \
+  --target pi=openrouter/moonshotai/kimi-k3 \
+  --target prime-agent=openrouter/z-ai/glm-5 \
   --target opencode=openrouter/z-ai/glm-5 \
   --repeat 3
 ```
 
 Every target is explicit. Weaver never falls back to another model or runtime when one fails to
 start. OpenCode uses its normal provider login; subscription-backed Codex and Claude use their
-existing local logins.
+existing local logins. Pi and Prime targets require `provider/model` names. They run with a fresh
+empty harness home and use only the selected provider's key from executor-secret
+scope:
+
+```bash
+weaver secret set OPENROUTER_API_KEY --executor
+yarn eval:harness --target pi=openrouter/moonshotai/kimi-k3
+```
+
+Each Pi/Prime case starts one invocation-local RPC process with `--no-session`. Prime's public CLI
+normally delegates RPC sessions to its daemon, so Weaver calls Prime's public embedding entrypoint
+inside the fresh child; a process-local no-op extension factory selects the documented in-process
+runtime and adds no tool or state. Weaver disables extension, skill, prompt, theme, and context-file
+discovery and explicitly loads only its authenticated submission extension. Prime Agent is never
+launched with a goal, autonomous mode, a schedule, a daemon socket, continue, resume, or fork. Its
+process and RPC state are torn down after the assignment, so none of Prime's session machinery can
+become Workstream memory; its RPC session identifier is not recorded in the worker outcome or eval
+telemetry.
 
 The local OpenHands target invokes the pinned official Agent Server image through a Docker-compatible
 runtime (OrbStack on macOS) and needs an executor-only model-provider key:
@@ -147,6 +167,10 @@ data is reported as unavailable, never as zero.
 > action assignment fails closed there. Enforced multi-tenant isolation and supervised remote actions
 > are what the still-open confinement and supervised-action gates widen it to.
 
-Weaver does not implement its own sandbox for this work. The evals exercise maintained SDKs and the
-official OpenHands Agent Server runtime; production containment remains the chosen runtime
-provider's responsibility.
+Weaver does not implement its own sandbox for this work. The evals exercise maintained SDKs and
+CLIs plus the official OpenHands Agent Server runtime; production containment remains the chosen
+runtime provider's responsibility. Pi and Prime also reject action assignments before starting a
+bridge or process because neither adapter exposes live Pilot supervision. Their fresh homes hide
+personal harness logins and unrelated provider keys, but the selected key is still present in the
+host child process for provider authentication; use these candidates only with the frozen trusted
+eval corpus until an inference proxy or isolated runtime removes that key from model tool reach.

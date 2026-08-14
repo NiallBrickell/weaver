@@ -4,7 +4,14 @@ import type {
   WorkerExecutor,
 } from '../executor/types.js';
 
-export const EVAL_EXECUTORS = ['claude-sdk', 'codex-sdk', 'opencode', 'openhands'] as const;
+export const EVAL_EXECUTORS = [
+  'claude-sdk',
+  'codex-sdk',
+  'opencode',
+  'openhands',
+  'pi',
+  'prime-agent',
+] as const;
 
 export type EvalExecutorId = (typeof EVAL_EXECUTORS)[number];
 

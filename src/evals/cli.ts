@@ -23,10 +23,14 @@ Executors: ${EVAL_EXECUTORS.join(', ')}
 Examples:
   yarn eval:harness --target codex-sdk=gpt-5.6-sol --case code-repair
   yarn eval:harness --target opencode=openrouter/moonshotai/kimi-k3 --repeat 3
+  yarn eval:harness --target pi=openrouter/moonshotai/kimi-k3 --repeat 3
+  yarn eval:harness --target prime-agent=openrouter/z-ai/glm-5 --repeat 3
   weaver secret set OPENROUTER_API_KEY --executor
   yarn eval:harness --target openhands=openrouter/moonshotai/kimi-k3
 
 Every target is explicit. The suite never silently substitutes a model or falls back to another executor.
+Pi and Prime Agent targets require provider-qualified model names (provider/model). They run fresh,
+without session persistence; Prime goals, schedules, autonomous mode, and daemon state are never used.
 Every suite run also appends its case results to the durable ledger (default evals/ledger.jsonl,
 checked into git); --ingest replays an existing results.json into it and --history aggregates it.`;
 
