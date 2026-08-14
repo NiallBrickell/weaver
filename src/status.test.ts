@@ -224,3 +224,52 @@ test('a successful probe exposes its due reconciliation after clearing capacity 
   assert.doesNotMatch(status, /workstream is dormant/);
   assert.doesNotMatch(status, /RAW PROVIDER ERROR/);
 });
+
+test('a live coordinator lease is shown as active work instead of idle', () => {
+  const coordinating = doc([]);
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  const expiresAt = new Date(Date.now() + 14 * 60_000).toISOString();
+  coordinating.lease = {
+    passId: 'pass_live',
+    acquiredAt: startedAt,
+    expiresAt,
+  };
+  coordinating.passes.push({
+    id: 'pass_live',
+    startedAt,
+    baseRevision: coordinating.revision,
+    wakeReasons: ['human steering arrived'],
+    model: 'claude-fable-5',
+    changes: [],
+    outcome: 'running',
+  });
+
+  const status = renderStatus(coordinating);
+
+  assert.match(status, /coordinating: pass_live \(human steering arrived\)/);
+  assert.doesNotMatch(status, /idle — waiting on wakes/);
+});
+
+test('an expired coordinator lease is shown as awaiting recovery instead of idle', () => {
+  const recovering = doc([]);
+  const startedAt = new Date(Date.now() - 16 * 60_000).toISOString();
+  recovering.lease = {
+    passId: 'pass_expired',
+    acquiredAt: startedAt,
+    expiresAt: new Date(Date.now() - 60_000).toISOString(),
+  };
+  recovering.passes.push({
+    id: 'pass_expired',
+    startedAt,
+    baseRevision: recovering.revision,
+    wakeReasons: ['scheduled reconciliation'],
+    model: 'claude-fable-5',
+    changes: [],
+    outcome: 'running',
+  });
+
+  const status = renderStatus(recovering);
+
+  assert.match(status, /recovering: pass_expired lease expired — recovery pending/);
+  assert.doesNotMatch(status, /idle — waiting on wakes/);
+});

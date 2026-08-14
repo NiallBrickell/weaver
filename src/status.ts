@@ -90,6 +90,14 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   const virtual = virtualNow();
   const nowVirtual = virtual.toISOString();
   const capacity = capacityPresentation(doc, nowVirtual);
+  const coordinatorPass = doc.lease
+    ? doc.passes.find((pass) => pass.id === doc.lease?.passId && pass.outcome === 'running')
+    : undefined;
+  const coordinatorLine = coordinatorPass && doc.lease
+    ? new Date(doc.lease.expiresAt).getTime() > wallNow.getTime()
+      ? `coordinating: ${coordinatorPass.id}${coordinatorPass.wakeReasons[0] ? ` (${coordinatorPass.wakeReasons[0]})` : ''}`
+      : `recovering: ${coordinatorPass.id} lease expired — recovery pending`
+    : undefined;
   const nowLines = [
     ...(capacity.blocking ? [`WAITING — ${capacity.blocking.summary}. ${capacity.blocking.recovery}`] : []),
     ...capacity.details
@@ -98,6 +106,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
     ...recoveredCapacityWakes
       .filter((wake) => isWakeDue(wake.condition, wallNow, virtual))
       .map(() => 'READY — provider retry reconciliation is due now'),
+    ...(coordinatorLine ? [coordinatorLine] : []),
     ...running.map((a) => `working: ${a.id} "${a.objective}"`),
     ...queued.map((a) => `queued: ${a.id} "${a.objective}"`),
     ...awaiting.map((a) => `awaiting review: ${a.id} "${a.objective}"`),
