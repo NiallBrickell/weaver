@@ -96,7 +96,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   const coordinatorLine = coordinatorPass && doc.lease
     ? new Date(doc.lease.expiresAt).getTime() > wallNow.getTime()
       ? `coordinating: ${coordinatorPass.id}${coordinatorPass.wakeReasons[0] ? ` (${coordinatorPass.wakeReasons[0]})` : ''}`
-      : `recovering: ${coordinatorPass.id} lease expired — next tick restores its wake`
+      : `recovering: ${coordinatorPass.id} lease expired — recovery pending`
     : undefined;
   const nowLines = [
     ...(capacity.blocking ? [`WAITING — ${capacity.blocking.summary}. ${capacity.blocking.recovery}`] : []),

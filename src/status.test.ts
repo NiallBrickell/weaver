@@ -270,6 +270,6 @@ test('an expired coordinator lease is shown as awaiting recovery instead of idle
 
   const status = renderStatus(recovering);
 
-  assert.match(status, /recovering: pass_expired lease expired — next tick restores its wake/);
+  assert.match(status, /recovering: pass_expired lease expired — recovery pending/);
   assert.doesNotMatch(status, /idle — waiting on wakes/);
 });
