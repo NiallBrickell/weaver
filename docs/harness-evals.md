@@ -175,10 +175,14 @@ yarn eval:harness --history
 `--history` is descriptive evidence, not an automatic capability gate. The checked-in ledger
 deliberately retains Codex runs from before the MCP approval repair beside successful reruns, and
 those rows originally shared one harness version; collapsing them produces a misleading pass rate.
-The production Codex adapter now emits the `codex-sdk-0.147.0-weaver.2` epoch so new evidence cannot
-silently join that old population. A routing commitment must additionally preserve case/adapter
-versions and exact gate vectors rather than consuming this mean. Missing score or cost stays
-excluded, never counted as zero.
+The production Codex adapter emitted the `codex-sdk-0.147.0-weaver.2` epoch after the MCP approval
+repair so new evidence could not silently join that old population. It now emits
+`codex-sdk-0.147.0-weaver.3` for the corrected host-process/full-access worker boundary, keeping
+future runs separate from `.2` workspace-write evidence. The checked-in Codex routing commitment
+still cites its immutable reviewed `.2` cohort; only a new complete, reviewed `.3` cohort can change
+that evidence citation. A routing commitment must additionally preserve case/adapter versions and
+exact gate vectors rather than consuming this mean. Missing score or cost stays excluded, never
+counted as zero.
 
 Economics are outcome-aware: cost per pass divides the complete cohort spend by hard-gate-passing
 submissions, so an expensive no-submission run cannot disappear from a cheap model's headline.

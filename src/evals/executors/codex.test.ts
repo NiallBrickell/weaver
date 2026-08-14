@@ -46,7 +46,7 @@ function streamed(events: AsyncGenerator<ThreadEvent>): RunStreamedResult {
 }
 
 describe('CodexEvalExecutor', () => {
-  test('starts one workspace-write thread with a required authenticated submit MCP and records stream telemetry', async () => {
+  test('starts one full-access host thread with a required authenticated submit MCP and records stream telemetry', async () => {
     const base = Date.parse('2026-08-08T10:00:00.000Z');
     let elapsed = 0;
     let codexOptions: CodexOptions | undefined;
@@ -132,7 +132,7 @@ describe('CodexEvalExecutor', () => {
     assert.equal(signal, req.abort.signal);
     assert.deepEqual(threadOptions, {
       model: 'gpt-5.6-codex',
-      sandboxMode: 'workspace-write',
+      sandboxMode: 'danger-full-access',
       approvalPolicy: 'never',
       workingDirectory: '/fixture/workspace',
       additionalDirectories: ['/fixture/additional'],

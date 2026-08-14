@@ -28,10 +28,10 @@ import type {
 } from './types.js';
 
 const SUBMIT_TOKEN_ENV = 'WEAVER_CODEX_SUBMIT_TOKEN';
-// Weaver adapter behavior is part of eval identity. The .2 epoch separates
-// deterministic MCP approval + subscription-auth/history semantics from the
-// older bridge-broken rows retained in the durable ledger.
-const HARNESS_VERSION = 'codex-sdk-0.147.0-weaver.2';
+// Weaver adapter behavior is part of eval identity. The .3 epoch separates
+// the declared host-process/full-access worker boundary from .2's
+// workspace-write runs retained in the durable ledger.
+const HARNESS_VERSION = 'codex-sdk-0.147.0-weaver.3';
 const EMPTY_USAGE: ExecutorUsage = {
   inputTokens: null,
   outputTokens: null,
@@ -180,7 +180,13 @@ export class CodexExecutor implements WorkerExecutor {
       });
       const thread = codex.startThread({
         model: req.model,
-        sandboxMode: 'workspace-write',
+        // This executor is explicitly a host-process substrate and must expose
+        // the same ordinary coding-agent surface as the local Claude worker.
+        // Codex's workspace-write mode recursively protects Git metadata and
+        // cannot cover every host daemon/cache a normal coding run may need.
+        // Irreversible egress remains gated by Weaver's action lifecycle and
+        // Pilot; supervised actions already fail closed above.
+        sandboxMode: 'danger-full-access',
         approvalPolicy: 'never',
         workingDirectory: req.cwd ?? process.cwd(),
         additionalDirectories: req.additionalDirectories,
