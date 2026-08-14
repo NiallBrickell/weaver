@@ -611,6 +611,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const [toast, setToast] = useState('');
   const printoutAbort = React.useRef<AbortController | null>(null);
   const printoutOpening = React.useRef(false);
+  const inspectOpening = React.useRef(false);
 
   useEffect(() => {
     probePilot();
@@ -705,16 +706,23 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
     }
     if (input === 'i') {
       // i opens knowledge for whatever is selected: one workstream's own page,
-      // or — with nothing selected, at the top — the fleet homepage with the
-      // global policy store. Either way the whole site is regenerated, so the
-      // links between the two directions resolve.
+      // or — with nothing selected, at the top — the fleet homepage. Either
+      // way the whole site is regenerated, so the links between the two
+      // directions resolve. That is seconds of work at fleet scale, so the
+      // wait announces itself immediately, a repeat press is answered rather
+      // than doubling the work, and the generator yields between workstreams
+      // so this toast can actually paint.
+      if (inspectOpening.current) { setToast('knowledge pages are already generating…'); return; }
+      inspectOpening.current = true;
+      setToast(`generating knowledge pages (${selSlug ?? 'fleet'})…`);
       void runInspect(selSlug)
         .then((out) => {
           if (process.platform === 'darwin') execFile('open', [out]);
           // Where it went is only worth a toast when we couldn't open it for you.
           setToast(process.platform === 'darwin' ? `knowledge → ${selSlug ?? 'fleet'}` : `knowledge → ${out}`);
         })
-        .catch((e) => setToast(`✗ ${e instanceof Error ? e.message : e}`));
+        .catch((e) => setToast(`✗ ${e instanceof Error ? e.message : e}`))
+        .finally(() => { inspectOpening.current = false; });
       return;
     }
     if (key.upArrow || input === 'k') { setCursor((c) => Math.max(NO_SELECTION, c - 1)); setScroll(0); }

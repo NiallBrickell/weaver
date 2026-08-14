@@ -194,9 +194,11 @@ test('fleet archives and knowledge pages redact colliding local secret names', a
   });
   // Each workstream's own typed state also carries BOTH values, so every page
   // is asked to redact the neighbouring workstream's colliding TOKEN as well
-  // as its own. (The seeded policy above covers the fleet page, which lists
-  // the whole store; a workstream page now shows only the policies that
-  // shaped it, so its leak has to come from its own state.)
+  // as its own. (The seeded policy above covers learned.html, which lists the
+  // whole store; a workstream page shows only the policies that shaped it, so
+  // its leak has to come from its own state. The fleet overview carries no
+  // policy prose and no secret-bearing state in this fixture, so it is only
+  // asserted clean, not marked.)
   for (const slug of ['alpha', 'beta']) {
     await arrive(slug, (doc) => {
       doc.decisions.push({
@@ -214,15 +216,17 @@ test('fleet archives and knowledge pages redact colliding local secret names', a
 
   const published = await publishPrintoutHtml(undefined, { openFile: async () => {} });
   await runInspect();
+  const overviewPath = path.join(weaverHome(), 'inspect.html');
   for (const file of [
     published.path,
     published.hubPath,
-    path.join(weaverHome(), 'inspect.html'),
+    overviewPath,
+    path.join(weaverHome(), 'learned.html'),
     path.join(weaverHome(), 'alpha', 'inspect.html'),
     path.join(weaverHome(), 'beta', 'inspect.html'),
   ]) {
     const content = fs.readFileSync(file, 'utf8');
     assert.doesNotMatch(content, new RegExp(`${alphaValue}|${betaValue}`), file);
-    if (file !== published.hubPath) assert.match(content, /«secret:/, file);
+    if (file !== published.hubPath && file !== overviewPath) assert.match(content, /«secret:/, file);
   }
 });

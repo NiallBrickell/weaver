@@ -185,7 +185,7 @@ const BIG_LINEAGE = 16;
 function decisionSection(doc: WorkstreamDoc): string {
   const decisions = doc.decisions;
   if (!decisions.length) {
-    return `<section><h2>Decision lineage</h2>${empty('No decisions recorded yet — direction has not been established.')}</section>`;
+    return `<section id="decisions"><h2>Decision lineage</h2>${empty('No decisions recorded yet — direction has not been established.')}</section>`;
   }
   // Details for the click-to-inspect panel, carried as JSON (escaped for the
   // script context) so the page needs no server round-trip.
@@ -237,7 +237,7 @@ function decisionSection(doc: WorkstreamDoc): string {
             : empty('No standing decisions — nothing currently commits this workstream.')
         }<details><summary>Full lineage graph (${decisions.length} decisions)</summary>${graph}</details>`
       : graph;
-  return `<section>
+  return `<section id="decisions">
 <h2>Decision lineage <span class="count">${standing} standing · ${superseded} superseded${closed ? ` · ${closed} closed` : ''}</span></h2>
 <p class="hint">Each row is one line of direction; arrows are explicit supersessions — a decision is never silently reversed. Click a node for its rationale and applied policies.</p>
 ${body}
@@ -246,33 +246,52 @@ ${body}
 }
 
 // ---------------------------------------------------------------------------
-// 2. Policy panel (global store)
+// 2. Policy rows (global store page + per-workstream section)
 
-function policyCard(p: PolicyRecord): string {
+/** The evidence verdict at a glance: how often the rule held, how often it
+ * needed a person. "Unproven" is a real answer, not an omission. */
+function evidenceTally(p: PolicyRecord): string {
+  if (!p.evidence.length) return `<span class="row-meta">unproven</span>`;
+  const clean = p.evidence.filter((e) => e.interventionFree).length;
+  const bad = p.evidence.length - clean;
+  return `<span class="row-meta"><span class="ok">${clean} clean</span>${bad ? ` · <span class="warn">${bad} intervened</span>` : ''}</span>`;
+}
+
+/**
+ * One policy, one line — the full record one click below it. Statements run to
+ * paragraphs and evidence narratives to pages; rendered open, a store of
+ * hundreds is a wall nobody reads. The summary row carries what a scan needs
+ * (status, the rule's gist, effect kind, evidence tally); the fold keeps every
+ * stored fact, and each evidence narrative folds one level further so even the
+ * opened record reads as a list of verdicts, not an essay.
+ */
+function policyRow(p: PolicyRecord): string {
+  const provenance =
+    'workstreamSlug' in p.provenance
+      ? `learned from <code>${esc(p.provenance.workstreamSlug)}</code> / <code>${esc(p.provenance.passId)}</code>${p.provenance.steeringId ? ` steering <code>${esc(p.provenance.steeringId)}</code>` : ''}`
+      : `seeded by <code>${esc(p.provenance.source)}</code> from <code>${esc(p.provenance.ref)}</code>`;
   const evidence = p.evidence.length
-    ? `<ul class="evidence">${p.evidence
+    ? p.evidence
         .map(
           (e) =>
-            `<li><span class="${e.interventionFree ? 'ok' : 'warn'}">${e.interventionFree ? 'intervention-free' : 'intervened'}</span> ${esc(e.workstreamSlug)} / ${esc(e.passId)} — ${esc(e.note)}</li>`,
+            `<details class="evd"><summary><span class="${e.interventionFree ? 'ok' : 'warn'}">${e.interventionFree ? '✓ intervention-free' : '✗ intervened'}</span> · ${esc(e.workstreamSlug)} / ${esc(e.passId)}</summary><p>${esc(e.note)}</p></details>`,
         )
-        .join('')}</ul>`
+        .join('')
     : `<p class="empty">No evidence yet — unproven.</p>`;
-  const lineage = p.supersededBy ? `<p class="lineage">superseded by <code>${esc(p.supersededBy)}</code></p>` : '';
   const contested = p.contested
-    ? `<p class="meta"><span class="pill warn">contested — under review</span> ${esc(p.contested.note)} (in <code>${esc(p.contested.workstreamSlug)}</code>)</p>`
+    ? `<p class="meta"><span class="warn">contested</span> — ${esc(p.contested.note)} (in <code>${esc(p.contested.workstreamSlug)}</code>)</p>`
     : '';
-  return `<article class="card policy ${p.status}${p.contested ? ' contested' : ''}">
-<header><code>${esc(p.id)}</code> <span class="pill status-${p.status}">${p.status}</span> <span class="pill effect">${esc(p.effect.kind)}</span></header>
+  const lineage = p.supersededBy ? `<p class="meta">superseded by <code>${esc(p.supersededBy)}</code></p>` : '';
+  return `<details class="row policy" id="${esc(p.id)}">
+<summary><span class="pill status-${p.status}">${p.status}</span><span class="row-title">${esc(firstLine(p.statement, 150))}</span>${p.contested ? '<span class="pill warn">contested</span>' : ''}<span class="pill effect">${esc(p.effect.kind)}</span>${evidenceTally(p)}</summary>
+<div class="row-body">
 <p class="statement">${esc(p.statement)}</p>
 <p class="meta">effect: ${esc(p.effect.description)}</p>
-<p class="meta">scope tags: ${p.scope.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(' ') || '(none)'}</p>
-<p class="meta">${
-    'workstreamSlug' in p.provenance
-      ? `learned from <code>${esc(p.provenance.workstreamSlug)}</code> pass <code>${esc(p.provenance.passId)}</code>${p.provenance.steeringId ? ` steering <code>${esc(p.provenance.steeringId)}</code>` : ''}`
-      : `seeded by <code>${esc(p.provenance.source)}</code> from <code>${esc(p.provenance.ref)}</code>`
-  } — ${esc(p.provenance.interventionSummary)}</p>
+<p class="meta"><code>${esc(p.id)}</code> · ${provenance} — ${esc(p.provenance.interventionSummary)}</p>
+<p class="meta">tags: ${p.scope.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(' ') || '(none)'}</p>
 ${contested}${evidence}${lineage}
-</article>`;
+</div>
+</details>`;
 }
 
 function policySection(
@@ -282,98 +301,75 @@ function policySection(
   opts: { emptyMsg?: string; footer?: string } = {},
 ): string {
   const body = policies.length
-    ? policies.map(policyCard).join('\n')
+    ? `<div class="rows">${policies.map(policyRow).join('\n')}</div>`
     : empty(opts.emptyMsg ?? 'No learned policies.');
-  return `<section><h2>${esc(heading)} <span class="count">${policies.length}</span></h2><p class="hint">${esc(note)}</p>${body}${opts.footer ?? ''}</section>`;
+  return `<section id="policies-here"><h2>${esc(heading)} <span class="count">${policies.length}</span></h2><p class="hint">${esc(note)}</p>${body}${opts.footer ?? ''}</section>`;
 }
 
 /**
- * One line per policy, for the groups a reader scans rather than studies —
- * the 341 shadow policies nothing has yet proven. A full card each buried the
- * handful that ARE load-bearing under a page nobody could read; the statement,
- * its effect, and where it came from are what distinguishes one unproven
- * candidate from another, and the full card is one click away in the store.
+ * The policy store as its own page. It is a library, not status — on the fleet
+ * page it buried "what needs me" under hundreds of rules, so the overview now
+ * links here instead. Every policy lands in exactly one group so the totals in
+ * the header reconcile with what is on screen; the groups a reader studies
+ * (active, contested, evidenced) are open rows, and the long tails (unproven,
+ * superseded) fold whole — complete records, out of the way.
  */
-function policyOneLiner(p: PolicyRecord): string {
-  const source =
-    'workstreamSlug' in p.provenance ? p.provenance.workstreamSlug : p.provenance.source;
-  const lineage = p.supersededBy ? ` <span class="dim">superseded by <code>${esc(p.supersededBy)}</code></span>` : '';
-  return `<li><span class="statement-line">${esc(firstLine(p.statement, 160))}</span> <span class="pill effect">${esc(p.effect.kind)}</span> <span class="dim">${esc(source)}</span>${lineage}</li>`;
-}
-
-function policyGroup(title: string, cards: string): string {
-  return `<h3>${esc(title)}</h3>${cards}`;
-}
-
-/**
- * The fleet page's learning answer: what the fleet has learned, grouped by how
- * much the fleet actually knows about it. Every policy lands in exactly one
- * group — superseded first (resolved lineage), then contested, then by status
- * and evidence — so the totals in the header reconcile with what is on screen.
- */
-function learnedSection(policies: PolicyRecord[]): string {
+export function renderLearnedHtml(policies: PolicyRecord[]): string {
+  let body: string;
   if (!policies.length) {
-    return `<section id="policies"><h2>Learned <span class="count">0</span></h2>${empty('No learned policies.')}</section>`;
-  }
-  const superseded = policies.filter((p) => p.status === 'superseded');
-  const live = policies.filter((p) => p.status !== 'superseded');
-  const contested = live.filter((p) => p.contested);
-  const rest = live.filter((p) => !p.contested);
-  const active = rest.filter((p) => p.status === 'active');
-  const shadowProven = rest.filter((p) => p.status === 'shadow' && p.evidence.length > 0);
-  const shadowUnproven = rest.filter((p) => p.status === 'shadow' && p.evidence.length === 0);
+    body = `<section><h2>Learned <span class="count">0</span></h2>${empty('No learned policies.')}</section>`;
+  } else {
+    const superseded = policies.filter((p) => p.status === 'superseded');
+    const live = policies.filter((p) => p.status !== 'superseded');
+    const contested = live.filter((p) => p.contested);
+    const rest = live.filter((p) => !p.contested);
+    const active = rest.filter((p) => p.status === 'active');
+    const shadowProven = rest.filter((p) => p.status === 'shadow' && p.evidence.length > 0);
+    const shadowUnproven = rest.filter((p) => p.status === 'shadow' && p.evidence.length === 0);
 
-  const byEvidence = (a: PolicyRecord, b: PolicyRecord) =>
-    b.evidence.length - a.evidence.length || b.createdAt.localeCompare(a.createdAt);
+    const byEvidence = (a: PolicyRecord, b: PolicyRecord) =>
+      b.evidence.length - a.evidence.length || b.createdAt.localeCompare(a.createdAt);
 
-  const unproven = policies.filter((p) => p.evidence.length === 0).length;
-  const effectCounts = new Map<string, number>();
-  for (const p of policies) effectCounts.set(p.effect.kind, (effectCounts.get(p.effect.kind) ?? 0) + 1);
-  const effects = [...effectCounts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([kind, n]) => `${n} ${kind}`)
-    .join(' / ');
-  const statuses = [
-    `${policies.filter((p) => p.status === 'active').length} active`,
-    `${policies.filter((p) => p.status === 'shadow').length} shadow (${unproven} unproven)`,
-    `${superseded.length} superseded`,
-  ].join(' · ');
+    const unproven = policies.filter((p) => p.evidence.length === 0).length;
+    const effectCounts = new Map<string, number>();
+    for (const p of policies) effectCounts.set(p.effect.kind, (effectCounts.get(p.effect.kind) ?? 0) + 1);
+    const effects = [...effectCounts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([kind, n]) => `${n} ${kind}`)
+      .join(' / ');
+    const statuses = [
+      `${policies.filter((p) => p.status === 'active').length} active`,
+      `${policies.filter((p) => p.status === 'shadow').length} shadow (${unproven} unproven)`,
+      `${superseded.length} superseded`,
+    ].join(' · ');
 
-  const groups = [
-    active.length
-      ? policyGroup(`Active (${active.length})`, [...active].sort(byEvidence).map(policyCard).join('\n'))
-      : '',
-    contested.length
-      ? policyGroup(
-          `Contested (${contested.length})`,
-          [...contested].sort(byEvidence).map(policyCard).join('\n'),
-        )
-      : '',
-    shadowProven.length
-      ? policyGroup(
-          `Shadow, with evidence (${shadowProven.length})`,
-          [...shadowProven].sort(byEvidence).map(policyCard).join('\n'),
-        )
-      : '',
-    shadowUnproven.length
-      ? `<details><summary>Shadow, unproven (${shadowUnproven.length})</summary><ul class="policy-lines">${shadowUnproven
-          .map(policyOneLiner)
-          .join('')}</ul></details>`
-      : '',
-    superseded.length
-      ? `<details><summary>Superseded (${superseded.length})</summary><ul class="policy-lines">${superseded
-          .map(policyOneLiner)
-          .join('')}</ul></details>`
-      : '',
-  ]
-    .filter(Boolean)
-    .join('\n');
-  return `<section id="policies">
+    const rows = (ps: PolicyRecord[]) =>
+      `<div class="rows">${[...ps].sort(byEvidence).map(policyRow).join('\n')}</div>`;
+    const groups = [
+      active.length ? `<h3>Active (${active.length})</h3>${rows(active)}` : '',
+      contested.length ? `<h3>Contested (${contested.length})</h3>${rows(contested)}` : '',
+      shadowProven.length
+        ? `<h3>Shadow, with evidence (${shadowProven.length})</h3>${rows(shadowProven)}`
+        : '',
+      shadowUnproven.length
+        ? `<details><summary>Shadow, unproven (${shadowUnproven.length})</summary>${rows(shadowUnproven)}</details>`
+        : '',
+      superseded.length
+        ? `<details><summary>Superseded (${superseded.length})</summary>${rows(superseded)}</details>`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    body = `<section>
 <h2>Learned <span class="count">${policies.length}</span></h2>
-<p class="hint">${esc(statuses)} — ${esc(effects)}</p>
-<p class="hint">Shadow policies shape plans but are cited on every application; promotion to active is earned by an intervention-free matching workstream. A policy can only add verification, narrow authority, or advise — authority is never learned.</p>
+<p class="hint">${esc(statuses)} — ${esc(effects)}. Shadow policies shape plans; promotion to active is earned by intervention-free evidence.</p>
 ${groups}
 </section>`;
+  }
+  return page('Learned — what the fleet knows', `${policies.length} polic${policies.length === 1 ? 'y' : 'ies'} · each row expands to the full record`, body, [
+    { href: 'inspect.html', label: '← Fleet' },
+    { href: 'printouts/index.html', label: 'Printouts' },
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -414,13 +410,13 @@ function interventionSection(doc: WorkstreamDoc): string {
     ? `<ol class="timeline">${entries
         .map(
           ({ kind, e }) =>
-            `<li class="tl-${kind}"><span class="tl-when">${esc(fmtVirtual(e.atVirtual))}</span><span class="pill tl-kind">${kind}</span> <span class="tl-what">${esc(e.summary)}</span></li>`,
+            `<li class="tl-${kind}"><span class="tl-when">${esc(fmtVirtual(e.atVirtual))}</span><span class="pill tl-kind">${kind}</span> <span class="tl-what">${esc(firstLine(e.summary, 200))}</span></li>`,
         )
         .join('')}</ol>`
     : empty('No human interventions in the event tail.');
-  return `<section>
+  return `<section id="interventions">
 <h2>Interventions <span class="count">${total} total</span></h2>
-<p class="hint">Interventions per successful outcome is the number the learning loop drives down. The timeline below is drawn from the bounded event tail (last ${doc.events.length} events), so the lifetime count above may exceed what is listed.</p>
+<p class="hint">Drawn from the bounded event tail (last ${doc.events.length} events); the lifetime count above may exceed what is listed.</p>
 ${body}
 </section>`;
 }
@@ -445,18 +441,37 @@ function deliverableRow(doc: WorkstreamDoc, d: Deliverable): string {
   return `<li class="del ${state === 'rejected' ? 'rejected' : 'candidate'}"><code>${esc(d.id)}</code> <strong>${esc(d.title)}</strong> (${esc(d.kind)}) — ${state === 'rejected' ? `<span class="bad">REJECTED</span>${reason}` : `candidate, adoption=${esc(state)}`}, hash <code>${esc(shortHash(d.contentHash))}</code>, from <code>${esc(d.producedByAssignment ?? asg?.id ?? '?')}</code></li>`;
 }
 
+/** How many of a deliverable group stay in the open before the rest fold. */
+const RECENT_DELIVERABLES = 10;
+
 function deliverableSection(doc: WorkstreamDoc): string {
   const adopted = doc.deliverables.filter((d) => d.adopted);
   const rest = doc.deliverables.filter((d) => !d.adopted);
   const rejected = rest.filter((d) => producingAssignment(doc, d)?.adoption.state === 'rejected');
   const candidates = rest.filter((d) => !rejected.includes(d));
-  const group = (title: string, items: Deliverable[]) =>
-    `<h3>${esc(title)} <span class="count">${items.length}</span></h3>` +
-    (items.length ? `<ul class="dels">${items.map((d) => deliverableRow(doc, d)).join('')}</ul>` : empty('None.'));
+  // A long-lived stream accumulates hundreds of these; newest first, a
+  // screenful in the open, the remainder folded whole — same shape as the
+  // actions audit, because it went unreadable the same way.
+  const group = (title: string, items: Deliverable[]) => {
+    const sorted = [...items].sort((a, b) =>
+      (b.adopted?.atVirtual ?? b.createdAtVirtual).localeCompare(a.adopted?.atVirtual ?? a.createdAtVirtual),
+    );
+    const recent = sorted.slice(0, RECENT_DELIVERABLES);
+    const older = sorted.slice(RECENT_DELIVERABLES);
+    const head = `<h3>${esc(title)} <span class="count">${items.length}</span></h3>`;
+    if (!items.length) return `${head}${empty('None.')}`;
+    return (
+      head +
+      `<ul class="dels">${recent.map((d) => deliverableRow(doc, d)).join('')}</ul>` +
+      (older.length
+        ? `<details><summary>Older ${esc(title.toLowerCase())} (${older.length})</summary><ul class="dels">${older.map((d) => deliverableRow(doc, d)).join('')}</ul></details>`
+        : '')
+    );
+  };
   if (!doc.deliverables.length) {
-    return `<section><h2>Deliverables</h2>${empty('No deliverables produced yet.')}</section>`;
+    return `<section id="deliverables"><h2>Deliverables</h2>${empty('No deliverables produced yet.')}</section>`;
   }
-  return `<section>
+  return `<section id="deliverables">
 <h2>Deliverables</h2>
 <p class="hint">A worker finishing is a submission; only adoption pins a hash and makes it authoritative. Rejected candidates stay inspectable.</p>
 ${group('Adopted', adopted)}
@@ -468,7 +483,16 @@ ${group('Rejected', rejected)}
 // ---------------------------------------------------------------------------
 // 5. Actions audit
 
-function actionCard(a: Assignment): string {
+/** The action states that are over and done, as opposed to in motion. */
+const SETTLED_ACTION_STATES = new Set(['completed', 'failed', 'cancelled']);
+
+/**
+ * One action, one line: state, what it was, whether the effect was confirmed.
+ * An act still in motion opens expanded — the ask is exactly what a human came
+ * to read — while settled history opens on demand. The fold keeps the whole
+ * record: approval, the executed command or the full briefing, the readback.
+ */
+function actionRow(a: Assignment): string {
   const ex = a.exec;
   const approval = ex?.approval
     ? `<span class="ok">approved by ${esc(ex.approval.by)}</span> at ${esc(fmtVirtual(ex.approval.at))}`
@@ -478,23 +502,27 @@ function actionCard(a: Assignment): string {
         ? '<span class="bad">rejected / cancelled</span>'
         : '<span class="warn">no approval recorded</span>';
   // An engine-executed command IS the thing that was approved — it stays in
-  // the open. A worker briefing is context, often pages of it, and 90 cards'
-  // worth of open briefings is what made the audit unreadable: the full text
-  // keeps its place on the record, one click away.
+  // the open once the row is. A worker briefing is context, often pages of it:
+  // it keeps its place on the record, one more click away.
   const executed = ex?.run
     ? `<p class="meta">engine-executed command:</p><pre>${esc(ex.run)}</pre>`
     : `<details><summary>full worker briefing</summary><pre>${esc(a.briefing)}</pre></details>`;
   const readback = ex?.verified
     ? `<p class="meta">readback <span class="${ex.verified.ok ? 'ok' : 'bad'}">${ex.verified.ok ? 'CONFIRMED' : 'FAILED'}</span> at ${esc(fmtVirtual(ex.verified.at))} via <code>${esc(ex.verify)}</code></p><pre>${esc(ex.verified.output.trim().slice(0, 400))}</pre>`
     : `<p class="meta">readback not yet run (verify: <code>${esc(ex?.verify ?? '?')}</code>)</p>`;
-  return `<article class="card action">
-<header><code>${esc(a.id)}</code> <span class="pill">${esc(a.state)}</span> <span class="pill">adoption: ${esc(a.adoption.state)}</span></header>
-<p class="statement">${esc(a.objective)}</p>
-${ex?.ask ? `<p class="meta">ask: ${esc(ex.ask)}</p>` : ''}
+  const verdict = ex?.verified
+    ? `<span class="${ex.verified.ok ? 'ok' : 'bad'}">${ex.verified.ok ? '✓ confirmed' : '✗ failed'}</span>`
+    : '';
+  return `<details class="row action"${SETTLED_ACTION_STATES.has(a.state) ? '' : ' open'}>
+<summary><span class="pill state-${esc(a.state)}">${esc(a.state)}</span><span class="row-title">${esc(firstLine(a.objective, 150))}</span><span class="row-meta">${verdict}${verdict ? ' · ' : ''}adoption: ${esc(a.adoption.state)}</span></summary>
+<div class="row-body">
+<p class="meta"><code>${esc(a.id)}</code></p>
+${ex?.ask ? `<p class="statement">${esc(ex.ask)}</p>` : ''}
 <p class="meta">${approval}</p>
 ${executed}
 ${readback}
-</article>`;
+</div>
+</details>`;
 }
 
 /** How many settled actions stay in the open before the rest fold away. */
@@ -503,32 +531,31 @@ const RECENT_ACTIONS = 10;
 function actionSection(doc: WorkstreamDoc): string {
   const actions = doc.assignments.filter((a) => a.kind === 'action');
   if (!actions.length) {
-    return `<section><h2>Actions audit</h2>
-<p class="hint">Every real-world act: who approved it, what actually ran, and the deterministic readback that confirmed (or refuted) the effect — the worker's prose never counts.</p>
+    return `<section id="actions"><h2>Actions audit</h2>
+<p class="hint">Every real-world act: who approved it, what ran, and the deterministic readback that confirmed the effect.</p>
 ${empty('No real-world actions in this workstream.')}</section>`;
   }
-  // Anything still in motion is shown in full; settled history is newest
-  // first, windowed after a screenful. Nothing leaves the record — the fold
-  // holds every older card, complete.
-  const settled = new Set(['completed', 'failed', 'cancelled']);
-  const open = actions.filter((a) => !settled.has(a.state));
+  // Anything still in motion leads, expanded; settled history is one line
+  // each, newest first, windowed after a screenful. Nothing leaves the record
+  // — every fold holds the complete row.
+  const open = actions.filter((a) => !SETTLED_ACTION_STATES.has(a.state));
   const rest = actions
-    .filter((a) => settled.has(a.state))
+    .filter((a) => SETTLED_ACTION_STATES.has(a.state))
     .sort((a, b) => b.createdAtVirtual.localeCompare(a.createdAtVirtual));
   const recent = rest.slice(0, RECENT_ACTIONS);
   const older = rest.slice(RECENT_ACTIONS);
   const body = [
-    ...open.map(actionCard),
-    ...recent.map(actionCard),
+    ...open.map(actionRow),
+    ...recent.map(actionRow),
     older.length
-      ? `<details><summary>Older actions (${older.length})</summary>${older.map(actionCard).join('\n')}</details>`
+      ? `<details><summary>Older actions (${older.length})</summary><div class="rows">${older.map(actionRow).join('\n')}</div></details>`
       : '',
   ]
     .filter(Boolean)
     .join('\n');
-  return `<section><h2>Actions audit <span class="count">${actions.length}</span></h2>
-<p class="hint">Every real-world act: who approved it, what actually ran, and the deterministic readback that confirmed (or refuted) the effect — the worker's prose never counts. In motion first, then settled, newest first.</p>
-${body}</section>`;
+  return `<section id="actions"><h2>Actions audit <span class="count">${actions.length}</span></h2>
+<p class="hint">Every real-world act: who approved it, what ran, and the deterministic readback that confirmed the effect. In motion first, then settled, newest first.</p>
+<div class="rows">${body}</div></section>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -553,15 +580,26 @@ pre { background: var(--panel2); border: 1px solid var(--line); border-radius: 8
 .pill.status-active { color: var(--ok); border-color: var(--ok); }
 .pill.status-shadow { color: var(--warn); border-color: var(--warn); }
 .pill.status-superseded { color: var(--dim); text-decoration: line-through; }
+.pill.state-gated { color: var(--warn); border-color: var(--warn); }
+.pill.state-running, .pill.state-awaiting_review { color: var(--coord); border-color: var(--coord); }
+.pill.state-failed, .pill.state-cancelled { color: var(--bad); border-color: var(--bad); }
 .tag { display:inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--panel2); }
 .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
-.card { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 10px 0; }
-.card header { margin-bottom: 6px; }
-.card .statement { margin: 4px 0; font-weight: 600; }
-.card .meta { margin: 3px 0; color: var(--dim); font-size: 13px; }
-.card.policy.superseded { opacity: .6; }
-.evidence { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
-.lineage { color: var(--dim); font-size: 13px; }
+.statement { margin: 4px 0; font-weight: 600; max-width: 90ch; }
+.meta { margin: 3px 0; color: var(--dim); font-size: 13px; max-width: 90ch; }
+.rows { margin: 4px 0; }
+.row { margin: 0; border-bottom: 1px solid var(--line); }
+.row > summary { display: flex; align-items: baseline; gap: 10px; padding: 7px 4px; cursor: pointer; list-style: none; color: var(--fg); font-size: 14px; }
+.row > summary::-webkit-details-marker { display: none; }
+.row > summary::before { content: "▸"; color: var(--dim); font-size: 11px; flex: none; }
+.row[open] > summary::before { content: "▾"; }
+.row .row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.row-meta { color: var(--dim); font-size: 12px; white-space: nowrap; flex: none; }
+.row .pill { flex: none; }
+.row-body { padding: 4px 10px 12px 22px; border-left: 2px solid var(--line); margin: 0 0 10px 5px; }
+.evd { margin: 2px 0; }
+.evd > summary { cursor: pointer; font-size: 13px; color: var(--dim); padding: 2px 0; }
+.evd p { margin: 4px 0 8px 16px; font-size: 13px; color: var(--fg); max-width: 90ch; }
 .legend { display:flex; gap: 18px; color: var(--dim); font-size: 12px; margin-bottom: 8px; }
 .legend .swatch { display:inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; border: 2px solid var(--edge); }
 .legend .swatch.human { border-color: var(--human); } .legend .swatch.coordinator { border-color: var(--coord); }
@@ -587,8 +625,10 @@ svg text { pointer-events: none; }
 .timeline li.tl-config { border-left-color: var(--muted, #666); opacity: .75; }
 .tl-when { color: var(--dim); font-size: 12px; font-family: ui-monospace, monospace; margin-right: 8px; }
 .dels { list-style: none; padding: 0; margin: 6px 0; } .dels li { padding: 4px 0; }
-.page-nav { display:flex; gap:16px; margin:0 0 14px; font-size:13px; }
-.page-nav a { text-decoration:none; }
+.page-nav { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0 -24px 14px; padding: 12px 24px; font-size: 13px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.page-nav a { text-decoration: none; color: var(--fg); }
+.page-nav a:hover { color: var(--coord); }
+.page-nav .nav-count { color: var(--dim); }
 a { color: var(--coord); }
 footer { color: var(--dim); font-size: 12px; margin-top: 24px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -607,8 +647,8 @@ tr.state-waiting td.state { color: var(--dim); }
 tr.state-idle td.state, tr.state-paused td.state { color: var(--dim); font-style: italic; }
 details { margin: 10px 0; }
 details > summary { cursor: pointer; color: var(--dim); font-size: 13px; padding: 4px 0; }
-.since, .policy-lines { list-style: none; margin: 4px 0 12px; padding: 0; }
-.since li, .policy-lines li { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.since { list-style: none; margin: 4px 0 12px; padding: 0; }
+.since li { padding: 4px 0; border-bottom: 1px solid var(--line); }
 .statement-line { font-weight: 600; }
 `;
 
@@ -646,13 +686,26 @@ const SCRIPT = `
 })();
 `;
 
-function page(
-  title: string,
-  subtitle: string,
-  body: string,
-  back?: { href: string; label: string },
-  printoutsHref = 'printouts/index.html',
-): string {
+/** A nav entry; a count renders dimmed after the label so the bar doubles as
+ * a table of contents with sizes ("Actions · 95"). */
+interface NavEntry {
+  href: string;
+  label: string;
+  count?: number;
+}
+
+/**
+ * Shared page chrome. The nav is sticky and every page carries one: the
+ * original design stacked sections with nothing to jump by, which at fleet
+ * scale meant scrolling blind through thousands of lines to find a section.
+ */
+function page(title: string, subtitle: string, body: string, nav: NavEntry[]): string {
+  const links = nav
+    .map(
+      (n) =>
+        `<a href="${esc(n.href)}">${esc(n.label)}${n.count !== undefined ? ` <span class="nav-count">${n.count}</span>` : ''}</a>`,
+    )
+    .join('');
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -663,7 +716,7 @@ function page(
 </head>
 <body>
 <main>
-<nav class="page-nav">${back ? `<a href="${esc(back.href)}">${esc(back.label)}</a>` : ''}<a href="${esc(printoutsHref)}">Printouts</a></nav>
+<nav class="page-nav">${links}</nav>
 <h1>${esc(title)}</h1>
 <p class="subtitle">${esc(subtitle)}</p>
 ${body}
@@ -724,18 +777,10 @@ ${
     : legacyClaim
       ? `<h3>Legacy conclusion claim (evidence unvalidated)</h3><p>${esc(legacyClaim)}</p>`
     : latest
-      ? `<h3>Current course</h3><p><strong>${esc(latest.title)}</strong> — ${esc(latest.rationale)}</p>`
+      ? `<h3>Current course</h3><p><strong>${esc(latest.title)}</strong> — ${esc(firstLine(latest.rationale, 300))}</p>`
       : ''
 }
-${open.length ? `<h3>Waiting on the human</h3><ul>${open.map((a) => `<li>${esc(a.summary.slice(0, 400))}</li>`).join('')}</ul>` : ''}
-</section>`;
-}
-
-function printoutSection(href: string, scope: string): string {
-  return `<section>
-<h2>Printouts</h2>
-<p class="hint">Readable, archived catch-up windows showing what changed, what was adopted, and which external effects were actually verified.</p>
-<p><a href="${esc(href)}">Browse ${esc(scope)} printouts →</a></p>
+${open.length ? `<h3>Waiting on the human</h3><ul>${open.map((a) => `<li>${esc(firstLine(a.summary, 300))}</li>`).join('')}</ul>` : ''}
 </section>`;
 }
 
@@ -756,31 +801,40 @@ export function renderWorkstreamHtml(
     ws.managedBy ? `managed by ${ws.managedBy.slug}` : '',
     managed.length ? `manages ${managed.length} workstream${managed.length === 1 ? '' : 's'}` : '',
   ].filter(Boolean).join(' · ');
+  const inPlay = policiesForWorkstream(policies, doc);
   const body = [
     taskSection(doc),
-    printoutSection(`../printouts/index.html#${encodeURIComponent(ws.slug)}`, 'this workstream’s'),
     decisionSection(doc),
+    actionSection(doc),
+    deliverableSection(doc),
     policySection(
-      policiesForWorkstream(policies, doc),
+      inPlay,
       'Policies in play here',
-      'Learned here, cited by a decision here, or evidenced by an outcome here — what has actually shaped this workstream. Tag scope is wider: it selects what a coordinator MAY apply when planning, and lives in the full store. A policy can only add verification, narrow authority, or advise — authority is never learned.',
+      'Learned here, cited by a decision here, or evidenced by an outcome here. Tag scope is wider — it selects what a coordinator MAY apply — and lives in the full store.',
       {
         emptyMsg: 'No policy has been learned here, applied here, or evidenced here yet.',
-        footer: `<p class="hint"><a href="../inspect.html#policies">Full policy store (${policies.length}) →</a></p>`,
+        footer: `<p class="hint"><a href="../learned.html">Full policy store (${policies.length}) →</a></p>`,
       },
     ),
     interventionSection(doc),
-    deliverableSection(doc),
-    actionSection(doc),
   ].join('\n');
   return page(
     `${ws.title} — knowledge inspector`,
     `${ws.slug} · ${ws.status} · revision ${doc.revision} · ${doc.spend.coordinatorPasses} coordinator passes · ~$${doc.spend.totalCostUsd.toFixed(2)} SDK estimate${managedBadge ? ` · ${managedBadge}` : ''}`,
     body,
     // A workstream page is reachable directly (dashboard [i] on a selected
-    // stream), so it always carries its own way back up to the fleet page.
-    { href: '../inspect.html', label: '← all workstreams' },
-    `../printouts/index.html#${encodeURIComponent(ws.slug)}`,
+    // stream), so it always carries its own way back up to the fleet page —
+    // and a table of contents, because at real scale these sections run long.
+    [
+      { href: '../inspect.html', label: '← Fleet' },
+      { href: '#decisions', label: 'Decisions', count: doc.decisions.length },
+      { href: '#actions', label: 'Actions', count: doc.assignments.filter((a) => a.kind === 'action').length },
+      { href: '#deliverables', label: 'Deliverables', count: doc.deliverables.length },
+      { href: '#policies-here', label: 'Policies', count: inPlay.length },
+      { href: '#interventions', label: 'Interventions', count: doc.spend.humanInterventions ?? 0 },
+      { href: '../learned.html', label: 'Learned' },
+      { href: `../printouts/index.html#${encodeURIComponent(ws.slug)}`, label: 'Printouts' },
+    ],
   );
 }
 
@@ -870,7 +924,7 @@ export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
 
 function needsYouSection(needs: FleetNeed[]): string {
   if (!needs.length) {
-    return `<section><h2>Needs you</h2>${empty('Nothing needs you.')}</section>`;
+    return `<section id="needs-you"><h2>Needs you</h2>${empty('Nothing needs you.')}</section>`;
   }
   const wall = new Date();
   const virtual = virtualNow();
@@ -883,9 +937,9 @@ function needsYouSection(needs: FleetNeed[]): string {
 <td>${esc(firstLine(n.summary, 160))}</td>
 </tr>`;
   });
-  return `<section>
+  return `<section id="needs-you">
 <h2>Needs you <span class="count">${needs.length}</span></h2>
-<p class="hint">Most urgent first, then longest waiting. Answer them in the dashboard (<code>weaver watch</code>) — approving there IS the approval.</p>
+<p class="hint">Most urgent first, then longest waiting. Answer them in <code>weaver watch</code>.</p>
 <table><tbody>${rows.join('\n')}</tbody></table>
 </section>`;
 }
@@ -906,7 +960,7 @@ function sinceYouLeftSection(
   viewed: InspectViewed | null,
 ): string {
   if (!viewed) {
-    return `<section>
+    return `<section id="since">
 <h2>Since you left</h2>
 ${empty('First visit — the next generation will know what changed.')}
 </section>`;
@@ -974,7 +1028,7 @@ ${empty('First visit — the next generation will know what changed.')}
   const evidenceLine = newEvidence.length
     ? `<p class="meta">${newEvidence.length} new piece(s) of policy evidence — ${newEvidence.filter((e) => e.interventionFree).length} intervention-free.</p>`
     : '';
-  return `<section>
+  return `<section id="since">
 <h2>Since you left</h2>
 <p class="hint">Everything below happened after the last time these pages were generated (${esc(fmtVirtual(viewed.wallAt))} wall · ${esc(fmtVirtual(viewed.virtualAt))} virtual).</p>
 ${body || evidenceLine ? `${body}\n${evidenceLine}` : empty('Nothing has changed since you last looked.')}
@@ -1121,9 +1175,9 @@ ${tail}
 <tbody>${doneRows.join('\n')}</tbody>
 </table></details>`
     : '';
-  return `<section>
+  return `<section id="fleet">
 <h2>Fleet <span class="count">${live.length} live · ${doneRows.length} done</span></h2>
-<p class="hint">One row per workstream: what it is doing now, and what it has committed to, adopted, and cost. Direction is standing decisions — the commitments a fresh coordinator continues.</p>
+<p class="hint">One row per workstream. Direction is standing decisions — the commitments a fresh coordinator continues.</p>
 ${skipped}${liveTable}
 ${done}
 </section>`;
@@ -1136,17 +1190,25 @@ export function renderOverviewHtml(
   viewed: InspectViewed | null = null,
 ): string {
   const needs = fleetNeeds(docs);
+  const live = docs.filter((d) => d.workstream.status !== 'done').length;
+  // The store itself lives on learned.html: it is a library, and inline it
+  // buried "what needs me" under hundreds of rules nobody came here to read.
   const body = [
     needsYouSection(needs),
     sinceYouLeftSection(docs, policies, viewed),
     fleetSection(docs, needs, unreadable),
-    learnedSection(policies),
-    printoutSection('printouts/index.html', 'fleet'),
   ].join('\n');
   return page(
     'Weaver — knowledge inspector',
-    `Overview of ${docs.length} workstream(s) and ${policies.length} learned polic${policies.length === 1 ? 'y' : 'ies'} under ${weaverHome()}`,
+    `${docs.length} workstream(s) · ${policies.length} learned polic${policies.length === 1 ? 'y' : 'ies'} · ${weaverHome()}`,
     body,
+    [
+      { href: '#needs-you', label: 'Needs you', count: needs.length },
+      { href: '#since', label: 'Since you left' },
+      { href: '#fleet', label: 'Fleet', count: live },
+      { href: 'learned.html', label: 'Learned', count: policies.length },
+      { href: 'printouts/index.html', label: 'Printouts' },
+    ],
   );
 }
 
@@ -1179,6 +1241,9 @@ export async function runInspect(slug?: string): Promise<string> {
   const allSecrets = loadAllSecrets();
   const unreadable: string[] = [];
   for (const s of await listWorkstreams()) {
+    // Rendering a real fleet is seconds of CPU-bound work; yield between
+    // workstreams so a host UI (the dashboard's [i]) can keep painting.
+    await new Promise((resolve) => setImmediate(resolve));
     let doc: WorkstreamDoc;
     try {
       doc = await load(s);
@@ -1193,6 +1258,7 @@ export async function runInspect(slug?: string): Promise<string> {
   }
   const overview = path.join(weaverHome(), 'inspect.html');
   writeRedacted(overview, renderOverviewHtml(docs, policies, unreadable, viewed), allSecrets);
+  writeRedacted(path.join(weaverHome(), 'learned.html'), renderLearnedHtml(policies), allSecrets);
   await writePrintoutIndex();
   writeInspectViewed();
   return slug ? path.join(workstreamDir(slug), 'inspect.html') : overview;
