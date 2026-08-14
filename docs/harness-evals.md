@@ -263,15 +263,22 @@ no Kimi route is active.
 
 Model qualification and executor qualification are separate gates. A clean OpenRouter model cohort
 proves behavior through the tested OpenHands surface; it does not prove that the adapter carries the
-kernel's full ordinary worker capability contract. The current container mounts only one working
-directory and exposes Weaver's submission MCP, so automatic OpenHands routing waits for the
-operator's configured MCP servers and every declared source directory to cross the remote seam.
-Explicit OpenHands trials remain available in the meantime.
+kernel's full ordinary worker capability contract. Epoch
+`openhands-agent-server-1.41.0-weaver.3` mounts every declared source and adds an authenticated
+host-side relay for serializable stdio/HTTP/SSE user/local entries in `~/.claude.json`; durable
+commands, URLs, headers, environment credentials, and provider keys never enter the container.
+The relay snapshots the complete paginated tool catalog once, preserves text/image result blocks,
+and scrubs credentials from tool arguments, replies, catalog metadata, errors, and teardown.
+Unsupported OAuth and `headersHelper` variants fail before launch. Project `.mcp.json`, managed and
+plugin servers, and Claude.ai connectors remain outside discovery, so automatic OpenHands routing
+stays closed and all `.2` OpenRouter cohorts are stale for `.3` route qualification. Explicit
+OpenHands trials remain available in the meantime.
 
 ## What this does not prove yet
 
-Local Agent Server isolation means one fresh OpenHands container with only the evaluation workspace
-mounted. `host-process` means the Codex, OpenCode, Pi, Prime, or Claude process relies on the environment that
+Local Agent Server isolation means one fresh OpenHands container with only the declared evaluation
+directories mounted. `host-process` means the Codex, OpenCode, Pi, Prime, or Claude process relies
+on the environment that
 launched Weaver. Neither label is a claim of production-grade hostile or multi-tenant containment.
 The telemetry already carries a third `managed-sandbox` isolation value
 ([`src/evals/types.ts`](../src/evals/types.ts)) reserved for the managed-runtime trials that a real

@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { setExecutorSecret } from '../../secrets.js';
 import type { SubmitBridge } from '../../executor/submitBridge.js';
 import type { SubmitSurface, WorkerExecutionRequest } from '../../executor/types.js';
@@ -17,15 +17,27 @@ interface SeenFetch {
   init: RequestInit;
 }
 
+const TEST_WORKSPACE = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-openhands-workspace-'));
+const TEST_WORKSPACE_REAL = fs.realpathSync(TEST_WORKSPACE);
+after(() => fs.rmSync(TEST_WORKSPACE, { recursive: true, force: true }));
+
 describe('OpenHands eval executor', () => {
   it('runs one fresh pinned Agent Server conversation and always tears it down', async () => {
     const commands: Array<{ command: string; args: string[] }> = [];
     const seenFetch: SeenFetch[] = [];
     let bridgeClosed = 0;
     let providerProxyClosed = 0;
+    let operatorRelayClosed = 0;
     let statusReads = 0;
     const runCommand: CommandRunner = async (command, args) => {
       commands.push({ command, args: [...args] });
+      if (args[0] === 'ps') {
+        return {
+          exitCode: 0,
+          stdout: 'weaver-openhands-orphan-dead\t424242\nweaver-openhands-live\t7\n',
+          stderr: '',
+        };
+      }
       if (args[0] === 'port') {
         return { exitCode: 0, stdout: '127.0.0.1:49152\n', stderr: '' };
       }
@@ -80,6 +92,20 @@ describe('OpenHands eval executor', () => {
       runCommand,
       fetch: fetchImpl,
       startSubmitBridge: async () => bridge,
+      startMcpRelay: async (config, options) => {
+        assert.deepEqual(config, {
+          type: 'http', url: 'https://tracker.example.invalid/mcp',
+          headers: { Authorization: '${TRACKER_TOKEN}' },
+        });
+        assert.equal(options.env.TRACKER_TOKEN, 'host-only-tracker-secret');
+        assert.equal(options.bindHost, '0.0.0.0');
+        assert.equal(options.advertiseHost, 'host.docker.internal');
+        return {
+          url: 'http://host.docker.internal:41920/mcp',
+          token: 'operator-relay-secret',
+          async close() { operatorRelayClosed += 1; },
+        };
+      },
       startProviderProxy: async (options) => {
         assert.equal(options.upstreamApiKey, 'provider-secret');
         assert.equal(options.upstreamBaseUrl, 'https://provider.example/v1');
@@ -96,14 +122,24 @@ describe('OpenHands eval executor', () => {
         };
       },
       sleep: async () => undefined,
+      isProcessAlive: (pid) => pid === 7,
       now: increasingClock(),
     });
 
-    const outcome = await executor.execute(request());
+    const req = request();
+    req.env.TRACKER_TOKEN = 'host-only-tracker-secret';
+    req.operatorMcpServers = {
+      tracker: {
+        type: 'http', url: 'https://tracker.example.invalid/mcp',
+        headers: { Authorization: '${TRACKER_TOKEN}' },
+      },
+    };
+    const outcome = await executor.execute(req);
 
     assert.deepEqual(outcome, { costUsd: 1, sessionId: 'conversation-1' });
     assert.equal(bridgeClosed, 1);
     assert.equal(providerProxyClosed, 1);
+    assert.equal(operatorRelayClosed, 1);
     assert.equal(statusReads, 2);
 
     const dockerRun = commands.find(({ args }) => args[0] === 'run');
@@ -112,7 +148,10 @@ describe('OpenHands eval executor', () => {
     assert.ok(dockerRun.args.includes('--rm'));
     assert.ok(dockerRun.args.includes('--detach'));
     assert.ok(dockerRun.args.includes(OPENHANDS_AGENT_SERVER_IMAGE));
-    assert.deepEqual(valuesAfter(dockerRun.args, '--volume'), ['/work/repo:/workspace']);
+    assert.ok(valuesAfter(dockerRun.args, '--label').includes('weaver.executor=openhands'));
+    assert.ok(valuesAfter(dockerRun.args, '--label').includes(`weaver.owner_pid=${process.pid}`));
+    assert.ok(valuesAfter(dockerRun.args, '--label').some((label) => label.startsWith('weaver.owner_host=')));
+    assert.deepEqual(valuesAfter(dockerRun.args, '--volume'), [`${TEST_WORKSPACE_REAL}:/workspace:rw`]);
     assert.deepEqual(valuesAfter(dockerRun.args, '--add-host'), [
       'host.docker.internal:host-gateway',
     ]);
@@ -124,6 +163,10 @@ describe('OpenHands eval executor', () => {
     const dockerStop = commands.find(({ args }) => args[0] === 'stop');
     assert.ok(dockerStop);
     assert.equal(dockerStop.args.at(-1), valueAfter(dockerRun.args, '--name'));
+    assert.ok(commands.some(({ args }) =>
+      args[0] === 'rm' && args[1] === '--force' && args[2] === 'weaver-openhands-orphan-dead',
+    ));
+    assert.ok(!commands.some(({ args }) => args.includes('weaver-openhands-live')));
 
     const create = seenFetch.find(
       ({ url, init }) => url.endsWith('/api/conversations') && init.method === 'POST',
@@ -147,11 +190,19 @@ describe('OpenHands eval executor', () => {
         transport: 'streamable-http',
         auth: { strategy: 'bearer', value: bridge.token },
       },
+      tracker: {
+        url: 'http://host.docker.internal:41920/mcp',
+        transport: 'streamable-http',
+        auth: { strategy: 'bearer', value: 'operator-relay-secret' },
+      },
     });
-    assert.match(body.agent.agent_context.system_message_suffix, /mounted at \/workspace/);
+    assert.ok(!JSON.stringify(body).includes('host-only-tracker-secret'));
+    assert.ok(!JSON.stringify(body).includes('tracker.example.invalid'));
+    assert.match(body.agent.agent_context.system_message_suffix, /→ \/workspace/);
     assert.equal(body.agent.agent_context.load_project_skills, false);
     assert.deepEqual(body.workspace, { type: 'local', working_dir: '/workspace' });
-    assert.equal(body.initial_message.content[0].text, 'Complete the bounded assignment.');
+    assert.match(body.initial_message.content[0].text, /^Complete the bounded assignment\./);
+    assert.match(body.initial_message.content[0].text, /OpenHands workspace path mapping/);
     assert.equal(body.max_iterations, 12);
     assert.deepEqual(body.tool_module_qualnames, {
       terminal: 'openhands.tools.terminal.definition',
@@ -171,7 +222,7 @@ describe('OpenHands eval executor', () => {
       modelRequested: 'anthropic/claude-sonnet-4-5-20250929',
       providerResolved: 'anthropic',
       modelResolved: 'anthropic/claude-sonnet-4-5-20250929',
-      harnessVersion: 'openhands-agent-server-1.41.0-weaver.2',
+      harnessVersion: 'openhands-agent-server-1.41.0-weaver.3',
       isolation: 'agent-server',
       startedAt: '1970-01-01T00:00:01.000Z',
       endedAt: '1970-01-01T00:00:01.004Z',
@@ -218,6 +269,77 @@ describe('OpenHands eval executor', () => {
     assert.equal(executor.lastTelemetry()?.terminalReason, 'unsupported');
   });
 
+  it("reserves the 'weaver' MCP name for submission before any relay or process starts", async () => {
+    let sideEffects = 0;
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
+      startMcpRelay: async () => {
+        sideEffects += 1;
+        throw new Error('must not start');
+      },
+      startProviderProxy: async () => {
+        sideEffects += 1;
+        throw new Error('must not start');
+      },
+      runCommand: async () => {
+        sideEffects += 1;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+      now: () => 1_000,
+    });
+    const req = request();
+    req.operatorMcpServers = {
+      Weaver: { type: 'http', url: 'https://example.invalid/mcp' },
+    };
+
+    const outcome = await executor.execute(req);
+
+    assert.equal(sideEffects, 0);
+    assert.match(outcome.error ?? '', /reserved for the submission surface/);
+    assert.equal(executor.lastTelemetry()?.terminalReason, 'unsupported');
+  });
+
+  it('closes earlier operator relays if a later configured server cannot start', async () => {
+    let relayStarts = 0;
+    let firstRelayClosed = 0;
+    let downstreamStarts = 0;
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
+      startMcpRelay: async () => {
+        relayStarts += 1;
+        if (relayStarts === 2) throw new Error('failed to connect to configured MCP server');
+        return {
+          url: 'http://host.docker.internal:41922/mcp', token: 'first-relay-token',
+          async close() { firstRelayClosed += 1; },
+        };
+      },
+      startProviderProxy: async () => {
+        downstreamStarts += 1;
+        throw new Error('must not start');
+      },
+      runCommand: async () => {
+        downstreamStarts += 1;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+      now: () => 1_000,
+    });
+    const req = request();
+    req.operatorMcpServers = {
+      first: { type: 'http', url: 'https://first.example.invalid/mcp' },
+      second: { type: 'http', url: 'https://second.example.invalid/mcp' },
+    };
+
+    const outcome = await executor.execute(req);
+
+    assert.equal(relayStarts, 2);
+    assert.equal(firstRelayClosed, 1);
+    assert.equal(downstreamStarts, 0);
+    assert.equal(outcome.error, 'failed to connect to configured MCP server');
+    assert.equal(executor.lastTelemetry()?.terminalReason, 'error');
+  });
+
   it('scrubs durable and per-run credentials from every submission field and relay reply', async () => {
     let relayed: SubmitSurface | null = null;
     let submitted = '';
@@ -240,6 +362,7 @@ describe('OpenHands eval executor', () => {
             'provider-secret',
             'provider-proxy-token',
             'bridge-secret',
+            'operator-relay-token',
             session,
           ].join(' / ');
           replySeenByAgent = (await relayed.submitResult({
@@ -279,10 +402,18 @@ describe('OpenHands eval executor', () => {
         modelResolved: () => 'anthropic/claude-sonnet-4-5-20250929',
         async close() {},
       }),
+      startMcpRelay: async () => ({
+        url: 'http://host.docker.internal:41921/mcp',
+        token: 'operator-relay-token',
+        async close() {},
+      }),
       sleep: async () => undefined,
       now: increasingClock(),
     });
     const req = request();
+    req.operatorMcpServers = {
+      tracker: { type: 'http', url: 'https://tracker.example.invalid/mcp' },
+    };
     req.submit.submitResult = async (args) => {
       submitted = JSON.stringify(args);
       return { text: `ack provider-secret provider-proxy-token bridge-secret ${args.summary}` };
@@ -291,7 +422,9 @@ describe('OpenHands eval executor', () => {
     const outcome = await executor.execute(req);
 
     assert.equal(outcome.error, undefined);
-    for (const secret of ['provider-secret', 'provider-proxy-token', 'bridge-secret']) {
+    for (const secret of [
+      'provider-secret', 'provider-proxy-token', 'bridge-secret', 'operator-relay-token',
+    ]) {
       assert.ok(!submitted.includes(secret));
       assert.ok(!replySeenByAgent.includes(secret));
     }
@@ -530,28 +663,58 @@ describe('OpenHands eval executor', () => {
     assert.equal(bridgeClosed, 1);
   });
 
-  it('fails closed when a distinct additional directory would widen the mount set', async () => {
-    let sideEffects = 0;
+  it('mounts distinct additional directories and rewrites their prompt paths', async () => {
+    const additional = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-openhands-additional-'));
+    const seenCommands: string[][] = [];
+    let createBody: Record<string, any> | undefined;
     const executor = new OpenHandsEvalExecutor({
       apiKey: 'provider-secret',
-      runCommand: async () => {
-        sideEffects += 1;
-        return { exitCode: 0, stdout: '', stderr: '' };
+      baseUrl: 'https://provider.example/v1',
+      runCommand: async (_command, args) => {
+        seenCommands.push([...args]);
+        return args[0] === 'port'
+          ? { exitCode: 0, stdout: '127.0.0.1:49159\n', stderr: '' }
+          : { exitCode: 0, stdout: '', stderr: '' };
       },
-      startSubmitBridge: async () => {
-        sideEffects += 1;
-        throw new Error('must not start');
-      },
-      now: () => 1_000,
+      fetch: (async (input: string | URL | Request, init: RequestInit = {}) => {
+        const url = String(input);
+        if (url.endsWith('/health')) return response({ status: 'ok' });
+        if (url.endsWith('/api/conversations') && init.method === 'POST') {
+          createBody = JSON.parse(String(init.body));
+          return response({ id: 'conversation-mounts' });
+        }
+        if (url.endsWith('/api/conversations/conversation-mounts')) {
+          return response({ id: 'conversation-mounts', execution_status: 'finished' });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      }) as typeof globalThis.fetch,
+      startSubmitBridge: async () => ({
+        url: 'http://host.docker.internal:41881/mcp', token: 'bridge-secret', async close() {},
+      }),
+      startProviderProxy: async () => fakeProviderProxy(),
+      sleep: async () => undefined,
+      now: increasingClock(),
     });
     const req = request();
-    req.additionalDirectories = ['/work/repo', '/work/other'];
+    req.additionalDirectories = [TEST_WORKSPACE, additional];
+    req.prompt = `Compare ${TEST_WORKSPACE}/source.ts with ${additional}/reference.ts.`;
 
-    const outcome = await executor.execute(req);
+    try {
+      const outcome = await executor.execute(req);
 
-    assert.equal(sideEffects, 0);
-    assert.match(outcome.error ?? '', /mounts only cwd/);
-    assert.equal(executor.lastTelemetry()?.terminalReason, 'unsupported');
+      assert.equal(outcome.error, undefined);
+      const dockerRun = seenCommands.find((args) => args[0] === 'run');
+      assert.ok(dockerRun);
+      assert.deepEqual(valuesAfter(dockerRun, '--volume'), [
+        `${TEST_WORKSPACE_REAL}:/workspace:rw`,
+        `${fs.realpathSync(additional)}:/weaver-sources/1:rw`,
+      ]);
+      assert.ok(createBody);
+      assert.match(createBody.initial_message.content[0].text, /Compare \/workspace\/source\.ts with \/weaver-sources\/1\/reference\.ts/);
+      assert.match(createBody.agent.agent_context.system_message_suffix, new RegExp(additional.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    } finally {
+      fs.rmSync(additional, { recursive: true, force: true });
+    }
   });
 });
 
@@ -572,8 +735,8 @@ function request(): WorkerExecutionRequest {
     settingSources: ['user', 'project', 'local'],
     strictMcpConfig: false,
     maxTurns: 12,
-    cwd: '/work/repo',
-    additionalDirectories: ['/work/repo'],
+    cwd: TEST_WORKSPACE,
+    additionalDirectories: [TEST_WORKSPACE],
     env: {},
     operatorMcpServers: {},
     submit: {

@@ -50,6 +50,31 @@ test('existing supported environment placeholders remain placeholders', () => {
   assert.match(JSON.stringify(secured.servers), /EXISTING_KEY/);
 });
 
+test('resolved header placeholders move their actual values into the redaction environment', () => {
+  const secured = secureMcpHeaderCredentials({
+    existing: {
+      type: 'http',
+      url: 'https://example.invalid/mcp',
+      headers: {
+        Authorization: 'Bearer ${EXISTING_TOKEN}',
+        'X-Key': 'ApiKey ${MISSING_KEY:-fallback-secret}',
+      },
+    },
+  }, { EXISTING_TOKEN: 'resolved-secret' });
+
+  assert.deepEqual(
+    (secured.servers.existing as { headers: Record<string, string> }).headers,
+    {
+      Authorization: '${WEAVER_INTERNAL_MCP_HEADER_1}',
+      'X-Key': '${WEAVER_INTERNAL_MCP_HEADER_2}',
+    },
+  );
+  assert.deepEqual(secured.env, {
+    WEAVER_INTERNAL_MCP_HEADER_1: 'Bearer resolved-secret',
+    WEAVER_INTERNAL_MCP_HEADER_2: 'ApiKey fallback-secret',
+  });
+});
+
 test('non-header MCP configuration is preserved', () => {
   const stdio = { command: 'node', args: ['server.js'], env: { SAFE: 'value' } };
   const secured = secureMcpHeaderCredentials({ local: stdio, disabled: false });

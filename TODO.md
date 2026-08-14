@@ -71,9 +71,11 @@ Remaining hardening (was "promotion gates", now post-promotion):
   `fresh-context` case reports a per-run nonce that lives only in the declared current input, planted
   next to a same-shaped superseded value the brief says to ignore; answering from the stale value or
   any value not in this run's declared input fails the gate.
-- [ ] Add a connector-delivered image case whose authenticated MCP tool returns an image content
-  block, matching a screenshot attached to a Linear ticket. The local PNG case proves model/runtime
-  vision; this case must also prove transport support without exposing connector credentials.
+- [x] Preserve authenticated MCP image content blocks through the host relay without exposing
+  connector credentials; the deterministic relay contract covers the frozen catalog and tool result.
+- [ ] Add a model-facing connector image case matching a real screenshot-bearing ticket. The local
+  PNG case proves model/runtime vision and the relay test proves transport; this case proves the two
+  together for an image-capable automatic route.
 - [ ] Record model input modalities before launch and add the routing policy that sends image work
   only to a vision-capable target. A text-only GLM target should fail the image case without
   disqualifying GLM from text-only routes.
@@ -99,11 +101,12 @@ Remaining hardening (was "promotion gates", now post-promotion):
   substrate for cooperative work; supervised remote actions and an enforced (`managed-sandbox`)
   boundary remain the gates that widen that scope. Ongoing comparison of quality, latency, cost,
   operability, and capacity continues through the bakeoff among the surviving candidates.
-- [ ] Before an automatic route can select OpenHands, preserve the ordinary worker surface across
-  the remote seam: proxy the operator's configured MCP servers with their existing read/write
-  semantics and support every declared source directory. The current single-mount, Weaver-MCP-only
-  container remains an explicit cooperative-work target; model-quality evidence alone cannot waive
-  the kernel capability contract.
+- [ ] Before an automatic route can select OpenHands, finish preserving the ordinary worker surface
+  across the remote seam. Every declared source directory now mounts, and serializable user/local
+  stdio/HTTP/SSE servers relay host-side with full read/write tool semantics and no durable container
+  credential. Remaining: project `.mcp.json`, managed/plugin scopes, `headersHelper`, and Claude.ai
+  OAuth connectors whose tokens Claude Code stores privately. Model-quality evidence cannot waive
+  that kernel capability contract.
 - [ ] Stand up the standing eval cadence: re-run the subscription-backed targets (`claude-sdk` via
   the machine's Claude login, `codex-sdk` via the Codex login) on a schedule so the durable ledger
   (`evals/ledger.jsonl`) accumulates a time series per model rather than one-off snapshots.

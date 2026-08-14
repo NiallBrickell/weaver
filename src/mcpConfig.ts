@@ -12,15 +12,40 @@ export interface SecuredMcpConfiguration {
   env: Record<string, string>;
 }
 
-const ENV_CREDENTIAL = /^(?:Bearer\s+|Basic\s+)?(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\})$/;
+const ENV_PLACEHOLDER = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?::-(?:([^}]*)))?\}|([A-Za-z_][A-Za-z0-9_]*))/g;
 
 function plainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** Pure and synthetic-fixture friendly: never reads live credentials itself. */
+function resolveHeader(
+  raw: string,
+  sourceEnv: Readonly<Record<string, string | undefined>>,
+): { found: boolean; complete: boolean; value: string } {
+  let found = false;
+  let complete = true;
+  const value = raw.replace(
+    ENV_PLACEHOLDER,
+    (match, bracedName: string | undefined, fallback: string | undefined,
+      bareName: string | undefined) => {
+      found = true;
+      const supplied = sourceEnv[bracedName ?? bareName!];
+      const resolved = supplied !== undefined && supplied !== '' ? supplied : fallback;
+      if (resolved === undefined) {
+        complete = false;
+        return match;
+      }
+      return resolved;
+    },
+  );
+  return { found, complete, value };
+}
+
+/** Pure and synthetic-fixture friendly: live credentials are supplied
+ * explicitly by the caller, never read implicitly. */
 export function secureMcpHeaderCredentials(
   input: Record<string, unknown>,
+  sourceEnv: Readonly<Record<string, string | undefined>> = {},
 ): SecuredMcpConfiguration {
   const servers: Record<string, unknown> = {};
   const env: Record<string, string> = {};
@@ -35,13 +60,21 @@ export function secureMcpHeaderCredentials(
     if (plainRecord(rawConfig.headers)) {
       const headers: Record<string, unknown> = {};
       for (const [headerName, rawValue] of Object.entries(rawConfig.headers)) {
-        if (typeof rawValue !== 'string' || ENV_CREDENTIAL.test(rawValue.trim())) {
+        if (typeof rawValue !== 'string') {
+          headers[headerName] = rawValue;
+          continue;
+        }
+        const resolved = resolveHeader(rawValue, sourceEnv);
+        if (resolved.found && !resolved.complete) {
+          // Keep the native placeholder so Claude Code can produce its own
+          // missing-variable diagnostic. Strict remote launch will reject the
+          // same unresolved placeholder before starting a container.
           headers[headerName] = rawValue;
           continue;
         }
         index += 1;
         const envName = `WEAVER_INTERNAL_MCP_HEADER_${index}`;
-        env[envName] = rawValue;
+        env[envName] = resolved.value;
         headers[headerName] = `\${${envName}}`;
       }
       config.headers = headers;

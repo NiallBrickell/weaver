@@ -118,22 +118,55 @@ export function pilotSupervisor(cwd: string, slug: string) {
  * settings disabled so every live call still reaches Pilot.
  */
 export function operatorMcpServers(dirs: string[]): SecuredMcpConfiguration {
+  return operatorMcpConfiguration(dirs, false);
+}
+
+/** OpenHands cannot fall back to Claude Code's hidden on-disk settings loader.
+ * The serializable user/local subset discovered in ~/.claude.json must
+ * therefore fail before launch when malformed, rather than quietly becoming
+ * an empty tool surface. Local Claude keeps its historical tolerant discovery
+ * because its own settingSources remain authoritative. */
+function operatorMcpConfiguration(
+  dirs: string[],
+  strict: boolean,
+): SecuredMcpConfiguration {
   try {
-    const cfg = JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8')) as {
+    const configPath = join(homedir(), '.claude.json');
+    if (!existsSync(configPath)) return { servers: {}, env: {} };
+    const cfg = JSON.parse(readFileSync(configPath, 'utf8')) as {
       mcpServers?: Record<string, unknown>;
       projects?: Record<string, { mcpServers?: Record<string, unknown> }>;
     };
+    if (cfg.mcpServers !== undefined && !plainObject(cfg.mcpServers)) {
+      throw new Error('user mcpServers is not an object');
+    }
+    if (cfg.projects !== undefined && !plainObject(cfg.projects)) {
+      throw new Error('projects is not an object');
+    }
     const merged: Record<string, unknown> = { ...(cfg.mcpServers ?? {}) };
     const paths = Object.keys(cfg.projects ?? {}).sort((a, b) => a.length - b.length);
     for (const p of paths) {
       if (dirs.some((d) => d === p || d.startsWith(p.endsWith('/') ? p : `${p}/`))) {
-        Object.assign(merged, cfg.projects![p]!.mcpServers ?? {});
+        const projectServers = cfg.projects![p]?.mcpServers;
+        if (projectServers !== undefined && !plainObject(projectServers)) {
+          throw new Error(`project mcpServers is not an object for ${p}`);
+        }
+        Object.assign(merged, projectServers ?? {});
       }
     }
-    return secureMcpHeaderCredentials(merged);
-  } catch {
+    return secureMcpHeaderCredentials(merged, process.env);
+  } catch (caught) {
+    if (strict) {
+      throw new Error(
+        `OpenHands could not load the operator MCP configuration: ${caught instanceof Error ? caught.message : String(caught)}`,
+      );
+    }
     return { servers: {}, env: {} };
   }
+}
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 const SHARED_RULES = `
@@ -351,6 +384,17 @@ export async function runWorker(
     currentTarget.provider !== capacityTarget.provider ||
     currentTarget.model !== capacityTarget.model
   ) return false;
+  const readDirs = asg.readDirs ?? [];
+  const isAction = asg.kind === 'action';
+  const workCwd = isAction ? asg.exec!.cwd : (readDirs[0] ?? neutralWorkspace(slug));
+  // Local Claude and Codex inherit their complete configured MCP surface from
+  // their own runtimes. OpenHands cannot read the host settings, so Weaver
+  // explicitly discovers the serializable ~/.claude.json user/local subset
+  // for a host relay. Do this before the attempt CAS: malformed remote config
+  // must not leave a durable attempt stuck in `running` without a process.
+  const operatorMcp = (isAction || executorName === 'openhands')
+    ? operatorMcpConfiguration([workCwd, ...readDirs], executorName === 'openhands')
+    : { servers: {}, env: {} };
   const executor = providedExecutor ?? selectExecutor(executorName);
   const startedAt = new Date();
   try {
@@ -389,14 +433,6 @@ export async function runWorker(
 
   let submitted = false;
   const sections: string[] = [];
-  const readDirs = asg.readDirs ?? [];
-  const isAction = asg.kind === 'action';
-  // The production Claude executor inherits the operator's normal Code settings.
-  // Actions get an explicit secured MCP map while filesystem settings are
-  // disabled, keeping their tool calls behind Pilot.
-  const operatorMcp = isAction && asg.exec
-    ? operatorMcpServers([asg.exec.cwd, ...readDirs])
-    : { servers: {}, env: {} };
   // Action workers get secret VALUES as env vars only; every path back into
   // durable state is scrubbed so a value can never outlive the process.
   const secrets = isAction ? loadSecrets(slug) : {};
@@ -521,7 +557,6 @@ export async function runWorker(
     // workspace (readDirs[0] — e.g. a /tmp scratch dir the brief says to clone
     // into) did not, so every such worker crashed cryptically before it could
     // create it.
-    const workCwd = isAction ? asg.exec!.cwd : (readDirs[0] ?? neutralWorkspace(slug));
     mkdirSync(workCwd, { recursive: true });
     const outcome = await executor.execute({
       workstreamSlug: slug,
@@ -551,8 +586,9 @@ export async function runWorker(
             additionalDirectories: readDirs,
           }),
       // The SECURED server map: header credentials already moved into env
-      // placeholders by the harness for action workers. Ordinary workers load
-      // their normal on-disk Code configuration instead.
+      // placeholders by the harness. Local ordinary workers load their normal
+      // on-disk runtime configuration; OpenHands receives this map through its
+      // authenticated host relay because the container cannot read host settings.
       operatorMcpServers: operatorMcp.servers,
       // Every worker is a normal coding-agent worker. A declared action remains
       // special only because Pilot supervises its calls and the engine reads
