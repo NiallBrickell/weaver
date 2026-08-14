@@ -90,7 +90,8 @@ The first production-shaped Kimi K3 code-repair cohort (`20260814T125803Z`) pass
 and named quality check in two of three repetitions. In the failed repetition Kimi repaired the code
 and passed the hidden tests, but exited without calling `submit_result`; the run therefore had no
 candidate deliverable to adopt. That complete cohort remains negative routing evidence: Kimi is
-available as an explicit OpenHands target, but the reviewed bounded-repair route stays on Codex.
+available as an explicit OpenHands target. The earlier bounded-repair route is temporarily removed
+while Codex's full-access worker epoch and the cheaper candidates are requalified.
 
 ## What passes
 

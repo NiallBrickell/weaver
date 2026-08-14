@@ -51,41 +51,7 @@ export const DEFAULT_EXECUTION_REQUIREMENTS: AssignmentExecutionRequirements = {
 
 /** Reviewed routing commitments. Each active entry is audited against the
  * append-only ledger in modelRouting.test.ts. */
-export const WORK_MODEL_ROUTES: readonly WorkModelRoute[] = [
-  {
-    id: 'codex-bounded-code-repair-v1',
-    preference: 100,
-    match: {
-      profiles: ['bounded-code-repair'],
-      modalities: ['text'],
-    },
-    target: {
-      executor: 'codex-sdk',
-      provider: 'openai',
-      model: 'gpt-5.6-sol',
-    },
-    evidence: {
-      suiteRunId: '20260814T114654Z',
-      executor: 'codex-sdk',
-      model: 'gpt-5.6-sol',
-      harnessVersion: 'codex-sdk-0.147.0-weaver.2',
-      cases: [{
-        id: 'code-repair',
-        version: 1,
-        requiredHardGates: [
-          'weaver-submission',
-          'artifact-integrity',
-          'adoption-separation',
-          'target-identity',
-          'runtime-completion',
-          'workspace-scope',
-        ],
-        requiredGrades: ['hidden-tests', 'verification-evidence'],
-      }],
-      minRuns: 3,
-    },
-  },
-];
+export const WORK_MODEL_ROUTES: readonly WorkModelRoute[] = [];
 
 function normalizedRequirements(assignment: Assignment): AssignmentExecutionRequirements {
   return assignment.executionRequirements ?? DEFAULT_EXECUTION_REQUIREMENTS;

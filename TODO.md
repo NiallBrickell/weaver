@@ -102,7 +102,8 @@ Remaining hardening (was "promotion gates", now post-promotion):
 - [x] Derive a reviewed model-routing policy from versioned ledger evidence: assignments carry a
   closed execution profile and input modalities, attempts pin the selected executor/provider/model,
   and the checked-in registry cites complete versioned cohorts with exact hard-gate and quality
-  vectors. The first active route sends bounded text code repair to Codex; appending eval rows alone
-  never changes production routing.
+  vectors. The first Codex route was withdrawn when its worker sandbox boundary changed; the `.3`
+  full-access adapter and cheaper candidates must qualify before a replacement is checked in.
+  Appending eval rows alone never changes production routing.
 
 See [`docs/harness-evals.md`](./docs/harness-evals.md) for commands and the result contract.

@@ -30,16 +30,16 @@ new work — requirements such as `bounded-code-repair` plus `text`, never a mod
 name inferred from briefing prose. Weaver selects the target once before the
 attempt claim and stores executor, provider, and model on that attempt.
 
-The current reviewed route sends bounded text-only code repairs to
-`codex-sdk:gpt-5.6-sol`; general, image-bearing, evidence, and UI work retain the
-configured fallback. A route enters the checked-in registry only after at least
+The checked-in registry is temporarily empty while the full-access Codex worker
+epoch is requalified; all work therefore uses the configured fallback. A route
+enters the checked-in registry only after at least
 three exact repetitions in one complete cohort pass every hard gate and every
 named quality check in the same adapter and case versions. The append-only
 ledger is evidence, not configuration: adding a result cannot silently change
 production routing.
 
-Capacity is scoped to that exact target. A Codex limit parks matching repairs
-without parking general work on Claude. Unknown provider cost remains unknown;
+Capacity is scoped to that exact target. A limited route parks matching work
+without parking unrelated targets. Unknown provider cost remains unknown;
 route preference is an explicit reviewed choice, never a claim that missing
 cost telemetry means free.
 

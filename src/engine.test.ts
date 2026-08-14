@@ -408,7 +408,7 @@ test('a typed worker-model wait parks assignments without parsing prose', async 
   assert.deepEqual(runnableAssignments(doc), ['asg_first', 'asg_second']);
 });
 
-test('a routed Codex wait parks only matching work while the fallback remains runnable', async () => {
+test('a stale wait for a withdrawn route does not park work on the configured fallback', async () => {
   await createWorkstream({
     slug: 'routed-capacity',
     title: 'Routed capacity',
@@ -445,7 +445,7 @@ test('a routed Codex wait parks only matching work while the fallback remains ru
     };
   });
 
-  assert.deepEqual(runnableAssignments(await load('routed-capacity')), ['asg_general']);
+  assert.deepEqual(runnableAssignments(await load('routed-capacity')), ['asg_codex', 'asg_general']);
 });
 
 // ---------------------------------------------------------------------------
