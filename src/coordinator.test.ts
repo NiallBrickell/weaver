@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  COORDINATOR_SYSTEM_PROMPT,
   clearCoordinatorCapacityBackoff,
   passOutcome,
   pickCoordinatorModel,
@@ -14,6 +15,15 @@ import { virtualNow } from './clock.js';
 import type { CapacityCategory, InfrastructureWait } from './types.js';
 
 let home: string;
+
+test('incident briefs must trace trigger, recovery, escape, and every fallback attempt', () => {
+  assert.match(COORDINATOR_SYSTEM_PROMPT, /what triggered the failed operation/);
+  assert.match(COORDINATOR_SYSTEM_PROMPT, /why its recovery\/retry\/fallback did not recover/);
+  assert.match(COORDINATOR_SYSTEM_PROMPT, /why the failure escaped/);
+  assert.match(COORDINATOR_SYSTEM_PROMPT, /enumerate EVERY configured attempt/);
+  assert.match(COORDINATOR_SYSTEM_PROMPT, /missing from telemetry is an observability defect/);
+  assert.match(COORDINATOR_SYSTEM_PROMPT, /trigger, recovery, containment, detection, and recurrence evidence/);
+});
 
 beforeEach(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-coordinator-capacity-'));

@@ -113,6 +113,9 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
     // a future prompt edit cannot silently re-forbid remote writes.
     assert.match(request.systemPrompt.append, /read AND write/);
     assert.match(request.systemPrompt.append, /IRREVERSIBLE egress/);
+    assert.match(request.systemPrompt.append, /separate trigger, failed recovery, and escape/);
+    assert.match(request.systemPrompt.append, /enumerate every configured attempt/);
+    assert.match(request.systemPrompt.append, /missing telemetry is a finding/);
     assert.doesNotMatch(request.systemPrompt.append, /changing a remote service/);
     assert.equal(request.cwd, readDir);
     assert.deepEqual(request.additionalDirectories, [readDir]);
@@ -199,6 +202,8 @@ test('a declared action uses the same Code surface with Pilot supervision', asyn
     assert.equal(typeof request.supervise, 'function');
     assert.equal(request.cwd, actionDir);
     assert.match(request.systemPrompt.append, /human-approved real-world ACTION/);
+    assert.match(request.systemPrompt.append, /containment only/);
+    assert.match(request.systemPrompt.append, /does not fix the upstream failure/);
   } finally {
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });
