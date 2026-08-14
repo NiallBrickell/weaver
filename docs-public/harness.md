@@ -2,7 +2,7 @@
 
 *Where each continuity invariant lives — durable typed state, disposable model runs*
 
-The durable layer is a single typed document per workstream plus content-addressed artifacts. The disposable layer is the Claude Agent SDK: every coordinator pass and worker run is a fresh session that exits. These invariants are the kernel — code that blurs them is wrong even when it works:
+The durable layer is a single typed document per workstream plus content-addressed artifacts. The disposable layer is a selected model runtime: every coordinator pass and worker run is a fresh session that exits. Local Claude and Codex implementations preserve the same typed boundary. These invariants are the kernel — code that blurs them is wrong even when it works:
 
 | Invariant | Enforcement |
 |---|---|

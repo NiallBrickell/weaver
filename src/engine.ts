@@ -12,7 +12,7 @@
 
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
-import { pickCoordinatorModel, runCoordinatorPass } from './coordinator.js';
+import { pickCoordinatorTarget, runCoordinatorPass } from './coordinator.js';
 import {
   ExecutionSafetyLimitedError,
   isLegacyDollarBudgetAttention,
@@ -28,7 +28,7 @@ import { virtualNow } from './clock.js';
 import { pidIsLive } from './processLock.js';
 import { collisionKey, isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
 import { capacityBackoffFor } from './capacity.js';
-import { coordinatorCapacityTarget, workerCapacityTarget } from './modelConfig.js';
+import { workerCapacityTarget } from './modelConfig.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
 
 /**
@@ -785,8 +785,8 @@ export async function flagDanglingDependencies(slug: string): Promise<number> {
 
 export function coordinatorBackoffActive(doc: WorkstreamDoc): boolean {
   const now = virtualNow().toISOString();
-  const selectedModel = pickCoordinatorModel(doc, now);
-  const retryAt = capacityBackoffFor(doc, coordinatorCapacityTarget(selectedModel))?.wait.retryAt;
+  const selectedTarget = pickCoordinatorTarget(doc, now);
+  const retryAt = capacityBackoffFor(doc, selectedTarget)?.wait.retryAt;
   return retryAt ? retryAt > now : false;
 }
 

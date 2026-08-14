@@ -8,13 +8,17 @@ import {
   clearCoordinatorCapacityBackoff,
   passOutcome,
   pickCoordinatorModel,
+  pickCoordinatorTarget,
   recordCoordinatorCapacityBackoff,
+  runCoordinatorPass,
 } from './coordinator.js';
 import { arrive, createWorkstream, load } from './store.js';
 import { virtualNow } from './clock.js';
 import type { CapacityCategory, InfrastructureWait } from './types.js';
+import type { CoordinatorExecutor } from './executor/coordinator.js';
 
 let home: string;
+let coordinatorEnv: Record<string, string | undefined>;
 
 test('incident briefs must trace trigger, recovery, escape, and every fallback attempt', () => {
   assert.match(COORDINATOR_SYSTEM_PROMPT, /what triggered the failed operation/);
@@ -26,6 +30,16 @@ test('incident briefs must trace trigger, recovery, escape, and every fallback a
 });
 
 beforeEach(async () => {
+  coordinatorEnv = {
+    WEAVER_COORDINATOR_EXECUTOR: process.env.WEAVER_COORDINATOR_EXECUTOR,
+    WEAVER_COORDINATOR_MODEL: process.env.WEAVER_COORDINATOR_MODEL,
+    WEAVER_COORDINATOR_FALLBACK_EXECUTOR: process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR,
+    WEAVER_COORDINATOR_FALLBACK_MODEL: process.env.WEAVER_COORDINATOR_FALLBACK_MODEL,
+  };
+  delete process.env.WEAVER_COORDINATOR_EXECUTOR;
+  delete process.env.WEAVER_COORDINATOR_MODEL;
+  delete process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR;
+  delete process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-coordinator-capacity-'));
   process.env.WEAVER_HOME = home;
   await createWorkstream({
@@ -42,6 +56,10 @@ beforeEach(async () => {
 
 afterEach(() => {
   delete process.env.WEAVER_HOME;
+  for (const [name, value] of Object.entries(coordinatorEnv)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
   fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -131,6 +149,68 @@ test('a limited primary model degrades the pass to the fallback, and only then',
   capacity.byModel['claude-fable-5']!.wait = wait('claude-fable-5', future);
   (capacity.byModel as Record<string, unknown>)['claude-opus-5'] = { wait: wait('claude-opus-5', future), consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now };
   assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5');
+});
+
+test('a limited Anthropic primary can degrade to an exact Codex/OpenAI target', async () => {
+  process.env.WEAVER_COORDINATOR_EXECUTOR = 'local-sdk';
+  process.env.WEAVER_COORDINATOR_MODEL = 'claude-fable-5';
+  process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR = 'codex-sdk';
+  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = 'gpt-5.6-sol';
+  const now = virtualNow().toISOString();
+  const doc = await load('coordinator-capacity');
+  doc.capacity = {
+    state: 'backoff',
+    byModel: {
+      'local-sdk:anthropic:claude-fable-5': {
+        wait: {
+          kind: 'usage_limit', recovery: 'wait_or_enable_usage_credits',
+          source: 'coordinator', sourceId: 'pass_primary',
+          executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+          detectedAt: now,
+          retryAt: new Date(virtualNow().getTime() + 60 * 60_000).toISOString(),
+        },
+        consecutiveBackoffs: 1,
+        firstBackoffAtVirtual: now,
+        lastBackoffAtVirtual: now,
+      },
+    },
+  };
+
+  assert.deepEqual(pickCoordinatorTarget(doc, now), {
+    executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
+  });
+});
+
+test('a pass pins executor, provider, and model while a fake Codex loop finishes through the real tool closure', async () => {
+  process.env.WEAVER_COORDINATOR_EXECUTOR = 'codex-sdk';
+  process.env.WEAVER_COORDINATOR_MODEL = 'gpt-5.6-sol';
+  process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR = 'codex-sdk';
+  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = 'gpt-5.6-sol';
+  const executor: CoordinatorExecutor = {
+    id: 'codex-sdk',
+    async execute(req) {
+      assert.equal(req.model, 'gpt-5.6-sol');
+      assert.match(req.prompt, /A wake fired/);
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(finish);
+      const reply = await finish.handler({
+        summary: 'Reconciled the typed state and exited cleanly.',
+        acknowledged_steering: true,
+      }, {});
+      assert.equal(reply.isError, undefined);
+      return { costUsd: 0, sessionId: 'codex-thread-fixture' };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const doc = await load('coordinator-capacity');
+  const pass = doc.passes.at(-1)!;
+  assert.equal(pass.executor, 'codex-sdk');
+  assert.equal(pass.provider, 'openai');
+  assert.equal(pass.model, 'gpt-5.6-sol');
+  assert.equal(pass.sessionId, 'codex-thread-fixture');
+  assert.equal(pass.outcome, 'completed');
 });
 
 test('passOutcome: a conflicted finish is never recorded as completed', () => {

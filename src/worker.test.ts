@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { LocalSdkExecutor } from './executor/localSdk.js';
 import { OpenHandsExecutor } from './executor/openHands.js';
+import { CodexExecutor } from './executor/codex.js';
 import {
   consumeDueWorkerInfrastructureWakes,
   finalizeWorkerRun,
@@ -36,6 +37,10 @@ describe('executor selection', () => {
 
   it('openhands resolves to the containerized remote executor', () => {
     withEnv('openhands', () => assert.ok(selectExecutor() instanceof OpenHandsExecutor));
+  });
+
+  it('codex-sdk resolves to the local subscription-backed Codex executor', () => {
+    withEnv('codex-sdk', () => assert.ok(selectExecutor() instanceof CodexExecutor));
   });
 
   it('an unknown executor fails hard, naming the variable — never a silent local fallback', () => {
@@ -131,6 +136,9 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
     assert.equal(assignment.adoption.state, 'proposed');
     assert.equal(assignment.attempts[0]!.costUsd, 0.25);
     assert.equal(assignment.attempts[0]!.sessionId, 'fake-research-session');
+    assert.equal(assignment.attempts[0]!.executor, 'local-sdk');
+    assert.equal(assignment.attempts[0]!.provider, 'anthropic');
+    assert.equal(assignment.attempts[0]!.model, 'sonnet');
     assert.equal(doc.deliverables.length, 1);
     assert.equal(doc.providerCapacity?.length, 1);
     assert.equal(doc.providerCapacity?.[0]?.provider, 'anthropic');

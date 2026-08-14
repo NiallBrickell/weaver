@@ -24,8 +24,7 @@ import type {
 import { isPendingSteering } from './steering.js';
 import {
   coordinatorCapacityTarget,
-  coordinatorFallbackModel,
-  coordinatorModel,
+  coordinatorFallbackCapacityTarget,
   targetOfWait,
   workerCapacityTarget,
   type CapacityTarget,
@@ -308,6 +307,7 @@ export function isClaudeSdkWait(wait: InfrastructureWait): boolean {
 function providerName(provider: string | undefined): string {
   switch (provider?.toLowerCase()) {
     case 'anthropic': return 'Claude';
+    case 'openai': return 'OpenAI';
     case 'openrouter': return 'OpenRouter';
     case 'moonshot':
     case 'moonshotai': return 'Moonshot';
@@ -446,8 +446,8 @@ function waitPosition(wait: InfrastructureWait, role: string, now: Date): string
  * block. */
 export function capacityPresentation(doc: WorkstreamDoc, nowIso: string): CapacityPresentation {
   const now = new Date(nowIso);
-  const primaryTarget = coordinatorCapacityTarget(coordinatorModel());
-  const fallbackTarget = coordinatorCapacityTarget(coordinatorFallbackModel());
+  const primaryTarget = coordinatorCapacityTarget();
+  const fallbackTarget = coordinatorFallbackCapacityTarget();
   const workerTarget = workerCapacityTarget();
   const primaryEntry = capacityBackoffFor(doc, primaryTarget);
   const fallbackEntry = capacityBackoffFor(doc, fallbackTarget);

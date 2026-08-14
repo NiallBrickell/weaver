@@ -67,6 +67,9 @@ export interface Attempt {
   /** OS pid of the harness process driving this attempt: a dead pid means the
    * attempt is orphaned NOW — recovery need not wait out the stale horizon. */
   runnerPid?: number;
+  /** Exact disposable target for this attempt. Optional on legacy records. */
+  executor?: string;
+  provider?: string;
   model?: string;
   startedAt: Iso;
   endedAt?: Iso;
@@ -374,6 +377,9 @@ export interface PassRecord {
   endedAt?: Iso;
   baseRevision: number;
   wakeReasons: string[];
+  /** Exact disposable coordinator target. Optional on legacy records. */
+  executor?: string;
+  provider?: string;
   model?: string;
   sessionId?: string;
   costUsd?: number;

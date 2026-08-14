@@ -13,7 +13,8 @@ Copy [`.env.example`](../.env.example) to `.env` and uncomment what you need.
 `.env` is gitignored, so it stays local to your machine.
 
 ```dotenv
-WEAVER_COORDINATOR_FALLBACK_MODEL=claude-opus-4-8
+WEAVER_COORDINATOR_FALLBACK_MODEL=gpt-5.6-sol
+WEAVER_COORDINATOR_FALLBACK_EXECUTOR=codex-sdk
 WEAVER_STORE=postgres://user:pass@host:5432/weaver
 ```
 
@@ -42,7 +43,9 @@ pending (see [Claude capacity & billing](./claude-capacity.md)).
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `WEAVER_COORDINATOR_MODEL` | `claude-fable-5` | The coordinator's primary model |
+| `WEAVER_COORDINATOR_EXECUTOR` | `local-sdk` | Runtime for the primary coordinator: `local-sdk` (Claude) or `codex-sdk` (Codex) |
 | `WEAVER_COORDINATOR_FALLBACK_MODEL` | `claude-opus-5` | The model it degrades to when the primary pool is limited |
+| `WEAVER_COORDINATOR_FALLBACK_EXECUTOR` | primary executor | Runtime for the fallback coordinator; may differ from the primary |
 | `WEAVER_WORKER_MODEL` | `sonnet` | The model workers run on |
 | `WEAVER_ASK_MODEL` | `sonnet` | The model behind `weaver do`/`weaver ask` intake |
 
@@ -57,7 +60,7 @@ pending (see [Claude capacity & billing](./claude-capacity.md)).
 
 | Variable | Default | What it sets |
 | --- | --- | --- |
-| `WEAVER_EXECUTOR` | `local-sdk` | Where a worker's model loop runs — `local-sdk` (local Claude Agent SDK) or `openhands` (a pinned OpenHands Agent Server container). See [Where workers run](./executors.md) |
+| `WEAVER_EXECUTOR` | `local-sdk` | Where a worker's model loop runs — `local-sdk` (Claude), `codex-sdk` (local Codex), or `openhands` (pinned container). See [Where workers run](./executors.md) |
 | `WEAVER_MODEL_API_KEY` | *(unset)* | Provider key the OpenHands container uses for the model (falls back to `LLM_API_KEY`); required when `WEAVER_EXECUTOR=openhands` |
 | `WEAVER_OPENHANDS_BASE_URL` | *(unset)* | Optional provider base URL for the OpenHands model (e.g. an OpenRouter-compatible endpoint) |
 | `WEAVER_PILOT_URL` | `http://localhost:9721` | The operator's pilot daemon that gates external actions |

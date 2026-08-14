@@ -11,8 +11,8 @@ loop runs*, and this bakeoff is how a new runtime earns that place with evidence
 anecdote.
 
 The initial bakeoff supports four explicit targets: the Claude SDK baseline, Codex SDK, OpenCode,
-and OpenHands. They are evaluation adapters only; running the suite does not change the executor
-used by real Workstreams.
+and OpenHands. Running the suite never changes production configuration. Codex and OpenHands run
+through the same executor classes available to real Workstreams; OpenCode remains eval-only.
 
 ## Run the suite
 
@@ -27,8 +27,8 @@ yarn eval:harness \
 ```
 
 Every target is explicit. Weaver never falls back to another model or runtime when one fails to
-start. OpenCode uses its normal provider login; Codex and Claude use their existing local login or
-API configuration.
+start. OpenCode uses its normal provider login; subscription-backed Codex and Claude use their
+existing local logins.
 
 The local OpenHands target invokes the pinned official Agent Server image and needs Docker plus an
 explicit model-provider key:
@@ -66,8 +66,10 @@ yarn eval:harness --history
 ```
 
 Missing scores and costs stay excluded from the aggregates — a run whose provider reported no cost
-is marked, never counted as free. This accumulated history is what a future per-assignment
-model-routing policy will consume.
+is marked, never counted as free. This table is descriptive, not an automatic routing gate: the
+append-only ledger intentionally retains pre-fix failures, and a mean can erase which exact gate
+failed. A production routing commitment must use versioned adapter/case evidence and exact gate
+vectors with repeated clean runs.
 
 Cost policy: the standing eval cadence runs on subscription-backed targets — `claude-sdk` through
 the machine's Claude Code login and `codex-sdk` through the Codex login — at zero marginal cost.
