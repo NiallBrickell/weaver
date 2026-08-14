@@ -86,17 +86,21 @@ Remaining hardening (was "promotion gates", now post-promotion):
   local Agent Server container and the current host-process Codex/OpenCode/Claude runs measure task
   behavior; none proves a hostile or multi-tenant production boundary.
 - [ ] Add a real subprocess lifecycle probe for every host runtime. In particular, promotion needs
-  evidence that OpenCode's SDK-launched server process has exited, not merely that `close()` was
-  called.
+  an exit receipt rather than merely calling a helper's synchronous `close()`. OpenCode now owns
+  the spawned child, awaits its exit, and removes its temporary home afterwards; add the equivalent
+  receipts and deterministic live probes for the remaining host runtimes.
 - [ ] Normalize or report unequal turn/prompt controls before comparing efficiency. The Codex
   TypeScript SDK currently has no `maxTurns` or system-prompt option, so its 40-minute harness wall
   and user-message-appended worker contract are not equivalent to the other candidates.
 - [ ] Run at least three repetitions of both a matched-model matrix (same provider/model through
   OpenHands and OpenCode where supported) and each harness's strongest natural stack. Include
   OpenRouter Kimi K3 and GLM-5 targets alongside Codex and the Claude baseline.
-- [ ] Run the same production-shaped cohort for GLM-5.3 as soon as it has a real API model id.
-  Z.ai's 14 Aug launch documentation exposes it only through the Coding Plan and says API access is
-  coming soon; OpenRouter did not list it on launch day. Never relabel GLM-5/5.2 evidence as 5.3.
+- [x] Complete the production-shaped GLM-5.3 cohort through Z.ai's officially supported OpenCode
+  Coding Plan target (`zai-coding-plan/glm-5.3`). Exact `.3` cohort `20260814T213026Z` passed 10/10
+  with every hard gate and both quality checks at 55.0s median / 62.3s p95. The adapter keeps the
+  durable key behind a run-bound proxy and records subscription cost as unknown; normal-auth and
+  interrupted pre-fix rows remain historical and never qualify a route. No GLM-5/5.2 evidence was
+  relabelled as 5.3.
 - [x] Promote a production executor. OpenHands is wired into `selectExecutor` as the first remote
   substrate for cooperative work; supervised remote actions and an enforced (`managed-sandbox`)
   boundary remain the gates that widen that scope. Ongoing comparison of quality, latency, cost,

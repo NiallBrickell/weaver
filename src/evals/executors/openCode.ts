@@ -1,3 +1,12 @@
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import {
+  startProviderProxy,
+  type ProviderProxy,
+  type ProviderProxyOptions,
+} from '../../executor/providerProxy.js';
 import type { SubmitBridge, SubmitBridgeOptions } from '../../executor/submitBridge.js';
 import { startSubmitBridge } from '../../executor/submitBridge.js';
 import type {
@@ -5,6 +14,7 @@ import type {
   WorkerExecutionOutcome,
   WorkerExecutionRequest,
 } from '../../executor/types.js';
+import { loadExecutorSecrets, redactSecrets } from '../../secrets.js';
 import type {
   EvalExecutionTelemetry,
   EvalExecutor,
@@ -15,6 +25,24 @@ interface ProviderModel {
   providerID: string;
   modelID: string;
 }
+
+interface OpenCodeProviderConfiguration {
+  apiKey: string;
+  apiKeyName: string;
+  upstreamBaseUrl: string;
+}
+
+const OPEN_CODE_ADAPTER_EPOCH = 'weaver.3';
+const PROVIDERS: Record<string, Omit<OpenCodeProviderConfiguration, 'apiKey'>> = {
+  openrouter: {
+    apiKeyName: 'OPENROUTER_API_KEY',
+    upstreamBaseUrl: 'https://openrouter.ai/api/v1',
+  },
+  'zai-coding-plan': {
+    apiKeyName: 'ZHIPU_API_KEY',
+    upstreamBaseUrl: 'https://api.z.ai/api/coding/paas/v4',
+  },
+};
 
 interface OpenCodePromptInput {
   model: ProviderModel;
@@ -53,6 +81,8 @@ export interface OpenCodeRuntimeStart {
   cwd: string;
   bridge: SubmitBridge;
   maxTurns: number;
+  model: ProviderModel;
+  providerProxy: ProviderProxy;
 }
 
 export type StartOpenCodeRuntime = (input: OpenCodeRuntimeStart) => Promise<OpenCodeRuntime>;
@@ -63,8 +93,9 @@ export interface OpenCodeEvalExecutorDependencies {
     submit: SubmitSurface,
     options?: SubmitBridgeOptions,
   ) => Promise<SubmitBridge>;
+  startProviderProxy?: (options: ProviderProxyOptions) => Promise<ProviderProxy>;
+  executorSecrets?: Record<string, string>;
   now?: () => number;
-  ambientEnv?: NodeJS.ProcessEnv;
 }
 
 type OpenCodeSdkModule = typeof import('@opencode-ai/sdk/v2');
@@ -82,10 +113,6 @@ function requiredString(value: unknown, description: string): string {
     throw new Error(`OpenCode returned no ${description}`);
   }
   return value;
-}
-
-function optionalString(value: unknown): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 function optionalNumber(value: unknown): number | null {
@@ -124,30 +151,209 @@ async function loadOpenCodeSdk(): Promise<OpenCodeSdkModule> {
   }
 }
 
+/**
+ * OpenCode's SDK helper unconditionally spreads raw process.env into its
+ * coding-agent server. Build the child environment explicitly instead: the
+ * agent gets enough operating-system context to run local tools, but no
+ * Weaver state path, provider credential, auth socket, or operator home.
+ */
+export function isolatedOpenCodeEnv(
+  tempHome: string,
+  config: unknown,
+  ambient: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const candidates: NodeJS.ProcessEnv = {
+    HOME: tempHome,
+    XDG_CONFIG_HOME: path.join(tempHome, 'config'),
+    XDG_DATA_HOME: path.join(tempHome, 'data'),
+    XDG_CACHE_HOME: path.join(tempHome, 'cache'),
+    XDG_STATE_HOME: path.join(tempHome, 'state'),
+    PATH: ambient.PATH,
+    SHELL: ambient.SHELL,
+    LANG: ambient.LANG ?? 'C.UTF-8',
+    LC_ALL: ambient.LC_ALL,
+    TMPDIR: ambient.TMPDIR ?? os.tmpdir(),
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+  };
+  return Object.fromEntries(
+    Object.entries(candidates).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+}
+
+export interface IsolatedOpenCodeServer {
+  url: string;
+  close(): Promise<void>;
+}
+
+const OPEN_CODE_START_TIMEOUT_MS = 10_000;
+const OPEN_CODE_STOP_TIMEOUT_MS = 5_000;
+
+export async function startIsolatedOpenCodeServer(input: {
+  cwd: string;
+  config: unknown;
+  executable?: string;
+  args?: string[];
+  ambientEnv?: NodeJS.ProcessEnv;
+  startTimeoutMs?: number;
+  stopTimeoutMs?: number;
+}): Promise<IsolatedOpenCodeServer> {
+  const startTimeoutMs = input.startTimeoutMs ?? OPEN_CODE_START_TIMEOUT_MS;
+  const stopTimeoutMs = input.stopTimeoutMs ?? OPEN_CODE_STOP_TIMEOUT_MS;
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'weaver-opencode-'));
+  let child: ChildProcessWithoutNullStreams;
+  try {
+    child = spawn(
+      input.executable ?? 'opencode',
+      input.args ?? ['serve', '--hostname=127.0.0.1', '--port=0'],
+      {
+        cwd: input.cwd,
+        env: isolatedOpenCodeEnv(tempHome, input.config, input.ambientEnv),
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
+  } catch (error) {
+    await fs.rm(tempHome, { recursive: true, force: true });
+    throw error;
+  }
+
+  let output = '';
+  let startupSettled = false;
+  let terminationSettled = false;
+  let resolveTermination!: () => void;
+  const terminated = new Promise<void>((resolve) => { resolveTermination = resolve; });
+  const markTerminated = () => {
+    if (terminationSettled) return;
+    terminationSettled = true;
+    resolveTermination();
+  };
+  child.once('exit', markTerminated);
+  child.once('error', markTerminated);
+
+  const startup = new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      if (startupSettled) return;
+      startupSettled = true;
+      reject(new Error(`timeout waiting ${startTimeoutMs}ms for OpenCode server`));
+    }, startTimeoutMs);
+    timeout.unref?.();
+
+    const rejectStartup = (error: Error) => {
+      if (startupSettled) return;
+      startupSettled = true;
+      clearTimeout(timeout);
+      reject(error);
+    };
+    child.once('error', rejectStartup);
+    child.once('exit', (code, signal) => {
+      rejectStartup(new Error(
+        `OpenCode server exited before readiness (${signal ?? code ?? 'unknown'})` +
+          (output.trim() ? `: ${output.trim()}` : ''),
+      ));
+    });
+    child.stdout.on('data', (chunk: Buffer) => {
+      output = (output + chunk.toString()).slice(-64 * 1024);
+      if (startupSettled) return;
+      for (const line of output.split(/\r?\n/)) {
+        if (!line.startsWith('opencode server listening')) continue;
+        const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
+        if (!match) {
+          rejectStartup(new Error(`cannot parse OpenCode server URL from: ${line}`));
+          return;
+        }
+        startupSettled = true;
+        clearTimeout(timeout);
+        resolve(match[1]!);
+        return;
+      }
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      output = (output + chunk.toString()).slice(-64 * 1024);
+    });
+  });
+
+  let closed = false;
+  const waitForTermination = async (timeoutMs: number): Promise<boolean> => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        terminated.then(() => true),
+        new Promise<false>((resolve) => {
+          timeout = setTimeout(() => resolve(false), timeoutMs);
+          timeout.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  };
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    try {
+      if (!terminationSettled) child.kill('SIGTERM');
+      const stopped = await waitForTermination(stopTimeoutMs);
+      if (!stopped && !terminationSettled) {
+        child.kill('SIGKILL');
+        if (!await waitForTermination(stopTimeoutMs)) {
+          throw new Error('OpenCode server did not exit after SIGKILL');
+        }
+      }
+    } finally {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+  };
+
+  try {
+    return { url: await startup, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
 export const startLocalOpenCodeRuntime: StartOpenCodeRuntime = async ({
   cwd,
   bridge,
   maxTurns,
+  model,
+  providerProxy,
 }) => {
   const sdk = await loadOpenCodeSdk();
-  const server = await sdk.createOpencodeServer({
-    hostname: '127.0.0.1',
-    port: 0,
-    config: {
-      autoupdate: false,
-      permission: 'allow',
-      agent: { build: { maxSteps: maxTurns } },
-      mcp: {
-        weaver: {
-          type: 'remote',
-          url: bridge.url,
-          enabled: true,
-          oauth: false,
-          headers: { Authorization: `Bearer ${bridge.token}` },
+  const config = {
+    autoupdate: false,
+    share: 'disabled' as const,
+    enabled_providers: [model.providerID],
+    permission: 'allow' as const,
+    agent: { build: { maxSteps: maxTurns } },
+    provider: {
+      [model.providerID]: {
+        npm: '@ai-sdk/openai-compatible',
+        options: {
+          apiKey: providerProxy.token,
+          baseURL: providerProxy.url,
+        },
+        models: {
+          [model.modelID]: {
+            id: model.modelID,
+            name: model.modelID,
+            reasoning: true,
+            tool_call: true,
+            limit: { context: 1_000_000, output: 131_072 },
+          },
         },
       },
     },
-  });
+    mcp: {
+      weaver: {
+        type: 'remote' as const,
+        url: bridge.url,
+        enabled: true,
+        oauth: false,
+        headers: { Authorization: `Bearer ${bridge.token}` },
+      },
+    },
+  };
+  const server = await startIsolatedOpenCodeServer({ cwd, config });
 
   try {
     const client = sdk.createOpencodeClient({
@@ -183,11 +389,11 @@ export const startLocalOpenCodeRuntime: StartOpenCodeRuntime = async ({
         await client.session.delete({ sessionID: sessionId });
       },
       async close() {
-        server.close();
+        await server.close();
       },
     };
   } catch (error) {
-    server.close();
+    await server.close();
     throw error;
   }
 };
@@ -204,14 +410,16 @@ export class OpenCodeEvalExecutor implements EvalExecutor {
   private telemetry: EvalExecutionTelemetry | null = null;
   private readonly startRuntime: StartOpenCodeRuntime;
   private readonly startBridge: NonNullable<OpenCodeEvalExecutorDependencies['startBridge']>;
+  private readonly startProviderProxy: NonNullable<OpenCodeEvalExecutorDependencies['startProviderProxy']>;
+  private readonly executorSecrets: Record<string, string>;
   private readonly now: () => number;
-  private readonly ambientEnv: NodeJS.ProcessEnv;
 
   constructor(dependencies: OpenCodeEvalExecutorDependencies = {}) {
     this.startRuntime = dependencies.startRuntime ?? startLocalOpenCodeRuntime;
     this.startBridge = dependencies.startBridge ?? startSubmitBridge;
+    this.startProviderProxy = dependencies.startProviderProxy ?? startProviderProxy;
+    this.executorSecrets = dependencies.executorSecrets ?? loadExecutorSecrets();
     this.now = dependencies.now ?? Date.now;
-    this.ambientEnv = dependencies.ambientEnv ?? process.env;
   }
 
   lastTelemetry(): EvalExecutionTelemetry | null {
@@ -235,23 +443,6 @@ export class OpenCodeEvalExecutor implements EvalExecutor {
       return { costUsd: 0, error: message };
     }
 
-    const strippedAmbientCredentials = [
-      'ANTHROPIC_API_KEY',
-      'ANTHROPIC_AUTH_TOKEN',
-      'CLAUDE_CODE_OAUTH_TOKEN',
-    ].filter((name) => this.ambientEnv[name] !== undefined && req.env[name] === undefined);
-    if (strippedAmbientCredentials.length) {
-      const message = `OpenCode's SDK server inherits raw process.env and would bypass Weaver credential sanitization (${strippedAmbientCredentials.join(', ')})`;
-      this.telemetry = this.makeTelemetry({
-        req,
-        startedMs,
-        startedAt,
-        terminalReason: 'unsupported',
-        error: message,
-      });
-      return { costUsd: 0, error: message };
-    }
-
     let model: ProviderModel;
     try {
       model = splitOpenCodeModel(req.model);
@@ -262,6 +453,21 @@ export class OpenCodeEvalExecutor implements EvalExecutor {
         startedMs,
         startedAt,
         terminalReason: 'error',
+        error: message,
+      });
+      return { costUsd: 0, error: message };
+    }
+
+    let provider: OpenCodeProviderConfiguration;
+    try {
+      provider = this.providerConfiguration(model);
+    } catch (error) {
+      const message = errorMessage(error);
+      this.telemetry = this.makeTelemetry({
+        req,
+        startedMs,
+        startedAt,
+        terminalReason: 'unsupported',
         error: message,
       });
       return { costUsd: 0, error: message };
@@ -289,6 +495,7 @@ export class OpenCodeEvalExecutor implements EvalExecutor {
       },
     };
 
+    let providerProxy: ProviderProxy | undefined;
     let bridge: SubmitBridge | undefined;
     let runtime: OpenCodeRuntime | undefined;
     let sessionId: string | undefined;
@@ -297,13 +504,29 @@ export class OpenCodeEvalExecutor implements EvalExecutor {
     let failure: string | null = null;
     let terminalReason: EvalExecutionTelemetry['terminalReason'] = 'completed';
     const cleanupFailures: string[] = [];
+    let redactionSecrets: Record<string, string> = { ...this.executorSecrets };
 
     try {
-      bridge = await this.startBridge(observedSubmit);
+      providerProxy = await this.startProviderProxy({
+        upstreamBaseUrl: provider.upstreamBaseUrl,
+        upstreamApiKey: provider.apiKey,
+        allowedModels: [model.modelID],
+        maxRequests: req.maxTurns,
+      });
+      redactionSecrets = {
+        ...redactionSecrets,
+        OPEN_CODE_PROVIDER_PROXY_TOKEN: providerProxy.token,
+      };
+      bridge = await this.startBridge(observedSubmit, {
+        rejectArgumentValues: Object.values(redactionSecrets),
+        rejectArgumentMessage: 'REFUSED: submission contains executor-private credentials',
+      });
       runtime = await this.startRuntime({
         cwd: req.cwd ?? process.cwd(),
         bridge,
         maxTurns: req.maxTurns,
+        model,
+        providerProxy,
       });
       startupMs = this.now() - startedMs;
       sessionId = await runtime.createSession(`${req.workstreamSlug}/${req.assignmentId}`);
@@ -341,12 +564,17 @@ export class OpenCodeEvalExecutor implements EvalExecutor {
         try { await bridge.close(); }
         catch (error) { cleanupFailures.push(`submit bridge close: ${errorMessage(error)}`); }
       }
+      if (providerProxy) {
+        try { await providerProxy.close(); }
+        catch (error) { cleanupFailures.push(`provider proxy close: ${errorMessage(error)}`); }
+      }
     }
 
     if (cleanupFailures.length) {
       failure = [failure, ...cleanupFailures].filter(Boolean).join('; ');
       terminalReason = 'error';
     }
+    if (failure) failure = redactSecrets(failure, redactionSecrets);
 
     const info = result?.info;
     const usage: EvalUsage = {
@@ -355,14 +583,19 @@ export class OpenCodeEvalExecutor implements EvalExecutor {
       cachedInputTokens: optionalNumber(info?.tokens?.cache?.read),
       reasoningOutputTokens: optionalNumber(info?.tokens?.reasoning),
     };
-    const costUsd = optionalNumber(info?.cost);
+    // Coding Plan quota is subscription-backed. OpenCode reports catalog cost
+    // zero, which is not a bill or a marginal-dollar measurement.
+    const costUsd = model.providerID === 'zai-coding-plan'
+      ? null
+      : optionalNumber(info?.cost);
+    const resolvedModel = providerProxy?.modelResolved() ?? null;
     const endedMs = this.now();
     this.telemetry = {
       executor: this.id,
       modelRequested: req.model,
-      providerResolved: optionalString(info?.providerID),
-      modelResolved: optionalString(info?.modelID),
-      harnessVersion: runtime?.harnessVersion ?? 'unknown',
+      providerResolved: resolvedModel ? model.providerID : null,
+      modelResolved: resolvedModel,
+      harnessVersion: `${runtime?.harnessVersion ?? 'unknown'}-${OPEN_CODE_ADAPTER_EPOCH}`,
       isolation: 'host-process',
       startedAt,
       endedAt: new Date(endedMs).toISOString(),
@@ -381,6 +614,23 @@ export class OpenCodeEvalExecutor implements EvalExecutor {
       ...(sessionId ? { sessionId } : {}),
       ...(failure ? { error: failure } : {}),
     };
+  }
+
+  private providerConfiguration(model: ProviderModel): OpenCodeProviderConfiguration {
+    const known = PROVIDERS[model.providerID];
+    if (!known) {
+      throw new Error(
+        `OpenCode eval provider '${model.providerID}' has no executor-only proxy configuration`,
+      );
+    }
+    const apiKey = this.executorSecrets[known.apiKeyName];
+    if (!apiKey) {
+      throw new Error(
+        `OpenCode eval requires ${known.apiKeyName} in executor-only secrets ` +
+          '(`weaver secret set <NAME> --executor`)',
+      );
+    }
+    return { ...known, apiKey };
   }
 
   private makeTelemetry(input: {

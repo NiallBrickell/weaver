@@ -19,8 +19,8 @@ The candidates are:
 - `claude-sdk`: the current production baseline, wrapped only to collect eval telemetry;
 - `codex-sdk`: the official TypeScript SDK, one fresh subscription-backed thread per assignment, with
   `workspace-write` and `approvalPolicy: never`;
-- `opencode`: the current OpenCode SDK and local server, one fresh server and session per
-  assignment;
+- `opencode`: the current OpenCode client and one fresh isolated local server/session per
+  assignment, with provider inference behind a run-bound host proxy;
 - `openhands`: the pinned official OpenHands Agent Server OCI image, one fresh container and
   conversation per assignment;
 - `pi`: the installed Pi CLI in invocation-local RPC mode with `--no-session`; and
@@ -103,13 +103,25 @@ yarn eval:harness \
   --target opencode=openrouter/moonshotai/kimi-k3 \
   --target pi=openrouter/moonshotai/kimi-k3 \
   --target prime-agent=openrouter/z-ai/glm-5 \
-  --target opencode=openrouter/z-ai/glm-5 \
+  --target opencode=zai-coding-plan/glm-5.3 \
   --repeat 3
 ```
 
-OpenCode uses its normal provider authentication; run `opencode auth login` once for the selected
-provider. The Codex SDK uses the existing Codex login. The Claude
-baseline uses the existing Claude Code login.
+OpenCode does **not** use its normal plaintext provider-auth file. Store the selected provider key
+in executor-only scope; Weaver keeps it in a model-pinned host inference proxy and gives the fresh
+OpenCode server only a disposable run bearer:
+
+```bash
+weaver secret set ZHIPU_API_KEY --executor
+yarn eval:harness --target opencode=zai-coding-plan/glm-5.3 --case code-repair
+```
+
+The adapter starts OpenCode with a temporary home and an explicit minimal child environment: no
+operator home, Weaver state path, provider key, SSH agent, or unrelated ambient credential crosses
+the process boundary. Closing a run waits for the actual server process to exit before deleting
+that home. This protects durable credentials but does not turn a local host process into a managed
+sandbox. The Codex SDK uses the existing Codex login; the Claude baseline uses the existing Claude
+Code login.
 
 Pi and Prime require an explicit `provider/model` target. Each run gets a temporary empty harness
 home, so personal Pi/Prime login files and configuration are never exposed to model tools. Store
@@ -163,17 +175,18 @@ The suite never substitutes another model or executor when a target cannot start
   from POST/GET/search/event state in v1.41, but the session key is intentionally trusted for the
   broader local API, including plaintext exposure of secrets persisted in global settings. Weaver
   sends no durable provider key into the container at all: only the proxy's random run bearer.
-The example slugs are OpenRouter's current
+The OpenRouter example slugs are its current
 [Kimi K3](https://openrouter.ai/moonshotai/kimi-k3-20260715) and
 [GLM-5](https://openrouter.ai/z-ai/glm-5) identifiers; targets stay explicit because a moving
 "latest" alias would make results irreproducible.
 
-GLM-5.3 was announced on 14 Aug 2026, but Z.ai's
-[launch material](https://z.ai/blog/glm-5) currently limits access to the Coding Plan, and
-OpenRouter's live catalog has no 5.3 id.
-It is therefore recorded as unavailable for this executor, not run under a guessed alias or credited
-with GLM-5/5.2 results. The cohort becomes eligible only when a real API target can preserve exact
-requested and provider-resolved identity.
+GLM-5.3 is available through Z.ai's officially supported
+[OpenCode Coding Plan integration](https://docs.z.ai/devpack/tool/opencode) as the exact
+`zai-coding-plan/glm-5.3` target. Weaver uses the dedicated
+`https://api.z.ai/api/coding/paas/v4` endpoint and requires the upstream response to resolve
+`glm-5.3`; no GLM-5/5.2 evidence is relabelled. Coding Plan calls consume subscription quota rather
+than exposing a per-run dollar bill, so their cost is `null`/`—`, never the misleading catalog
+value `$0.00`.
 
 Each suite writes a gitignored directory under `eval-results/` containing `results.json`, a stable
 schema with raw nullable telemetry and grader detail, and `report.md`, a human-readable vector
@@ -231,26 +244,39 @@ The value is `—` unless every run reported cost. Failure cost separately expos
 hard-gate failures, and p95 wall time keeps a long failed attempt visible beside the median.
 
 Cost policy for accumulating this evidence: the standing cadence runs subscription-backed targets
-through the machine's existing Claude Code and Codex logins rather than per-token API billing. Their
-ledger cost remains unknown unless the SDK reports it. OpenRouter targets are confined to cheap
-open-weight models, and Claude-family models are never routed through OpenRouter.
+through the machine's existing Claude Code, Codex, and Z.ai Coding Plan access rather than
+presenting catalog zeroes as per-token API billing. Their ledger cost remains unknown unless the
+provider reports a real bill. OpenRouter targets are confined to cheap open-weight models, and
+Claude-family models are never routed through OpenRouter.
 
 The current exact bounded code-repair economics are:
 
 | Target / cohort | Hard-gate passes | Median / p95 wall | Total cost | Cost/pass | Failure cost |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `codex-sdk:gpt-5.6-sol` `.3` / `20260814T145942Z` | 10/10 | 114.0s / 166.9s | — | — | — |
+| `opencode:zai-coding-plan/glm-5.3` `.3` / `20260814T213026Z` | 10/10 | 55.0s / 62.3s | — | — | — |
 | `openhands:openrouter/z-ai/glm-5.2` / `20260814T145843Z` | 10/10 | 33.3s / 42.5s | $0.3025 | $0.0303 | — |
 | `openhands:openrouter/z-ai/glm-5` / `20260814T133601Z` | 10/10 | 75.7s / 82.1s | $0.3240 | $0.0324 | — |
 | `openhands:openrouter/moonshotai/kimi-k2.6` / `20260814T133601Z` | 10/10 | 81.8s / 126.9s | $0.3164 | $0.0316 | — |
 | `openhands:openrouter/moonshotai/kimi-k2.7-code` / `20260814T145842Z` | 8/10 | 58.1s / 95.3s | $0.3551 | $0.0444 | $0.1094 |
 | `openhands:openrouter/moonshotai/kimi-k3` / `20260814T125803Z` | 2/3 | 111.9s / 382.0s | $0.4144 | $0.2072 | $0.2517 |
 
-Codex's subscription-backed adapter reports no dollar telemetry, so its missing value remains
-unknown rather than being presented as free. GLM-5.2 is the fastest and cheapest fully clean
-OpenRouter cohort for this case. Kimi K2.7 Code failed the submission boundary twice; Kimi K3 failed
-it once and incurred a very long tail. Both remain negative routing evidence even though their
-hidden repairs passed.
+Codex and Z.ai Coding Plan expose subscription quota rather than a per-run dollar bill, so their
+missing values remain unknown rather than being presented as free. GLM-5.3's exact OpenCode cohort
+passed the full vector 10/10 with a 55.0s median — 52% below Codex's 114.0s median — while the older
+OpenHands/GLM-5.2 cohort remains the fastest clean run at 33.3s and the cheapest measured
+OpenRouter run at $0.0303/pass. These are runtime-plus-model observations, not a model-only ranking:
+OpenCode is a trusted host process and OpenHands is a local container. Kimi K2.7 Code failed the
+submission boundary twice; Kimi K3 failed it once and incurred a very long tail. Both remain
+negative routing evidence even though their hidden repairs passed.
+
+The first GLM-5.3 canary used OpenCode's ordinary plaintext auth store and incorrectly inherited
+the operator environment; it remains under raw harness `1.18.15`. The interrupted `.2` cohort moved
+the provider key behind the proxy but still exposed `WEAVER_HOME`, making the executor-secret file
+discoverable by path. Those rows remain honest historical evidence, but only `.3` supplies both the
+run proxy and isolated child environment. The complete `.3` cohort is model-quality evidence, not a
+production route: OpenCode remains eval-only until it carries the ordinary operator MCP surface and
+a reviewed production executor boundary.
 
 The first exact production-shaped Kimi K3 code-repair cohort (`20260814T125803Z`,
 `openhands-agent-server-1.41.0-weaver.2`) passed the complete vector in repetitions 1 and 3 but not
@@ -322,9 +348,13 @@ would invalidate the bakeoff.
   prompt field. Its worker contract is appended to user input and the 40-minute Weaver wall is the
   outer bound; efficiency results are not normalized until that limitation is resolved or reported
   as a capability dimension.
-- OpenCode's official server helper inherits raw `process.env` and its `close()` is not an awaited
-  process-exit receipt. The eval adapter fails closed when that inheritance would reintroduce
-  credentials Weaver stripped; production promotion still needs an observed subprocess-exit test.
+- OpenCode's official server helper unconditionally inherits raw `process.env`, stores ordinary
+  provider login keys in its user data file, and exposes only a synchronous `close()` with no
+  process-exit receipt. Weaver therefore does not use that helper: the eval adapter owns the child,
+  supplies a fresh home plus an explicit minimal environment, keeps the durable provider key behind
+  the run proxy, awaits the child's exit, and only then deletes the home. The deterministic lifecycle
+  test and live canary both prove that sequence. It remains a trusted `host-process`, not structural
+  confinement or a production worker with the full operator MCP surface.
 - Pi and Prime share extension and RPC concepts but not durable semantics. The adapter uses their
   JSONL RPC protocol only as a disposable process-control channel, records the provider/model from
   the completed assistant message plus the installed CLI version, and then destroys that channel.

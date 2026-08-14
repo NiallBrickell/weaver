@@ -25,15 +25,26 @@ yarn eval:harness \
   --target opencode=openrouter/moonshotai/kimi-k3 \
   --target pi=openrouter/moonshotai/kimi-k3 \
   --target prime-agent=openrouter/z-ai/glm-5 \
-  --target opencode=openrouter/z-ai/glm-5 \
+  --target opencode=zai-coding-plan/glm-5.3 \
   --repeat 3
 ```
 
 Every target is explicit. Weaver never falls back to another model or runtime when one fails to
-start. OpenCode uses its normal provider login; subscription-backed Codex and Claude use their
-existing local logins. Pi and Prime targets require `provider/model` names. They run with a fresh
-empty harness home and use only the selected provider's key from executor-secret
-scope:
+start. OpenCode uses an executor-only provider key behind a run-bound host proxy, not its normal
+plaintext provider-auth file:
+
+```bash
+weaver secret set ZHIPU_API_KEY --executor
+yarn eval:harness --target opencode=zai-coding-plan/glm-5.3 --case code-repair
+```
+
+Each case gets a fresh OpenCode home and a minimal child environment with no operator home, Weaver
+state path, provider key, SSH agent, or unrelated ambient credential. Weaver waits for the server
+process to exit before deleting that home. The server sees only disposable inference and
+submission bearers; it remains an explicitly labelled `host-process`, not a managed sandbox.
+Subscription-backed Codex and Claude use their existing local logins. Pi and Prime targets require
+`provider/model` names. Each runs with a fresh empty harness home and uses only the selected
+provider's key from executor-secret scope:
 
 ```bash
 weaver secret set OPENROUTER_API_KEY --executor
@@ -67,8 +78,9 @@ Results are written under `eval-results/` (gitignored) as machine-readable `resu
 readable `report.md`.
 
 The examples pin OpenRouter's current [Kimi K3](https://openrouter.ai/moonshotai/kimi-k3-20260715)
-and [GLM-5](https://openrouter.ai/z-ai/glm-5) slugs. The suite avoids a moving "latest" alias so a
-result can be reproduced later.
+and [GLM-5](https://openrouter.ai/z-ai/glm-5) slugs plus Z.ai Coding Plan's exact
+[`glm-5.3`](https://docs.z.ai/guides/llm/glm-5.3) model. The suite avoids a moving "latest" alias so
+a result can be reproduced later.
 
 ## Longitudinal ledger
 
@@ -105,9 +117,10 @@ commitment is a reviewed checked-in registry entry; appending ledger rows alone 
 routing.
 
 Cost policy: the standing eval cadence runs subscription-backed targets through the machine's
-existing Claude Code and Codex logins rather than per-token API billing. Their ledger cost remains
-unknown unless the SDK reports it. OpenRouter targets are confined to cheap open-weight models, and
-Claude-family models are never routed through OpenRouter.
+existing Claude Code, Codex, and Z.ai Coding Plan access rather than presenting catalog zeroes as
+per-token billing. Their ledger cost remains unknown unless the provider reports a real bill.
+OpenRouter targets are confined to cheap open-weight models, and Claude-family models are never
+routed through OpenRouter.
 
 The current bounded code-repair comparison is outcome-aware; failed-run spend stays in cost per
 successful result:
@@ -115,15 +128,19 @@ successful result:
 | Exact target and cohort | Hard-gate passes | Median / p95 wall | Total cost | Cost per pass | Failure spend |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `codex-sdk:gpt-5.6-sol` `.3` (`20260814T145942Z`) | 10/10 | 114.0s / 166.9s | — | — | — |
+| `opencode:zai-coding-plan/glm-5.3` `.3` (`20260814T213026Z`) | 10/10 | 55.0s / 62.3s | — | — | — |
 | `openhands:openrouter/z-ai/glm-5.2` (`20260814T145843Z`) | 10/10 | 33.3s / 42.5s | $0.3025 | $0.0303 | — |
 | `openhands:openrouter/z-ai/glm-5` (`20260814T133601Z`) | 10/10 | 75.7s / 82.1s | $0.3240 | $0.0324 | — |
 | `openhands:openrouter/moonshotai/kimi-k2.6` (`20260814T133601Z`) | 10/10 | 81.8s / 126.9s | $0.3164 | $0.0316 | — |
 | `openhands:openrouter/moonshotai/kimi-k2.7-code` (`20260814T145842Z`) | 8/10 | 58.1s / 95.3s | $0.3551 | $0.0444 | $0.1094 |
 | `openhands:openrouter/moonshotai/kimi-k3` (`20260814T125803Z`) | 2/3 | 111.9s / 382.0s | $0.4144 | $0.2072 | $0.2517 |
 
-Codex does not expose per-run subscription cost, so its `—` is unknown rather than zero. GLM-5.2
-is the fastest and cheapest fully clean OpenRouter cohort in this case. Kimi K2.7 Code and Kimi K3
-both repaired code in failed repetitions but exited without a valid `submit_result`; those complete
+Codex and Z.ai Coding Plan do not expose a per-run subscription bill, so `—` is unknown rather than
+zero. GLM-5.3 passed the full vector 10/10 at a 55.0s median, 52% below Codex's 114.0s median.
+OpenHands/GLM-5.2 remains the fastest clean cohort at 33.3s and the cheapest measured OpenRouter
+cohort at $0.0303/pass. These compare runtime-plus-model targets, not models in isolation: OpenCode
+is a trusted host process while OpenHands is a local container. Kimi K2.7 Code and Kimi K3 both
+repaired code in failed repetitions but exited without a valid `submit_result`; those complete
 cohorts remain negative routing evidence.
 
 The Codex `.3` cohort qualifies the reviewed text-only bounded-repair route when Codex is already
@@ -132,8 +149,12 @@ single-mount/submission-only epoch. OpenHands `.3` adds plural mounts and a cred
 host relay for serializable user/local MCP entries, making those rows stale for route qualification;
 no OpenRouter model is automatically routed until a fresh `.3` cohort exists and the remaining
 project/plugin/managed and Claude.ai/OAuth connector surface is implemented and proven separately.
-GLM-5.3 is not represented by any of these rows: its launch-day Coding Plan availability did not
-include an OpenRouter model id, so Weaver will run a separate exact cohort when one exists.
+GLM-5.3 is evaluated through the officially supported OpenCode Coding Plan target, not a guessed
+OpenRouter alias. Its provider reports subscription quota rather than a dollar bill, so Weaver
+records cost as unknown instead of `$0.00`. OpenCode remains eval-only: model-quality evidence does
+not by itself supply the ordinary operator MCP surface or a remote managed-sandbox boundary.
+The initial normal-auth canary and interrupted `.2` cohort remain as pre-hardening history; only
+`.3` combines the host provider proxy, fresh child home, minimal environment, and awaited exit.
 
 ## What passes
 

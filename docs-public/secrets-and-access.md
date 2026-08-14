@@ -14,6 +14,9 @@ weaver secret set OPENROUTER_API_KEY --executor
 weaver secret list --executor
 ```
 
+Interactive `secret set` input disables terminal echo and finishes on Enter; piping a value on
+stdin remains supported for automation.
+
 The contract:
 
 - **Set once, everywhere.** Secrets are global by default — every workstream's action workers see the name and every exec shell gets the value; `--ws` scoping is the exception for a credential only one stream should hold.
@@ -30,6 +33,10 @@ shells do not. Their values still join the shared store-refusal and every
 output-redaction boundary. For OpenHands, the durable provider key stays in a
 host-side inference proxy and serializable MCP credentials stay in host-side
 relays, while the disposable container receives only random per-run bearers.
+The OpenCode eval adapter uses the same provider-key shape: a fresh local server
+gets a temporary home, a minimal environment, and only disposable proxy and
+submission bearers. Normal OpenCode auth files and Weaver's state path are not
+visible to that process.
 
 ## Operator access
 
