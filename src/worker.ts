@@ -173,7 +173,7 @@ const SHARED_RULES = `
 Rules:
 1. Produce exactly what the assignment asks for, judged against its acceptance criteria — the coordinator will review your submission against them literally.
 2. Your submission is a PROPOSAL. It becomes real only if the coordinator adopts it, so make the artifact self-contained and reviewable.
-3. For anything longer than ~150 lines, build the artifact incrementally: call append_section repeatedly (each call adds one section, in order), then call submit_result ONCE with an empty or short closing content — the appended sections are prepended automatically. Never submit a placeholder: an empty or stub artifact is worse than no submission, and the coordinator will reject it.
+3. Submission is part of the work, not optional reporting after it. For anything longer than ~150 lines, build the artifact incrementally: call append_section repeatedly (each call adds one section, in order), then call submit_result ONCE with an empty or short closing content — the appended sections are prepended automatically. Never submit a placeholder: an empty or stub artifact is worse than no submission, and the coordinator will reject it.
 4. Call submit_result exactly once. Do not end without submitting.
 5. If something refuses you — a denied tool, a missing permission, an input the brief assumed exists — do not engineer a longer route around it. Say exactly what refused you and what the brief needs it for. A workaround that quietly preserves a wrong constraint is worse than an honest blockage: the coordinator can change the constraint or dispatch an approved action, but only if it learns the refusal happened.
 6. On an incident, alert, or user-visible failure, separate trigger, failed recovery, and escape. If the evidence says retries, fallbacks, or an aggregate such as "all models failed", enumerate every configured attempt and verify each against runtime evidence; missing telemetry is a finding, not a successful investigation. If the briefing or acceptance criteria cover containment only, perform that bounded work but state plainly that it does not fix the upstream failure and name the unverified layers in your submission.`;
@@ -247,6 +247,7 @@ export async function finalizeWorkerRun(
       attempt.costUsd = outcome.costUsd;
       if (outcome.sessionId) attempt.sessionId = outcome.sessionId;
       if (outcome.infrastructure) attempt.infrastructure = outcome.infrastructure;
+      if (outcome.terminalReason) attempt.terminalReason = outcome.terminalReason;
     }
     d.spend.totalCostUsd += outcome.costUsd;
     if (outcome.submitted) {
@@ -327,6 +328,7 @@ export async function runWorker(
   assignmentId: string,
   providedExecutor?: WorkerExecutor,
   executorCapabilities?: ReadonlySet<string>,
+  timing?: { wallMs?: number; wallTickMs?: number },
 ): Promise<boolean> {
   const declaredExecutors = executorCapabilities ??
     (providedExecutor ? undefined : runnerExecutorCapabilities());
@@ -443,6 +445,64 @@ export async function runWorker(
   // The Weaver submission surface stays in the harness: whatever substrate
   // runs the model loop, only these closures can propose a submission through
   // Weaver's API. Process containment itself belongs to that substrate.
+  const persistSubmission = async (
+    a: Parameters<SubmitSurface['submitResult']>[0],
+    completeness: 'complete' | 'checkpoint' = 'complete',
+  ): Promise<SubmitReply> => {
+    if (submitted) return { text: 'already submitted — stop', isError: true };
+    const fullContent = [...sections, a.artifact.content].filter(Boolean).join('\n\n');
+    if (fullContent.trim().length < 200) {
+      return {
+        text: `REFUSED: artifact content is ${fullContent.trim().length} chars — that is a stub, not a deliverable. Build the real artifact with append_section calls, then submit_result again.`,
+        isError: true,
+      };
+    }
+    submitted = true;
+    const cleanContent = redactSecrets(fullContent, redactionSecrets);
+    const cleanSummary = redactSecrets(a.summary, redactionSecrets);
+    const cleanTitle = redactSecrets(a.artifact.title, redactionSecrets);
+    const cleanKind = redactSecrets(a.artifact.kind, redactionSecrets);
+    const cleanFileName = redactSecrets(a.artifact.file_name, redactionSecrets);
+    const { relPath, hash } = await writeArtifact(slug, cleanFileName, cleanContent);
+    await arrive(slug, (d, event) => {
+      const asg2 = d.assignments.find((x) => x.id === assignmentId)!;
+      const delId = newId('del');
+      d.deliverables.push({
+        id: delId,
+        title: cleanTitle,
+        kind: cleanKind,
+        path: relPath,
+        contentHash: hash,
+        producedByAssignment: assignmentId,
+        createdAtVirtual: virtualNow().toISOString(),
+      });
+      asg2.submission = {
+        summary: cleanSummary,
+        deliverableId: delId,
+        ...(completeness === 'checkpoint' ? { completeness } : {}),
+      };
+      asg2.state = 'awaiting_review';
+      asg2.adoption = { state: 'proposed' };
+      const attempt = asg2.attempts.find((t) => t.runId === runId);
+      if (attempt) attempt.endedAt = new Date().toISOString();
+      d.wakes.push({
+        id: newId('wake'),
+        reason: completeness === 'checkpoint'
+          ? `assignment ${assignmentId} preserved an incomplete hard-wall checkpoint for review`
+          : `assignment ${assignmentId} submitted a result for review`,
+        condition: { type: 'immediate' },
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      });
+      event(
+        completeness === 'checkpoint' ? 'worker.checkpointed' : 'worker.submitted',
+        `${assignmentId} → ${delId} "${cleanTitle}" (${hash.slice(0, 8)})${completeness === 'checkpoint' ? ' [incomplete checkpoint]' : ''}`,
+        [assignmentId, delId],
+      );
+    });
+    return { text: completeness === 'checkpoint' ? 'incomplete checkpoint preserved for coordinator review' : 'submitted — you are done' };
+  };
+
   const submit: SubmitSurface = {
     async appendSection(content): Promise<SubmitReply> {
       if (submitted) return { text: 'already submitted — stop', isError: true };
@@ -451,50 +511,13 @@ export async function runWorker(
     },
 
     async submitResult(a): Promise<SubmitReply> {
-      if (submitted) return { text: 'already submitted — stop', isError: true };
-      const fullContent = [...sections, a.artifact.content].filter(Boolean).join('\n\n');
-      if (fullContent.trim().length < 200) {
-        return {
-          text: `REFUSED: artifact content is ${fullContent.trim().length} chars — that is a stub, not a deliverable. Build the real artifact with append_section calls, then submit_result again.`,
-          isError: true,
-        };
-      }
-      submitted = true;
-      const cleanContent = redactSecrets(fullContent, redactionSecrets);
-      const cleanSummary = redactSecrets(a.summary, redactionSecrets);
-      const cleanTitle = redactSecrets(a.artifact.title, redactionSecrets);
-      const cleanKind = redactSecrets(a.artifact.kind, redactionSecrets);
-      const cleanFileName = redactSecrets(a.artifact.file_name, redactionSecrets);
-      const { relPath, hash } = await writeArtifact(slug, cleanFileName, cleanContent);
-      await arrive(slug, (d, event) => {
-        const asg2 = d.assignments.find((x) => x.id === assignmentId)!;
-        const delId = newId('del');
-        d.deliverables.push({
-          id: delId,
-          title: cleanTitle,
-          kind: cleanKind,
-          path: relPath,
-          contentHash: hash,
-          producedByAssignment: assignmentId,
-          createdAtVirtual: virtualNow().toISOString(),
-        });
-        asg2.submission = { summary: cleanSummary, deliverableId: delId };
-        asg2.state = 'awaiting_review';
-        asg2.adoption = { state: 'proposed' };
-        const attempt = asg2.attempts.find((t) => t.runId === runId);
-        if (attempt) attempt.endedAt = new Date().toISOString();
-        d.wakes.push({
-          id: newId('wake'),
-          reason: `assignment ${assignmentId} submitted a result for review`,
-          condition: { type: 'immediate' },
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-        });
-        event('worker.submitted', `${assignmentId} → ${delId} "${cleanTitle}" (${hash.slice(0, 8)})`, [assignmentId, delId]);
-      });
-      return { text: 'submitted — you are done' };
+      return persistSubmission(a);
     },
   };
+
+  const workerWallMs = timing?.wallMs ?? 40 * 60_000;
+  const submissionReserveMs = Math.min(10 * 60_000, Math.floor(workerWallMs / 2));
+  const checkpointAtMs = workerWallMs - submissionReserveMs;
 
   const prompt = [
     `# Assignment ${asg.id} (${asg.kind})`,
@@ -527,6 +550,9 @@ export async function runWorker(
         ]
       : []),
     ...(inputs.length ? [``, `## Declared inputs`, ...inputs] : []),
+    ``,
+    `## Execution clock (harness-enforced)`,
+    `This disposable run is hard-aborted after ${Math.round(workerWallMs / 60_000)} awake minutes. Reserve the final ${Math.round(submissionReserveMs / 60_000)} awake minutes for durable reporting. By ${Math.round(checkpointAtMs / 60_000)} awake minutes, stop optional investigation, extra screenshots, and polish; call append_section with the factual evidence already established (even for a short report), then call submit_result immediately. A file or external change without submit_result is not a Weaver result and will be treated as unknown work. If an external mutation may have landed, read the exact target back once before reporting and never repeat the mutation.`,
     // Action workers run with settingSources: [] so filesystem allow-rules can
     // never shadow the pilot supervisor — but that also strips the SDK's
     // CLAUDE.md loading, so the target repo's own conventions (PR labels,
@@ -543,7 +569,7 @@ export async function runWorker(
   // (→ no_submission → coordinator retries) rather than starve the runner.
   // Sleep-aware: laptop-lid suspension doesn't count toward the wall.
   const abort = new AbortController();
-  const wall = armWall(abort, 40 * 60_000, 'worker');
+  const wall = armWall(abort, workerWallMs, 'worker', timing?.wallTickMs);
   try {
     if (isAction) {
       // Structural gate, independent of the engine's scheduling: an action
@@ -631,7 +657,22 @@ export async function runWorker(
   }
 
   const wallFired = wall.fired();
-  if (wallFired && !submitted) resultSubtype = 'wall_timeout';
+  if (wallFired && !submitted) {
+    const checkpointLength = sections.join('\n\n').trim().length;
+    if (checkpointLength >= 200) {
+      const reply = await persistSubmission({
+        summary: `The worker reached its hard wall after preserving ${sections.length} factual section(s), but before a complete submit_result. This is an incomplete recovery checkpoint: inspect it, read back any external effects, and dispatch only the missing bounded work.`,
+        artifact: {
+          title: `${asg.objective} — interrupted worker checkpoint`,
+          kind: 'worker_checkpoint',
+          file_name: `${assignmentId}-${runId}-checkpoint.md`,
+          content: `## Harness checkpoint status\n\nThis candidate was preserved automatically at the worker hard wall. It is incomplete and cannot be adopted as the assignment result. Reconcile it against current typed and external state before continuing.`,
+        },
+      }, 'checkpoint');
+      if (!reply.isError) resultSubtype = 'wall_timeout_checkpoint';
+    }
+    resultSubtype = resultSubtype ?? 'wall_timeout';
+  }
 
   const capacitySource = {
     source: 'worker',

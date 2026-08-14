@@ -13,7 +13,7 @@ import {
   recordCoordinatorCapacityBackoff,
   runCoordinatorPass,
 } from './coordinator.js';
-import { arrive, createWorkstream, load } from './store.js';
+import { arrive, createWorkstream, load, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { CapacityCategory, InfrastructureWait } from './types.js';
 import type { CoordinatorExecutor } from './executor/coordinator.js';
@@ -275,6 +275,67 @@ test('create_assignment persists typed requirements without choosing a model', a
     modalities: ['text'],
   });
   assert.equal(assignment.attempts.length, 0, 'durable requirements do not preselect a disposable target');
+});
+
+test('an incomplete hard-wall checkpoint is readable but cannot be adopted', async () => {
+  const { relPath, hash } = await writeArtifact(
+    'coordinator-capacity',
+    'checkpoint.md',
+    `# Interrupted checkpoint\n\n${'Verified evidence preserved before the hard wall. '.repeat(8)}`,
+  );
+  await arrive('coordinator-capacity', (doc) => {
+    doc.deliverables.push({
+      id: 'del_checkpoint', title: 'Interrupted checkpoint', kind: 'worker_checkpoint',
+      path: relPath, contentHash: hash, producedByAssignment: 'asg_checkpoint',
+      createdAtVirtual: virtualNow().toISOString(),
+    });
+    doc.assignments.push({
+      id: 'asg_checkpoint', objective: 'complete the bounded work', briefing: 'n/a', kind: 'work',
+      acceptanceCriteria: ['complete result'], dependsOn: [], state: 'awaiting_review', attempts: [],
+      submission: {
+        summary: 'Incomplete evidence preserved at the worker wall.',
+        deliverableId: 'del_checkpoint',
+        completeness: 'checkpoint',
+      },
+      adoption: { state: 'proposed' }, createdAtVirtual: virtualNow().toISOString(),
+    });
+  });
+
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const read = req.tools.find((definition) => definition.name === 'read_artifact');
+      const adopt = req.tools.find((definition) => definition.name === 'adopt_submission');
+      const reject = req.tools.find((definition) => definition.name === 'reject_submission');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(read && adopt && reject && finish);
+      assert.match(req.prompt, /INCOMPLETE CHECKPOINT \(cannot adopt\)/);
+      const artifact = await read.handler({ deliverable_id: 'del_checkpoint' }, {});
+      assert.equal(artifact.isError, undefined);
+      const refused = await adopt.handler({
+        assignment_id: 'asg_checkpoint',
+        reason: 'It contains useful evidence.',
+      }, {});
+      assert.equal(refused.isError, true);
+      assert.match(JSON.stringify(refused), /incomplete hard-wall checkpoint/);
+      const rejected = await reject.handler({
+        assignment_id: 'asg_checkpoint',
+        reason: 'Preserve the evidence and dispatch only the missing bounded work.',
+      }, {});
+      assert.equal(rejected.isError, undefined);
+      await finish.handler({
+        summary: 'Rejected the incomplete checkpoint without losing its evidence.',
+        acknowledged_steering: true,
+      }, {});
+      return { costUsd: 0, sessionId: 'checkpoint-review' };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['checkpoint ready'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const assignment = (await load('coordinator-capacity')).assignments[0]!;
+  assert.equal(assignment.adoption.state, 'rejected');
+  assert.equal(assignment.state, 'completed');
 });
 
 test('passOutcome: a conflicted finish is never recorded as completed', () => {

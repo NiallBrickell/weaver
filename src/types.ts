@@ -153,6 +153,9 @@ export interface Assignment {
   submission?: {
     summary: string;
     deliverableId?: Id;
+    /** A hard-wall checkpoint is inspectable recovery evidence, never a
+     * complete result. Legacy/absent means a normal complete submission. */
+    completeness?: 'complete' | 'checkpoint';
   };
   /** Adoption is a coordinator act, distinct from the worker finishing. */
   adoption: {

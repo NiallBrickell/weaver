@@ -12,6 +12,14 @@ environment, supervises declared actions, and accepts a submission only through
 its own callback. The executor owns only the disposable half — the model loop
 and the ordinary coding-agent tools.
 
+Workers have a sleep-aware 40-minute safety wall. Weaver tells each worker to
+stop optional investigation at minute 30, append the evidence already
+established, and submit during the reserved final ten minutes. If the hard wall
+still interrupts between an `append_section` checkpoint and `submit_result`,
+Weaver preserves those sections as an explicitly incomplete candidate. A fresh
+coordinator can inspect and reject that checkpoint before dispatching only the
+missing work, but it cannot adopt the checkpoint as a completed result.
+
 ## The substrates
 
 | `WEAVER_EXECUTOR` | Where the loop runs | Containment |

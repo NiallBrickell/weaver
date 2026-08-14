@@ -126,6 +126,9 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
     assert.equal(request.cwd, readDir);
     assert.deepEqual(request.additionalDirectories, [readDir]);
     assert.ok(request.prompt.includes(`- ${readDir}`));
+    assert.match(request.prompt, /hard-aborted after 40 awake minutes/);
+    assert.match(request.prompt, /By 30 awake minutes, stop optional investigation/);
+    assert.match(request.prompt, /call append_section with the factual evidence already established/);
     assert.equal(request.permissionMode, 'bypassPermissions');
     assert.deepEqual(request.settingSources, ['user', 'project', 'local']);
     assert.equal(request.strictMcpConfig, false);
@@ -588,6 +591,71 @@ test('worker wall timeout is durable work failure, not provider capacity', async
   } finally {
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('worker wall preserves appended evidence as a typed, non-adoptable checkpoint', async () => {
+  const home = workerHome();
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-worker-checkpoint-'));
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      const reply = await req.submit.appendSection(
+        `# Verified checkpoint\n\n${'Current-state evidence was read back and verified before the hard wall. '.repeat(8)}`,
+      );
+      assert.equal(reply.isError, undefined);
+      await new Promise<void>((resolve, reject) => {
+        // armWall intentionally unrefs its production timer so an idle runner
+        // can exit cleanly. Keep this synthetic executor alive while waiting
+        // for that timer; otherwise Node may end the test before the unref'd
+        // wall gets a chance to fire (as the Linux CI runner correctly did).
+        const guard = setTimeout(() => reject(new Error('worker wall did not fire')), 1_000);
+        const onAbort = () => {
+          clearTimeout(guard);
+          resolve();
+        };
+        if (req.abort.signal.aborted) onAbort();
+        else req.abort.signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return { costUsd: 0.1, sessionId: 'checkpoint-session' };
+    },
+  };
+
+  try {
+    await createWorkstream({
+      slug: 'worker-checkpoint', title: 'worker-checkpoint',
+      objective: 'preserve verified work at the wall', tags: [],
+      successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-checkpoint', (d) => d.assignments.push({
+      id: 'asg_checkpoint', objective: 'verify a bounded external repair',
+      briefing: 'Read back the repair and return evidence.', kind: 'work',
+      readDirs: [workspace], acceptanceCriteria: ['current state is verified'],
+      dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await runWorker('worker-checkpoint', 'asg_checkpoint', executor, undefined, {
+      wallMs: 40,
+      wallTickMs: 10,
+    });
+
+    const doc = await load('worker-checkpoint');
+    const assignment = doc.assignments[0]!;
+    assert.equal(assignment.state, 'awaiting_review');
+    assert.equal(assignment.adoption.state, 'proposed');
+    assert.equal(assignment.submission?.completeness, 'checkpoint');
+    assert.equal(assignment.attempts[0]!.terminalReason, 'wall_timeout_checkpoint');
+    assert.equal(doc.deliverables.length, 1);
+    assert.equal(doc.deliverables[0]!.kind, 'worker_checkpoint');
+    const artifact = await readArtifact('worker-checkpoint', doc.deliverables[0]!.path);
+    assert.match(artifact, /Current-state evidence was read back and verified/);
+    assert.match(artifact, /incomplete and cannot be adopted/);
+    assert.ok(doc.events.some((event) => event.type === 'worker.checkpointed'));
+    assert.equal(doc.capacity, null);
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
 
