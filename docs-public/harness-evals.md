@@ -127,9 +127,11 @@ both repaired code in failed repetitions but exited without a valid `submit_resu
 cohorts remain negative routing evidence.
 
 The Codex `.3` cohort qualifies the reviewed text-only bounded-repair route when Codex is already
-the configured worker substrate. OpenHands remains available as an explicit cooperative-work target,
-but no OpenRouter model is automatically routed until the adapter carries every declared source
-directory and the operator's configured MCP surface.
+the configured worker substrate. The OpenHands rows above were collected under the older `.2`
+single-mount/submission-only epoch. OpenHands `.3` adds plural mounts and a credential-isolating
+host relay for serializable user/local MCP entries, making those rows stale for route qualification;
+no OpenRouter model is automatically routed until a fresh `.3` cohort exists and the remaining
+project/plugin/managed and Claude.ai/OAuth connector surface is implemented and proven separately.
 GLM-5.3 is not represented by any of these rows: its launch-day Coding Plan availability did not
 include an OpenRouter model id, so Weaver will run a separate exact cohort when one exists.
 
@@ -146,9 +148,11 @@ from a superseded value. The visual result must be exact structured JSON. Image 
 regularly include screenshots and image-bearing tickets; exact extraction is therefore a hard gate
 rather than an optional quality point.
 
-The initial visual case uses a local PNG so it measures model/runtime vision directly. Promotion
-also requires an authenticated MCP image-block case matching a screenshot attached to a Linear
-ticket; that separately tests connector transport and credential handling.
+The initial visual case uses a local PNG so it measures model/runtime vision directly. The `.3`
+relay has a deterministic authenticated MCP image-block transport test, including credential
+confinement. An automatic image-capable remote route additionally requires a model-facing
+authenticated connector case matching a real screenshot-bearing ticket; text-only route evidence
+does not need to pretend the model can consume images.
 
 The selected model must support image input. A text-only model may remain useful for text routes,
 but it cannot pass an image assignment; the planned model router records that modality instead of
@@ -163,7 +167,7 @@ data is reported as unavailable, never as zero.
 > rely on the environment that launched Weaver, and a local OpenHands container is not a managed
 > multi-tenant sandbox. OpenHands is an available production remote executor
 > (`WEAVER_EXECUTOR=openhands`, see [Where workers run](./executors.md)), but that promotion is
-> scoped to explicitly configured cooperative work assignments: its container mounts only the assignment workspace, and an
+> scoped to explicitly configured cooperative work assignments: its container mounts only the declared assignment directories, and an
 > action assignment fails closed there. Enforced multi-tenant isolation and supervised remote actions
 > are what the still-open confinement and supervised-action gates widen it to.
 

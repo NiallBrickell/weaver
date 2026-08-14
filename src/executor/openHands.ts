@@ -6,8 +6,9 @@
  * remain in the host process behind a per-run inference proxy; neither the
  * model container nor its conversation config receives the real key.
  *
- * Containment is real here: the host working directory is bind-mounted at
- * /workspace, the container is `--rm` and always torn down, and the worker's
+ * Containment is real here: the declared host working directories are
+ * bind-mounted at deterministic container paths, the container is `--rm` and
+ * always torn down, and the worker's
  * only Weaver API is the submit surface reached over an ephemeral HTTP bridge
  * (advertised as host.docker.internal, bearer-authenticated). Action-worker
  * supervision is NOT supported yet, so an action request fails closed rather
@@ -16,13 +17,16 @@
 
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { hostname } from 'node:os';
 import { resolve } from 'node:path';
 import { loadExecutorSecrets, redactSecrets } from '../secrets.js';
+import { startMcpRelay, type McpRelay } from './mcpRelay.js';
 import {
   startProviderProxy,
   type ProviderProxy,
 } from './providerProxy.js';
 import { startSubmitBridge, type SubmitBridge } from './submitBridge.js';
+import { planWorkspaceMounts, type WorkspaceMountPlan } from './workspaceMounts.js';
 import type {
   ExecutorTelemetry,
   ExecutorUsage,
@@ -35,9 +39,8 @@ import type {
 export const OPENHANDS_AGENT_SERVER_IMAGE =
   'ghcr.io/openhands/agent-server:1.41.0-python';
 
-const AGENT_SERVER_WORKSPACE = '/workspace';
 const AGENT_SERVER_PORT = '8000/tcp';
-const HARNESS_VERSION = 'openhands-agent-server-1.41.0-weaver.2';
+const HARNESS_VERSION = 'openhands-agent-server-1.41.0-weaver.3';
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENHANDS_TOOL_MODULES = {
   terminal: 'openhands.tools.terminal.definition',
@@ -46,6 +49,8 @@ const OPENHANDS_TOOL_MODULES = {
 } as const;
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const DEFAULT_STARTUP_TIMEOUT_MS = 60_000;
+const CONTAINER_LABEL = 'weaver.executor=openhands';
+const CONTAINER_OWNER_HOST = hostname();
 
 export interface CommandResult {
   exitCode: number;
@@ -67,11 +72,13 @@ export interface OpenHandsExecutorOptions {
   runCommand?: CommandRunner;
   startSubmitBridge?: typeof startSubmitBridge;
   startProviderProxy?: typeof startProviderProxy;
+  startMcpRelay?: typeof startMcpRelay;
   loadExecutorSecrets?: typeof loadExecutorSecrets;
   now?: () => number;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   pollIntervalMs?: number;
   startupTimeoutMs?: number;
+  isProcessAlive?: (pid: number) => boolean;
 }
 
 interface ConversationInfo {
@@ -105,6 +112,11 @@ interface MetricsTotals {
   usage: ExecutorUsage;
 }
 
+interface NamedMcpRelay {
+  name: string;
+  relay: McpRelay;
+}
+
 class UnsupportedOpenHandsRequest extends Error {}
 
 class OpenHandsConversationError extends Error {
@@ -127,11 +139,13 @@ export class OpenHandsExecutor implements WorkerExecutor {
   private readonly runCommand: CommandRunner;
   private readonly bridgeStarter: typeof startSubmitBridge;
   private readonly providerProxyStarter: typeof startProviderProxy;
+  private readonly mcpRelayStarter: typeof startMcpRelay;
   private readonly executorSecretsLoader: typeof loadExecutorSecrets;
   private readonly now: () => number;
   private readonly sleep: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   private readonly pollIntervalMs: number;
   private readonly startupTimeoutMs: number;
+  private readonly isProcessAlive: (pid: number) => boolean;
   private telemetry: ExecutorTelemetry | null = null;
 
   constructor(options: OpenHandsExecutorOptions = {}) {
@@ -142,11 +156,13 @@ export class OpenHandsExecutor implements WorkerExecutor {
     this.runCommand = options.runCommand ?? runCommand;
     this.bridgeStarter = options.startSubmitBridge ?? startSubmitBridge;
     this.providerProxyStarter = options.startProviderProxy ?? startProviderProxy;
+    this.mcpRelayStarter = options.startMcpRelay ?? startMcpRelay;
     this.executorSecretsLoader = options.loadExecutorSecrets ?? loadExecutorSecrets;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? abortableSleep;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
+    this.isProcessAlive = options.isProcessAlive ?? processAlive;
   }
 
   lastTelemetry(): ExecutorTelemetry | null {
@@ -165,17 +181,33 @@ export class OpenHandsExecutor implements WorkerExecutor {
     let bridge: SubmitBridge | null = null;
     let providerProxy: ProviderProxy | null = null;
     let providerConfiguration: ProviderConfiguration | null = null;
+    let workspacePlan: WorkspaceMountPlan | null = null;
     let containerStarted = false;
     let containerAttempted = false;
     let agentServerUrl: string | null = null;
     let sessionApiKey: string | null = null;
     const cleanupFailures: string[] = [];
+    const operatorRelays: NamedMcpRelay[] = [];
     const containerName = `weaver-openhands-${safeName(req.assignmentId)}-${randomBytes(6).toString('hex')}`;
 
     try {
       this.validateRequest(req);
+      workspacePlan = planWorkspaceMounts({
+        cwd: resolve(req.cwd ?? process.cwd()),
+        additionalDirectories: req.additionalDirectories,
+        prompt: req.prompt,
+      });
       providerConfiguration = this.providerConfiguration(req.model);
       if (req.abort.signal.aborted) throw abortError();
+
+      for (const [name, config] of Object.entries(req.operatorMcpServers)) {
+        const relay = await this.mcpRelayStarter(config, {
+          env: req.env,
+          bindHost: '0.0.0.0',
+          advertiseHost: 'host.docker.internal',
+        });
+        operatorRelays.push({ name, relay });
+      }
 
       providerProxy = await this.providerProxyStarter({
         upstreamBaseUrl: providerConfiguration.baseUrl,
@@ -194,6 +226,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
             sessionApiKey,
             bridge?.token,
             providerProxy?.token,
+            operatorRelays.map(({ relay }) => relay.token),
           )),
           (text) => this.sanitizePrivate(
             text,
@@ -201,6 +234,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
             sessionApiKey,
             bridge?.token,
             providerProxy?.token,
+            operatorRelays.map(({ relay }) => relay.token),
           ),
         ),
         submitResult: async (args) => {
@@ -210,6 +244,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
             sessionApiKey,
             bridge?.token,
             providerProxy?.token,
+            operatorRelays.map(({ relay }) => relay.token),
           );
           const sanitized = {
             summary: sanitize(args.summary),
@@ -230,7 +265,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
       });
 
       sessionApiKey = randomBytes(32).toString('hex');
-      const cwd = resolve(req.cwd ?? process.cwd());
+      await this.reapOrphanedContainers(req.abort.signal);
       containerAttempted = true;
       await this.checkedCommand(
         [
@@ -239,6 +274,12 @@ export class OpenHandsExecutor implements WorkerExecutor {
           '--detach',
           '--name',
           containerName,
+          '--label',
+          CONTAINER_LABEL,
+          '--label',
+          `weaver.owner_pid=${process.pid}`,
+          '--label',
+          `weaver.owner_host=${CONTAINER_OWNER_HOST}`,
           '--publish',
           `127.0.0.1::${AGENT_SERVER_PORT.split('/')[0]}`,
           '--add-host',
@@ -253,8 +294,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
           'OH_BASH_EVENTS_DIR=/tmp/weaver-bash-events',
           '--env',
           'OH_WORKSPACE_PATH=/tmp/weaver-agent-server-workspace',
-          '--volume',
-          `${cwd}:${AGENT_SERVER_WORKSPACE}`,
+          ...workspacePlan.dockerArgs,
           OPENHANDS_AGENT_SERVER_IMAGE,
           '--host',
           '0.0.0.0',
@@ -280,8 +320,9 @@ export class OpenHandsExecutor implements WorkerExecutor {
           body: JSON.stringify(this.createConversationRequest(
             req,
             bridge,
-            cwd,
+            workspacePlan,
             providerProxy,
+            operatorRelays,
           )),
         },
         req.abort.signal,
@@ -338,6 +379,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
         sessionApiKey,
         bridge?.token,
         providerProxy?.token,
+        operatorRelays.map(({ relay }) => relay.token),
       );
       if (isAbort(caught, req.abort.signal)) {
         terminalReason = 'aborted';
@@ -371,7 +413,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
         try {
           const stop = await this.runCommand(
             this.dockerCommand,
-            ['stop', '--time', '5', containerName],
+            ['stop', '--timeout', '5', containerName],
             { signal: AbortSignal.timeout(15_000) },
           );
           stopped = stop.exitCode === 0;
@@ -390,6 +432,10 @@ export class OpenHandsExecutor implements WorkerExecutor {
             cleanupFailures.push(`container removal: ${caught instanceof Error ? caught.message : String(caught)}`);
           }
         }
+      }
+      for (const { relay } of operatorRelays) {
+        try { await relay.close(); }
+        catch { cleanupFailures.push('operator MCP relay: failed to close'); }
       }
       if (bridge) {
         try { await bridge.close(); }
@@ -410,6 +456,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
           sessionApiKey,
           bridge?.token,
           providerProxy?.token,
+          operatorRelays.map(({ relay }) => relay.token),
         );
       }
 
@@ -450,13 +497,9 @@ export class OpenHandsExecutor implements WorkerExecutor {
         'OpenHands executor does not support action-worker supervision',
       );
     }
-    const cwd = resolve(req.cwd ?? process.cwd());
-    const extraDirectories = new Set(
-      req.additionalDirectories.map((directory) => resolve(directory)).filter((directory) => directory !== cwd),
-    );
-    if (extraDirectories.size > 0) {
+    if (Object.keys(req.operatorMcpServers).some((name) => name.toLowerCase() === 'weaver')) {
       throw new UnsupportedOpenHandsRequest(
-        'OpenHands executor mounts only cwd; distinct additionalDirectories are unsupported',
+        "operator MCP server name 'weaver' is reserved for the submission surface",
       );
     }
   }
@@ -498,8 +541,9 @@ export class OpenHandsExecutor implements WorkerExecutor {
   private createConversationRequest(
     req: WorkerExecutionRequest,
     bridge: SubmitBridge,
-    hostCwd: string,
+    workspacePlan: WorkspaceMountPlan,
     providerProxy: ProviderProxy,
+    operatorRelays: readonly NamedMcpRelay[],
   ): Record<string, unknown> {
     return {
       agent: {
@@ -519,21 +563,32 @@ export class OpenHandsExecutor implements WorkerExecutor {
         agent_context: {
           system_message_suffix: [
             req.systemPrompt.append,
-            `The host working directory ${hostCwd} is mounted at ${AGENT_SERVER_WORKSPACE}; use ${AGENT_SERVER_WORKSPACE} inside this runtime.`,
+            [
+              'The declared host directories are mounted at these runtime paths:',
+              ...workspacePlan.pathMappings.map(
+                ({ hostPath, containerPath }) => `- ${hostPath} → ${containerPath}`,
+              ),
+              'Use the runtime paths inside this container.',
+            ].join('\n'),
           ].join('\n\n'),
           load_project_skills: false,
         },
-        mcp_config: {
-          weaver: {
+        mcp_config: Object.fromEntries([
+          ['weaver', {
             url: bridge.url,
             transport: 'streamable-http',
             auth: { strategy: 'bearer', value: bridge.token },
-          },
-        },
+          }],
+          ...operatorRelays.map(({ name, relay }) => [name, {
+            url: relay.url,
+            transport: 'streamable-http',
+            auth: { strategy: 'bearer', value: relay.token },
+          }]),
+        ]),
       },
       initial_message: {
         role: 'user',
-        content: [{ type: 'text', text: req.prompt }],
+        content: [{ type: 'text', text: workspacePlan.prompt }],
       },
       max_iterations: req.maxTurns,
       stuck_detection: true,
@@ -543,7 +598,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
       tool_module_qualnames: { ...OPENHANDS_TOOL_MODULES },
       agent_definitions: [],
       plugins: null,
-      workspace: { type: 'local', working_dir: AGENT_SERVER_WORKSPACE },
+      workspace: { type: 'local', working_dir: workspacePlan.workingDirectory },
       hook_config: null,
       user_id: null,
     };
@@ -555,12 +610,16 @@ export class OpenHandsExecutor implements WorkerExecutor {
     sessionApiKey: string | null,
     submitToken?: string | null,
     providerProxyToken?: string | null,
+    operatorRelayTokens: readonly string[] = [],
   ): string {
     const secrets: Record<string, string> = {};
     if (provider) secrets[provider.apiKeyName] = provider.apiKey;
     if (sessionApiKey) secrets.OPENHANDS_SESSION_API_KEY = sessionApiKey;
     if (submitToken) secrets.OPENHANDS_SUBMIT_TOKEN = submitToken;
     if (providerProxyToken) secrets.OPENHANDS_PROVIDER_PROXY_TOKEN = providerProxyToken;
+    for (const [index, token] of operatorRelayTokens.entries()) {
+      secrets[`OPENHANDS_OPERATOR_MCP_TOKEN_${index + 1}`] = token;
+    }
     return redactProviderDiagnostics(redactSecrets(text, secrets));
   }
 
@@ -571,6 +630,32 @@ export class OpenHandsExecutor implements WorkerExecutor {
       throw new Error(`${this.dockerCommand} ${args[0]} failed: ${detail}`);
     }
     return result;
+  }
+
+  private async reapOrphanedContainers(signal: AbortSignal): Promise<void> {
+    const listed = await this.runCommand(this.dockerCommand, [
+      'ps', '--all', '--filter', `label=${CONTAINER_LABEL}`,
+      '--filter', `label=weaver.owner_host=${CONTAINER_OWNER_HOST}`, '--format',
+      '{{.Names}}\t{{.Label "weaver.owner_pid"}}',
+    ], { signal });
+    if (listed.exitCode !== 0) {
+      throw new Error('failed to inspect prior OpenHands containers');
+    }
+    for (const line of listed.stdout.split('\n')) {
+      if (!line.trim()) continue;
+      const [name, rawPid] = line.split('\t');
+      if (!name || !/^weaver-openhands-[a-z0-9_-]+$/.test(name)) continue;
+      const ownerPid = Number(rawPid);
+      if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0 || this.isProcessAlive(ownerPid)) continue;
+      const removed = await this.runCommand(
+        this.dockerCommand,
+        ['rm', '--force', name],
+        { signal: AbortSignal.timeout(15_000) },
+      );
+      if (removed.exitCode !== 0) {
+        throw new Error('failed to remove an orphaned OpenHands container');
+      }
+    }
   }
 
   private async waitForHealth(baseUrl: string, signal: AbortSignal): Promise<void> {
@@ -851,6 +936,15 @@ function abortableSleep(milliseconds: number, signal: AbortSignal): Promise<void
     }, milliseconds);
     signal.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (caught) {
+    return !(caught instanceof Error && 'code' in caught && caught.code === 'ESRCH');
+  }
 }
 
 function abortError(): Error {

@@ -18,7 +18,7 @@ and the ordinary coding-agent tools.
 | --- | --- | --- |
 | `local-sdk` *(default)* | The local Claude Agent SDK `query()` in this process's environment | Host process — the launching machine is the boundary |
 | `codex-sdk` | A fresh local Codex SDK thread using the machine's ChatGPT login | Host process — the launching machine is the boundary |
-| `openhands` | A pinned OpenHands Agent Server container, one per assignment | Agent server — the host working directory is bind-mounted at `/workspace`; the container is `--rm` and always torn down |
+| `openhands` | A pinned OpenHands Agent Server container, one per assignment | Agent server — the primary directory is mounted at `/workspace`, independent declared sources at `/weaver-sources/N`; the container is `--rm` and always torn down |
 
 An unknown value fails hard before the attempt starts, on purpose: a silent
 fallback to local execution would make a misconfigured remote fleet look healthy.
@@ -75,11 +75,14 @@ executor wait separately from provider capacity because it has no honest retry
 timestamp. Unknown or empty declarations fail at runner startup.
 
 Passing model-quality gates is necessary but not sufficient for an automatic
-route. The current OpenHands adapter mounts one working directory and exposes
-Weaver's submission MCP, but it does not yet transport every operator-configured
-MCP server or multiple declared source directories. It remains an explicit
-cooperative-work target until that ordinary worker surface crosses the remote
-seam; the router does not infer that a narrowly scoped brief needs fewer tools.
+route. OpenHands now mounts every declared source directory and relays the
+serializable user/local MCP entries discoverable in `~/.claude.json` through
+authenticated host endpoints. It does not yet carry project `.mcp.json`,
+managed or plugin servers, `headersHelper`, or Claude.ai/OAuth connectors whose
+tokens Claude Code keeps privately. It therefore remains an explicit
+cooperative-work target until that complete ordinary worker surface crosses the
+remote seam; the router does not infer that a narrowly scoped brief needs fewer
+tools.
 
 Cross-executor automatic preference remains closed until Weaver stores that
 execution policy durably with the Workstream. An environment-only switch would
@@ -163,9 +166,21 @@ Requirements:
 - **A Docker-compatible container runtime** must be available. On macOS the
   supported local path is OrbStack; Weaver uses its compatible `docker` CLI to
   run the pinned Agent Server image and cleans it up after every assignment.
+  Containers carry an owner-process label; a later run removes labeled orphans
+  whose owner died before its `finally` cleanup could execute.
 - The worker reaches Weaver's submission surface over an ephemeral,
   bearer-authenticated HTTP bridge advertised to the container as
   `host.docker.internal` — nothing durable is written by the container directly.
+- Every declared source directory must already exist. The primary directory is
+  mounted read-write at `/workspace`; independent additional directories get
+  stable `/weaver-sources/N` paths, nested and symlink-equivalent sources are
+  deduplicated, and host paths in the brief are rewritten to their runtime paths.
+- Serializable stdio, Streamable HTTP, and legacy SSE user/local MCP entries
+  from `~/.claude.json` stay on the host. Per-run authenticated relays expose
+  their complete tool lists and read/write calls to the container; commands,
+  URLs, headers, environment values, and durable credentials never enter its
+  configuration. Unsupported OAuth and dynamic-header variants fail before
+  container launch rather than silently dropping tools.
 - The durable provider key never enters the container. A host-side proxy holds
   it in memory and gives the run a random, inference-only bearer, then closes
   with the container. The proxy accepts only chat-completion/response calls for
@@ -189,9 +204,9 @@ Requirements:
 
 ## What it does and does not guarantee today
 
-- **Real filesystem containment, not an enforced hostile boundary.** Only the
-  assignment's working directory is mounted, so work stays inside `/workspace`.
-  This is the right isolation for a cooperating worker; it is not yet a
+- **Real host-filesystem scoping, not an enforced hostile boundary.** Only the
+  assignment's declared directories are mounted at the documented runtime
+  paths. This is useful isolation for a cooperating worker; it is not yet a
   multi-tenant or adversarial sandbox. That harder guarantee is tracked as a
   future managed-sandbox target.
 - **Agent Server credentials stay conversation-local.** Weaver never writes a

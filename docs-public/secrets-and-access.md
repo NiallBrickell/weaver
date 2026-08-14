@@ -27,9 +27,9 @@ Values live in `0600` env files inside the gitignored state directory.
 Executor-only secrets are a stricter sibling scope. An adapter loads them
 directly; `secretNames`, projections, action environments, and deterministic
 shells do not. Their values still join the shared store-refusal and every
-output-redaction boundary. For OpenHands, the durable key stays in a host-side
-inference proxy, while the disposable container receives only a random
-per-run bearer.
+output-redaction boundary. For OpenHands, the durable provider key stays in a
+host-side inference proxy and serializable MCP credentials stay in host-side
+relays, while the disposable container receives only random per-run bearers.
 
 ## Operator access
 
@@ -39,6 +39,16 @@ An approved action acts *as you, on your machine* — so it gets what you have:
 - **Your MCP servers**: workers inherit the MCP servers you've registered for the directories the action touches, with the same stored auth your own sessions use. No re-plumbing access that already exists.
 
 Operator MCP authentication headers are never placed literally in Agent SDK process arguments. Weaver replaces static header values with generated environment placeholders before spawning Claude Code, using the [runtime expansion supported by Claude Code MCP configuration](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcpjson). The generated environment copy joins the disposable worker's output-redaction set, then disappears with the process; Weaver never writes it into workstream state.
+
+For OpenHands, Weaver does not serialize upstream MCP URLs, commands,
+arguments, headers, or environment blocks into the container at all. A
+host-side relay connects each supported stdio/HTTP/SSE server and gives the run
+a disposable URL and bearer; credential values and relay tokens are scrubbed
+from catalogs, calls, results, errors, submissions, and telemetry. Claude
+Code's private OAuth tokens, dynamic `headersHelper`, project/plugin/managed
+scopes, and Claude.ai connectors are not copied or extracted. Those surfaces
+remain an explicit remote-executor limitation and keep automatic OpenHands
+routing closed.
 
 The standing order is: exhaust the machine's existing access (MCP auth, CLI logins) before ever asking the human for a credential — and when an ask is genuinely necessary, it arrives as a one-click card naming the exact secret to set (`weaver secret set <name>`), with chasing the external service as the fallback option, never the lead. A card that sends you to a status page while a credential you hold would unblock the work is the workstream doing its remediation wrong.
 

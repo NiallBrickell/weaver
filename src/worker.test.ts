@@ -130,6 +130,7 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
     assert.deepEqual(request.settingSources, ['user', 'project', 'local']);
     assert.equal(request.strictMcpConfig, false);
     assert.equal(request.supervise, undefined);
+    assert.deepEqual(request.operatorMcpServers, {});
 
     const doc = await load('worker-research-surface');
     const assignment = doc.assignments[0]!;
@@ -148,6 +149,121 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(readDir, { recursive: true, force: true });
+  }
+});
+
+test('an OpenHands work assignment receives the applicable secured host MCP map', async () => {
+  const stateHome = workerHome();
+  const operatorHome = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-openhands-operator-'));
+  const workspace = path.join(operatorHome, 'work', 'repo');
+  fs.mkdirSync(workspace, { recursive: true });
+  const credential = 'Bearer synthetic-openhands-mcp-secret';
+  fs.writeFileSync(path.join(operatorHome, '.claude.json'), JSON.stringify({
+    mcpServers: {
+      global_tool: { command: 'synthetic-server', args: ['--stdio'] },
+    },
+    projects: {
+      [workspace]: {
+        mcpServers: {
+          project_tool: {
+            type: 'http',
+            url: 'https://example.invalid/mcp',
+            headers: { Authorization: credential },
+          },
+        },
+      },
+    },
+  }));
+  const previousHome = process.env.HOME;
+  process.env.HOME = operatorHome;
+  let request: WorkerExecutionRequest | undefined;
+  const executor: WorkerExecutor = {
+    id: 'openhands',
+    async execute(req) {
+      request = req;
+      await req.submit.submitResult({
+        summary: 'Used the remote worker surface and returned deterministic evidence.',
+        artifact: {
+          title: 'Remote surface evidence', kind: 'report', file_name: 'remote.md',
+          content: `# Evidence\n\n${'Verified the secured operator MCP surface in the remote request. '.repeat(6)}`,
+        },
+      });
+      return { costUsd: 0, sessionId: 'remote-surface-session' };
+    },
+  };
+
+  try {
+    await createWorkstream({
+      slug: 'worker-openhands-mcp', title: 'worker-openhands-mcp',
+      objective: 'carry ordinary MCP tools across the remote seam', tags: [],
+      successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-openhands-mcp', (d) => d.assignments.push({
+      id: 'asg_remote_mcp', objective: 'use configured tools', briefing: 'Inspect the project.',
+      kind: 'work', readDirs: [workspace], acceptanceCriteria: ['submit evidence'],
+      dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await runWorker('worker-openhands-mcp', 'asg_remote_mcp', executor);
+
+    assert.ok(request);
+    assert.deepEqual(Object.keys(request.operatorMcpServers).sort(), ['global_tool', 'project_tool']);
+    assert.doesNotMatch(JSON.stringify(request.operatorMcpServers), /synthetic-openhands-mcp-secret/);
+    assert.equal(request.env.WEAVER_INTERNAL_MCP_HEADER_1, credential);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(stateHome, { recursive: true, force: true });
+    fs.rmSync(operatorHome, { recursive: true, force: true });
+  }
+});
+
+test('a malformed remote MCP map fails before an OpenHands attempt is claimed', async () => {
+  const stateHome = workerHome();
+  const operatorHome = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-openhands-bad-mcp-'));
+  const workspace = path.join(operatorHome, 'work', 'repo');
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(path.join(operatorHome, '.claude.json'), '{ malformed');
+  const previousHome = process.env.HOME;
+  process.env.HOME = operatorHome;
+  let launched = false;
+  const executor: WorkerExecutor = {
+    id: 'openhands',
+    async execute() {
+      launched = true;
+      return { costUsd: 0 };
+    },
+  };
+
+  try {
+    await createWorkstream({
+      slug: 'worker-openhands-bad-mcp', title: 'worker-openhands-bad-mcp',
+      objective: 'fail closed on malformed remote MCP discovery', tags: [],
+      successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-openhands-bad-mcp', (d) => d.assignments.push({
+      id: 'asg_remote_bad_mcp', objective: 'use configured tools', briefing: 'Inspect the project.',
+      kind: 'work', readDirs: [workspace], acceptanceCriteria: ['submit evidence'],
+      dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await assert.rejects(
+      runWorker('worker-openhands-bad-mcp', 'asg_remote_bad_mcp', executor),
+      /OpenHands could not load the operator MCP configuration/,
+    );
+    assert.equal(launched, false);
+    const assignment = (await load('worker-openhands-bad-mcp')).assignments[0]!;
+    assert.equal(assignment.state, 'queued');
+    assert.equal(assignment.attempts.length, 0);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(stateHome, { recursive: true, force: true });
+    fs.rmSync(operatorHome, { recursive: true, force: true });
   }
 });
 
@@ -212,6 +328,7 @@ test('a typed bounded repair pins the reviewed Codex route on its disposable att
   const executor: WorkerExecutor = {
     async execute(req) {
       assert.equal(req.model, 'gpt-5.6-sol');
+      assert.deepEqual(req.operatorMcpServers, {});
       const reply = await req.submit.submitResult({
         summary: 'Applied the bounded repair and ran its deterministic verification.',
         artifact: {
