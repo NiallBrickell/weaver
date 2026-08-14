@@ -1,4 +1,4 @@
-import { Badge, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, cn } from '../components/index.js';
+import { Badge, Card, CardContent, CardHeader, CardTitle, cn } from '../components/index.js';
 import type { FleetBoardView, WorkstreamCardView, WorkstreamLane } from './model.js';
 import { Shell } from './shared.js';
 
@@ -18,11 +18,16 @@ function stateVariant(lane: WorkstreamLane): 'attention' | 'accent' | 'warning' 
 
 function WorkstreamCard({ card }: { card: WorkstreamCardView }) {
   const routine = card.tags.includes('routine');
+  const showDirection = card.direction && (card.direction.recent || card.direction.status === 'waiting');
+  const showActivity = card.latestFact
+    && card.latestFact.summary !== card.next
+    && card.latestFact.summary !== card.course?.summary
+    && !showDirection;
   return (
     <Card
       data-workstream-card=""
       data-search={`${card.title} ${card.slug} ${card.objective} ${card.tags.join(' ')}`.toLowerCase()}
-      data-recent={card.latestFact?.recent ? 'true' : 'false'}
+      data-recent={card.latestFact?.recent || card.direction?.recent ? 'true' : 'false'}
       data-routine={routine ? 'true' : 'false'}
       className={cn(
         'group relative overflow-hidden bg-zinc-950 transition hover:-translate-y-0.5 hover:border-zinc-700 hover:shadow-lg hover:shadow-black/20',
@@ -35,44 +40,57 @@ function WorkstreamCard({ card }: { card: WorkstreamCardView }) {
           {card.needCount > 1 ? <Badge variant="attention">{card.needCount} needs</Badge> : null}
           {routine ? <Badge variant="outline">Routine</Badge> : null}
           {card.priority && card.priority !== 'normal' ? <Badge variant="warning">{card.priority}</Badge> : null}
-          {card.integrityWarnings.length ? <Badge variant="attention">Integrity</Badge> : null}
+          {card.integrityWarnings.length ? <Badge variant="attention">State problem</Badge> : null}
         </div>
         <CardTitle className="text-[15px]">
-          <a href={`${card.slug}/inspect.html`} className="outline-none after:absolute after:inset-0">
+          <a href={`${card.slug}/inspect.html`} className="rounded-sm outline-none after:absolute after:inset-0 focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950">
             {card.title}
           </a>
         </CardTitle>
-        <CardDescription className="truncate font-mono text-xs text-zinc-600">{card.slug}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-zinc-600">
-            {card.lane === 'needs-you' ? 'Decision' : card.lane === 'waiting' ? 'Waiting for' : 'Next'}
+          <p className="flex items-center justify-between gap-3 text-xs font-medium text-zinc-400">
+            <span>Now</span>
+            {card.nowAge ? <span>{card.nowAge} ago</span> : null}
           </p>
           <p className="mt-1 line-clamp-3 text-sm leading-5 text-zinc-200">{card.next}</p>
         </div>
-        {card.latestFact ? (
-          <div className="rounded-lg border border-zinc-900 bg-zinc-900/40 px-3 py-2.5">
-            <p className="flex items-center justify-between gap-3 text-[11px] text-zinc-500">
-              <span>{card.latestFact.label}</span>
-              <span>{card.latestFact.age} ago</span>
+        {showDirection ? (
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5">
+            <p className="flex items-center justify-between gap-3 text-xs text-amber-200">
+              <span>{card.direction!.status === 'waiting' ? 'New direction from you' : 'You changed direction'}</span>
+              <time dateTime={card.direction!.at} title={card.direction!.time}>{card.direction!.age} ago</time>
             </p>
-            <p className="mt-1 line-clamp-2 text-xs leading-5 text-zinc-400">{card.latestFact.summary}</p>
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-zinc-300">{card.direction!.body}</p>
+          </div>
+        ) : null}
+        {card.course ? (
+          <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2.5">
+            <p className="flex items-center justify-between gap-3 text-xs text-zinc-400">
+              <span>Course</span>
+              <span>{card.course.age} ago</span>
+            </p>
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-zinc-300">{card.course.summary}</p>
+          </div>
+        ) : null}
+        {showActivity ? (
+          <div className="rounded-lg border border-zinc-900 bg-zinc-900/40 px-3 py-2.5">
+            <p className="flex items-center justify-between gap-3 text-xs text-zinc-400">
+              <span>{card.latestFact!.label}</span>
+              <span>{card.latestFact!.age} ago</span>
+            </p>
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-zinc-300">{card.latestFact!.summary}</p>
           </div>
         ) : null}
         {card.managedBy || card.manages.length ? (
-          <p className="text-xs text-zinc-500">
-            {card.managedBy ? <>Managed by <span className="text-zinc-300">{card.managedBy}</span></> : null}
+          <p className="text-xs text-zinc-400">
+            {card.managedBy ? <>Coordinated by <span className="text-zinc-200">{card.managedBy}</span></> : null}
             {card.managedBy && card.manages.length ? ' · ' : null}
-            {card.manages.length ? <>Manages <span className="text-zinc-300">{card.manages.length}</span></> : null}
+            {card.manages.length ? <><span className="text-zinc-200">{card.manages.length}</span> related Workstream{card.manages.length === 1 ? '' : 's'}</> : null}
           </p>
         ) : null}
       </CardContent>
-      <CardFooter className="relative justify-between text-[11px] text-zinc-600">
-        <span>{card.openAssignmentCount} open</span>
-        <span>{card.acceptedAssignmentCount} accepted</span>
-        <span>{card.adoptedDeliverableCount} pinned</span>
-      </CardFooter>
     </Card>
   );
 }
@@ -113,17 +131,21 @@ function FleetLane({ id, cards }: { id: WorkstreamLane; cards: WorkstreamCardVie
 const FLEET_SCRIPT = `
 (() => {
   const input = document.querySelector('[data-board-search]');
+  const resultStatus = document.querySelector('[data-board-results]');
   const buttons = [...document.querySelectorAll('[data-board-filter]')];
   const cards = [...document.querySelectorAll('[data-workstream-card]')];
   let filter = 'all';
   const apply = () => {
     const query = (input?.value || '').trim().toLowerCase();
     const filtering = Boolean(query) || filter !== 'all';
+    let visible = 0;
     for (const card of cards) {
       const matchesText = !query || (card.dataset.search || '').includes(query);
       const matchesFilter = filter === 'all' || card.dataset[filter] === 'true';
       card.hidden = !(matchesText && matchesFilter);
+      if (!card.hidden) visible += 1;
     }
+    if (resultStatus) resultStatus.textContent = visible + ' Workstream' + (visible === 1 ? '' : 's') + ' shown';
     for (const overflow of document.querySelectorAll('[data-fleet-overflow]')) {
       if (filtering) overflow.open = Boolean(overflow.querySelector('[data-workstream-card]:not([hidden])'));
     }
@@ -145,7 +167,7 @@ export function FleetPage({ view }: { view: FleetBoardView }) {
   const live = Object.values(view.lanes).flat().length;
   const moving = view.lanes.moving.length;
   const waiting = view.lanes.waiting.length;
-  const recent = Object.values(view.lanes).flat().filter((card) => card.latestFact?.recent).length;
+  const recent = Object.values(view.lanes).flat().filter((card) => card.latestFact?.recent || card.direction?.recent).length;
   const routines = Object.values(view.lanes).flat().filter((card) => card.tags.includes('routine')).length;
   const stats = [
     ['Needs you', view.lanes['needs-you'].length, 'text-rose-300'],
@@ -205,6 +227,7 @@ export function FleetPage({ view }: { view: FleetBoardView }) {
           ))}
         </div>
       </div>
+      <p data-board-results="" aria-live="polite" className="sr-only">{live} Workstreams shown</p>
       <div className="grid grid-cols-[repeat(4,minmax(17rem,1fr))] items-start gap-3 overflow-x-auto pb-4 lg:grid-cols-4">
         {(Object.keys(laneMeta) as WorkstreamLane[]).map((lane) => (
           <FleetLane key={lane} id={lane} cards={view.lanes[lane]} />
@@ -220,7 +243,7 @@ export function FleetPage({ view }: { view: FleetBoardView }) {
               <a key={item.slug} href={`${item.slug}/inspect.html`} className="grid gap-1 px-4 py-3 hover:bg-zinc-900/50 sm:grid-cols-[minmax(12rem,1fr)_2fr_auto] sm:gap-4">
                 <span className="text-sm font-medium text-zinc-200">{item.title}</span>
                 <span className="truncate text-sm text-zinc-500">{item.outcome}</span>
-                <span className="text-xs text-zinc-600">{item.adoptedDeliverableCount} pinned</span>
+                <span className="text-xs text-zinc-400">{item.adoptedDeliverableCount} accepted result{item.adoptedDeliverableCount === 1 ? '' : 's'}</span>
               </a>
             ))}
           </div>

@@ -3,7 +3,7 @@ import { assignmentBoard, type AssignmentBoardView } from '../../assignmentBoard
 import { virtualNow } from '../../clock.js';
 import { isLegacyDollarBudgetAttention } from '../../executionSafety.js';
 import { isDoctrine, type PolicyRecord } from '../../policies.js';
-import type { WorkstreamDoc } from '../../types.js';
+import type { Decision, Steering, WorkstreamDoc } from '../../types.js';
 
 export interface ManagedWorkstreamLink {
   slug: string;
@@ -29,6 +29,22 @@ export interface LatestFact {
   recent: boolean;
 }
 
+export interface DirectionView {
+  body: string;
+  by: string;
+  at: string;
+  time: string;
+  age: string;
+  recent: boolean;
+  status: 'waiting' | 'read' | 'withdrawn';
+}
+
+export interface CourseDecisionView {
+  decision: Decision;
+  time: string;
+  age: string;
+}
+
 export interface WorkstreamCardView {
   slug: string;
   title: string;
@@ -41,6 +57,9 @@ export interface WorkstreamCardView {
   lane: WorkstreamLane;
   state: string;
   next: string;
+  nowAge?: string;
+  course?: { summary: string; age: string };
+  direction?: DirectionView;
   needCount: number;
   openAssignmentCount: number;
   acceptedAssignmentCount: number;
@@ -73,6 +92,10 @@ export interface WorkstreamPageView {
   position: WorkstreamCardView;
   needs: FleetNeed[];
   integrityWarnings: string[];
+  generatedAt: string;
+  latestDirection?: DirectionView;
+  directionHistory: DirectionView[];
+  course: CourseDecisionView[];
 }
 
 const NEED_RANK: Record<FleetNeedKind, number> = {
@@ -87,15 +110,60 @@ const NEED_RANK: Record<FleetNeedKind, number> = {
 
 const RECENT_MOVEMENT_MS = 24 * 60 * 60_000;
 
+const INTERNAL_REF_LABELS: Record<string, string> = {
+  asg: 'the assignment',
+  dec: 'the decision',
+  steer: 'the human direction',
+  pass: 'the coordinator pass',
+  run: 'the execution attempt',
+  del: 'the result',
+  att: 'the attention item',
+  wake: 'the checkpoint',
+  note: 'the related Workstream update',
+  mdir: 'the coordinating Workstream note',
+  dir: 'the coordinating Workstream note',
+  int: 'the interaction',
+  obs: 'the observation',
+  pol: 'the policy',
+  reply: 'the reply',
+  ws: 'the Workstream record',
+};
+
+/** Storage identifiers remain provenance; people get recognizable nouns. */
+export function displayText(value: string): string {
+  return value
+    .replace(/\b(asg|dec|steer|pass|run|del|att|wake|note|mdir|dir|int|obs|pol|reply|ws)_[a-z0-9_-]+\b/gi, (match, prefix: string) =>
+      INTERNAL_REF_LABELS[prefix.toLowerCase()] ?? match,
+    )
+    .replace(/\bFallback\s*\/\s*decision point for\b:?\s*/gi, 'Continue after ')
+    .replace(/\bBackstop for\b:?\s*/gi, 'Follow up on ')
+    .replace(/\bexec_verify\b/gi, 'readback')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function firstLine(value: string, max = 160): string {
-  const line = value.split('\n')[0]!.trim();
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+  const line = displayText(value.split('\n')[0] ?? '');
+  if (line.length <= max) return line;
+  const candidate = line.slice(0, max - 1);
+  const boundary = candidate.lastIndexOf(' ');
+  return `${candidate.slice(0, boundary > max * 0.65 ? boundary : candidate.length).trimEnd()}…`;
+}
+
+export function formatTimestamp(value: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return 'Time unknown';
+  const day = String(parsed.getUTCDate()).padStart(2, '0');
+  const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][parsed.getUTCMonth()];
+  const hours = String(parsed.getUTCHours()).padStart(2, '0');
+  const minutes = String(parsed.getUTCMinutes()).padStart(2, '0');
+  return `${day} ${month} ${parsed.getUTCFullYear()} · ${hours}:${minutes} UTC`;
 }
 
 export function passIntegrityWarnings(doc: WorkstreamDoc): string[] {
   return doc.passes.flatMap((pass) =>
     pass.outcome === 'completed' && !pass.summary
-      ? [`${pass.id}: completed without a summary — a clean finish always records one`]
+      ? [`${pass.id}: completed without a summary — the record needs repair`]
       : [],
   );
 }
@@ -173,8 +241,8 @@ function soonestWake(
   doc: WorkstreamDoc,
   wallNow: Date,
   organizationalNow: Date,
-): { remaining: number; reason: string; blocking: boolean } | undefined {
-  let soonest: { remaining: number; reason: string; blocking: boolean } | undefined;
+): { remaining: number; reason: string; blocking: boolean; createdAt: string } | undefined {
+  let soonest: { remaining: number; reason: string; blocking: boolean; createdAt: string } | undefined;
   for (const wake of doc.wakes) {
     if (wake.status !== 'pending') continue;
     const remaining =
@@ -189,6 +257,7 @@ function soonestWake(
         remaining,
         reason: wake.reason,
         blocking: wake.infrastructure !== undefined || wake.executionSafety !== undefined,
+        createdAt: wake.createdAt,
       };
     }
   }
@@ -210,38 +279,38 @@ function dueLabel(milliseconds: number): string {
 function latestFact(doc: WorkstreamDoc, organizationalNow: Date): LatestFact | undefined {
   const facts: { label: string; summary: string; atVirtual: string }[] = [];
   for (const decision of doc.decisions) {
-    facts.push({ label: 'Direction', summary: decision.title, atVirtual: decision.decidedAtVirtual });
+    facts.push({ label: 'Course updated', summary: decision.title, atVirtual: decision.decidedAtVirtual });
   }
   for (const assignment of doc.assignments) {
-    facts.push({ label: 'Work opened', summary: assignment.objective, atVirtual: assignment.createdAtVirtual });
+    facts.push({ label: 'Next step added', summary: assignment.objective, atVirtual: assignment.createdAtVirtual });
   }
   for (const deliverable of doc.deliverables) {
     facts.push({
-      label: deliverable.adopted ? 'Adopted' : 'Candidate',
+      label: deliverable.adopted ? 'Result accepted' : 'Result submitted',
       summary: deliverable.title,
       atVirtual: deliverable.adopted?.atVirtual ?? deliverable.createdAtVirtual,
     });
   }
   for (const interaction of doc.interactions) {
     if (interaction.sentAtVirtual) {
-      facts.push({ label: 'Sent', summary: interaction.subject, atVirtual: interaction.sentAtVirtual });
+      facts.push({ label: 'Message sent', summary: interaction.subject, atVirtual: interaction.sentAtVirtual });
     }
     for (const reply of interaction.replies) {
-      facts.push({ label: 'Reply', summary: reply.body, atVirtual: reply.receivedAtVirtual });
+      facts.push({ label: 'Reply received', summary: reply.body, atVirtual: reply.receivedAtVirtual });
     }
   }
   for (const observation of doc.observations) {
-    facts.push({ label: 'Observed', summary: observation.summary, atVirtual: observation.atVirtual });
+    facts.push({ label: 'New evidence', summary: observation.summary, atVirtual: observation.atVirtual });
   }
   for (const direction of doc.managerDirections ?? []) {
-    facts.push({ label: 'Direction received', summary: direction.body, atVirtual: direction.atVirtual });
+    facts.push({ label: 'Note from coordinating Workstream', summary: direction.body, atVirtual: direction.atVirtual });
   }
   for (const notice of doc.managerNotices ?? []) {
-    facts.push({ label: 'Managed work', summary: notice.summary, atVirtual: notice.receivedAtVirtual });
+    facts.push({ label: 'Related Workstream update', summary: notice.summary, atVirtual: notice.receivedAtVirtual });
   }
   if (doc.workstream.conclusion) {
     facts.push({
-      label: 'Concluded',
+      label: 'Outcome concluded',
       summary: doc.workstream.conclusion.summary,
       atVirtual: doc.workstream.conclusion.atVirtual,
     });
@@ -257,6 +326,35 @@ function latestFact(doc: WorkstreamDoc, organizationalNow: Date): LatestFact | u
     age: compactAge(fact.atVirtual, organizationalNow),
     recent: Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= RECENT_MOVEMENT_MS,
   };
+}
+
+function directionView(direction: Steering, wallNow: Date): DirectionView {
+  const elapsed = wallNow.getTime() - Date.parse(direction.at);
+  const actor = !direction.by
+    ? 'You'
+    : /(?:agent|session|claude|codex)/i.test(direction.by)
+      ? 'Agent acting for you'
+      : direction.by;
+  return {
+    body: displayText(direction.body),
+    by: actor,
+    at: direction.at,
+    time: formatTimestamp(direction.at),
+    age: compactAge(direction.at, wallNow),
+    recent: Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= RECENT_MOVEMENT_MS,
+    status: direction.revokedAt ? 'withdrawn' : direction.consumedByPass ? 'read' : 'waiting',
+  };
+}
+
+function standingCourse(doc: WorkstreamDoc, organizationalNow: Date): CourseDecisionView[] {
+  return doc.decisions
+    .filter((decision) => decision.status === 'standing')
+    .sort((a, b) => b.decidedAtVirtual.localeCompare(a.decidedAtVirtual))
+    .map((decision) => ({
+      decision,
+      time: formatTimestamp(decision.decidedAtVirtual),
+      age: compactAge(decision.decidedAtVirtual, organizationalNow),
+    }));
 }
 
 function concludedAt(doc: WorkstreamDoc): string {
@@ -278,33 +376,57 @@ function cardFor(
     (assignment) => assignment.state === 'gated' && assignment.exec?.pilotVerdict?.decision === 'approve',
   );
   const wake = soonestWake(doc, wallNow, organizationalNow);
-  const standing = [...doc.decisions].reverse().find((decision) => decision.status === 'standing');
+  const standing = standingCourse(doc, organizationalNow)[0]?.decision;
+  const direction = [...doc.steering]
+    .filter((candidate) => !candidate.revokedAt)
+    .sort((a, b) => b.at.localeCompare(a.at))[0];
   const hasLease = !!doc.lease && Date.parse(doc.lease.expiresAt) > wallNow.getTime();
   let lane: WorkstreamLane;
   let state: string;
   let next: string;
+  let nowAge: string | undefined;
 
   if (needs.length) {
     lane = 'needs-you';
-    state = needs[0]!.kind;
+    state = needs[0]!.kind === 'review'
+      ? 'Needs your review'
+      : needs[0]!.kind === 'blocker'
+        ? 'Needs your help'
+        : 'Needs your approval';
     next = needs[0]!.summary;
+    nowAge = needs[0]!.at ? compactAge(needs[0]!.at!, wallNow) : undefined;
   } else if (running || review || pilotApproved || hasLease) {
     lane = 'moving';
-    state = running || hasLease ? 'working' : review ? 'review' : 'dispatching';
+    state = running || hasLease ? 'Working' : review ? 'Weaver is reviewing' : 'Starting work';
     next = running?.objective ?? review?.objective ?? pilotApproved?.objective ?? 'Coordinator pass in flight';
+    const executionAt = running?.attempts.at(-1)?.startedAt
+      ?? review?.attempts.at(-1)?.endedAt
+      ?? doc.lease?.acquiredAt;
+    const organizationalAt = running?.createdAtVirtual ?? review?.createdAtVirtual ?? pilotApproved?.createdAtVirtual;
+    nowAge = executionAt
+      ? compactAge(executionAt, wallNow)
+      : organizationalAt
+        ? compactAge(organizationalAt, organizationalNow)
+        : undefined;
   } else if (
     doc.workstream.status === 'paused' ||
     (wake && wake.remaining > 0 && (wake.blocking || !queued))
   ) {
     lane = 'waiting';
-    state = doc.workstream.status === 'paused' ? 'paused' : wake?.blocking ? 'blocked' : 'scheduled';
+    state = doc.workstream.status === 'paused' ? 'Paused' : wake?.blocking ? 'Temporarily blocked' : 'Next check scheduled';
     next = doc.workstream.status === 'paused'
       ? 'Paused by the human'
       : `${wake!.reason}${wake!.remaining > 0 ? ` · ${dueLabel(wake!.remaining)}` : ''}`;
+    nowAge = doc.workstream.status === 'paused' || !wake ? undefined : compactAge(wake.createdAt, wallNow);
   } else {
     lane = 'ready';
-    state = queued || wake ? 'planned' : 'unscheduled';
+    state = queued ? 'Ready to start' : wake ? 'Ready to reconcile' : 'No next step';
     next = queued?.objective ?? wake?.reason ?? standing?.title ?? 'No next move scheduled';
+    nowAge = queued
+      ? compactAge(queued.createdAtVirtual, organizationalNow)
+      : wake
+        ? compactAge(wake.createdAt, wallNow)
+        : undefined;
   }
 
   return {
@@ -319,6 +441,14 @@ function cardFor(
     lane,
     state,
     next: firstLine(next),
+    ...(nowAge ? { nowAge } : {}),
+    ...(standing ? {
+      course: {
+        summary: firstLine(standing.title, 120),
+        age: compactAge(standing.decidedAtVirtual, organizationalNow),
+      },
+    } : {}),
+    ...(direction ? { direction: directionView(direction, wallNow) } : {}),
     needCount: needs.length,
     openAssignmentCount: doc.assignments.filter(
       (assignment) => !['completed', 'failed', 'cancelled'].includes(assignment.state),
@@ -385,14 +515,23 @@ export function workstreamPage(
   managed: ManagedWorkstreamLink[] = [],
 ): WorkstreamPageView {
   const needs = fleetNeeds([doc]);
+  const wallNow = new Date();
+  const organizationalNow = virtualNow();
+  const directionHistory = [...doc.steering]
+    .sort((a, b) => b.at.localeCompare(a.at))
+    .map((direction) => directionView(direction, wallNow));
   return {
     doc,
     managed,
     policies: policiesForWorkstream(allPolicies, doc),
     assignments: assignmentBoard(doc),
-    position: cardFor(doc, needs, managed, new Date(), virtualNow()),
+    position: cardFor(doc, needs, managed, wallNow, organizationalNow),
     needs,
     integrityWarnings: passIntegrityWarnings(doc),
+    generatedAt: new Date().toISOString(),
+    latestDirection: directionHistory.find((direction) => direction.status !== 'withdrawn'),
+    directionHistory,
+    course: standingCourse(doc, organizationalNow),
   };
 }
 
