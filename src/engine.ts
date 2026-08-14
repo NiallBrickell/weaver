@@ -20,7 +20,7 @@ import {
   parkIfExecutionLimited,
   retireLegacyDollarBudgetCard,
 } from './executionSafety.js';
-import { loadSecrets, redactSecrets } from './secrets.js';
+import { loadRedactionSecrets, loadSecrets, redactSecrets } from './secrets.js';
 import { runWorker } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
@@ -407,6 +407,7 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
     throw new Error(`${assignmentId} verify refused: no execution attempt to read back`);
   }
   const secrets = loadSecrets(slug);
+  const redactionSecrets = loadRedactionSecrets(slug);
 
 
   let ok = false;
@@ -425,7 +426,7 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
     const err = e as { stdout?: string; stderr?: string; message?: string };
     output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
   }
-  output = redactSecrets(output, secrets);
+  output = redactSecrets(output, redactionSecrets);
   await arrive(slug, (d, event) => {
     const a2 = d.assignments.find((x) => x.id === assignmentId)!;
     a2.exec!.verified = { ok, output: output.slice(0, 2000), at: new Date().toISOString() };
@@ -530,6 +531,7 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
     }
     mkdirSync(asg.exec!.cwd, { recursive: true });
     const secrets = loadSecrets(slug);
+    const redactionSecrets = loadRedactionSecrets(slug);
     let ok = false;
     let output = '';
     try {
@@ -546,13 +548,13 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
       const err = e as { stdout?: string; stderr?: string; message?: string };
       output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
     }
-    output = redactSecrets(output, secrets);
+    output = redactSecrets(output, redactionSecrets);
     const report = [
       `# Engine execution of ${asg.id}`,
       ``,
       `Command (human-authored, executed verbatim by the engine — no model):`,
       '```',
-      redactSecrets(asg.exec!.run!, secrets),
+      redactSecrets(asg.exec!.run!, redactionSecrets),
       '```',
       ``,
       `Exit: ${ok ? '0' : 'non-zero'}`,

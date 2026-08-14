@@ -11,13 +11,19 @@ import * as path from 'node:path';
 
 import { tick, verifyAction } from './engine.js';
 import {
+  executorSecretNames,
+  executorSecretsPath,
   globalSecretsPath,
   loadAllSecrets,
+  loadExecutorSecrets,
+  loadRedactionSecrets,
   loadSecrets,
   redactSecrets,
+  removeExecutorSecret,
   removeSecret,
   sdkEnv,
   secretNames,
+  setExecutorSecret,
   setSecret,
 } from './secrets.js';
 import { createWorkstream, load, readArtifact } from './store.js';
@@ -89,6 +95,37 @@ test('fleet redaction retains different local values stored under the same name'
   assert.ok(Object.values(all).includes('beta-value-456'));
   const redacted = redactSecrets('alpha-value-123 / beta-value-456', all);
   assert.doesNotMatch(redacted, /alpha-value-123|beta-value-456/);
+});
+
+test('executor secrets are 0600, reloadable, and invisible to action-secret names and values', () => {
+  setSecret('ACTION_TOKEN', 'action-value-123');
+  setExecutorSecret('OPENROUTER_API_KEY', 'executor-value-456');
+
+  assert.deepEqual(executorSecretNames(), ['OPENROUTER_API_KEY']);
+  assert.equal(loadExecutorSecrets().OPENROUTER_API_KEY, 'executor-value-456');
+  assert.deepEqual(secretNames(), ['ACTION_TOKEN']);
+  assert.equal(loadSecrets().OPENROUTER_API_KEY, undefined);
+  assert.equal(fs.statSync(executorSecretsPath()).mode & 0o777, 0o600);
+  assert.equal(removeExecutorSecret('OPENROUTER_API_KEY'), true);
+  assert.equal(removeExecutorSecret('OPENROUTER_API_KEY'), false);
+});
+
+test('executor secrets join every redaction set while name collisions retain both values', async () => {
+  await makeWs('executor-redaction');
+  setSecret('TOKEN', 'action-value-123', 'executor-redaction');
+  setExecutorSecret('TOKEN', 'executor-value-456');
+
+  assert.deepEqual(secretNames('executor-redaction'), ['TOKEN']);
+  const applicable = loadRedactionSecrets('executor-redaction');
+  assert.ok(Object.values(applicable).includes('action-value-123'));
+  assert.ok(Object.values(applicable).includes('executor-value-456'));
+  assert.doesNotMatch(
+    redactSecrets('action-value-123 executor-value-456', applicable),
+    /action-value-123|executor-value-456/,
+  );
+  const all = loadAllSecrets();
+  assert.ok(Object.values(all).includes('action-value-123'));
+  assert.ok(Object.values(all).includes('executor-value-456'));
 });
 
 test('invalid names and empty values are refused', () => {
@@ -188,6 +225,22 @@ test('EVERY doc write refuses embedded secret values at the store layer (steer, 
   assert.equal((await load('sec-store-ws')).steering.length, 0);
 });
 
+test('executor credentials are also refused by the shared typed-state write boundary', async () => {
+  await makeWs('sec-executor-store-ws');
+  setExecutorSecret('OPENROUTER_API_KEY', 'executor-provider-value-789');
+  await assert.rejects(
+    arrive('sec-executor-store-ws', (d) => {
+      d.steering.push({
+        id: 'steer_executor',
+        body: 'leaked executor-provider-value-789',
+        at: new Date().toISOString(),
+      });
+    }),
+    /OPENROUTER_API_KEY/,
+  );
+  assert.equal((await load('sec-executor-store-ws')).steering.length, 0);
+});
+
 test('writeArtifact redacts values before hashing, so the pin matches disk and no artifact carries a value', async () => {
   await makeWs('sec-artifact-ws');
   setSecret('KEY', 'artifact-secret-99', 'sec-artifact-ws');
@@ -197,6 +250,20 @@ test('writeArtifact redacts values before hashing, so the pin matches disk and n
   assert.ok(!onDisk.includes('artifact-secret-99'));
   assert.ok(onDisk.includes('«secret:KEY»'));
   assert.equal(sha256(onDisk), hash);
+});
+
+test('writeArtifact redacts executor-only provider credentials', async () => {
+  await makeWs('sec-executor-artifact-ws');
+  setExecutorSecret('OPENROUTER_API_KEY', 'executor-artifact-secret-99');
+  const { readArtifact: readA, writeArtifact } = await import('./store.js');
+  const { relPath } = await writeArtifact(
+    'sec-executor-artifact-ws',
+    'out.md',
+    'header executor-artifact-secret-99 footer',
+  );
+  const onDisk = await readA('sec-executor-artifact-ws', relPath);
+  assert.ok(!onDisk.includes('executor-artifact-secret-99'));
+  assert.ok(onDisk.includes('«secret:OPENROUTER_API_KEY»'));
 });
 
 test('engine-executed exec.run gets secrets in env; the execution record never contains the value', async () => {

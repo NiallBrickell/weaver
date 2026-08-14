@@ -119,9 +119,9 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver backfill --tags <t1,t2> [--rules <path>]... [--claude-projects <dir>] [--limit N] [--dry-run]
                                              seed shadow policies from existing practice: rules files (CLAUDE.md/AGENTS.md, deterministic) and/or recent Claude Code transcripts (one model pass, default 5 sessions).
                                              Re-running REFRESHES rules-file doctrine: edited rules update in place, deleted sections retire, and a changed rule contests the learned policies scoped to it (--dry-run shows that blast radius first)
-  weaver secret set <NAME> [--ws slug]       store a secret (value read from stdin, never argv); global unless --ws
-  weaver secret list [--ws slug]             list secret NAMES (values are never printed)
-  weaver secret rm <NAME> [--ws slug]        remove a secret
+  weaver secret set <NAME> [--ws slug | --executor]   store from stdin; --executor is adapter-only and never exposed to workers
+  weaver secret list [--ws slug | --executor]         list secret NAMES (values are never printed)
+  weaver secret rm <NAME> [--ws slug | --executor]    remove a secret
   weaver watch                               interactive dashboard + embedded runner; keys: ↑↓, a/x/d/s, p pause, P printout, q quit
   weaver watch --plain                       legacy read-only raw dashboard; q quits (use 'weaver printout [slug]' to catch up)
   weaver printout [slug] [--text]            open an HTML catch-up page; --text writes the plain report instead
@@ -411,8 +411,8 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       {
         // Commands are stored in typed state forever — a pasted secret VALUE
         // would outlive every redaction layer. Reference secrets as $NAME.
-        const { assertNoSecretValues, loadSecrets } = await import('./secrets.js');
-        const secrets = loadSecrets(slug);
+        const { assertNoSecretValues, loadRedactionSecrets } = await import('./secrets.js');
+        const secrets = loadRedactionSecrets(slug);
         for (const text of [verify, run ?? '', briefing, objective]) {
           assertNoSecretValues(text, secrets);
         }
@@ -718,9 +718,18 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
     }
 
     case 'secret': {
-      const { removeSecret, secretNames, setSecret } = await import('./secrets.js');
+      const {
+        executorSecretNames,
+        removeExecutorSecret,
+        removeSecret,
+        secretNames,
+        setExecutorSecret,
+        setSecret,
+      } = await import('./secrets.js');
       const [sub, ...f] = rest;
       const ws = opt(f, 'ws');
+      const executor = f.includes('--executor');
+      if (ws && executor) fail('--ws and --executor are mutually exclusive');
       switch (sub) {
         case 'set': {
           const name = f[0] && !f[0].startsWith('--') ? f[0] : fail('secret NAME required');
@@ -729,19 +738,22 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
             process.stderr.write(`paste the value for ${name} and press Ctrl-D:\n`);
           }
           const value = readFileSync(0, 'utf8').trim();
-          setSecret(name, value, ws);
-          process.stdout.write(`secret ${name} stored (${ws ? `workstream ${ws}` : 'global'})\n`);
+          if (executor) setExecutorSecret(name, value);
+          else setSecret(name, value, ws);
+          process.stdout.write(`secret ${name} stored (${executor ? 'executor-only' : ws ? `workstream ${ws}` : 'global'})\n`);
           break;
         }
         case 'list': {
-          const names = secretNames(ws);
+          const names = executor ? executorSecretNames() : secretNames(ws);
           process.stdout.write(names.length ? names.map((n) => `${n}\n`).join('') : '(none)\n');
           break;
         }
         case 'rm': {
           const name = f[0] && !f[0].startsWith('--') ? f[0] : fail('secret NAME required');
           process.stdout.write(
-            removeSecret(name, ws) ? `secret ${name} removed\n` : `no secret ${name}\n`,
+            (executor ? removeExecutorSecret(name) : removeSecret(name, ws))
+              ? `secret ${name} removed\n`
+              : `no secret ${name}\n`,
           );
           break;
         }

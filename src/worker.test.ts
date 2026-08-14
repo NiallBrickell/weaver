@@ -12,7 +12,8 @@ import {
   runWorker,
   selectExecutor,
 } from './worker.js';
-import { arrive, createWorkstream, load } from './store.js';
+import { setExecutorSecret } from './secrets.js';
+import { arrive, createWorkstream, load, readArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { InfrastructureWait } from './types.js';
 import type { WorkerExecutionRequest, WorkerExecutor } from './executor/types.js';
@@ -147,6 +148,57 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(readDir, { recursive: true, force: true });
+  }
+});
+
+test('generic worker capture scrubs executor-only values from every submission field', async () => {
+  const home = workerHome();
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-worker-executor-secret-'));
+  const secret = 'executor-only-provider-value-987';
+  setExecutorSecret('OPENROUTER_API_KEY', secret);
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      const reply = await req.submit.submitResult({
+        summary: `summary ${secret}`,
+        artifact: {
+          title: `title ${secret}`,
+          kind: `kind ${secret}`,
+          file_name: `file-${secret}.md`,
+          content: `# Evidence\n\n${(`content ${secret} verified. `).repeat(12)}`,
+        },
+      });
+      assert.equal(reply.isError, undefined);
+      return { costUsd: 0, sessionId: 'secret-scrub-session' };
+    },
+  };
+  try {
+    await createWorkstream({
+      slug: 'worker-executor-secret',
+      title: 'Worker executor secret',
+      objective: 'prove all worker capture fields are scrubbed',
+      tags: [], successCriteria: [], constraints: [],
+      autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-executor-secret', (d) => d.assignments.push({
+      id: 'asg_secret', objective: 'submit evidence', briefing: 'Submit the bounded evidence.',
+      kind: 'work', readDirs: [workspace], acceptanceCriteria: ['submission lands'],
+      dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await runWorker('worker-executor-secret', 'asg_secret', executor);
+
+    const doc = await load('worker-executor-secret');
+    assert.equal(doc.assignments[0]!.state, 'awaiting_review');
+    assert.doesNotMatch(JSON.stringify(doc), new RegExp(secret));
+    assert.match(doc.deliverables[0]!.title, /«secret:OPENROUTER_API_KEY»/);
+    const artifact = await readArtifact('worker-executor-secret', doc.deliverables[0]!.path);
+    assert.doesNotMatch(artifact, new RegExp(secret));
+    assert.match(artifact, /«secret:OPENROUTER_API_KEY»/);
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
 

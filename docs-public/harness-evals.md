@@ -30,13 +30,18 @@ Every target is explicit. Weaver never falls back to another model or runtime wh
 start. OpenCode uses its normal provider login; subscription-backed Codex and Claude use their
 existing local logins.
 
-The local OpenHands target invokes the pinned official Agent Server image and needs Docker plus an
-explicit model-provider key:
+The local OpenHands target invokes the pinned official Agent Server image through a Docker-compatible
+runtime (OrbStack on macOS) and needs an executor-only model-provider key:
 
 ```bash
-WEAVER_MODEL_API_KEY=... yarn eval:harness \
+weaver secret set OPENROUTER_API_KEY --executor
+yarn eval:harness \
   --target openhands=openrouter/moonshotai/kimi-k3
 ```
+
+The real key remains behind an ephemeral host proxy; the container receives only a random per-run
+inference bearer. OpenHands telemetry calls a model resolved only when the upstream response itself
+reports that model id — requested configuration alone is not identity evidence.
 
 Results are written under `eval-results/` (gitignored) as machine-readable `results.json` and a
 readable `report.md`.

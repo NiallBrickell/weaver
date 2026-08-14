@@ -9,6 +9,7 @@ import { ClaudeSdkEvalExecutor } from './executors/claude.js';
 import { CodexEvalExecutor } from './executors/codex.js';
 import { OpenCodeEvalExecutor } from './executors/openCode.js';
 import { OpenHandsEvalExecutor } from './executors/openHands.js';
+import { loadExecutorSecrets } from '../secrets.js';
 import type {
   EvalCaseResult,
   EvalExecutor,
@@ -81,7 +82,13 @@ export function createEvalExecutor(target: EvalTarget): EvalExecutor {
     case 'claude-sdk': return new ClaudeSdkEvalExecutor();
     case 'codex-sdk': return new CodexEvalExecutor();
     case 'opencode': return new OpenCodeEvalExecutor();
-    case 'openhands': return new OpenHandsEvalExecutor();
+    case 'openhands': {
+      // Each case gets a throwaway WEAVER_HOME for durable-state isolation.
+      // Capture the operator's executor-only credentials before entering that
+      // home; the real key remains host memory and never enters eval state.
+      const executorSecrets = loadExecutorSecrets();
+      return new OpenHandsEvalExecutor({ loadExecutorSecrets: () => executorSecrets });
+    }
   }
 }
 

@@ -4,10 +4,11 @@
  *
  * Values live in env files under WEAVER_HOME (0600, inside the gitignored
  * state dir): `secrets.env` is global, `<slug>/secrets.env` overlays it per
- * workstream. Only NAMES are ever surfaced to models — the engine injects
- * values as environment variables into action workers and into exec.run /
- * exec.verify shells, and `redactSecrets` scrubs values from everything the
- * harness captures back (verify output, execution records, artifacts).
+ * workstream, and `executor-secrets.env` is private to executor adapters.
+ * Only action-secret NAMES are ever surfaced to models — the engine injects
+ * their values into action workers and exec.run / exec.verify shells. Executor
+ * secrets are never named or injected there; adapters consume them directly.
+ * Every value joins the redaction/store-refusal set.
  */
 
 import * as fs from 'node:fs';
@@ -18,6 +19,10 @@ const NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 
 export function globalSecretsPath(): string {
   return path.join(weaverHome(), 'secrets.env');
+}
+
+export function executorSecretsPath(): string {
+  return path.join(weaverHome(), 'executor-secrets.env');
 }
 
 export function workstreamSecretsPath(slug: string): string {
@@ -54,6 +59,41 @@ export function loadSecrets(slug?: string): Record<string, string> {
   };
 }
 
+/** Provider credentials consumed only by executor adapters, never workers. */
+export function loadExecutorSecrets(): Record<string, string> {
+  return parseEnvFile(executorSecretsPath());
+}
+
+function addRetainingCollision(
+  target: Record<string, string>,
+  name: string,
+  value: string,
+  scope: string,
+): void {
+  if (target[name] === undefined || target[name] === value) {
+    target[name] = value;
+    return;
+  }
+  let label = `${scope}:${name}`;
+  let suffix = 2;
+  while (target[label] !== undefined && target[label] !== value) {
+    label = `${scope}:${name}:${suffix++}`;
+  }
+  target[label] = value;
+}
+
+/**
+ * Applicable action values plus executor-private values, solely for refusing
+ * or redacting captured data. This function must never feed a model or shell.
+ */
+export function loadRedactionSecrets(slug?: string): Record<string, string> {
+  const out = { ...loadSecrets(slug) };
+  for (const [name, value] of Object.entries(loadExecutorSecrets())) {
+    addRetainingCollision(out, name, value, 'executor');
+  }
+  return out;
+}
+
 /**
  * Every secret value across the fleet, retaining collisions where two
  * workstreams use the same name for different values. Global-policy-bearing
@@ -62,20 +102,16 @@ export function loadSecrets(slug?: string): Record<string, string> {
  */
 export function loadAllSecrets(): Record<string, string> {
   const all: Record<string, string> = { ...parseEnvFile(globalSecretsPath()) };
+  for (const [name, value] of Object.entries(loadExecutorSecrets())) {
+    addRetainingCollision(all, name, value, 'executor');
+  }
   let slugs: string[] = [];
   try { slugs = fs.readdirSync(weaverHome()); }
   catch { return all; }
   for (const slug of slugs.sort()) {
     const local = parseEnvFile(workstreamSecretsPath(slug));
     for (const [name, value] of Object.entries(local)) {
-      if (all[name] === undefined || all[name] === value) {
-        all[name] = value;
-        continue;
-      }
-      let label = `${slug}:${name}`;
-      let suffix = 2;
-      while (all[label] !== undefined && all[label] !== value) label = `${slug}:${name}:${suffix++}`;
-      all[label] = value;
+      addRetainingCollision(all, name, value, slug);
     }
   }
   return all;
@@ -87,18 +123,36 @@ export function secretNames(slug?: string): string[] {
 }
 
 export function setSecret(name: string, value: string, slug?: string): void {
+  setSecretAt(name, value, slug ? workstreamSecretsPath(slug) : globalSecretsPath());
+}
+
+export function setExecutorSecret(name: string, value: string): void {
+  setSecretAt(name, value, executorSecretsPath());
+}
+
+function setSecretAt(name: string, value: string, p: string): void {
   if (!NAME_RE.test(name)) {
     throw new Error(`invalid secret name '${name}' — use UPPER_SNAKE_CASE`);
   }
   if (!value) throw new Error('empty secret value');
-  const p = slug ? workstreamSecretsPath(slug) : globalSecretsPath();
   const current = parseEnvFile(p);
   current[name] = value;
   writeEnvFile(p, current);
 }
 
 export function removeSecret(name: string, slug?: string): boolean {
-  const p = slug ? workstreamSecretsPath(slug) : globalSecretsPath();
+  return removeSecretAt(name, slug ? workstreamSecretsPath(slug) : globalSecretsPath());
+}
+
+export function removeExecutorSecret(name: string): boolean {
+  return removeSecretAt(name, executorSecretsPath());
+}
+
+export function executorSecretNames(): string[] {
+  return Object.keys(loadExecutorSecrets()).sort();
+}
+
+function removeSecretAt(name: string, p: string): boolean {
   const current = parseEnvFile(p);
   if (!(name in current)) return false;
   delete current[name];

@@ -33,7 +33,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PolicyRecord } from './policies.js';
 import { loadPolicies } from './policies.js';
-import { loadSecrets, redactSecrets } from './secrets.js';
+import { loadAllSecrets, redactSecrets } from './secrets.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
 import type { PassRecord, WorkstreamDoc } from './types.js';
 
@@ -1323,8 +1323,7 @@ export async function runStats(now = new Date()): Promise<string> {
   const docs: WorkstreamDoc[] = [];
   for (const s of await listWorkstreams()) docs.push(await load(s));
   const policies = (await loadPolicies()).policies;
-  const allSecrets: Record<string, string> = { ...loadSecrets() };
-  for (const doc of docs) Object.assign(allSecrets, loadSecrets(doc.workstream.slug));
+  const allSecrets = loadAllSecrets();
   const html = renderStatsHtml(computeStats(docs, policies, now));
   const out = path.join(weaverHome(), 'stats.html');
   fs.writeFileSync(out, redactSecrets(html, allSecrets));

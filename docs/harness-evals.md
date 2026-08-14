@@ -21,7 +21,7 @@ The candidates are:
   `workspace-write` and `approvalPolicy: never`;
 - `opencode`: the current OpenCode SDK and local server, one fresh server and session per
   assignment; and
-- `openhands`: the pinned official OpenHands Agent Server Docker image, one fresh container and
+- `openhands`: the pinned official OpenHands Agent Server OCI image, one fresh container and
   conversation per assignment.
 
 The harness wiring lives under [`src/evals/`](../src/evals/), but production runtimes live under
@@ -106,15 +106,40 @@ OpenCode uses its normal provider authentication; run `opencode auth login` once
 provider. The Codex SDK uses the existing Codex login. The Claude
 baseline uses the existing Claude Code login.
 
-The local OpenHands target needs Docker and an explicit provider key:
+The local OpenHands target needs a Docker-compatible runtime (OrbStack on macOS) and an executor-only provider key:
 
 ```bash
-WEAVER_MODEL_API_KEY=... yarn eval:harness \
+weaver secret set OPENROUTER_API_KEY --executor
+yarn eval:harness \
   --target openhands=openrouter/moonshotai/kimi-k3
 ```
 
 Set `WEAVER_OPENHANDS_BASE_URL` when the provider requires a custom OpenAI-compatible base URL.
 The suite never substitutes another model or executor when a target cannot start.
+
+- **OpenHands conversation identity is requested configuration, not provider evidence.** The pinned
+  Agent Server redacts conversation LLM keys correctly, but its normal `ConversationInfo`, stats,
+  and native-agent fields only repeat the requested model. Weaver therefore keeps the durable key
+  behind an ephemeral host inference proxy and takes `modelResolved` from the upstream provider's
+  actual response. Missing response identity is `null`/failure, never filled from the request.
+- **OpenHands tool specs use registry names, not Python class names.** `TerminalTool`,
+  `FileEditorTool`, and `TaskTrackerTool` derive the registered names `terminal`, `file_editor`, and
+  `task_tracker`; sending the class names fails at conversation creation. The v1.41 request also
+  carries an exact tool-name → `.definition` module-qualname dictionary (not the list in newer
+  client examples), empty agent definitions, and null plugins, matching the official
+  `RemoteConversation` transport. The first two real Kimi cohorts exposed these contract omissions
+  before any provider call; their failed rows remain in the ledger rather than being rewritten away.
+- **`initial_message` starts a v1.41 conversation.** Creation is not a two-step create-then-run
+  sequence when that field is present; an additional `/run` races the already-live loop and returns
+  HTTP 409. Weaver creates once, polls that fresh run, and never resumes it.
+- **A terminal Agent Server status does not carry its cause.** `ConversationInfo` reports only
+  `execution_status: error`; the typed cause is a `ConversationErrorEvent`. On failure Weaver makes
+  one bounded authenticated `events/search` read, retains a concise provider error, and removes
+  provider account identifiers before telemetry or the eval ledger can persist it.
+- **Keep provider credentials out of Agent Server settings.** A conversation-scoped key is redacted
+  from POST/GET/search/event state in v1.41, but the session key is intentionally trusted for the
+  broader local API, including plaintext exposure of secrets persisted in global settings. Weaver
+  sends no durable provider key into the container at all: only the proxy's random run bearer.
 The example slugs are OpenRouter's current
 [Kimi K3](https://openrouter.ai/moonshotai/kimi-k3-20260715) and
 [GLM-5](https://openrouter.ai/z-ai/glm-5) identifiers; targets stay explicit because a moving
@@ -206,7 +231,7 @@ would invalidate the bakeoff.
   process-exit receipt. The eval adapter fails closed when that inheritance would reintroduce
   credentials Weaver stripped; production promotion still needs an observed subprocess-exit test.
 - A local quality run is not a sandbox proof. The OpenHands adapter invokes the maintained Agent
-  Server image and Docker lifecycle; it does not implement a container runtime or filesystem jail in
+  Server image and container lifecycle; it does not implement a container runtime or filesystem jail in
   Weaver. Agent Server persistence is directed to container-only `/tmp` paths so its own traces do
   not contaminate the graded workspace.
 - Startup telemetry is candidate-native, not a cross-harness benchmark: Codex reports thread start,

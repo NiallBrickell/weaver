@@ -1,7 +1,11 @@
 import { strict as assert } from 'node:assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, it } from 'node:test';
+import { setExecutorSecret } from '../../secrets.js';
 import type { SubmitBridge } from '../../executor/submitBridge.js';
-import type { WorkerExecutionRequest } from '../../executor/types.js';
+import type { SubmitSurface, WorkerExecutionRequest } from '../../executor/types.js';
 import {
   OPENHANDS_AGENT_SERVER_IMAGE,
   OpenHandsEvalExecutor,
@@ -18,6 +22,7 @@ describe('OpenHands eval executor', () => {
     const commands: Array<{ command: string; args: string[] }> = [];
     const seenFetch: SeenFetch[] = [];
     let bridgeClosed = 0;
+    let providerProxyClosed = 0;
     let statusReads = 0;
     const runCommand: CommandRunner = async (command, args) => {
       commands.push({ command, args: [...args] });
@@ -33,7 +38,6 @@ describe('OpenHands eval executor', () => {
       if (url.endsWith('/api/conversations') && init.method === 'POST') {
         return response({ id: 'conversation-1', execution_status: 'idle' });
       }
-      if (url.endsWith('/run')) return response({ success: true });
       if (url.endsWith('/api/conversations/conversation-1')) {
         statusReads += 1;
         if (statusReads === 1) {
@@ -76,6 +80,21 @@ describe('OpenHands eval executor', () => {
       runCommand,
       fetch: fetchImpl,
       startSubmitBridge: async () => bridge,
+      startProviderProxy: async (options) => {
+        assert.equal(options.upstreamApiKey, 'provider-secret');
+        assert.equal(options.upstreamBaseUrl, 'https://provider.example/v1');
+        assert.deepEqual(options.allowedModels, [
+          'anthropic/claude-sonnet-4-5-20250929',
+          'claude-sonnet-4-5-20250929',
+        ]);
+        assert.equal(options.maxRequests, 14);
+        return {
+          url: 'http://host.docker.internal:41900/v1',
+          token: 'provider-proxy-secret',
+          modelResolved: () => 'anthropic/claude-sonnet-4-5-20250929',
+          async close() { providerProxyClosed += 1; },
+        };
+      },
       sleep: async () => undefined,
       now: increasingClock(),
     });
@@ -84,6 +103,7 @@ describe('OpenHands eval executor', () => {
 
     assert.deepEqual(outcome, { costUsd: 1, sessionId: 'conversation-1' });
     assert.equal(bridgeClosed, 1);
+    assert.equal(providerProxyClosed, 1);
     assert.equal(statusReads, 2);
 
     const dockerRun = commands.find(({ args }) => args[0] === 'run');
@@ -113,12 +133,13 @@ describe('OpenHands eval executor', () => {
     const body = JSON.parse(String(create.init.body)) as Record<string, any>;
     assert.equal(body.agent.kind, 'Agent');
     assert.equal(body.agent.llm.model, 'anthropic/claude-sonnet-4-5-20250929');
-    assert.equal(body.agent.llm.api_key, 'provider-secret');
-    assert.equal(body.agent.llm.base_url, 'https://provider.example/v1');
+    assert.equal(body.agent.llm.api_key, 'provider-proxy-secret');
+    assert.equal(body.agent.llm.base_url, 'http://host.docker.internal:41900/v1');
+    assert.ok(!JSON.stringify(body).includes('provider-secret'));
     assert.deepEqual(body.agent.tools, [
-      { name: 'TerminalTool' },
-      { name: 'FileEditorTool' },
-      { name: 'TaskTrackerTool' },
+      { name: 'terminal' },
+      { name: 'file_editor' },
+      { name: 'task_tracker' },
     ]);
     assert.deepEqual(body.agent.mcp_config, {
       weaver: {
@@ -132,17 +153,25 @@ describe('OpenHands eval executor', () => {
     assert.deepEqual(body.workspace, { type: 'local', working_dir: '/workspace' });
     assert.equal(body.initial_message.content[0].text, 'Complete the bounded assignment.');
     assert.equal(body.max_iterations, 12);
+    assert.deepEqual(body.tool_module_qualnames, {
+      terminal: 'openhands.tools.terminal.definition',
+      file_editor: 'openhands.tools.file_editor.definition',
+      task_tracker: 'openhands.tools.task_tracker.definition',
+    });
+    assert.deepEqual(body.agent_definitions, []);
+    assert.equal(body.plugins, null);
 
     for (const call of seenFetch.filter(({ url }) => !url.endsWith('/health'))) {
       assert.equal(header(call.init, 'X-Session-API-Key'), header(create.init, 'X-Session-API-Key'));
     }
+    assert.ok(!seenFetch.some(({ url }) => url.endsWith('/run')));
 
     assert.deepEqual(executor.lastTelemetry(), {
       executor: 'openhands',
       modelRequested: 'anthropic/claude-sonnet-4-5-20250929',
       providerResolved: 'anthropic',
       modelResolved: 'anthropic/claude-sonnet-4-5-20250929',
-      harnessVersion: 'openhands-agent-server-1.41.0',
+      harnessVersion: 'openhands-agent-server-1.41.0-weaver.2',
       isolation: 'agent-server',
       startedAt: '1970-01-01T00:00:01.000Z',
       endedAt: '1970-01-01T00:00:01.004Z',
@@ -167,6 +196,7 @@ describe('OpenHands eval executor', () => {
     let processStarts = 0;
     const executor = new OpenHandsEvalExecutor({
       apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
       startSubmitBridge: async () => {
         bridgeStarts += 1;
         throw new Error('must not start');
@@ -186,6 +216,225 @@ describe('OpenHands eval executor', () => {
     assert.equal(processStarts, 0);
     assert.match(outcome.error ?? '', /does not support action-worker supervision/);
     assert.equal(executor.lastTelemetry()?.terminalReason, 'unsupported');
+  });
+
+  it('scrubs durable and per-run credentials from every submission field and relay reply', async () => {
+    let relayed: SubmitSurface | null = null;
+    let submitted = '';
+    let replySeenByAgent = '';
+    let statusReads = 0;
+    const runCommand: CommandRunner = async (_command, args) => args[0] === 'port'
+      ? { exitCode: 0, stdout: '127.0.0.1:49154\n', stderr: '' }
+      : { exitCode: 0, stdout: '', stderr: '' };
+    const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.endsWith('/health')) return response({ status: 'ok' });
+      if (url.endsWith('/api/conversations') && init.method === 'POST') {
+        return response({ id: 'conversation-secrets', execution_status: 'idle' });
+      }
+      if (url.endsWith('/api/conversations/conversation-secrets')) {
+        const session = header(init, 'X-Session-API-Key');
+        if (statusReads === 0) {
+          assert.ok(relayed);
+          const secretText = [
+            'provider-secret',
+            'provider-proxy-token',
+            'bridge-secret',
+            session,
+          ].join(' / ');
+          replySeenByAgent = (await relayed.submitResult({
+            summary: secretText,
+            artifact: {
+              title: secretText,
+              kind: secretText,
+              file_name: secretText,
+              content: secretText,
+            },
+          })).text;
+        }
+        statusReads += 1;
+        return response({
+          id: 'conversation-secrets',
+          execution_status: statusReads === 1 ? 'running' : 'finished',
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof globalThis.fetch;
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
+      runCommand,
+      fetch: fetchImpl,
+      startSubmitBridge: async (submit) => {
+        relayed = submit;
+        return {
+          url: 'http://host.docker.internal:41876/mcp',
+          token: 'bridge-secret',
+          async close() {},
+        };
+      },
+      startProviderProxy: async () => ({
+        url: 'http://host.docker.internal:41902/v1',
+        token: 'provider-proxy-token',
+        modelResolved: () => 'anthropic/claude-sonnet-4-5-20250929',
+        async close() {},
+      }),
+      sleep: async () => undefined,
+      now: increasingClock(),
+    });
+    const req = request();
+    req.submit.submitResult = async (args) => {
+      submitted = JSON.stringify(args);
+      return { text: `ack provider-secret provider-proxy-token bridge-secret ${args.summary}` };
+    };
+
+    const outcome = await executor.execute(req);
+
+    assert.equal(outcome.error, undefined);
+    for (const secret of ['provider-secret', 'provider-proxy-token', 'bridge-secret']) {
+      assert.ok(!submitted.includes(secret));
+      assert.ok(!replySeenByAgent.includes(secret));
+    }
+    assert.match(submitted, /«secret:/);
+    assert.match(replySeenByAgent, /«secret:/);
+  });
+
+  it('does not manufacture resolved identity when the upstream provider response omits it', async () => {
+    let statusReads = 0;
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
+      runCommand: async (_command, args) => args[0] === 'port'
+        ? { exitCode: 0, stdout: '127.0.0.1:49155\n', stderr: '' }
+        : { exitCode: 0, stdout: '', stderr: '' },
+      fetch: (async (input: string | URL | Request, init: RequestInit = {}) => {
+        const url = String(input);
+        if (url.endsWith('/health')) return response({ status: 'ok' });
+        if (url.endsWith('/api/conversations') && init.method === 'POST') {
+          return response({ id: 'conversation-no-model', execution_status: 'idle' });
+        }
+        if (url.endsWith('/api/conversations/conversation-no-model')) {
+          statusReads += 1;
+          return response({
+            id: 'conversation-no-model',
+            execution_status: statusReads === 1 ? 'running' : 'finished',
+          });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      }) as typeof globalThis.fetch,
+      startSubmitBridge: async () => ({
+        url: 'http://host.docker.internal:41877/mcp',
+        token: 'bridge-secret',
+        async close() {},
+      }),
+      startProviderProxy: async () => ({
+        url: 'http://host.docker.internal:41903/v1',
+        token: 'provider-proxy-token',
+        modelResolved: () => null,
+        async close() {},
+      }),
+      sleep: async () => undefined,
+      now: increasingClock(),
+    });
+
+    const outcome = await executor.execute(request());
+
+    assert.match(outcome.error ?? '', /did not report a model identity/);
+    assert.equal(executor.lastTelemetry()?.terminalReason, 'error');
+    assert.equal(executor.lastTelemetry()?.providerResolved, null);
+    assert.equal(executor.lastTelemetry()?.modelResolved, null);
+  });
+
+  it('retains a concise typed provider failure without leaking provider account identifiers', async () => {
+    const keySettingsUrl =
+      'https://openrouter.ai/workspaces/default/keys/account-specific-identifier';
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      runCommand: async (_command, args) => args[0] === 'port'
+        ? { exitCode: 0, stdout: '127.0.0.1:49158\n', stderr: '' }
+        : { exitCode: 0, stdout: '', stderr: '' },
+      fetch: (async (input: string | URL | Request, init: RequestInit = {}) => {
+        const url = String(input);
+        if (url.endsWith('/health')) return response({ status: 'ok' });
+        if (url.endsWith('/api/conversations') && init.method === 'POST') {
+          return response({ id: 'conversation-provider-error', execution_status: 'idle' });
+        }
+        if (url.endsWith('/api/conversations/conversation-provider-error')) {
+          return response({ id: 'conversation-provider-error', execution_status: 'error' });
+        }
+        if (url.endsWith('/events/search?limit=100')) {
+          return response({
+            items: [{
+              kind: 'ConversationErrorEvent',
+              code: 'APIError',
+              detail: 'litellm.APIError: OpenrouterException - ' + JSON.stringify({
+                error: {
+                  code: 402,
+                  message: `More credits required; visit ${keySettingsUrl}`,
+                  metadata: { previous_errors: ['duplicate-noise'] },
+                },
+              }),
+            }],
+          });
+        }
+        if (url.endsWith('/pause') && init.method === 'POST') return response({ success: true });
+        throw new Error(`unexpected fetch ${url}`);
+      }) as typeof globalThis.fetch,
+      startSubmitBridge: async () => ({
+        url: 'http://host.docker.internal:41880/mcp',
+        token: 'bridge-secret',
+        async close() {},
+      }),
+      startProviderProxy: async () => ({
+        url: 'http://host.docker.internal:41906/v1',
+        token: 'provider-proxy-token',
+        modelResolved: () => null,
+        async close() {},
+      }),
+      sleep: async () => undefined,
+      now: increasingClock(),
+    });
+    const req = request();
+    req.model = 'openrouter/moonshotai/kimi-k3';
+
+    const outcome = await executor.execute(req);
+
+    assert.match(outcome.error ?? '', /OpenRouter 402: More credits required/);
+    assert.match(outcome.error ?? '', /\[OpenRouter key settings\]/);
+    assert.ok(!outcome.error?.includes('account-specific-identifier'));
+    assert.ok(!outcome.error?.includes('previous_errors'));
+    assert.equal(executor.lastTelemetry()?.error, outcome.error);
+    assert.equal(executor.lastTelemetry()?.terminalReason, 'error');
+  });
+
+  it('reloads the executor-only OpenRouter key for every run and supplies the official base URL', async () => {
+    const previousHome = process.env.WEAVER_HOME;
+    process.env.WEAVER_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-openhands-key-'));
+    try {
+      const seen: Array<{ key: string; baseUrl: string }> = [];
+      const executor = new OpenHandsEvalExecutor({
+        startProviderProxy: async (options) => {
+          seen.push({ key: options.upstreamApiKey, baseUrl: options.upstreamBaseUrl });
+          throw new Error('stop after credential resolution');
+        },
+        now: () => 1_000,
+      });
+      const req = request();
+      req.model = 'openrouter/moonshotai/kimi-k3';
+
+      setExecutorSecret('OPENROUTER_API_KEY', 'first-provider-key');
+      await executor.execute(req);
+      setExecutorSecret('OPENROUTER_API_KEY', 'second-provider-key');
+      await executor.execute(req);
+
+      assert.deepEqual(seen, [
+        { key: 'first-provider-key', baseUrl: 'https://openrouter.ai/api/v1' },
+        { key: 'second-provider-key', baseUrl: 'https://openrouter.ai/api/v1' },
+      ]);
+    } finally {
+      if (previousHome === undefined) delete process.env.WEAVER_HOME;
+      else process.env.WEAVER_HOME = previousHome;
+    }
   });
 
   it('pauses an aborted conversation, then stops the container and closes the bridge', async () => {
@@ -218,6 +467,7 @@ describe('OpenHands eval executor', () => {
     }) as typeof globalThis.fetch;
     const executor = new OpenHandsEvalExecutor({
       apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
       runCommand,
       fetch: fetchImpl,
       startSubmitBridge: async () => ({
@@ -227,6 +477,7 @@ describe('OpenHands eval executor', () => {
           bridgeClosed += 1;
         },
       }),
+      startProviderProxy: async () => fakeProviderProxy(),
       sleep: async () => undefined,
       now: () => 1_000,
     });
@@ -249,6 +500,7 @@ describe('OpenHands eval executor', () => {
     let bridgeClosed = 0;
     const executor = new OpenHandsEvalExecutor({
       apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
       runCommand: async (_command, args) => {
         commands.push([...args]);
         if (args[0] === 'run') {
@@ -263,6 +515,7 @@ describe('OpenHands eval executor', () => {
           bridgeClosed += 1;
         },
       }),
+      startProviderProxy: async () => fakeProviderProxy(),
       now: () => 1_000,
     });
 
@@ -361,5 +614,14 @@ function increasingClock(): () => number {
   return () => {
     value += 1;
     return value;
+  };
+}
+
+function fakeProviderProxy() {
+  return {
+    url: 'http://host.docker.internal:41901/v1',
+    token: 'provider-proxy-token',
+    modelResolved: () => 'anthropic/claude-sonnet-4-5-20250929',
+    async close() {},
   };
 }

@@ -2,7 +2,9 @@
  * The OpenHands executor: a worker's model loop run inside a pinned OpenHands
  * Agent Server container instead of the local SDK. This is the first REMOTE
  * substrate behind the WorkerExecutor seam — the durable Workstream contract is
- * unchanged, only where the disposable loop runs.
+ * unchanged, only where the disposable loop runs. Durable provider credentials
+ * remain in the host process behind a per-run inference proxy; neither the
+ * model container nor its conversation config receives the real key.
  *
  * Containment is real here: the host working directory is bind-mounted at
  * /workspace, the container is `--rm` and always torn down, and the worker's
@@ -15,6 +17,11 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
+import { loadExecutorSecrets, redactSecrets } from '../secrets.js';
+import {
+  startProviderProxy,
+  type ProviderProxy,
+} from './providerProxy.js';
 import { startSubmitBridge, type SubmitBridge } from './submitBridge.js';
 import type {
   ExecutorTelemetry,
@@ -30,7 +37,13 @@ export const OPENHANDS_AGENT_SERVER_IMAGE =
 
 const AGENT_SERVER_WORKSPACE = '/workspace';
 const AGENT_SERVER_PORT = '8000/tcp';
-const HARNESS_VERSION = 'openhands-agent-server-1.41.0';
+const HARNESS_VERSION = 'openhands-agent-server-1.41.0-weaver.2';
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+const OPENHANDS_TOOL_MODULES = {
+  terminal: 'openhands.tools.terminal.definition',
+  file_editor: 'openhands.tools.file_editor.definition',
+  task_tracker: 'openhands.tools.task_tracker.definition',
+} as const;
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const DEFAULT_STARTUP_TIMEOUT_MS = 60_000;
 
@@ -53,6 +66,8 @@ export interface OpenHandsExecutorOptions {
   fetch?: typeof globalThis.fetch;
   runCommand?: CommandRunner;
   startSubmitBridge?: typeof startSubmitBridge;
+  startProviderProxy?: typeof startProviderProxy;
+  loadExecutorSecrets?: typeof loadExecutorSecrets;
   now?: () => number;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   pollIntervalMs?: number;
@@ -64,8 +79,25 @@ interface ConversationInfo {
   execution_status?: string;
   agent_status?: string;
   status?: string;
+  error?: unknown;
+  detail?: unknown;
+  message?: unknown;
+  agent?: {
+    state?: {
+      error?: unknown;
+      last_error?: unknown;
+      message?: unknown;
+    };
+  };
   stats?: unknown;
   conversation_stats?: unknown;
+}
+
+interface ProviderConfiguration {
+  apiKey: string;
+  apiKeyName: string;
+  baseUrl: string;
+  provider: string | null;
 }
 
 interface MetricsTotals {
@@ -80,19 +112,22 @@ class OpenHandsConversationError extends Error {
     status: string,
     readonly info: ConversationInfo,
   ) {
-    super(`OpenHands conversation ${status}`);
+    const detail = conversationErrorDetail(info);
+    super(`OpenHands conversation ${status}${detail ? `: ${detail}` : ''}`);
   }
 }
 
 export class OpenHandsExecutor implements WorkerExecutor {
   readonly id = 'openhands' as const;
 
-  private readonly apiKey: string | undefined;
-  private readonly baseUrl: string | undefined;
+  private readonly apiKeyOverride: string | undefined;
+  private readonly baseUrlOverride: string | undefined;
   private readonly dockerCommand: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly runCommand: CommandRunner;
   private readonly bridgeStarter: typeof startSubmitBridge;
+  private readonly providerProxyStarter: typeof startProviderProxy;
+  private readonly executorSecretsLoader: typeof loadExecutorSecrets;
   private readonly now: () => number;
   private readonly sleep: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   private readonly pollIntervalMs: number;
@@ -100,15 +135,14 @@ export class OpenHandsExecutor implements WorkerExecutor {
   private telemetry: ExecutorTelemetry | null = null;
 
   constructor(options: OpenHandsExecutorOptions = {}) {
-    this.apiKey =
-      options.apiKey ??
-      process.env.WEAVER_MODEL_API_KEY ??
-      process.env.LLM_API_KEY;
-    this.baseUrl = options.baseUrl ?? process.env.WEAVER_OPENHANDS_BASE_URL;
+    this.apiKeyOverride = options.apiKey;
+    this.baseUrlOverride = options.baseUrl;
     this.dockerCommand = options.dockerCommand ?? 'docker';
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.runCommand = options.runCommand ?? runCommand;
     this.bridgeStarter = options.startSubmitBridge ?? startSubmitBridge;
+    this.providerProxyStarter = options.startProviderProxy ?? startProviderProxy;
+    this.executorSecretsLoader = options.loadExecutorSecrets ?? loadExecutorSecrets;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? abortableSleep;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -129,6 +163,8 @@ export class OpenHandsExecutor implements WorkerExecutor {
     let terminalReason: ExecutorTelemetry['terminalReason'] = 'error';
     let error: string | null = null;
     let bridge: SubmitBridge | null = null;
+    let providerProxy: ProviderProxy | null = null;
+    let providerConfiguration: ProviderConfiguration | null = null;
     let containerStarted = false;
     let containerAttempted = false;
     let agentServerUrl: string | null = null;
@@ -138,24 +174,54 @@ export class OpenHandsExecutor implements WorkerExecutor {
 
     try {
       this.validateRequest(req);
+      providerConfiguration = this.providerConfiguration(req.model);
       if (req.abort.signal.aborted) throw abortError();
 
+      providerProxy = await this.providerProxyStarter({
+        upstreamBaseUrl: providerConfiguration.baseUrl,
+        upstreamApiKey: providerConfiguration.apiKey,
+        allowedModels: providerModelVariants(req.model),
+        maxRequests: req.maxTurns + 2,
+        bindHost: '0.0.0.0',
+        advertiseHost: 'host.docker.internal',
+      });
+
       const submit: SubmitSurface = {
-        appendSection: (content) => req.submit.appendSection(content),
+        appendSection: async (content) => sanitizeReply(
+          await req.submit.appendSection(this.sanitizePrivate(
+            content,
+            providerConfiguration,
+            sessionApiKey,
+            bridge?.token,
+            providerProxy?.token,
+          )),
+          (text) => this.sanitizePrivate(
+            text,
+            providerConfiguration,
+            sessionApiKey,
+            bridge?.token,
+            providerProxy?.token,
+          ),
+        ),
         submitResult: async (args) => {
-          const sanitized = sessionApiKey
-            ? {
-                summary: args.summary.replaceAll(sessionApiKey, '[REDACTED]'),
-                artifact: Object.fromEntries(Object.entries(args.artifact).map(([key, value]) => [
-                  key, value.replaceAll(sessionApiKey!, '[REDACTED]'),
-                ])) as typeof args.artifact,
-              }
-            : args;
+          const sanitize = (value: string) => this.sanitizePrivate(
+            value,
+            providerConfiguration,
+            sessionApiKey,
+            bridge?.token,
+            providerProxy?.token,
+          );
+          const sanitized = {
+            summary: sanitize(args.summary),
+            artifact: Object.fromEntries(Object.entries(args.artifact).map(([key, value]) => [
+              key, sanitize(value),
+            ])) as typeof args.artifact,
+          };
           const reply = await req.submit.submitResult(sanitized);
           if (!reply.isError && timeToSubmissionMs === null) {
             timeToSubmissionMs = Math.max(0, this.now() - startedAtMs);
           }
-          return reply;
+          return sanitizeReply(reply, sanitize);
         },
       };
       bridge = await this.bridgeStarter(submit, {
@@ -211,21 +277,21 @@ export class OpenHandsExecutor implements WorkerExecutor {
         '/api/conversations',
         {
           method: 'POST',
-          body: JSON.stringify(this.createConversationRequest(req, bridge, cwd)),
+          body: JSON.stringify(this.createConversationRequest(
+            req,
+            bridge,
+            cwd,
+            providerProxy,
+          )),
         },
         req.abort.signal,
       );
       if (!conversation.id) throw new Error('OpenHands did not return a conversation id');
       sessionId = conversation.id;
 
-      await this.requestJson(
-        agentServerUrl,
-        sessionApiKey,
-        `/api/conversations/${encodeURIComponent(sessionId)}/run`,
-        { method: 'POST' },
-        req.abort.signal,
-      );
-
+      // A v1.41 conversation carrying initial_message starts immediately.
+      // POSTing /run as well races that live loop and is correctly rejected as
+      // "Conversation already running".
       const finalInfo = await this.waitForConversation(
         agentServerUrl,
         sessionApiKey,
@@ -233,12 +299,46 @@ export class OpenHandsExecutor implements WorkerExecutor {
         req.abort.signal,
       );
       metrics = readMetrics(finalInfo.stats ?? finalInfo.conversation_stats);
+      const upstreamModel = providerProxy.modelResolved();
+      if (!upstreamModel) {
+        throw new Error(
+          'OpenHands provider response did not report a model identity; refusing false resolved-model provenance',
+        );
+      }
       terminalReason = 'completed';
     } catch (caught) {
       if (caught instanceof OpenHandsConversationError) {
         metrics = readMetrics(caught.info.stats ?? caught.info.conversation_stats);
       }
-      error = caught instanceof Error ? caught.message : String(caught);
+      let caughtMessage = caught instanceof Error ? caught.message : String(caught);
+      if (
+        caught instanceof OpenHandsConversationError &&
+        agentServerUrl !== null &&
+        sessionApiKey !== null &&
+        sessionId !== null
+      ) {
+        try {
+          const events = await this.requestJson<unknown>(
+            agentServerUrl,
+            sessionApiKey,
+            `/api/conversations/${encodeURIComponent(sessionId)}/events/search?limit=100`,
+            { method: 'GET' },
+            AbortSignal.timeout(5_000),
+          );
+          const detail = conversationEventErrorDetail(events);
+          if (detail && !caughtMessage.includes(detail)) caughtMessage += `: ${detail}`;
+        } catch {
+          // The typed conversation status remains the primary failure. Event
+          // lookup is bounded, best-effort diagnostic enrichment only.
+        }
+      }
+      error = this.sanitizePrivate(
+        caughtMessage,
+        providerConfiguration,
+        sessionApiKey,
+        bridge?.token,
+        providerProxy?.token,
+      );
       if (isAbort(caught, req.abort.signal)) {
         terminalReason = 'aborted';
       } else if (caught instanceof UnsupportedOpenHandsRequest) {
@@ -295,18 +395,33 @@ export class OpenHandsExecutor implements WorkerExecutor {
         try { await bridge.close(); }
         catch (caught) { cleanupFailures.push(`submit bridge: ${caught instanceof Error ? caught.message : String(caught)}`); }
       }
+      if (providerProxy) {
+        try { await providerProxy.close(); }
+        catch (caught) { cleanupFailures.push(`provider proxy: ${caught instanceof Error ? caught.message : String(caught)}`); }
+      }
       if (cleanupFailures.length) {
         error = [error, ...cleanupFailures].filter(Boolean).join('; ');
         terminalReason = 'error';
       }
+      if (error !== null) {
+        error = this.sanitizePrivate(
+          error,
+          providerConfiguration,
+          sessionApiKey,
+          bridge?.token,
+          providerProxy?.token,
+        );
+      }
 
       const endedAtMs = this.now();
-      const resolved = terminalReason === 'completed';
+      const modelResolved = terminalReason === 'completed'
+        ? providerProxy?.modelResolved() ?? null
+        : null;
       this.telemetry = {
         executor: this.id,
         modelRequested: req.model,
-        providerResolved: resolved ? providerFromModel(req.model) : null,
-        modelResolved: resolved ? req.model : null,
+        providerResolved: modelResolved ? providerConfiguration?.provider ?? null : null,
+        modelResolved,
         harnessVersion: HARNESS_VERSION,
         isolation: 'agent-server',
         startedAt,
@@ -335,12 +450,6 @@ export class OpenHandsExecutor implements WorkerExecutor {
         'OpenHands executor does not support action-worker supervision',
       );
     }
-    if (!this.apiKey) {
-      throw new UnsupportedOpenHandsRequest(
-        'OpenHands executor requires WEAVER_MODEL_API_KEY (or LLM_API_KEY)',
-      );
-    }
-
     const cwd = resolve(req.cwd ?? process.cwd());
     const extraDirectories = new Set(
       req.additionalDirectories.map((directory) => resolve(directory)).filter((directory) => directory !== cwd),
@@ -352,10 +461,45 @@ export class OpenHandsExecutor implements WorkerExecutor {
     }
   }
 
+  private providerConfiguration(model: string): ProviderConfiguration {
+    const provider = providerFromModel(model);
+    const executorSecrets = this.executorSecretsLoader();
+    const providerKeyName = providerSecretName(provider);
+    const apiKey =
+      this.apiKeyOverride ??
+      (providerKeyName ? executorSecrets[providerKeyName] : undefined) ??
+      executorSecrets.WEAVER_MODEL_API_KEY ??
+      process.env.WEAVER_MODEL_API_KEY ??
+      process.env.LLM_API_KEY;
+    if (!apiKey) {
+      throw new UnsupportedOpenHandsRequest(
+        `OpenHands executor requires ${providerKeyName ?? 'WEAVER_MODEL_API_KEY'} in executor-only secrets ` +
+          '(`weaver secret set <NAME> --executor`)',
+      );
+    }
+
+    const baseUrl =
+      this.baseUrlOverride ??
+      process.env.WEAVER_OPENHANDS_BASE_URL ??
+      (provider === 'openrouter' ? OPENROUTER_BASE_URL : undefined);
+    if (!baseUrl) {
+      throw new UnsupportedOpenHandsRequest(
+        'OpenHands requires WEAVER_OPENHANDS_BASE_URL for this provider so the durable API key can remain behind the host proxy',
+      );
+    }
+    return {
+      apiKey,
+      apiKeyName: this.apiKeyOverride ? 'WEAVER_MODEL_API_KEY' : providerKeyName ?? 'WEAVER_MODEL_API_KEY',
+      baseUrl,
+      provider,
+    };
+  }
+
   private createConversationRequest(
     req: WorkerExecutionRequest,
     bridge: SubmitBridge,
     hostCwd: string,
+    providerProxy: ProviderProxy,
   ): Record<string, unknown> {
     return {
       agent: {
@@ -363,13 +507,13 @@ export class OpenHandsExecutor implements WorkerExecutor {
         llm: {
           usage_id: 'agent',
           model: req.model,
-          api_key: this.apiKey,
-          ...(this.baseUrl ? { base_url: this.baseUrl } : {}),
+          api_key: providerProxy.token,
+          base_url: providerProxy.url,
         },
         tools: [
-          { name: 'TerminalTool' },
-          { name: 'FileEditorTool' },
-          { name: 'TaskTrackerTool' },
+          { name: 'terminal' },
+          { name: 'file_editor' },
+          { name: 'task_tracker' },
         ],
         system_prompt_kwargs: { cli_mode: true },
         agent_context: {
@@ -393,10 +537,31 @@ export class OpenHandsExecutor implements WorkerExecutor {
       },
       max_iterations: req.maxTurns,
       stuck_detection: true,
+      // The Agent Server binary does not pre-register tool modules. Its
+      // official RemoteConversation client transports the current registry on
+      // creation; name-only Tool definitions otherwise fail at POST time.
+      tool_module_qualnames: { ...OPENHANDS_TOOL_MODULES },
+      agent_definitions: [],
+      plugins: null,
       workspace: { type: 'local', working_dir: AGENT_SERVER_WORKSPACE },
       hook_config: null,
       user_id: null,
     };
+  }
+
+  private sanitizePrivate(
+    text: string,
+    provider: ProviderConfiguration | null,
+    sessionApiKey: string | null,
+    submitToken?: string | null,
+    providerProxyToken?: string | null,
+  ): string {
+    const secrets: Record<string, string> = {};
+    if (provider) secrets[provider.apiKeyName] = provider.apiKey;
+    if (sessionApiKey) secrets.OPENHANDS_SESSION_API_KEY = sessionApiKey;
+    if (submitToken) secrets.OPENHANDS_SUBMIT_TOKEN = submitToken;
+    if (providerProxyToken) secrets.OPENHANDS_PROVIDER_PROXY_TOKEN = providerProxyToken;
+    return redactProviderDiagnostics(redactSecrets(text, secrets));
   }
 
   private async checkedCommand(args: string[], signal: AbortSignal): Promise<CommandResult> {
@@ -520,6 +685,94 @@ function safeName(value: string): string {
 function providerFromModel(model: string): string | null {
   const separator = model.indexOf('/');
   return separator > 0 ? model.slice(0, separator) : null;
+}
+
+function providerSecretName(provider: string | null): string | null {
+  if (!provider) return null;
+  const normalized = provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+  return normalized ? `${normalized}_API_KEY` : null;
+}
+
+function providerModelVariants(model: string): string[] {
+  const separator = model.indexOf('/');
+  return separator > 0 ? [model, model.slice(separator + 1)] : [model];
+}
+
+function sanitizeReply(
+  reply: Awaited<ReturnType<SubmitSurface['submitResult']>>,
+  sanitize: (text: string) => string,
+): Awaited<ReturnType<SubmitSurface['submitResult']>> {
+  return { ...reply, text: sanitize(reply.text) };
+}
+
+function conversationErrorDetail(info: ConversationInfo): string | null {
+  const candidates = [
+    info.error,
+    info.detail,
+    info.message,
+    info.agent?.state?.last_error,
+    info.agent?.state?.error,
+    info.agent?.state?.message,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim().slice(0, 2_000);
+    }
+    if (isRecord(candidate)) {
+      const encoded = JSON.stringify(candidate);
+      if (encoded !== '{}') return encoded.slice(0, 2_000);
+    }
+  }
+  return null;
+}
+
+function conversationEventErrorDetail(value: unknown): string | null {
+  if (!isRecord(value) || !Array.isArray(value.items)) return null;
+  for (const item of [...value.items].reverse()) {
+    if (!isRecord(item)) continue;
+    const eventKind = [item.kind, item.type, item.event_type]
+      .find((candidate): candidate is string => typeof candidate === 'string');
+    const code = typeof item.code === 'string' ? item.code.trim() : '';
+    const detail = [item.detail, item.error, item.message]
+      .find((candidate): candidate is string =>
+        typeof candidate === 'string' && candidate.trim().length > 0)
+      ?.trim();
+    if (detail && (Boolean(code) || Boolean(eventKind && /error/i.test(eventKind)))) {
+      return summarizeProviderError(code, detail);
+    }
+  }
+  return null;
+}
+
+function summarizeProviderError(eventCode: string, detail: string): string {
+  const marker = 'OpenrouterException - ';
+  const markerIndex = detail.indexOf(marker);
+  if (markerIndex >= 0) {
+    try {
+      const payload = JSON.parse(detail.slice(markerIndex + marker.length)) as unknown;
+      if (isRecord(payload) && isRecord(payload.error)) {
+        const providerCode = payload.error.code;
+        const message = payload.error.message;
+        if (typeof message === 'string' && message.trim()) {
+          const label = typeof providerCode === 'number' || typeof providerCode === 'string'
+            ? `OpenRouter ${providerCode}`
+            : 'OpenRouter';
+          return `${label}: ${message.trim()}`.slice(0, 2_000);
+        }
+      }
+    } catch {
+      // Fall through to the typed event detail if a future provider changes
+      // the wrapper format.
+    }
+  }
+  return `${eventCode ? `${eventCode}: ` : ''}${detail}`.slice(0, 2_000);
+}
+
+function redactProviderDiagnostics(text: string): string {
+  return text.replace(
+    /https:\/\/openrouter\.ai\/workspaces\/[^/\s"']+\/keys\/[a-z0-9_-]+/gi,
+    '[OpenRouter key settings]',
+  );
 }
 
 function emptyMetrics(): MetricsTotals {

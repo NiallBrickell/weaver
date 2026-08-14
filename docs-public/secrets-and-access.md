@@ -8,6 +8,10 @@
 echo "$MY_TOKEN" | weaver secret set SENTRY_AUTH_TOKEN            # global
 echo "$MY_TOKEN" | weaver secret set STRIPE_KEY --ws billing-fix  # per-workstream
 weaver secret list
+
+# Model-provider credentials: invisible even by name to every model and shell
+weaver secret set OPENROUTER_API_KEY --executor
+weaver secret list --executor
 ```
 
 The contract:
@@ -19,6 +23,13 @@ The contract:
 - **Nothing captured keeps a value.** Everything that flows back — command output, artifacts, submissions — is scrubbed (`«secret:NAME»`), and the store's single write path refuses any document write that embeds a known secret value. A pasted credential fails loudly with the fix (`reference it as $NAME`) instead of persisting forever.
 
 Values live in `0600` env files inside the gitignored state directory.
+
+Executor-only secrets are a stricter sibling scope. An adapter loads them
+directly; `secretNames`, projections, action environments, and deterministic
+shells do not. Their values still join the shared store-refusal and every
+output-redaction boundary. For OpenHands, the durable key stays in a host-side
+inference proxy, while the disposable container receives only a random
+per-run bearer.
 
 ## Operator access
 

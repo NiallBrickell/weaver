@@ -34,7 +34,7 @@ import {
   type CapacityTarget,
 } from './modelConfig.js';
 import { workerTargetForAssignment } from './modelRouting.js';
-import { loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
+import { loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
 import {
@@ -379,7 +379,7 @@ export async function runWorker(
   const secrets = isAction ? loadSecrets(slug) : {};
   // Ephemeral MCP header credentials join the redaction set: they ride the
   // executor's env, never durable state — whatever substrate ran the loop.
-  const redactionSecrets = { ...secrets, ...operatorMcp.env };
+  const redactionSecrets = { ...loadRedactionSecrets(slug), ...operatorMcp.env };
 
   // The Weaver submission surface stays in the harness: whatever substrate
   // runs the model loop, only these closures can propose a submission through
@@ -403,14 +403,17 @@ export async function runWorker(
       submitted = true;
       const cleanContent = redactSecrets(fullContent, redactionSecrets);
       const cleanSummary = redactSecrets(a.summary, redactionSecrets);
-      const { relPath, hash } = await writeArtifact(slug, a.artifact.file_name, cleanContent);
+      const cleanTitle = redactSecrets(a.artifact.title, redactionSecrets);
+      const cleanKind = redactSecrets(a.artifact.kind, redactionSecrets);
+      const cleanFileName = redactSecrets(a.artifact.file_name, redactionSecrets);
+      const { relPath, hash } = await writeArtifact(slug, cleanFileName, cleanContent);
       await arrive(slug, (d, event) => {
         const asg2 = d.assignments.find((x) => x.id === assignmentId)!;
         const delId = newId('del');
         d.deliverables.push({
           id: delId,
-          title: a.artifact.title,
-          kind: a.artifact.kind,
+          title: cleanTitle,
+          kind: cleanKind,
           path: relPath,
           contentHash: hash,
           producedByAssignment: assignmentId,
@@ -428,7 +431,7 @@ export async function runWorker(
           status: 'pending',
           createdAt: new Date().toISOString(),
         });
-        event('worker.submitted', `${assignmentId} → ${delId} "${a.artifact.title}" (${hash.slice(0, 8)})`, [assignmentId, delId]);
+        event('worker.submitted', `${assignmentId} → ${delId} "${cleanTitle}" (${hash.slice(0, 8)})`, [assignmentId, delId]);
       });
       return { text: 'submitted — you are done' };
     },
