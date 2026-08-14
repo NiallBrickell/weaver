@@ -97,8 +97,9 @@ Remaining hardening (was "promotion gates", now post-promotion):
 - [ ] Stand up the standing eval cadence: re-run the subscription-backed targets (`claude-sdk` via
   the machine's Claude login, `codex-sdk` via the Codex login) on a schedule so the durable ledger
   (`evals/ledger.jsonl`) accumulates a time series per model rather than one-off snapshots.
-- [ ] Derive a model-routing policy from the ledger: per-assignment model/executor selection, keyed
+- [ ] Derive a reviewed model-routing policy from versioned ledger evidence: per-assignment model/executor selection, keyed
   by assignment kind/tags and input modality and consumed at `selectExecutor` time, sourced from
-  `--history` aggregates instead of anecdote.
+  exact hard-gate/quality vectors instead of anecdote. Never auto-route from the current aggregate:
+  it mixes pre-fix Codex bridge failures with post-fix runs under one harness version.
 
 See [`docs/harness-evals.md`](./docs/harness-evals.md) for commands and the result contract.

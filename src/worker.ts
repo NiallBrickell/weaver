@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { virtualNow } from './clock.js';
 import { LocalSdkExecutor } from './executor/localSdk.js';
 import { OpenHandsExecutor } from './executor/openHands.js';
+import { CodexExecutor } from './executor/codex.js';
 import type { SubmitReply, SubmitSurface, WorkerExecutor } from './executor/types.js';
 import { armWall } from './wall.js';
 import {
@@ -58,11 +59,11 @@ export { workerModel } from './modelConfig.js';
  * assignment fails closed there, because container tool calls cannot yet be
  * routed through Pilot supervision.
  */
-export function selectExecutor(): WorkerExecutor {
-  const name = process.env.WEAVER_EXECUTOR ?? 'local-sdk';
+export function selectExecutor(name = workerExecutorName()): WorkerExecutor {
   if (name === 'local-sdk') return new LocalSdkExecutor();
+  if (name === 'codex-sdk') return new CodexExecutor();
   if (name === 'openhands') return new OpenHandsExecutor();
-  throw new Error(`unknown WEAVER_EXECUTOR '${name}' — supported: local-sdk, openhands`);
+  throw new Error(`unknown WEAVER_EXECUTOR '${name}' — supported: local-sdk, codex-sdk, openhands`);
 }
 
 /**
@@ -297,8 +298,15 @@ export async function runWorker(
   if (!asg) throw new Error(`no assignment ${assignmentId}`);
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
   // A misconfigured WEAVER_EXECUTOR fails here, before any state moves.
-  const executor = providedExecutor ?? selectExecutor();
-  const capacityTarget = workerCapacityTarget(workerModel(), executor.id ?? workerExecutorName());
+  const configuredExecutor = workerExecutorName();
+  const executor = providedExecutor ?? selectExecutor(configuredExecutor);
+  // Pinned for the whole disposable attempt: the durable record, launch,
+  // failure classification, and capacity clearing must describe one target,
+  // even if a long-lived process changes its environment while the run is in
+  // flight. Custom/injected executors inherit the configured identity only
+  // when they do not publish their own stable id.
+  const targetModel = workerModel();
+  const capacityTarget = workerCapacityTarget(targetModel, executor.id ?? configuredExecutor);
 
   // Declared inputs: ADOPTED deliverables of dependency assignments only — a
   // rejected candidate never becomes another worker's input.
@@ -334,7 +342,9 @@ export async function runWorker(
       a.state = 'running';
       a.attempts.push({
         runId,
-        model: workerModel(),
+        executor: capacityTarget.executor,
+        provider: capacityTarget.provider,
+        model: capacityTarget.model,
         runnerPid: process.pid,
         startedAt: startedAt.toISOString(),
       });
@@ -491,7 +501,7 @@ export async function runWorker(
         preset: 'claude_code',
         append: isAction ? ACTION_SYSTEM : WORKER_SYSTEM,
       },
-      model: workerModel(),
+      model: targetModel,
       tools: { type: 'preset', preset: 'claude_code' },
       // Ephemeral MCP header credentials ride the subprocess env with the
       // action secrets — never SDK process arguments, never durable state.
@@ -556,7 +566,7 @@ export async function runWorker(
   const capacitySource = {
     source: 'worker',
     sourceId: runId,
-    model: workerModel(),
+    model: targetModel,
     executor: capacityTarget.executor,
     provider: capacityTarget.provider,
     now: virtualNow(),

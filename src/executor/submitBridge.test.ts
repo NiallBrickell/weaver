@@ -85,3 +85,32 @@ test('submit bridge can advertise a container-visible host without changing its 
     await bridge.close();
   }
 });
+
+test('tool bridge refuses executor-private values before a harness handler can persist them', async () => {
+  let calls = 0;
+  const submit: SubmitSurface = {
+    async appendSection() { calls++; return { text: 'must not run' }; },
+    async submitResult() { calls++; return { text: 'must not run' }; },
+  };
+  const bridge = await startSubmitBridge(submit, {
+    rejectArgumentValues: ['/tmp/disposable-coordinator-home'],
+    rejectArgumentMessage: 'REFUSED: disposable path',
+  });
+  const client = new Client({ name: 'weaver-private-path-test', version: '0.1.0' });
+  const transport = new StreamableHTTPClientTransport(new URL(bridge.url), {
+    requestInit: { headers: { Authorization: `Bearer ${bridge.token}` } },
+  });
+  try {
+    await client.connect(transport);
+    const result = await client.callTool({
+      name: 'append_section',
+      arguments: { content: 'persist /tmp/disposable-coordinator-home/worktree' },
+    });
+    assert.equal(result.isError, true);
+    assert.deepEqual(result.content, [{ type: 'text', text: 'REFUSED: disposable path' }]);
+    assert.equal(calls, 0);
+  } finally {
+    await client.close();
+    await bridge.close();
+  }
+});

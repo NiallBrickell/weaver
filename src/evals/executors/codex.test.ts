@@ -25,7 +25,12 @@ function request(overrides: Partial<WorkerExecutionRequest> = {}): WorkerExecuti
     maxTurns: 80,
     cwd: '/fixture/workspace',
     additionalDirectories: ['/fixture/additional'],
-    env: { PATH: '/usr/bin', OMIT_ME: undefined },
+    env: {
+      PATH: '/usr/bin',
+      OPENAI_API_KEY: 'must-not-switch-billing',
+      CODEX_API_KEY: 'must-not-switch-principal',
+      OMIT_ME: undefined,
+    },
     operatorMcpServers: {},
     submit: {
       async appendSection() { return { text: 'appended' }; },
@@ -139,6 +144,8 @@ describe('CodexEvalExecutor', () => {
         WEAVER_CODEX_SUBMIT_TOKEN: 'bridge-secret',
       },
       config: {
+        forced_login_method: 'chatgpt',
+        history: { persistence: 'none' },
         mcp_servers: {
           weaver: {
             url: 'http://127.0.0.1:43210/mcp',
@@ -146,7 +153,7 @@ describe('CodexEvalExecutor', () => {
             required: true,
             enabled: true,
             enabled_tools: ['append_section', 'submit_result'],
-            default_tools_approval_mode: 'auto',
+            default_tools_approval_mode: 'approve',
           },
         },
       },

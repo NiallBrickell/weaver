@@ -2,35 +2,32 @@
 
 Weaver's durable Workstream layer should not depend on one disposable agent loop, and Weaver must
 not become a sandbox implementation. This bakeoff evaluates maintained runtimes at the existing
-`WorkerExecutor` seam ([`src/executor/types.ts`](../src/executor/types.ts)) before any of them is
-allowed into production selection.
+`WorkerExecutor` seam ([`src/executor/types.ts`](../src/executor/types.ts)) and keeps evidence for
+future routing changes.
 
 This is the *remote-execution* half of the same seam story the rest of the harness already tells.
 The durable brain is now genuinely shareable across machines — the knowledge layer lives behind
 `StateStore` (plain Postgres via `WEAVER_STORE`), and a fleet of disposable bots keeps its memory in
 one Weaver over the network-ingress seam (`weaver serve`, [`src/ingress.ts`](../src/ingress.ts)).
 The remaining seam is where a worker's model loop actually runs. That choice has now been made:
-`selectExecutor()` knows `local-sdk` (default) and `openhands`, the first remote substrate
-([`src/executor/openHands.ts`](../src/executor/openHands.ts)). This bakeoff is how that choice
-earned — and how any future change to it keeps earning — its evidence instead of arriving by
+`selectExecutor()` knows `local-sdk` (default), local `codex-sdk`, and `openhands`, the first remote
+substrate. This bakeoff is how those choices earned — and how any future change keeps earning — evidence instead of arriving by
 anecdote.
 
 The candidates are:
 
 - `claude-sdk`: the current production baseline, wrapped only to collect eval telemetry;
-- `codex-sdk`: the official TypeScript SDK, one fresh thread per assignment, with
+- `codex-sdk`: the official TypeScript SDK, one fresh subscription-backed thread per assignment, with
   `workspace-write` and `approvalPolicy: never`;
 - `opencode`: the current OpenCode SDK and local server, one fresh server and session per
   assignment; and
 - `openhands`: the pinned official OpenHands Agent Server Docker image, one fresh container and
   conversation per assignment.
 
-These adapters live under [`src/evals/`](../src/evals/). Three of them (`claude-sdk`, `codex-sdk`,
-`opencode`) remain eval-only — they are not in `selectExecutor` ([`src/worker.ts`](../src/worker.ts)),
-so an eval result cannot silently change how real Workstreams execute. The fourth, `openhands`, has
-been promoted: its runtime now lives in [`src/executor/openHands.ts`](../src/executor/openHands.ts)
-and the eval adapter is a thin wrapper over that production class, so the bakeoff exercises the exact
-code a production `openhands` worker runs.
+The harness wiring lives under [`src/evals/`](../src/evals/), but production runtimes live under
+[`src/executor/`](../src/executor/). Codex and OpenHands eval adapters are thin wrappers over those
+production classes, so the bakeoff exercises the exact code real workers run. OpenCode remains
+eval-only. An eval result never mutates `WEAVER_EXECUTOR` or a routing commitment.
 
 ## What is being tested
 
@@ -93,7 +90,7 @@ yarn eval:harness \
 ```
 
 OpenCode uses its normal provider authentication; run `opencode auth login` once for the selected
-provider. The Codex SDK uses the existing Codex login or OpenAI API configuration. The Claude
+provider. The Codex SDK uses the existing Codex login. The Claude
 baseline uses the existing Claude Code login.
 
 The local OpenHands target needs Docker and an explicit provider key:
@@ -137,8 +134,13 @@ yarn eval:harness --ingest eval-results/<run>/results.json
 yarn eval:harness --history
 ```
 
-The history aggregation is the evidence a future model-routing policy consumes; a missing score or
-cost stays excluded, never counted as zero.
+`--history` is descriptive evidence, not an automatic capability gate. The checked-in ledger
+deliberately retains Codex runs from before the MCP approval repair beside successful reruns, and
+those rows originally shared one harness version; collapsing them produces a misleading pass rate.
+The production Codex adapter now emits the `codex-sdk-0.147.0-weaver.2` epoch so new evidence cannot
+silently join that old population. A routing commitment must additionally preserve case/adapter
+versions and exact gate vectors rather than consuming this mean. Missing score or cost stays
+excluded, never counted as zero.
 
 Cost policy for accumulating this evidence: the standing cadence runs on subscription-backed
 targets — `claude-sdk` through the machine's Claude Code login and `codex-sdk` through the Codex
@@ -153,13 +155,14 @@ launched Weaver. Neither label is a claim of production-grade hostile or multi-t
 The telemetry already carries a third `managed-sandbox` isolation value
 ([`src/evals/types.ts`](../src/evals/types.ts)) reserved for the managed-runtime trials that a real
 remote fleet would run on; no candidate reports it yet. The `confinement` case now measures whether a
-candidate *behaves* as if confined, but a passing host-process run is behavioural, not enforced — the
-production choice remains blocked on the supervised-action case in [`TODO.md`](../TODO.md) and on
-managed-runtime targets that report `managed-sandbox` and prove the boundary structurally.
+candidate *behaves* as if confined, but a passing host-process run is behavioural, not enforced.
+A managed-runtime target still needs to report `managed-sandbox` and prove the boundary
+structurally. Supervised actions likewise remain a scope-widening gate for Codex/OpenHands, not a
+reason to pretend ordinary work is unsupported.
 
 The important architectural finding so far is that task capability and action authority remain
-orthogonal. Codex, OpenCode, and OpenHands can be evaluated for ordinary work, but their current
-adapters reject action assignments before launch because they do not yet expose Weaver's live Pilot
+orthogonal. Codex and OpenHands production executors (and the OpenCode eval adapter) support
+ordinary work, but reject action assignments before launch because they do not yet expose Weaver's live Pilot
 supervision contract. Fail-closed is an honest missing capability; silently allowing the action
 would invalidate the bakeoff.
 
@@ -172,15 +175,16 @@ would invalidate the bakeoff.
   prompt/settings shapes originate in the Claude SDK. Eval adapters consume the narrow fields they
   can honor; production promotion should first replace those leaked types with Weaver-owned shapes.
 - Codex's official TypeScript SDK exposes fresh threads, streaming usage, sandbox mode, approval
-  policy, and remote MCP configuration, but not a per-tool authority callback. The eval adapter uses
+  policy, and remote MCP configuration, but not a per-tool authority callback. The production adapter uses
   a required bearer-authenticated MCP bridge and rejects supervised actions.
-- Codex MCP tools default to prompted per-tool approval (`default_tools_approval_mode` is one of
-  `auto`/`prompt`/`writes`/`approve`), and a headless thread under `approvalPolicy: 'never'`
-  auto-cancels each approval request rather than granting it. The symptom is a run that completes
+- Codex MCP `auto` mode can still route mutating tools for review
+  (`default_tools_approval_mode` is one of `auto`/`prompt`/`writes`/`approve`), and a headless thread
+  under `approvalPolicy: 'never'` auto-cancels that request rather than granting it. The symptom is a run that completes
   cleanly while every bridge call dies as "user cancelled MCP tool call" — the model even reports
-  its submission was refused. The weaver bridge sets `default_tools_approval_mode: 'auto'` on its
-  server entry, which is safe precisely because the bridge only exposes Weaver's own submission
-  surface, never a widened authority.
+  its submission was refused. The Weaver bridge sets `default_tools_approval_mode: 'approve'` on
+  its per-run server entry. That explicit owner approval is safe precisely because the bridge only
+  exposes Weaver's own enumerated submission or revision-checked mutation surface, never a widened
+  outside-world authority.
 - The Codex TypeScript SDK also exposes neither the other candidates' turn cap nor a distinct system
   prompt field. Its worker contract is appended to user input and the 40-minute Weaver wall is the
   outer bound; efficiency results are not normalized until that limitation is resolved or reported

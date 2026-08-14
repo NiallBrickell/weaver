@@ -2,7 +2,7 @@
 
 *How intentional external effects are gated, executed with normal tools, and confirmed by deterministic readback*
 
-Weaver has no channel adapters, no integration layer, no per-service plumbing. Every assignment is a regular Claude Code worker with real tools. A worker has exactly two lifecycles. Most work is `work`: bounded, reversible work that proposes a result, with the full toolset — including the operator's configured MCP servers used read AND write. Moving a tracker issue's status, commenting, or labelling to keep the systems a brief names in sync is ordinary `work`, not an action; the line is drawn by consequence, not by whether the write goes to a remote service.
+Weaver has no channel adapters, no integration layer, no per-service plumbing. Every assignment is a regular coding-agent worker with real tools. A worker has exactly two lifecycles. Most work is `work`: bounded, reversible work that proposes a result, with its executor's ordinary toolset — including the operator's configured MCP servers used read AND write where supported. Moving a tracker issue's status, commenting, or labelling to keep the systems a brief names in sync is ordinary `work`, not an action; the line is drawn by consequence, not by whether the write goes to a remote service.
 
 An `action` assignment is reserved for one *irreversible* egress to the outside world — merging or deploying a PR, spending money, sending a message to a person: `gh pr merge`, a payment API call with `curl`, a real send. Weaver's contribution is the gate before and the deterministic readback after; merely having a capable tool does not grant authority or make the worker's claim true.
 
@@ -37,4 +37,3 @@ Actions are designed idempotent: the briefing names a stable external key (a bra
 ## Repo deconfliction
 
 Weaver conflict-checks its own state on every write; the same discipline now extends across the git-repo seam. Before an action does an irreversible repo egress (`gh pr create`, `gh pr merge`, `git push`), Weaver checks whether another *open* PR is changing any of the same files. If one is, the action is held — a single card tells you which PR (and whose), and the exact overlapping paths — and it re-runs automatically once that PR merges or closes. A colliding open PR is a conflicting arrival on shared external state, so Weaver reconciles rather than opening a second competing write into the same files. When there is no collision the action ships autonomously as usual, and if the check itself can't run (no `gh`, not a repo) it never blocks work.
-

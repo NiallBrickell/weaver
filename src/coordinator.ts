@@ -12,7 +12,7 @@
  */
 
 import { isAbsolute } from 'node:path';
-import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { inVirtual, parseDuration, virtualNow } from './clock.js';
 import { conclusionEvidenceLabels } from './conclusion.js';
@@ -48,9 +48,15 @@ import { noteFleetRecovery } from './fleetCapacity.js';
 import { isPendingSteering } from './steering.js';
 import {
   coordinatorCapacityTarget,
+  coordinatorFallbackCapacityTarget,
   coordinatorFallbackModel,
   coordinatorModel,
+  type CapacityTarget,
 } from './modelConfig.js';
+import {
+  selectCoordinatorExecutor,
+  type CoordinatorExecutor,
+} from './executor/coordinator.js';
 import {
   RevisionConflictError,
   arrive,
@@ -73,14 +79,23 @@ export { coordinatorFallbackModel, coordinatorModel } from './modelConfig.js';
  * seat degrades one step (Opus) and keeps reconciling while the primary's
  * stored retry remains scheduled. If both pools are limited, the primary is
  * returned and the normal backoff machinery does its job. */
-export function pickCoordinatorModel(doc: WorkstreamDoc, nowIso: string): string {
-  const primary = coordinatorModel();
-  const fallback = coordinatorFallbackModel();
-  if (fallback === primary) return primary;
-  const primaryWait = capacityBackoffFor(doc, coordinatorCapacityTarget(primary))?.wait;
+export function pickCoordinatorTarget(doc: WorkstreamDoc, nowIso: string): CapacityTarget {
+  const primary = coordinatorCapacityTarget();
+  const fallback = coordinatorFallbackCapacityTarget();
+  if (
+    fallback.executor === primary.executor &&
+    fallback.provider === primary.provider &&
+    fallback.model === primary.model
+  ) return primary;
+  const primaryWait = capacityBackoffFor(doc, primary)?.wait;
   if (!primaryWait || primaryWait.retryAt <= nowIso) return primary;
-  const fallbackWait = capacityBackoffFor(doc, coordinatorCapacityTarget(fallback))?.wait;
+  const fallbackWait = capacityBackoffFor(doc, fallback)?.wait;
   return !fallbackWait || fallbackWait.retryAt <= nowIso ? fallback : primary;
+}
+
+/** Backward-compatible model-only view used by existing presentation/tests. */
+export function pickCoordinatorModel(doc: WorkstreamDoc, nowIso: string): string {
+  return pickCoordinatorTarget(doc, nowIso).model;
 }
 
 /** Deterministic capacity-state half of pass finalization. Kept outside the
@@ -94,8 +109,13 @@ export function recordCoordinatorCapacityBackoff(
   ensureCapacityAttention(doc, capacity, wakeId, () => newId('att'));
 }
 
-export function clearCoordinatorCapacityBackoff(doc: WorkstreamDoc, model: string): void {
-  const target = coordinatorCapacityTarget(model);
+export function clearCoordinatorCapacityBackoff(
+  doc: WorkstreamDoc,
+  targetOrModel: CapacityTarget | string,
+): void {
+  const target = typeof targetOrModel === 'string'
+    ? coordinatorCapacityTarget(targetOrModel)
+    : targetOrModel;
   clearCapacityBackoff(doc, target);
   resolveCapacityAttention(doc, target, 'coordinator');
 }
@@ -156,6 +176,7 @@ export function passOutcome(args: {
 export async function runCoordinatorPass(
   slug: string,
   wakeReasons: string[],
+  providedExecutor?: CoordinatorExecutor,
 ): Promise<PassOutcome> {
   let doc = await load(slug);
 
@@ -171,10 +192,22 @@ export async function runCoordinatorPass(
   }
 
   const passId = newId('pass');
-  // Pinned for the whole pass: the record, the SDK call, failure
-  // classification, and capacity clearing must all speak about ONE model.
-  const passModel = pickCoordinatorModel(doc, virtualNow().toISOString());
-  const degraded = passModel !== coordinatorModel();
+  // Pinned for the whole pass: the record, model loop, failure
+  // classification, and capacity clearing must all speak about ONE target.
+  const passTarget = pickCoordinatorTarget(doc, virtualNow().toISOString());
+  const passModel = passTarget.model;
+  const primaryTarget = coordinatorCapacityTarget();
+  const degraded = passTarget.executor !== primaryTarget.executor ||
+    passTarget.provider !== primaryTarget.provider ||
+    passTarget.model !== primaryTarget.model;
+  // A bad executor name fails before the lease/PassRecord write. Silent local
+  // fallback would make a configured Codex recovery path look healthy.
+  const executor = providedExecutor ?? selectCoordinatorExecutor(passTarget.executor);
+  if (executor.id !== passTarget.executor) {
+    throw new Error(
+      `coordinator executor '${executor.id}' does not match selected target '${passTarget.executor}'`,
+    );
+  }
   const startedAt = new Date();
   try {
     doc = await mutate(slug, doc.revision, (d, event) => {
@@ -193,10 +226,12 @@ export async function runCoordinatorPass(
         baseRevision: d.revision + 1,
         wakeReasons: wakeReasons.map((r) => (r.length > 300 ? `${r.slice(0, 297)}…` : r)),
         model: passModel,
+        executor: passTarget.executor,
+        provider: passTarget.provider,
         changes: [],
         outcome: 'running',
       });
-      event('pass.started', `Coordinator pass ${passId} started (${wakeReasons.join('; ') || 'manual'})${degraded ? ` — on fallback ${passModel} while ${coordinatorModel()} capacity recovers` : ''}`);
+      event('pass.started', `Coordinator pass ${passId} started (${wakeReasons.join('; ') || 'manual'}) on ${passTarget.executor}:${passModel}${degraded ? ` — fallback while ${primaryTarget.executor}:${primaryTarget.model} capacity recovers` : ''}`);
     });
   } catch (error) {
     if (error instanceof ExecutionSafetyLimitedError) await parkIfExecutionLimited(slug, startedAt);
@@ -245,10 +280,7 @@ export async function runCoordinatorPass(
     }
   };
 
-  const server = createSdkMcpServer({
-    name: 'weaver',
-    version: '0.1.0',
-    tools: [
+  const coordinatorTools = [
       tool(
         'record_decision',
         'Record an authoritative decision. Use supersedes_decision_id to explicitly replace a standing decision (keeps lineage).',
@@ -316,7 +348,7 @@ export async function runCoordinatorPass(
 
       tool(
         'create_assignment',
-        'Dispatch one bounded assignment to a fresh regular Claude Code worker. The worker sees ONLY the briefing plus the deliverables of depends_on assignments — write the briefing accordingly — but it has the normal Code toolset: Bash, file editing, web tools, and the operator\'s configured MCP servers, used freely READ and WRITE. Kind is a lifecycle, not a weaker runtime. Use kind "work" for anything reversible — investigation, code changes in a worktree, and keeping the systems the brief names in sync over MCP (moving a tracker issue\'s status, commenting, labelling) all count as work and need no approval; no MCP tool is special-cased. Capability is not authority: reserve kind "action" for one IRREVERSIBLE egress to the outside world — sending a message to a person, spending, or pushing/merging/deploying code. An action starts GATED until approved, every call is Pilot-supervised, and the effect is confirmed only by exec_verify (a deterministic shell readback the harness runs — the worker\'s own claim of success is never trusted). Actions must be idempotent-by-design: name a stable external key in the briefing so a re-run cannot duplicate the effect. Whether an act is within authority comes from the workstream\'s constraints and standing decisions, never this tool.',
+        'Dispatch one bounded assignment to a fresh regular coding-agent worker. The worker sees ONLY the briefing plus the deliverables of depends_on assignments — write the briefing accordingly — but it has the normal coding-agent toolset: shell, file editing, web tools, and the operator\'s configured MCP servers, used freely READ and WRITE. Kind is a lifecycle, not a weaker runtime. Use kind "work" for anything reversible — investigation, code changes in a worktree, and keeping the systems the brief names in sync over MCP (moving a tracker issue\'s status, commenting, labelling) all count as work and need no approval; no MCP tool is special-cased. Capability is not authority: reserve kind "action" for one IRREVERSIBLE egress to the outside world — sending a message to a person, spending, or pushing/merging/deploying code. An action starts GATED until approved, every call is Pilot-supervised, and the effect is confirmed only by exec_verify (a deterministic shell readback the harness runs — the worker\'s own claim of success is never trusted). Actions must be idempotent-by-design: name a stable external key in the briefing so a re-run cannot duplicate the effect. Whether an act is within authority comes from the workstream\'s constraints and standing decisions, never this tool.',
         {
           objective: z.string(),
           briefing: z.string().describe('complete self-contained brief for the worker'),
@@ -944,8 +976,7 @@ export async function runCoordinatorPass(
           return res;
         },
       ),
-    ],
-  });
+  ];
 
   const prompt = [
     `A wake fired for this workstream. Reconcile: make the bounded progress this wake justifies, then finish_pass.`,
@@ -966,33 +997,25 @@ export async function runCoordinatorPass(
   const abort = new AbortController();
   const wall = armWall(abort, 25 * 60_000, 'coordinator pass');
   try {
-    for await (const message of query({
+    const execution = await executor.execute({
       prompt,
-      options: {
-        model: passModel,
-        systemPrompt: COORDINATOR_SYSTEM_PROMPT,
-        tools: [],
-        mcpServers: { weaver: server },
-        allowedTools: ['mcp__weaver__*'],
-        permissionMode: 'dontAsk',
-        settingSources: [],
-        strictMcpConfig: true,
-        maxTurns: 60,
-        persistSession: false,
-        env: sdkEnv(),
-        abortController: abort,
+      model: passModel,
+      systemPrompt: COORDINATOR_SYSTEM_PROMPT,
+      tools: coordinatorTools,
+      env: sdkEnv(),
+      abort,
+      onClaudeMessage(message) {
+        tailMessage(slug, 'coordinator', passId, message);
+        sdkFailure.observe(message);
       },
-    })) {
-      tailMessage(slug, 'coordinator', passId, message);
-      sdkFailure.observe(message);
-      if (message.type === 'result') {
-        sessionId = message.session_id;
-        costUsd = 'total_cost_usd' in message ? message.total_cost_usd : 0;
-        if (message.is_error) {
-          hadError = true;
-          errorText = sdkFailure.diagnostic();
-        }
-      }
+    });
+    costUsd = execution.costUsd;
+    sessionId = execution.sessionId;
+    if (execution.error) {
+      hadError = true;
+      sdkFailure.capture(new Error(execution.error));
+      errorText = sdkFailure.diagnostic();
+      process.stderr.write(`coordinator pass error: ${execution.error}\n`);
     }
   } catch (e) {
     hadError = true;
@@ -1012,8 +1035,8 @@ export async function runCoordinatorPass(
     source: 'coordinator',
     sourceId: passId,
     model: passModel,
-    executor: 'local-sdk',
-    provider: 'anthropic',
+    executor: passTarget.executor,
+    provider: passTarget.provider,
     now: virtualNow(),
     wallNow: new Date(),
     wallFired: wall.fired(),
@@ -1028,7 +1051,7 @@ export async function runCoordinatorPass(
     // the account, not about this stream. Recorded once for the whole fleet so
     // streams still holding an older park on the same target are released by
     // the runner instead of each waiting out its own stale timer.
-    noteFleetRecovery(coordinatorCapacityTarget(passModel), new Date().toISOString());
+    noteFleetRecovery(passTarget, new Date().toISOString());
   }
 
   // Finalize provenance regardless of how the model behaved. This is an
@@ -1049,7 +1072,7 @@ export async function runCoordinatorPass(
     }
     if (d.lease?.passId === passId) d.lease = null;
     if (!infrastructure) {
-      clearCoordinatorCapacityBackoff(d, passModel);
+      clearCoordinatorCapacityBackoff(d, passTarget);
     }
     // Provider waits are execution attempts, not logical coordinator passes:
     // a month-long provider-usage outage must not consume the workstream's pass cap.
@@ -1085,22 +1108,26 @@ export async function runCoordinatorPass(
       event('pass.backoff', `${passId} parked on ${infrastructure.kind} until ${infrastructure.retryAt}`, [passId, wakeId]);
       // Degrade, don't park: if the PRIMARY model's pool is what failed and
       // the fallback's isn't also limited, wake immediately — the next pass
-      // will pick the fallback (pickCoordinatorModel reads the capacity entry
+      // will pick the fallback (pickCoordinatorTarget reads the capacity entry
       // just recorded). The typed wake above stays: it is the primary pool's
       // bookkeeping; its scheduled reset (or explicit retry) restores the
       // primary as soon as a real pass proves that pool recovered.
-      const fb = coordinatorFallbackModel();
-      const fbWait = capacityBackoffFor(d, coordinatorCapacityTarget(fb))?.wait;
-      const fbAvailable = fb !== infrastructure.model && (!fbWait || fbWait.retryAt <= virtualNow().toISOString());
-      if (infrastructure.model === coordinatorModel() && fbAvailable) {
+      const fb = coordinatorFallbackCapacityTarget();
+      const fbWait = capacityBackoffFor(d, fb)?.wait;
+      const fallbackDiffers = fb.executor !== passTarget.executor ||
+        fb.provider !== passTarget.provider || fb.model !== passTarget.model;
+      const fbAvailable = fallbackDiffers && (!fbWait || fbWait.retryAt <= virtualNow().toISOString());
+      const failedPrimary = infrastructure.executor === primaryTarget.executor &&
+        infrastructure.provider === primaryTarget.provider && infrastructure.model === primaryTarget.model;
+      if (failedPrimary && fbAvailable) {
         d.wakes.push({
           id: newId('wake'),
-          reason: `continue on fallback model ${fb} while ${infrastructure.model} capacity recovers`,
+          reason: `continue on fallback ${fb.executor}:${fb.model} while ${infrastructure.executor}:${infrastructure.model} capacity recovers`,
           condition: { type: 'immediate' },
           status: 'pending',
           createdAt: new Date().toISOString(),
         });
-        event('pass.degraded', `${infrastructure.model} pool is limited — coordinator continues on ${fb} until its stored retry proves recovery`, [passId]);
+        event('pass.degraded', `${infrastructure.executor}:${infrastructure.model} pool is limited — coordinator continues on ${fb.executor}:${fb.model} until its stored retry proves recovery`, [passId]);
       }
     } else if (outcome === 'conflicted') {
       // A finish that lost to a concurrent arrival is the revision check

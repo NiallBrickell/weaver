@@ -17,6 +17,14 @@ export function coordinatorFallbackModel(): string {
   return process.env.WEAVER_COORDINATOR_FALLBACK_MODEL ?? 'claude-opus-5';
 }
 
+export function coordinatorExecutorName(): string {
+  return process.env.WEAVER_COORDINATOR_EXECUTOR ?? 'local-sdk';
+}
+
+export function coordinatorFallbackExecutorName(): string {
+  return process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR ?? coordinatorExecutorName();
+}
+
 export function workerModel(): string {
   return process.env.WEAVER_WORKER_MODEL ?? 'sonnet';
 }
@@ -30,16 +38,31 @@ export function providerFromModel(model: string): string | null {
   return slash > 0 ? model.slice(0, slash) : null;
 }
 
-export function coordinatorCapacityTarget(model = coordinatorModel()): CapacityTarget {
-  return { executor: 'local-sdk', provider: 'anthropic', model };
+export function providerForExecutor(executor: string, model: string): string {
+  if (executor === 'local-sdk' || executor === 'claude-sdk') return 'anthropic';
+  if (executor === 'codex-sdk') return 'openai';
+  return providerFromModel(model) ?? 'unknown';
+}
+
+export function coordinatorCapacityTarget(
+  model = coordinatorModel(),
+  executor = coordinatorExecutorName(),
+): CapacityTarget {
+  return { executor, provider: providerForExecutor(executor, model), model };
+}
+
+export function coordinatorFallbackCapacityTarget(): CapacityTarget {
+  return coordinatorCapacityTarget(
+    coordinatorFallbackModel(),
+    coordinatorFallbackExecutorName(),
+  );
 }
 
 export function workerCapacityTarget(
   model = workerModel(),
   executor = workerExecutorName(),
 ): CapacityTarget {
-  if (executor === 'local-sdk') return { executor, provider: 'anthropic', model };
-  return { executor, provider: providerFromModel(model) ?? 'unknown', model };
+  return { executor, provider: providerForExecutor(executor, model), model };
 }
 
 /** A legacy coordinator always ran through the local Claude Agent SDK. A
@@ -49,5 +72,7 @@ export function targetOfWait(wait: InfrastructureWait): CapacityTarget | null {
   if (wait.executor && wait.provider) {
     return { executor: wait.executor, provider: wait.provider, model: wait.model };
   }
-  return wait.source === 'coordinator' ? coordinatorCapacityTarget(wait.model) : null;
+  return wait.source === 'coordinator'
+    ? { executor: 'local-sdk', provider: 'anthropic', model: wait.model }
+    : null;
 }

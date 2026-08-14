@@ -28,7 +28,7 @@ import {
   retryCapacityTargetNow,
 } from './capacity.js';
 import { readFleetCapacity, supersededByFleetRecovery } from './fleetCapacity.js';
-import { coordinatorCapacityTarget, targetOfWait, type CapacityTarget } from './modelConfig.js';
+import { targetOfWait, type CapacityTarget } from './modelConfig.js';
 import { acquireProcessLock, liveProcessLockPid } from './processLock.js';
 
 function lockDir(): string {
@@ -302,7 +302,14 @@ export async function expediteBackoffWakes(
           }
         }
         for (const model of recoveredModels) {
-          const target: CapacityTarget = coordinatorCapacityTarget(model);
+          // Credential probing is Claude-only, so retain the exact local SDK
+          // identity instead of rebuilding a target through whatever
+          // coordinator executor happens to be configured now.
+          const target: CapacityTarget = {
+            executor: 'local-sdk',
+            provider: 'anthropic',
+            model,
+          };
           retryCapacityTargetNow(d, now, target);
           clearCapacityBackoff(d, target);
           resolveCapacityAttention(d, target, 'capacity-probe');
