@@ -64,6 +64,19 @@ silently change the account or billing route. Every worker starts a new thread;
 history persistence is disabled, and its session id is provenance only and is
 never resumed.
 
+An ordinary Codex worker deliberately starts with `danger-full-access`. The
+executor is declared as a host-process substrate, so it must provide the same
+ordinary coding-agent surface as the local Claude worker, including Git
+metadata, host daemons, and caches. Codex's `workspace-write` mode still makes
+`.git` and resolved worktree gitdirs recursively read-only, and writes outside
+its configured roots remain unavailable; see OpenAI's
+[protected-path documentation](https://learn.chatgpt.com/docs/agent-approvals-security#protected-paths-in-writable-roots).
+This is not presented as filesystem containment. Weaver's authority boundary
+remains the assignment lifecycle: reversible `work` gets the ordinary agent
+surface, while irreversible egress must be an `action` supervised by Pilot.
+Codex refuses those actions until its SDK exposes the required per-tool
+supervision callback.
+
 The coordinator is stricter than a worker. Each pass gets a new temporary
 `CODEX_HOME` containing only a link to the local login, no operator MCP servers,
 skills, rules, hooks, or previous sessions. Shell, file changes, web search,
