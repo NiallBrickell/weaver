@@ -16,8 +16,19 @@
  * policy lands in 'shadow' with full provenance and earns 'active' through
  * the normal evidence path. Text that reads like GRANTING authority (merge,
  * send, spend, bypass...) is skipped with a note, never converted — authority
- * is never learned, and it is certainly never imported. Re-running is a
- * no-op: candidates dedup on normalized statement against the whole store.
+ * is never learned, and it is certainly never imported.
+ *
+ * Re-running is not a no-op any more, and could not stay one. A rules file is
+ * a living document — the operator edits a rule, deletes a section, tightens a
+ * sentence — and a seeding pass that only ever ADDS leaves the store holding
+ * the wording they abandoned, forever, beside the wording they now use. So a
+ * re-run REFRESHES: a rule whose text changed under the same section updates
+ * that policy in place (same id, same createdAt, journaled by the store's
+ * mutation receipt), a section that no longer exists retires its policies with
+ * the reason, and unchanged rules are still a no-op. Because a refreshed rule
+ * means the operator's standing instruction moved, it also contests the
+ * learned policies scoped to it — see `applyRulesRefresh` for why that blast
+ * radius is the point rather than an accident.
  */
 
 import * as fs from 'node:fs';
@@ -25,11 +36,14 @@ import * as path from 'node:path';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {
+  applyRulesRefresh,
   grantsAuthority,
+  isDoctrine,
   loadPolicies,
   normalizeStatement,
   proposeBackfillPolicy,
   type PolicyRecord,
+  type RulesRefreshUpdate,
 } from './policies.js';
 import { sdkEnv } from './secrets.js';
 
@@ -45,6 +59,11 @@ export interface BackfillCandidate {
   source: 'backfill:rules' | 'backfill:sessions';
   /** "path § heading" (rules) or "session <id>" (transcripts). */
   ref: string;
+  /** The operator's verbatim words behind a transcript-distilled candidate.
+   * Carried onto the policy's provenance because it is what separates their
+   * own instruction from a model's reading of a conversation — the first is
+   * doctrine, the second is a candidate like any other. */
+  quote?: string;
   interventionSummary: string;
 }
 
@@ -57,6 +76,24 @@ export interface BackfillReport {
   duplicates: BackfillCandidate[];
   /** Rule text refused with a reason (authority-granting language). */
   skipped: { text: string; reason: string; ref: string }[];
+  /**
+   * Doctrine whose text moved with the rules file. `contested` names the
+   * learned policies the refresh put under review — reported on a --dry-run
+   * too, because a re-run after a heavy edit can pull a lot of guidance out of
+   * the projection at once and the operator should see that before it happens,
+   * not afterwards.
+   */
+  refreshed: { id: string; before: string; after: string; ref: string; contested: string[] }[];
+  /** Rules that kept their words but changed section — the ref follows them. */
+  moved: { id: string; from: string; to: string }[];
+  /** Policies whose rules section no longer exists — retired with the reason. */
+  retired: { id: string; statement: string; ref: string; reason: string }[];
+  /** True when nothing was written (the caller passed --dry-run). */
+  dryRun: boolean;
+}
+
+function emptyReport(dryRun: boolean): BackfillReport {
+  return { created: [], wouldCreate: [], duplicates: [], skipped: [], refreshed: [], moved: [], retired: [], dryRun };
 }
 
 // Effect classification, deliberately simple: a rule that mandates
@@ -103,15 +140,36 @@ function linksOnly(text: string): boolean {
 export function parseRulesFile(filePath: string): {
   candidates: BackfillCandidate[];
   skipped: BackfillReport['skipped'];
+  /**
+   * Every rule-bearing section the file still HAS, whether or not any line
+   * under it survived the filters. Refresh needs this to tell "the operator
+   * deleted this section" from "this section's bullets happen not to parse as
+   * rules today" — only the first is a deletion, and inferring the second as
+   * one would retire policies on a parser heuristic.
+   */
+  sections: string[];
 } {
   const raw = fs.readFileSync(filePath, 'utf8');
   const candidates: BackfillCandidate[] = [];
   const skipped: BackfillReport['skipped'] = [];
+  const sections = new Set<string>();
 
   // Heading stack by level; a rule line needs a level>=2 heading above it and
   // no repo-internal heading anywhere in its ancestry.
   const headings: (string | undefined)[] = [];
   let inFence = false;
+
+  /** The ref a rule under the CURRENT heading stack would carry, or undefined
+   * when this position cannot hold a rule at all. One definition, used both
+   * when a heading opens a section and when a rule line lands in one, so the
+   * two can never disagree about what a section is called. */
+  const refHere = (): string | undefined => {
+    const stack = headings.filter((h): h is string => Boolean(h));
+    const underRuleHeading = headings.slice(2).some(Boolean);
+    if (!underRuleHeading || stack.some((h) => SKIP_HEADINGS.test(h))) return undefined;
+    const headingLabel = stack.slice(1).join(' › ') || stack.join(' › ');
+    return `${filePath} § ${headingLabel}`;
+  };
 
   for (const line of raw.split('\n')) {
     if (/^\s*(```|~~~)/.test(line)) {
@@ -125,12 +183,13 @@ export function parseRulesFile(filePath: string): {
       const level = heading[1]!.length;
       headings[level] = cleanMarkdown(heading[2]!);
       headings.length = level + 1; // deeper headings reset
+      const opened = refHere();
+      if (opened) sections.add(opened);
       continue;
     }
 
-    const stack = headings.filter((h): h is string => Boolean(h));
-    const underRuleHeading = headings.slice(2).some(Boolean);
-    if (!underRuleHeading || stack.some((h) => SKIP_HEADINGS.test(h))) continue;
+    const ref = refHere();
+    if (!ref) continue;
 
     // Rule shapes: a bullet (-, *, 1.) or a bold-lead paragraph line.
     const bullet = /^\s{0,3}(?:[-*+]|\d+\.)\s+(.+)$/.exec(line);
@@ -141,8 +200,7 @@ export function parseRulesFile(filePath: string): {
     const statement = cleanMarkdown(ruleText);
     if (statement.length < 20 || statement.length > 600) continue;
 
-    const headingLabel = stack.slice(1).join(' › ') || stack.join(' › ');
-    const ref = `${filePath} § ${headingLabel}`;
+    const headingLabel = ref.slice(ref.indexOf(' § ') + 3);
     if (grantsAuthority(statement)) {
       skipped.push({ text: statement, reason: 'reads like granting authority — authority is never learned or imported', ref });
       continue;
@@ -157,7 +215,7 @@ export function parseRulesFile(filePath: string): {
       interventionSummary: `backfilled from ${path.basename(filePath)} § ${headingLabel}`,
     });
   }
-  return { candidates, skipped };
+  return { candidates, skipped, sections: [...sections] };
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +246,7 @@ async function applyCandidates(
           effectDescription: c.effectDescription,
           source: c.source,
           ref: c.ref,
+          ...(c.quote ? { quote: c.quote } : {}),
           interventionSummary: c.interventionSummary,
         }),
       );
@@ -195,15 +254,247 @@ async function applyCandidates(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Refresh: matching this run's parsed rules against what a previous run stored.
+
+/**
+ * How alike two rule statements are, as the fraction of distinct words they
+ * share. Word overlap is a crude measure of meaning and a good measure of
+ * EDITING, which is what this has to detect: a rule the operator reworded keeps
+ * most of its vocabulary, while two different rules under one heading rarely do.
+ */
+function similarity(a: string, b: string): number {
+  const words = (s: string) => new Set(normalizeStatement(s).split(/[^a-z0-9]+/).filter(Boolean));
+  const wa = words(a);
+  const wb = words(b);
+  if (!wa.size || !wb.size) return 0;
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared / (wa.size + wb.size - shared);
+}
+
+/** Below this, two statements under one heading are treated as different rules
+ * rather than one edited rule. Set high on purpose: mistaking two bullets for
+ * one another would overwrite a rule the operator still holds, while missing an
+ * edit merely leaves an extra shadow candidate for them to supersede. */
+const REFRESH_SIMILARITY = 0.45;
+
+export interface RulesRefreshPlan {
+  /** Candidate text identical to what is stored — nothing to do. */
+  unchanged: { candidate: BackfillCandidate; id: string }[];
+  /** Same rule, new wording: update in place. */
+  updates: { id: string; before: string; candidate: BackfillCandidate }[];
+  /** Genuinely new rules. */
+  creates: BackfillCandidate[];
+  /** Same rule, same words, new section: follow it rather than retiring it. */
+  moves: { id: string; from: string; to: string }[];
+  /** Policies whose section is gone from a file this run parsed. */
+  retires: { id: string; statement: string; ref: string; reason: string }[];
+}
+
+/**
+ * Match this run's parsed rules against the rules-file policies already stored.
+ * Pure, so the matching rules can be argued with in tests rather than inferred
+ * from a store.
+ *
+ * Identity is (section, wording), in that order, because a rules file gives us
+ * nothing better: bullets have no ids, and their ORDER within a section is not
+ * identity either — inserting one line at the top would otherwise renumber
+ * every rule beneath it and rewrite them all. So a candidate claims a stored
+ * policy under the same section ref when their text matches exactly, and
+ * failing that when each is the other's closest match above the threshold.
+ * Mutual-best matters: without it, two candidates both drift toward the same
+ * policy and one of them silently overwrites a rule it has nothing to do with.
+ *
+ * Deletion is inferred ONLY from a vanished section, never a vanished bullet.
+ * A section that is gone from the file is unambiguous; a bullet that stopped
+ * parsing may have been reformatted, moved into a code fence, or grown past the
+ * length cap, and retiring the operator's rule because our own heuristics
+ * changed their mind about it would be the worst kind of quiet damage.
+ */
+export function planRulesRefresh(
+  candidates: BackfillCandidate[],
+  parsedFiles: { path: string; sections: string[] }[],
+  stored: PolicyRecord[],
+): RulesRefreshPlan {
+  const plan: RulesRefreshPlan = { unchanged: [], updates: [], creates: [], moves: [], retires: [] };
+  const live = stored.filter(
+    (p) => p.status !== 'superseded' && 'source' in p.provenance && p.provenance.source === 'backfill:rules',
+  );
+  const refOf = (p: PolicyRecord): string => ('ref' in p.provenance ? p.provenance.ref : '');
+  const byRef = new Map<string, PolicyRecord[]>();
+  for (const p of live) {
+    const list = byRef.get(refOf(p)) ?? [];
+    list.push(p);
+    byRef.set(refOf(p), list);
+  }
+
+  const claimed = new Set<string>();
+  const remaining: BackfillCandidate[] = [];
+
+  // 1. Exact text under the same section: unchanged, nothing to write.
+  for (const c of candidates) {
+    const hit = (byRef.get(c.ref) ?? []).find(
+      (p) => !claimed.has(p.id) && normalizeStatement(p.statement) === normalizeStatement(c.statement),
+    );
+    if (hit) {
+      claimed.add(hit.id);
+      plan.unchanged.push({ candidate: c, id: hit.id });
+    } else {
+      remaining.push(c);
+    }
+  }
+
+  // 2. Same section, reworded: mutual-best match above the threshold.
+  const scored: { c: BackfillCandidate; p: PolicyRecord; score: number }[] = [];
+  for (const c of remaining) {
+    for (const p of byRef.get(c.ref) ?? []) {
+      if (claimed.has(p.id)) continue;
+      const score = similarity(c.statement, p.statement);
+      if (score >= REFRESH_SIMILARITY) scored.push({ c, p, score });
+    }
+  }
+  const bestFor = new Map<object, number>();
+  for (const s of scored) {
+    bestFor.set(s.c, Math.max(bestFor.get(s.c) ?? 0, s.score));
+    bestFor.set(s.p, Math.max(bestFor.get(s.p) ?? 0, s.score));
+  }
+  const matchedCandidates = new Set<BackfillCandidate>();
+  for (const s of [...scored].sort((a, b) => b.score - a.score)) {
+    if (matchedCandidates.has(s.c) || claimed.has(s.p.id)) continue;
+    if (bestFor.get(s.c) !== s.score || bestFor.get(s.p) !== s.score) continue; // not mutual-best
+    claimed.add(s.p.id);
+    matchedCandidates.add(s.c);
+    plan.updates.push({ id: s.p.id, before: s.p.statement, candidate: s.c });
+  }
+
+  // 3. Everything still unmatched is a new rule (the global normalized-statement
+  //    dedup in applyCandidates still catches one that moved between sections).
+  for (const c of remaining) if (!matchedCandidates.has(c)) plan.creates.push(c);
+
+  // 4. Sections that no longer exist in a file this run actually parsed.
+  //    Scoped by the path as it was spelled when the policy was seeded, so a
+  //    run that names the same file differently (relative vs absolute, a
+  //    symlinked home) retires nothing rather than guessing — the worst it
+  //    costs is a re-seed the statement dedup then catches.
+  //
+  //    Renaming a heading LOOKS exactly like deleting one, so a rule whose
+  //    text is still somewhere in this run's candidates is a MOVE, not a
+  //    deletion — it follows the text to its new section. Without that, a
+  //    renamed heading would retire the rules and then the store-wide
+  //    statement dedup would refuse to re-create them, and the operator's
+  //    rules would quietly vanish from a store that still had their file.
+  const candidateByText = new Map<string, BackfillCandidate>();
+  for (const c of candidates) candidateByText.set(normalizeStatement(c.statement), c);
+  const moved = new Set<BackfillCandidate>();
+  const settled = new Set<string>();
+  for (const file of parsedFiles) {
+    const present = new Set(file.sections);
+    for (const p of live) {
+      const ref = refOf(p);
+      if (!ref.startsWith(`${file.path} § `) || present.has(ref) || settled.has(p.id)) continue;
+      settled.add(p.id);
+      const elsewhere = candidateByText.get(normalizeStatement(p.statement));
+      if (elsewhere) {
+        plan.moves.push({ id: p.id, from: ref, to: elsewhere.ref });
+        moved.add(elsewhere);
+        plan.unchanged.push({ candidate: elsewhere, id: p.id });
+        continue;
+      }
+      plan.retires.push({
+        id: p.id,
+        statement: p.statement,
+        ref,
+        reason: `the rules section it came from no longer exists in ${file.path} — the operator removed the rule`,
+      });
+    }
+  }
+  plan.creates = plan.creates.filter((c) => !moved.has(c));
+  return plan;
+}
+
 export async function backfillRules(paths: string[], tags: string[], dryRun: boolean): Promise<BackfillReport> {
-  const report: BackfillReport = { created: [], wouldCreate: [], duplicates: [], skipped: [] };
+  const report = emptyReport(dryRun);
   const candidates: BackfillCandidate[] = [];
+  const parsedFiles: { path: string; sections: string[] }[] = [];
   for (const p of paths) {
     const parsed = parseRulesFile(p);
     candidates.push(...parsed.candidates);
     report.skipped.push(...parsed.skipped);
+    parsedFiles.push({ path: p, sections: parsed.sections });
   }
-  await applyCandidates(candidates, tags, dryRun, report);
+
+  const store = await loadPolicies();
+  const plan = planRulesRefresh(candidates, parsedFiles, store.policies);
+  // An unchanged rule is reported exactly as a duplicate was before refresh
+  // existed: present in the store, nothing written.
+  for (const u of plan.unchanged) report.duplicates.push(u.candidate);
+
+  const updates: RulesRefreshUpdate[] = plan.updates.map((u) => ({
+    id: u.id,
+    statement: u.candidate.statement,
+    effectKind: u.candidate.effectKind,
+    effectDescription: u.candidate.effectDescription,
+  }));
+
+  if (dryRun) {
+    // Predict the contests from the loaded store, using the same rule the
+    // mutation applies — the operator sees the blast radius before choosing.
+    const refOf = (id: string): string => {
+      const p = store.policies.find((x) => x.id === id);
+      return p && 'ref' in p.provenance ? p.provenance.ref : '';
+    };
+    for (const u of plan.updates) {
+      const target = store.policies.find((p) => p.id === u.id)!;
+      const contested = store.policies
+        .filter(
+          (p) =>
+            p.id !== target.id &&
+            p.status !== 'superseded' &&
+            !p.contested &&
+            !isDoctrine(p) &&
+            p.scope.tags.some((t) => target.scope.tags.includes(t)),
+        )
+        .map((p) => p.id);
+      report.refreshed.push({
+        id: u.id,
+        before: u.before,
+        after: u.candidate.statement,
+        ref: refOf(u.id),
+        contested,
+      });
+    }
+    report.retired.push(...plan.retires);
+    report.moved.push(...plan.moves);
+  } else if (updates.length || plan.retires.length || plan.moves.length) {
+    const applied = await applyRulesRefresh({
+      updates,
+      moves: plan.moves.map((m) => ({ id: m.id, ref: m.to })),
+      retire: plan.retires.map((r) => ({ id: r.id, reason: r.reason })),
+    });
+    for (const m of applied.moved) {
+      report.moved.push({ id: m.id, from: plan.moves.find((x) => x.id === m.id)?.from ?? '', to: m.ref });
+    }
+    for (const u of applied.updated) {
+      report.refreshed.push({
+        id: u.id,
+        before: u.before,
+        after: u.after,
+        ref: plan.updates.find((x) => x.id === u.id)?.candidate.ref ?? '',
+        contested: u.contested,
+      });
+    }
+    for (const r of applied.retired) {
+      report.retired.push({
+        id: r.id,
+        statement: r.statement,
+        ref: plan.retires.find((x) => x.id === r.id)?.ref ?? '',
+        reason: r.reason,
+      });
+    }
+  }
+
+  await applyCandidates(plan.creates, tags, dryRun, report);
   return report;
 }
 
@@ -276,7 +567,7 @@ export async function backfillSessions(
   tags: string[],
   opts: { dryRun: boolean; limit: number },
 ): Promise<BackfillReport> {
-  const report: BackfillReport = { created: [], wouldCreate: [], duplicates: [], skipped: [] };
+  const report = emptyReport(opts.dryRun);
   const sessions = extractUserMessages(projectsDir, opts.limit);
   if (!sessions.length) return report;
 
@@ -328,7 +619,7 @@ export async function backfillSessions(
     `Below are USER messages (only) from recent coding-agent sessions, grouped by session id.`,
     ``,
     `Identify durable CORRECTIONS the user made — moments where they redirected the agent in a way that generalizes ("don't do X, always do Y"), not one-off task instructions, facts, or approvals. For each, submit:`,
-    `- statement: the rule as a general imperative`,
+    `- statement: the rule as a general imperative, in the user's own terms and NOTHING MORE. Strip execution detail they did not themselves choose — exact commands, flags, file paths, numeric thresholds, tool names. A quote makes this rule count as the user's own standing doctrine, which outranks what the fleet infers for itself, so a detail smuggled into the sentence inherits an authority the user never gave it. If they named the command, keep it; if you are supplying it, leave it out.`,
     `- effect: 'add_verification' when it mandates verifying/testing/checking, else 'advisory'`,
     `- quote: a short verbatim quote from the message`,
     `- sessionId: the session it came from`,
@@ -371,6 +662,7 @@ export async function backfillSessions(
       effectDescription: effectDescription(s.effect),
       source: 'backfill:sessions',
       ref,
+      quote: s.quote.slice(0, 300),
       interventionSummary: `backfilled from Claude Code ${ref}: "${s.quote.slice(0, 200)}"`,
     });
   }
@@ -382,6 +674,24 @@ export async function backfillSessions(
 
 export function renderBackfillReport(report: BackfillReport, dryRun: boolean): string {
   const lines: string[] = [];
+  const would = dryRun ? '(dry-run) ' : '';
+  for (const r of report.refreshed) {
+    lines.push(`~ ${would}${r.id} rule text updated in place from ${r.ref}`);
+    lines.push(`    was: "${r.before}"`);
+    lines.push(`    now: "${r.after}"`);
+    if (r.contested.length) {
+      lines.push(
+        `    ${dryRun ? 'would contest' : 'contested'} ${r.contested.length} learned polic${r.contested.length === 1 ? 'y' : 'ies'} sharing its scope — they were learned under the old wording and stop guiding until reconciled: ${r.contested.join(', ')}`,
+      );
+    }
+  }
+  for (const m of report.moved) {
+    lines.push(`> ${would}${m.id} still in the file, under a different section: ${m.from} → ${m.to}`);
+  }
+  for (const r of report.retired) {
+    lines.push(`- ${would}${r.id} retired: "${r.statement}"`);
+    lines.push(`    ${r.reason}`);
+  }
   for (const p of report.created) {
     lines.push(`+ ${p.id} [shadow/${p.effect.kind}] "${p.statement}"`);
     lines.push(`    from ${'ref' in p.provenance ? p.provenance.ref : ''}`);

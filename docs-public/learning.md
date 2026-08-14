@@ -38,6 +38,33 @@ shadow ──(another workstream applies it, cites it, and needs no correction)�
 - **Contested**: when a matching workstream applies a policy and *still* needs a correction on its point, that negative evidence marks the policy **contested** — under review. A contested policy is pulled out of active guidance in the projection and won't guide (or promote) again until a human resolves it, but it is **never** silently demoted or deleted. You resolve it by superseding it with a better rule, or — if the failure was situational and the rule is still sound — clearing the review (`weaver policies review-clear`).
 - **Superseded**: a wrong policy is replaced with lineage, exactly like decisions — contradicted openly, never silently ignored. Replacement and lineage are written together, atomically, so a crash can't leave two rules both live. You can supersede with a freshly written rule or by linking an existing one (`weaver policies supersede`, or the coordinator's `supersede_policy`).
 
+## Doctrine: your own rules outrank what the fleet worked out
+
+Two kinds of sentence live in the policy store, and they used to look identical. One is a rule **you** wrote down — in a rules file you maintain, or in a directive you typed at a workstream. The other is a coordinator's inference about how you want things done. The evidence loop was built for the second, and applied to the first it gets things backwards: a rule you stated plainly has nothing to prove, so holding it in shadow until some workstream happens to cite it leaves it weaker than an inference that got lucky. That is not hypothetical — a backfilled "never squash-merge" sat unproven for nine days while a learned merge policy that had picked up a `--squash` flag nobody chose collected clean outcome after clean outcome, each one reading as evidence for the whole sentence, flag included.
+
+So policies sourced from **your own words** form a class of their own, **doctrine**, worked out from provenance rather than set by anyone: a rule parsed from your rules file, a transcript candidate carrying your verbatim quote, or a policy whose statement restates the steering you gave rather than building on it. (A teammate's shared seed is not doctrine — it earns trust on your machine the ordinary way.)
+
+Doctrine behaves differently in three ways:
+
+- **It binds without evidence.** It renders first in every matching projection, marked as doctrine, with no "unproven" caveat. An untested rule is one nothing has had cause to test.
+- **On conflict, doctrine wins.** Where a doctrine rule and a learned policy cover the same scope, the coordinator is told to follow the doctrine, treat the learned policy as contested, and record that contradiction — not to decide for itself which one reads more convincing.
+- **A run can't retire your rule.** Negative evidence against doctrine is recorded and surfaced, but the rule keeps binding; a coordinator that thinks your rule is wrong raises it with you. You retire it by editing the rules file (see backfill, below) or superseding it yourself.
+
+Doctrine changes precedence, never permission: your rules file goes through the same authority firewall as everything else, so "the workstream may merge its own PR" is refused at import exactly as it would be from a coordinator. Writing a rule down is not the same as granting authority for it.
+
+## Statement and mechanism: the rule, and how it currently gets done
+
+A policy's **statement** is the rule in your terms. Its **mechanism** is the revisable how — the exact command, flag, threshold, or endpoint that carries it out today. They are separate on purpose: evidence promotes the statement, so an execution detail folded into that sentence quietly accumulates proof of a choice you never made. Coordinators are instructed to put the command they ran in `mechanism` and keep it out of `statement`, however well it worked.
+
+A mechanism is revisable by anyone at any time, with no approval and no supersession — when a flag is renamed or an endpoint moves, correct it and carry on:
+
+```bash
+weaver policies mechanism pol_1234abcd 'gh pr merge <n> --merge'   # set it
+weaver policies mechanism pol_1234abcd                             # clear it
+```
+
+The rule and its evidence are untouched, because changing how a permitted act is performed is not changing what was agreed. Mechanisms stay on your machine: team seeds carry statements, never the commands that happen to work in your setup.
+
 ## The authority firewall
 
 Structural, not behavioral: the policy effect vocabulary is closed — *add verification*, *narrow authority*, *advisory*. A policy that would spend, send, merge, contact, or widen access is unrepresentable in the store. However trusted a policy becomes, authority still comes only from the workstream's own configuration and egress-time revalidation. **Learning can recommend; it can never permit.**
@@ -57,7 +84,15 @@ weaver backfill --tags myapp --rules ~/project/CLAUDE.md --dry-run
 weaver backfill --tags myapp --claude-projects ~/.claude/projects/<project> --limit 5
 ```
 
-Backfill imports candidates, never trust. Every seeded policy lands in **shadow** with full provenance (file and heading, or session and quote) and earns *active* through the same evidence loop as a live correction. The authority firewall applies at import too: text that reads like granting authority — merging, sending, spending, bypassing gates — is refused with a note, never converted. Re-running is a no-op: candidates dedup against the store, so backfill is safe to repeat as your rules files evolve.
+Backfill imports candidates, never trust. A seeded policy carries full provenance (file and heading, or session and quote); one distilled from a transcript without your verbatim words earns *active* through the same evidence loop as a live correction, while a rule parsed from your rules file is **doctrine** and binds immediately (see above). The authority firewall applies at import too: text that reads like granting authority — merging, sending, spending, bypassing gates — is refused with a note, never converted.
+
+**Re-run it whenever your rules files change.** A rules file is a living document, so backfill refreshes rather than only adding: an unchanged rule is a no-op, a rule you reworded updates its policy in place (same id, so anything citing it stays valid), and a rule whose whole section you deleted is retired with the reason. Nothing is inferred from a bullet that merely stopped parsing — only a section that is gone counts as a deletion, and a rule whose words are still in the file has simply moved, so renaming a heading carries its rules across rather than dropping them.
+
+Because a rewritten rule means your standing instruction moved, it also **contests the learned policies scoped to it**: they were worked out under the old wording, and the fleet can't tell which of those inferences the new wording invalidates. Contested means "under review, don't guide with this" — nothing is deleted — and you resolve it by clearing the review or superseding, exactly as with any other contest. On a busy tag one edited rule can put several learned policies under review at once, so check the radius first:
+
+```bash
+weaver backfill --tags myapp --rules ~/project/CLAUDE.md --dry-run
+```
 
 Once your store has substance, it's shareable: [team seeds](./team-seeds.md) export your guardrails in sanitized form for teammates to import — shadow on their machine, earning trust through their outcomes, with their corrections superseding yours on the record.
 

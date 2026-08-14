@@ -110,13 +110,15 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver constraint <slug> add <text>        add a hard constraint (human-owned direction)
   weaver constraint <slug> remove <match>    remove the constraint containing <match>
   weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
-  weaver policies                            list learned policies (shadow/active/superseded, contested flagged)
+  weaver policies                            list policies (doctrine first, then shadow/active/superseded, contested flagged)
+  weaver policies mechanism <id> [text]      revise a policy's HOW (command/flag/threshold); empty text clears it. The rule and its evidence are untouched
   weaver policies export [--author name] [--out file]   sanitized team seed: statements/scope/effect only
   weaver policies import <file>              import a teammate's seed — all shadow, dedup, authority refused
   weaver policies supersede <oldId> (--with <id> | --statement <s> --tag <t>... --effect <kind> [--effect-desc <d>]) [--reason <r>]   replace a wrong policy (lineage kept); resolves a contested one
   weaver policies review-clear <id> [note]   clear a contest after review found the policy still sound (no supersession)
   weaver backfill --tags <t1,t2> [--rules <path>]... [--claude-projects <dir>] [--limit N] [--dry-run]
-                                             seed shadow policies from existing practice: rules files (CLAUDE.md/AGENTS.md, deterministic) and/or recent Claude Code transcripts (one model pass, default 5 sessions)
+                                             seed shadow policies from existing practice: rules files (CLAUDE.md/AGENTS.md, deterministic) and/or recent Claude Code transcripts (one model pass, default 5 sessions).
+                                             Re-running REFRESHES rules-file doctrine: edited rules update in place, deleted sections retire, and a changed rule contests the learned policies scoped to it (--dry-run shows that blast radius first)
   weaver secret set <NAME> [--ws slug]       store a secret (value read from stdin, never argv); global unless --ws
   weaver secret list [--ws slug]             list secret NAMES (values are never printed)
   weaver secret rm <NAME> [--ws slug]        remove a secret
@@ -644,6 +646,20 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
         process.stdout.write(`superseded ${oldId} → ${next.id} (shadow — earns active through the normal evidence loop)\n`);
         break;
       }
+      if (rest[0] === 'mechanism') {
+        // weaver policies mechanism <id> [text...] — revise the HOW. No
+        // supersession, no approval: the rule is unchanged and evidence was
+        // never about the command anyway. Omitting the text clears it.
+        const id = rest[1] ?? fail('usage: weaver policies mechanism <policyId> [text] (omit text to clear)');
+        const { revisePolicyMechanism } = await import('./policies.js');
+        const updated = await revisePolicyMechanism(id, rest.slice(2).join(' '));
+        process.stdout.write(
+          updated.mechanism
+            ? `${id} mechanism: ${updated.mechanism}\n(statement and evidence untouched — a mechanism is the how, not the rule)\n`
+            : `${id} mechanism cleared\n`,
+        );
+        break;
+      }
       if (rest[0] === 'review-clear') {
         // weaver policies review-clear <id> [note] — resolve a contest without superseding.
         const id = rest[1] ?? fail('usage: weaver policies review-clear <policyId> [note]');
@@ -652,13 +668,25 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
         process.stdout.write(`${id} contest cleared — it renders as ordinary guidance again\n`);
         break;
       }
-      for (const p of (await loadPolicies()).policies) {
+      // Doctrine first, for the same reason the projection puts it first: it
+      // is the operator's own rule and it outranks everything below it.
+      const { isDoctrine } = await import('./policies.js');
+      const all = (await loadPolicies()).policies;
+      for (const p of [...all.filter(isDoctrine), ...all.filter((x) => !isDoctrine(x))]) {
+        const contestSource = p.contested?.workstreamSlug
+          ? `in ${p.contested.workstreamSlug}`
+          : p.contested?.byPolicyId
+            ? `by refreshed doctrine ${p.contested.byPolicyId}`
+            : 'source not recorded';
         process.stdout.write(
-          `${p.id} [${p.status}/${p.effect.kind}]${p.contested ? ' CONTESTED' : ''} tags=[${p.scope.tags.join(',')}] "${p.statement}"\n` +
+          `${p.id} [${isDoctrine(p) ? 'DOCTRINE' : p.status}/${p.effect.kind}]${p.contested ? ' CONTESTED' : ''} tags=[${p.scope.tags.join(',')}] "${p.statement}"\n` +
+          (p.mechanism ? `    mechanism (revisable, not the rule): ${p.mechanism}\n` : '') +
           `    from ${policyOrigin(p)} (${p.provenance.interventionSummary.slice(0, 100)})\n` +
           `    evidence: ${p.evidence.length} (${p.evidence.filter((e) => e.interventionFree).length} intervention-free)` +
+          `${isDoctrine(p) ? ' — doctrine binds without evidence' : ''}` +
           `${p.supersedes ? ` supersedes ${p.supersedes}` : ''}${p.supersededBy ? ` superseded by ${p.supersededBy}` : ''}` +
-          `${p.contested ? `\n    CONTESTED in ${p.contested.workstreamSlug}: ${p.contested.note.slice(0, 100)}` : ''}\n`,
+          `${!p.supersededBy && p.supersededReason ? ` retired: ${p.supersededReason}` : ''}` +
+          `${p.contested ? `\n    CONTESTED ${contestSource}: ${p.contested.note.slice(0, 100)}` : ''}\n`,
         );
       }
       break;
