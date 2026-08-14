@@ -256,3 +256,36 @@ test('the poll loop throttles its slot cap when the injected load sampler report
     `expected a throttle line, got: ${JSON.stringify(lines)}`,
   );
 });
+
+test('a runner slot remains owned until its exact tick settles', async () => {
+  await make('slot-a');
+  await make('slot-b');
+  const abort = new AbortController();
+  const releases: Array<() => void> = [];
+  const calls: string[] = [];
+  const loop = runLoop({
+    intervalMs: 5,
+    concurrency: 1,
+    signal: abort.signal,
+    log: () => {},
+    logError: () => {},
+    loadSample: () => ({ load1: 1, cores: 8 }),
+    tickFn: async (slug) => {
+      calls.push(slug);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return { cycles: 0, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
+    },
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(calls.length, 1, 'an unsettled tick must keep the only slot');
+
+    releases.shift()!();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(calls.length, 2, 'the next workstream may start once the slot owner settles');
+  } finally {
+    abort.abort();
+    for (const release of releases) release();
+    await loop;
+  }
+});
