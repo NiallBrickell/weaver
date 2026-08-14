@@ -21,14 +21,14 @@ import {
   retireLegacyDollarBudgetCard,
 } from './executionSafety.js';
 import { loadSecrets, redactSecrets } from './secrets.js';
-import { runWorker, workerModel } from './worker.js';
+import { runWorker } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import { pidIsLive } from './processLock.js';
 import { collisionKey, isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
 import { capacityBackoffFor } from './capacity.js';
-import { workerCapacityTarget } from './modelConfig.js';
+import { workerTargetForAssignment } from './modelRouting.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
 
 /**
@@ -692,17 +692,20 @@ async function recoverCrashedAttempts(slug: string): Promise<number> {
 export function runnableAssignments(doc: WorkstreamDoc): string[] {
   if (doc.workstream.status !== 'active') return [];
   const now = virtualNow().toISOString();
-  const model = workerModel();
-  const target = workerCapacityTarget(model);
-  const workerRetryAt = capacityBackoffFor(doc, target)?.wait.retryAt;
-  const providerWait = workerRetryAt ? workerRetryAt > now : false;
-  if (providerWait) return [];
   return doc.assignments
     .filter((a) => a.state === 'queued')
+    // Capacity belongs to an exact executor/provider/model pool. A limited
+    // preferred route must not park independent work whose fallback is live.
+    .filter((a) => {
+      const target = workerTargetForAssignment(a);
+      const retryAt = capacityBackoffFor(doc, target)?.wait.retryAt;
+      return !retryAt || retryAt <= now;
+    })
     // A provider outage never erases intended work, but it must defer the
     // next disposable attempt. Without this typed guard, one credit failure
     // becomes a tight worker retry loop before its wake is due.
     .filter((a) => {
+      const target = workerTargetForAssignment(a);
       const wait = a.attempts.at(-1)?.infrastructure;
       return !wait ||
         wait.model !== target.model ||
@@ -892,11 +895,15 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
       // changes the rolling position. Engine-authored deterministic actions
       // run above and are intentionally outside this model-start guard.
       if (await parkIfExecutionLimited(slug)) break cycles;
-      const beforeWorkerStatus = await workstreamStatus(slug);
-      if (beforeWorkerStatus !== 'active') {
-        if (beforeWorkerStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+      const beforeWorkerDoc = await load(slug);
+      if (beforeWorkerDoc.workstream.status !== 'active') {
+        if (beforeWorkerDoc.workstream.status === 'paused') report.skipped = 'workstream became paused during this tick';
         break cycles;
       }
+      // The batch was computed before earlier workers ran. Re-evaluate this
+      // assignment now so a new exact-target backoff suppresses only its
+      // siblings while other routed pools can continue.
+      if (!runnableAssignments(beforeWorkerDoc).includes(id)) continue;
       // Repo-egress deconfliction gate: hold an action worker whose egress
       // (push/merge/PR-open) would collide with another OPEN PR editing the
       // same files, rather than launching a second competing write. Held
@@ -940,9 +947,9 @@ async function tickLocked(slug: string, maxPasses: number, report: TickReport): 
         }
       }
       progressed = true;
-      // The account/model failure is fleet capacity, not an assignment
-      // failure. Do not launch the rest of this precomputed batch into it.
-      if (after?.attempts.at(-1)?.infrastructure) break;
+      // Infrastructure belongs to this exact route. The next iteration's
+      // fresh runnable check skips its siblings without suppressing other
+      // providers/models in the same precomputed batch.
       const afterWorkerStatus = await workstreamStatus(slug);
       if (afterWorkerStatus !== 'active') {
         if (afterWorkerStatus === 'paused') report.skipped = 'workstream became paused during this tick';

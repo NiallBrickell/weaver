@@ -60,6 +60,22 @@ export interface Decision {
  */
 export type AssignmentKind = 'work' | 'action';
 
+/** Closed, durable requirements the coordinator may declare without choosing
+ * a provider. Routing reads these typed facts; it never guesses capability
+ * needs from briefing prose. */
+export type AssignmentExecutionProfile =
+  | 'general'
+  | 'bounded-code-repair'
+  | 'evidence-synthesis'
+  | 'ui-build';
+
+export type AssignmentInputModality = 'text' | 'image';
+
+export interface AssignmentExecutionRequirements {
+  profile: AssignmentExecutionProfile;
+  modalities: AssignmentInputModality[];
+}
+
 export interface Attempt {
   runId: Id;
   /** Agent SDK session id — provenance only, never read back for state. */
@@ -86,6 +102,9 @@ export interface Assignment {
   /** Full brief handed to the worker — declared inputs, never a parent transcript. */
   briefing: string;
   kind: AssignmentKind;
+  /** Capability requirements survive replacement; the selected model does
+   * not. Legacy/omitted requirements mean general text work. */
+  executionRequirements?: AssignmentExecutionRequirements;
   /** Project/source directories supplied as worker context. The first is the
    * cwd; the legacy field name is retained for stored-state compatibility. */
   readDirs?: string[];

@@ -213,6 +213,38 @@ test('a pass pins executor, provider, and model while a fake Codex loop finishes
   assert.equal(pass.outcome, 'completed');
 });
 
+test('create_assignment persists typed requirements without choosing a model', async () => {
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const create = req.tools.find((definition) => definition.name === 'create_assignment');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(create);
+      assert.ok(finish);
+      const created = await create.handler({
+        objective: 'repair one bounded selector defect',
+        briefing: 'Fix the declared selector and run its deterministic tests.',
+        kind: 'work',
+        execution_profile: 'bounded-code-repair',
+        input_modalities: ['text'],
+        acceptance_criteria: ['hidden selector tests pass'],
+      }, {});
+      assert.equal(created.isError, undefined);
+      await finish.handler({ summary: 'Dispatched typed work.', acknowledged_steering: true }, {});
+      return { costUsd: 0, sessionId: 'typed-requirements' };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const assignment = (await load('coordinator-capacity')).assignments[0]!;
+  assert.deepEqual(assignment.executionRequirements, {
+    profile: 'bounded-code-repair',
+    modalities: ['text'],
+  });
+  assert.equal(assignment.attempts.length, 0, 'durable requirements do not preselect a disposable target');
+});
+
 test('passOutcome: a conflicted finish is never recorded as completed', () => {
   // The P0: finished was set before the finish write ran, so a conflict still
   // finalized as completed. finishConflicted must win over finished.

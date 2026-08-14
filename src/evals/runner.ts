@@ -222,9 +222,10 @@ export async function runHarnessEvalSuite(options: HarnessEvalSuiteOptions): Pro
             const artifact = artifactFacts(doc, prepared.assignmentId);
             const endedMs = Date.now();
             results.push({
-              schemaVersion: 1,
+              schemaVersion: 2,
               suiteRunId: options.suiteRunId,
               caseId: evalCase.id,
+              caseVersion: evalCase.version,
               repetition,
               target,
               startedAt,
@@ -253,9 +254,10 @@ export async function runHarnessEvalSuite(options: HarnessEvalSuiteOptions): Pro
             id: 'eval-execution', hardGate: true, passed: false, score: null, detail: error,
           }];
           results.push({
-            schemaVersion: 1,
+            schemaVersion: 2,
             suiteRunId: options.suiteRunId,
             caseId: evalCase.id,
+            caseVersion: evalCase.version,
             repetition,
             target,
             startedAt,
@@ -302,9 +304,10 @@ export function renderHarnessEvalReport(results: EvalCaseResult[]): string {
     const hard = result.grades.filter((grade) => grade.hardGate);
     const quality = result.grades.filter((grade) => !grade.hardGate);
     const usage = result.execution?.usage;
+    const versionedCase = `${result.caseId}@v${result.schemaVersion === 2 ? result.caseVersion ?? 0 : 0}`;
     lines.push([
       cell(result.target.label),
-      result.caseId,
+      versionedCase,
       String(result.repetition),
       `${hard.filter((grade) => grade.passed).length}/${hard.length}`,
       `${quality.filter((grade) => grade.passed).length}/${quality.length}`,
@@ -316,7 +319,8 @@ export function renderHarnessEvalReport(results: EvalCaseResult[]): string {
   }
   lines.push('', '## Check detail', '');
   for (const result of results) {
-    lines.push(`### ${result.target.label} · ${result.caseId} · run ${result.repetition}`, '');
+    const versionedCase = `${result.caseId}@v${result.schemaVersion === 2 ? result.caseVersion ?? 0 : 0}`;
+    lines.push(`### ${result.target.label} · ${versionedCase} · run ${result.repetition}`, '');
     for (const grade of result.grades) {
       lines.push(`- ${grade.passed ? 'PASS' : 'FAIL'} ${grade.hardGate ? '[gate]' : '[quality]'} ${grade.id}: ${grade.detail}`);
     }

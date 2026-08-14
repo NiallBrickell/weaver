@@ -307,6 +307,38 @@ test('capacity presentation distinguishes fallback degradation from a real block
   }
 });
 
+test('capacity presentation reports a limited route without calling the whole worker fleet blocked', () => {
+  const now = source.now.toISOString();
+  const retryAt = new Date(source.now.getTime() + 60_000).toISOString();
+  const assignment = (id: string, profile: 'general' | 'bounded-code-repair') => ({
+    id, objective: id, briefing: 'n/a', kind: 'work' as const,
+    executionRequirements: { profile, modalities: ['text' as const] },
+    acceptanceCriteria: ['done'], dependsOn: [], state: 'queued' as const,
+    attempts: [], adoption: { state: 'none' as const }, createdAtVirtual: now,
+  });
+  const doc = {
+    workstream: { slug: 'routed-view' },
+    assignments: [assignment('asg_codex', 'bounded-code-repair'), assignment('asg_general', 'general')],
+    capacity: null, steering: [], managerDirections: [], wakes: [],
+  } as unknown as WorkstreamDoc;
+  const wait = {
+    kind: 'rate_limit' as const, recovery: 'automatic_retry' as const,
+    source: 'worker' as const, sourceId: 'run_codex',
+    executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
+    detectedAt: now, retryAt,
+  };
+  recordCapacityBackoff(doc, wait);
+
+  const degraded = capacityPresentation(doc, now);
+  assert.equal(degraded.blocking, undefined);
+  assert.match(degraded.details.join('\n'), /worker OpenAI gpt-5\.6-sol rate limited/);
+
+  recordCapacityBackoff(doc, {
+    ...wait, sourceId: 'run_general', executor: 'local-sdk', provider: 'anthropic', model: 'sonnet',
+  });
+  assert.match(capacityPresentation(doc, now).blocking!.summary, /^worker /);
+});
+
 test('a block says whether recovery is a persons move or a timers', () => {
   const previousFallback = process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
   process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = process.env.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5';

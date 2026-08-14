@@ -353,6 +353,8 @@ export async function runCoordinatorPass(
           objective: z.string(),
           briefing: z.string().describe('complete self-contained brief for the worker'),
           kind: z.enum(['work', 'action']),
+          execution_profile: z.enum(['general', 'bounded-code-repair', 'evidence-synthesis', 'ui-build']).optional().describe('Typed capability profile for kind "work". Use bounded-code-repair only for a small, well-specified code fix with deterministic verification; use evidence-synthesis for source-grounded analysis; use ui-build for implementation whose acceptance depends on rendered UI quality. Omit for general work. This declares requirements, never a provider or model.'),
+          input_modalities: z.array(z.enum(['text', 'image'])).min(1).optional().describe('Input forms the worker must understand. Omit for text-only work; include image only when the declared inputs contain an image the worker must inspect.'),
           acceptance_criteria: z.array(z.string()).min(1),
           depends_on: z.array(z.string()).optional(),
           read_dirs: z.array(z.string()).optional().describe('absolute project/source directories made available to the regular worker; the FIRST becomes its cwd and therefore decides which repository\'s own agent instructions, settings, and MCP servers apply to the session — for any repo-touching work, list the target repo (or its worktree) first. Omitted entirely, the worker starts in the workstream\'s neutral workspace directory with no repo context. (legacy field name retained for stored-state compatibility); only directories the workstream objective or human steering has named'),
@@ -389,6 +391,12 @@ export async function runCoordinatorPass(
               objective: a.objective,
               briefing: a.briefing,
               kind: a.kind,
+              ...(a.kind === 'work' ? {
+                executionRequirements: {
+                  profile: a.execution_profile ?? 'general',
+                  modalities: a.input_modalities ?? ['text'],
+                },
+              } : {}),
               ...(a.read_dirs?.length ? { readDirs: a.read_dirs } : {}),
               ...(a.kind === 'action'
                 ? { exec: { cwd: a.exec_cwd!, verify: a.exec_verify!, ask: a.approval_ask!.trim(), ...(a.exec_run ? { run: a.exec_run } : {}) } }

@@ -18,9 +18,10 @@ function grade(overrides: Partial<EvalGrade> = {}): EvalGrade {
 
 function makeResult(overrides: Partial<EvalCaseResult> = {}): EvalCaseResult {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     suiteRunId: 'suite-1',
     caseId: 'code-repair',
+    caseVersion: 1,
     repetition: 1,
     target: { executor: 'codex-sdk', model: 'test-model', label: 'codex-sdk:test-model' },
     startedAt: '2026-08-12T00:00:00.000Z',
@@ -117,21 +118,24 @@ test('a duplicate batch never creates the ledger file just to record a no-op', (
   }
 });
 
-test('aggregation groups by executor:model and case with null-safe score and cost', () => {
+test('aggregation groups by cohort, executor:model, harness version, and case version with grade pass vectors', () => {
   const group = [
     makeResult({
       repetition: 1,
       durationMs: 1_000,
       endedAt: '2026-08-10T00:00:01.000Z',
       execution: costOnlyExecution(0.01),
-      grades: [grade({ score: 1 }), grade({ score: null })],
+      grades: [
+        grade({ id: 'durability', score: null }),
+        grade({ id: 'accuracy', hardGate: false, score: 1 }),
+      ],
     }),
     makeResult({
       repetition: 2,
       durationMs: 3_000,
       endedAt: '2026-08-12T00:00:01.000Z',
       execution: costOnlyExecution(null),
-      grades: [grade({ score: null })], // no scored grades: excluded from the mean, never zero
+      grades: [grade({ id: 'durability', score: null })], // missing accuracy stays visible through its 1/3 vector
     }),
     makeResult({
       repetition: 3,
@@ -139,7 +143,10 @@ test('aggregation groups by executor:model and case with null-safe score and cos
       endedAt: '2026-08-11T00:00:01.000Z',
       execution: costOnlyExecution(0.02),
       passedHardGates: false,
-      grades: [grade({ score: 0.5, passed: false })],
+      grades: [
+        grade({ id: 'durability', score: null, passed: false }),
+        grade({ id: 'accuracy', hardGate: false, score: 0.5, passed: false }),
+      ],
     }),
   ];
   const other = makeResult({
@@ -152,9 +159,16 @@ test('aggregation groups by executor:model and case with null-safe score and cos
   assert.equal(rows.length, 2);
   const [claude, codex] = rows;
   assert.equal(codex!.target, 'codex-sdk:test-model');
+  assert.equal(codex!.suiteRunId, 'suite-1');
+  assert.equal(codex!.harnessVersion, 'fake');
   assert.equal(codex!.caseId, 'code-repair');
+  assert.equal(codex!.caseVersion, 1);
   assert.equal(codex!.runs, 3);
   assert.equal(codex!.hardGatePasses, 2);
+  assert.deepEqual(codex!.gradePasses, [
+    { id: 'durability', hardGate: true, passes: 2, runs: 3 },
+    { id: 'accuracy', hardGate: false, passes: 1, runs: 3 },
+  ]);
   assert.equal(codex!.meanScore, 0.75); // mean of per-run scores 1 and 0.5; the null-score run is excluded
   assert.equal(codex!.medianDurationMs, 2_000);
   assert.equal(codex!.knownCostUsd, 0.01 + 0.02);
@@ -165,6 +179,42 @@ test('aggregation groups by executor:model and case with null-safe score and cos
   assert.equal(claude!.knownCostUsd, null);
 });
 
+test('a failed cohort and a clean rerun remain separate evidence', () => {
+  const failed = makeResult({ suiteRunId: 'failed-environment', passedHardGates: false });
+  const clean = makeResult({ suiteRunId: 'clean-host', passedHardGates: true });
+  const rows = aggregateLedger([failed, clean]);
+  assert.deepEqual(rows.map((row) => ({
+    suiteRunId: row.suiteRunId,
+    passes: row.hardGatePasses,
+  })), [
+    { suiteRunId: 'clean-host', passes: 1 },
+    { suiteRunId: 'failed-environment', passes: 0 },
+  ]);
+});
+
+test('schema 1 rows remain readable as case version 0 in the unknown harness epoch', () => {
+  const legacy = makeResult({
+    schemaVersion: 1,
+    caseVersion: undefined,
+    suiteRunId: 'legacy-suite',
+    execution: costOnlyExecution(0.01),
+  });
+  const current = makeResult({
+    suiteRunId: 'current-suite',
+    execution: costOnlyExecution(0.01),
+  });
+
+  const rows = aggregateLedger([legacy, current]);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(
+    rows.map((row) => ({ harnessVersion: row.harnessVersion, caseVersion: row.caseVersion })),
+    [
+      { harnessVersion: 'fake', caseVersion: 1 },
+      { harnessVersion: 'unknown', caseVersion: 0 },
+    ],
+  );
+});
+
 test('the history table marks unknown costs and never renders a null as zero', () => {
   const rows = aggregateLedger([
     makeResult({ execution: costOnlyExecution(0.05) }),
@@ -173,6 +223,8 @@ test('the history table marks unknown costs and never renders a null as zero', (
   ]);
   const table = renderLedgerHistory(rows);
   assert.match(table, /\$0\.0500 \(\+unknown\)/);
+  assert.match(table, /H:check=2\/2/);
+  assert.match(table, /code-repair@v1/);
   assert.match(table, /—/);
   assert.doesNotMatch(table, /\$0\.0000/);
   assert.match(renderLedgerHistory([]), /ledger is empty/i);
