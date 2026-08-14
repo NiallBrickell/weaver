@@ -20,14 +20,17 @@ The candidates are:
 - `codex-sdk`: the official TypeScript SDK, one fresh subscription-backed thread per assignment, with
   `workspace-write` and `approvalPolicy: never`;
 - `opencode`: the current OpenCode SDK and local server, one fresh server and session per
-  assignment; and
+  assignment;
 - `openhands`: the pinned official OpenHands Agent Server OCI image, one fresh container and
-  conversation per assignment.
+  conversation per assignment;
+- `pi`: the installed Pi CLI in invocation-local RPC mode with `--no-session`; and
+- `prime-agent`: the installed Prime Agent CLI in invocation-local RPC mode with `--no-session`,
+  never its goals, autonomous loop, schedules, or daemon.
 
 The harness wiring lives under [`src/evals/`](../src/evals/), but production runtimes live under
 [`src/executor/`](../src/executor/). Codex and OpenHands eval adapters are thin wrappers over those
-production classes, so the bakeoff exercises the exact code real workers run. OpenCode remains
-eval-only. An eval result never mutates `WEAVER_EXECUTOR` or a routing commitment.
+production classes, so the bakeoff exercises the exact code real workers run. OpenCode, Pi, and
+Prime remain eval-only. An eval result never mutates `WEAVER_EXECUTOR` or a routing commitment.
 
 ## What is being tested
 
@@ -98,6 +101,8 @@ Run one or more explicit targets:
 yarn eval:harness \
   --target codex-sdk=gpt-5.6-sol \
   --target opencode=openrouter/moonshotai/kimi-k3 \
+  --target pi=openrouter/moonshotai/kimi-k3 \
+  --target prime-agent=openrouter/z-ai/glm-5 \
   --target opencode=openrouter/z-ai/glm-5 \
   --repeat 3
 ```
@@ -105,6 +110,24 @@ yarn eval:harness \
 OpenCode uses its normal provider authentication; run `opencode auth login` once for the selected
 provider. The Codex SDK uses the existing Codex login. The Claude
 baseline uses the existing Claude Code login.
+
+Pi and Prime require an explicit `provider/model` target. Each run gets a temporary empty harness
+home, so personal Pi/Prime login files and configuration are never exposed to model tools. Store
+the selected provider key with `weaver secret set NAME --executor`; the adapter removes every other
+known provider credential from the child environment and injects only the selected provider's
+value. All executor-secret values, the per-run submission bearer, and its
+URL are scrubbed from tool arguments, replies, submissions, and telemetry errors.
+
+Both adapters launch a new RPC subprocess with `--no-session` for every case, disable automatic
+extension/skill/prompt/theme/context discovery, and explicitly load Weaver's one submission
+extension. That extension reaches only two fixed authenticated localhost routes backed by the
+current run's `SubmitSurface`. Closing a case closes the RPC process and the bridge. Prime's public
+CLI normally delegates RPC to its daemon, so Weaver starts the public embedding entrypoint inside
+the child with a process-local no-op extension factory, which deliberately selects Prime's
+in-process path without adding a tool or state. Prime's goal, autonomous, schedule, daemon,
+continue, resume, and fork surfaces are never invoked; nothing from them is read as durable
+Workstream state, and the Prime RPC session identifier is omitted from worker outcomes and eval
+telemetry.
 
 The local OpenHands target needs a Docker-compatible runtime (OrbStack on macOS) and an executor-only provider key:
 
@@ -248,18 +271,18 @@ Explicit OpenHands trials remain available in the meantime.
 ## What this does not prove yet
 
 Local Agent Server isolation means one fresh OpenHands container with only the evaluation workspace
-mounted. `host-process` means the Codex, OpenCode, or Claude process relies on the environment that
+mounted. `host-process` means the Codex, OpenCode, Pi, Prime, or Claude process relies on the environment that
 launched Weaver. Neither label is a claim of production-grade hostile or multi-tenant containment.
 The telemetry already carries a third `managed-sandbox` isolation value
 ([`src/evals/types.ts`](../src/evals/types.ts)) reserved for the managed-runtime trials that a real
 remote fleet would run on; no candidate reports it yet. The `confinement` case now measures whether a
 candidate *behaves* as if confined, but a passing host-process run is behavioural, not enforced.
 A managed-runtime target still needs to report `managed-sandbox` and prove the boundary
-structurally. Supervised actions likewise remain a scope-widening gate for Codex/OpenHands, not a
+structurally. Supervised actions likewise remain a scope-widening gate for Codex/OpenHands/Pi/Prime, not a
 reason to pretend ordinary work is unsupported.
 
 The important architectural finding so far is that task capability and action authority remain
-orthogonal. Codex and OpenHands production executors (and the OpenCode eval adapter) support
+orthogonal. Codex and OpenHands production executors (and the OpenCode, Pi, and Prime eval adapters) support
 ordinary work, but reject action assignments before launch because they do not yet expose Weaver's live Pilot
 supervision contract. Fail-closed is an honest missing capability; silently allowing the action
 would invalidate the bakeoff.
@@ -295,6 +318,21 @@ would invalidate the bakeoff.
 - OpenCode's official server helper inherits raw `process.env` and its `close()` is not an awaited
   process-exit receipt. The eval adapter fails closed when that inheritance would reintroduce
   credentials Weaver stripped; production promotion still needs an observed subprocess-exit test.
+- Pi and Prime share extension and RPC concepts but not durable semantics. The adapter uses their
+  JSONL RPC protocol only as a disposable process-control channel, records the provider/model from
+  the completed assistant message plus the installed CLI version, and then destroys that channel.
+  Prime's richer resident/goal features would duplicate and weaken the Workstream layer if resumed.
+- Pi and Prime are host processes, not credential sandboxes. Their temporary home prevents access
+  to personal harness logins and the adapter removes unrelated provider keys, but the one selected
+  key is necessarily present in the child environment and therefore reachable by native shell or
+  IPython tools. Run these candidates only against the frozen trusted eval corpus. Production
+  promotion requires a provider proxy or an isolated runtime that keeps the durable key outside
+  the model tool process.
+- Prime Agent 0.7.2's ordinary CLI delegates even `--mode rpc --no-session` to its daemon. The
+  public `main(args, { extensionFactories })` embedding API deliberately stays in-process when a
+  process-local factory is present. Weaver starts that entrypoint in a new child with a no-op
+  factory and verifies it reports no active goal. Launching `prime-agent --mode rpc` directly would
+  violate the disposable boundary even though session persistence is disabled.
 - A local quality run is not a sandbox proof. The OpenHands adapter invokes the maintained Agent
   Server image and container lifecycle; it does not implement a container runtime or filesystem jail in
   Weaver. Agent Server persistence is directed to container-only `/tmp` paths so its own traces do

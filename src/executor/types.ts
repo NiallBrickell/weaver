@@ -152,6 +152,9 @@ export interface ExecutorUsage {
  */
 export interface ExecutorTelemetry {
   executor: string;
+  /** Explicit billing/capacity domain requested by multi-provider harnesses.
+   * Older single-provider records omit it; modelRequested remains required. */
+  providerRequested?: string | null;
   modelRequested: string;
   providerResolved: string | null;
   modelResolved: string | null;

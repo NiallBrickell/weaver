@@ -85,6 +85,11 @@ Cross-executor automatic preference remains closed until Weaver stores that
 execution policy durably with the Workstream. An environment-only switch would
 let configuration skew turn model choice into a Postgres tick-lock race.
 
+Pi and Prime Agent are available only in the harness-eval vocabulary. They are
+not accepted values for `WEAVER_EXECUTOR`, cannot coordinate a Workstream, and
+cannot run actions. Their fresh RPC adapters must first pass a complete reviewed
+cohort before any separate production-promotion change is considered.
+
 ## Running locally with Codex
 
 Codex can fill both disposable seats without using Claude-plan capacity for

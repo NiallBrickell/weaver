@@ -9,6 +9,8 @@ import { ClaudeSdkEvalExecutor } from './executors/claude.js';
 import { CodexEvalExecutor } from './executors/codex.js';
 import { OpenCodeEvalExecutor } from './executors/openCode.js';
 import { OpenHandsEvalExecutor } from './executors/openHands.js';
+import { PiEvalExecutor } from './executors/pi.js';
+import { PrimeAgentEvalExecutor } from './executors/primeAgent.js';
 import { loadExecutorSecrets } from '../secrets.js';
 import type {
   EvalCaseResult,
@@ -108,6 +110,8 @@ export function createEvalExecutor(target: EvalTarget): EvalExecutor {
       const executorSecrets = loadExecutorSecrets();
       return new OpenHandsEvalExecutor({ loadExecutorSecrets: () => executorSecrets });
     }
+    case 'pi': return new PiEvalExecutor();
+    case 'prime-agent': return new PrimeAgentEvalExecutor();
   }
 }
 
