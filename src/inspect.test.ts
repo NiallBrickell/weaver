@@ -12,7 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { runInspect, renderOverviewHtml, renderWorkstreamHtml, passIntegrityWarnings } from './inspect.js';
+import { runInspect, renderOverviewHtml, renderWorkstreamHtml, renderLearnedHtml, passIntegrityWarnings } from './inspect.js';
 import { inspectViewedPath, readInspectViewed, writeInspectViewed } from './inspectViewed.js';
 import type { InspectViewed } from './inspectViewed.js';
 import type { PolicyRecord } from './policies.js';
@@ -193,10 +193,10 @@ test('inspect on a synthetic doc renders lineage, adoption, actions, and interve
   assert.match(html, /asg_act1 approved by human/);
 });
 
-test('overview renders all workstreams and the global policy store; empty sections are honest', async () => {
+test('overview renders all workstreams and links the policy store on its own page; empty sections are honest', async () => {
   await makeWorkstream('ws-one');
   await makeWorkstream('ws-two');
-  const pol = await proposePolicy({
+  await proposePolicy({
     statement: 'Always dry-run destructive commands first',
     tags: ['ops'],
     effectKind: 'advisory',
@@ -211,13 +211,14 @@ test('overview renders all workstreams and the global policy store; empty sectio
   const html = fs.readFileSync(out, 'utf8');
   assert.match(html, /ws-one/);
   assert.match(html, /ws-two/);
-  // A brand-new policy nothing has proven yet is on the page as a statement in
-  // the collapsed group, not as a card — the fleet page must stay readable.
-  assert.ok(html.includes('Always dry-run destructive commands first'));
-  assert.match(html, /Shadow, unproven \(1\)/);
-  assert.ok(!html.includes(pol.id), 'an unproven shadow policy renders as a line, not a card');
+  // The store is a library, not status: the overview links it and carries none
+  // of its prose — that wall is what made the fleet page unreadable.
+  assert.ok(!html.includes('Always dry-run destructive commands first'));
+  assert.match(html, /href="learned\.html">Learned <span class="nav-count">1<\/span>/);
+  const learned = fs.readFileSync(path.join(weaverHome(), 'learned.html'), 'utf8');
+  assert.ok(learned.includes('Always dry-run destructive commands first'));
+  assert.match(learned, /Shadow, unproven \(1\)/);
   assert.match(html, /href="printouts\/index\.html"[^>]*>Printouts/);
-  assert.match(html, /Browse fleet printouts/);
   const printoutHub = path.join(weaverHome(), 'printouts', 'index.html');
   assert.ok(fs.existsSync(printoutHub));
   assert.match(fs.readFileSync(printoutHub, 'utf8'), /No printout has been opened yet/);
@@ -230,13 +231,12 @@ test('overview renders all workstreams and the global policy store; empty sectio
   assert.match(wsHtml, /No deliverables produced yet/);
   assert.match(wsHtml, /No real-world actions/);
   assert.match(wsHtml, /href="\.\.\/printouts\/index\.html#ws-one"[^>]*>Printouts/);
-  assert.match(wsHtml, /Browse this workstream’s printouts/);
 
-  // No workstreams at all is still an honest page.
+  // No workstreams at all is still an honest page, and so is an empty store.
   freshHome();
   const emptyHtml = renderOverviewHtml([], (await loadPolicies()).policies);
   assert.match(emptyHtml, /No workstreams under this WEAVER_HOME/);
-  assert.match(emptyHtml, /No learned policies/);
+  assert.match(renderLearnedHtml([]), /No learned policies/);
 });
 
 test('rendered HTML is redacted: a known secret value never reaches the file', async () => {
@@ -344,12 +344,15 @@ function evidenceFixture(workstreamSlug: string, at = '2026-02-01T00:00:00.000Z'
   return { workstreamSlug, passId: 'pass_e', note: 'held up', interventionFree: true, at };
 }
 
-test('the policy store groups by what the fleet knows: proven policies get cards, unproven shadow gets one lines', () => {
+test('the policy store is rows, not prose: one line per policy, the record in the fold, long tails collapsed', () => {
   const active = policyFixture({
     id: 'pol_active',
     statement: 'Confirm CI is green before merging',
     status: 'active',
-    evidence: [evidenceFixture('ws-a'), evidenceFixture('ws-b')],
+    evidence: [
+      evidenceFixture('ws-a'),
+      { workstreamSlug: 'ws-b', passId: 'pass_e', note: 'needed a human save', interventionFree: false, at: '2026-02-02T00:00:00.000Z' },
+    ],
   });
   const provenShadow = policyFixture({
     id: 'pol_proven',
@@ -363,17 +366,21 @@ test('the policy store groups by what the fleet knows: proven policies get cards
     status: 'superseded',
     supersededBy: 'pol_active',
   });
-  const html = renderOverviewHtml([], [unproven, retired, provenShadow, active]);
+  const html = renderLearnedHtml([unproven, retired, provenShadow, active]);
 
   // The header reconciles with the groups below it, computed not asserted-by-hand.
   assert.match(html, /1 active · 2 shadow \(2 unproven\) · 1 superseded/);
   assert.match(html, /4 advisory/);
 
-  // Proven policies keep their full cards; the unproven one has none at all.
-  assert.equal(html.match(/class="card policy/g)?.length, 2, 'the active one and the evidenced shadow one only');
+  // Every policy is exactly one collapsed row; nothing renders as an open card.
+  assert.equal(html.match(/class="row policy"/g)?.length, 4, 'one row per policy, all four');
   assert.ok(html.includes('pol_active'));
-  assert.ok(html.includes('pol_proven'));
-  assert.ok(!html.includes('pol_unproven'), 'a one-liner carries no id — the card is what carries one');
+  assert.ok(html.includes('pol_unproven'), 'the fold keeps the full record, id included');
+
+  // The row's summary tallies the evidence; the narrative folds one level down.
+  assert.match(html, /1 clean<\/span> · <span class="warn">1 intervened/);
+  assert.match(html, /<details class="evd"><summary>[^<]*<span class="ok">✓ intervention-free<\/span> · ws-a/);
+  assert.ok(html.indexOf('held up') > html.indexOf('✓ intervention-free'), 'the narrative sits behind the verdict, not beside it');
 
   // Active is rendered apart from, and ahead of, the shadow groups.
   assert.ok(html.indexOf('Active (1)') < html.indexOf('Shadow, with evidence (1)'));
@@ -384,12 +391,12 @@ test('the policy store groups by what the fleet knows: proven policies get cards
   assert.ok(html.indexOf('Shadow, unproven (1)') < html.indexOf('Name the dataset a read is for'));
   assert.match(html, /<details><summary>Shadow, unproven \(1\)<\/summary>/);
 
-  // Superseded keeps its lineage, collapsed and one line each.
+  // Superseded keeps its lineage, collapsed.
   assert.match(html, /<details><summary>Superseded \(1\)<\/summary>/);
   assert.ok(html.includes('superseded by <code>pol_active</code>'));
 
   // Contested policies are their own group, whatever their status.
-  const contestedHtml = renderOverviewHtml([], [
+  const contestedHtml = renderLearnedHtml([
     policyFixture({
       id: 'pol_contested',
       statement: 'A rule a human pushed back on',
@@ -441,7 +448,7 @@ test('a workstream page shows the policies that shaped IT, not everything sharin
   assert.ok(html.includes('pol_applied'), 'cited by a decision here');
   assert.ok(!html.includes('pol_tagonly'), 'a shared tag is not evidence this stream was shaped by it');
   // The wider, tag-scoped store stays one click away, with its real total.
-  assert.match(html, /href="\.\.\/inspect\.html#policies">Full policy store \(4\)/);
+  assert.match(html, /href="\.\.\/learned\.html">Full policy store \(4\)/);
 
   // A stream nothing has shaped yet says so, rather than borrowing the fleet's.
   await makeWorkstream('untouched-ws');
@@ -672,6 +679,33 @@ test('a long decision history answers with the standing course first; the graph 
   });
   const short = renderWorkstreamHtml(await load('short-lineage-ws'), []);
   assert.ok(!short.includes('Full lineage graph'), 'a small graph never folds');
+});
+
+test('deliverables read newest first and fold after a screenful, complete', async () => {
+  await makeWorkstream('dels-ws');
+  await arrive('dels-ws', (d) => {
+    for (let i = 0; i < 12; i++) {
+      d.deliverables.push({
+        id: `del_${i}`,
+        title: `Evidence ${i}`,
+        kind: 'document',
+        path: `a${i}.md`,
+        contentHash: `hash${i}`,
+        producedByAssignment: `asg_${i}`,
+        createdAtVirtual: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(),
+        adopted: {
+          contentHash: `hash${i}`,
+          passId: 'pass_1',
+          atVirtual: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(),
+        },
+      });
+    }
+  });
+  const html = renderWorkstreamHtml(await load('dels-ws'), []);
+  assert.match(html, /Older adopted \(2\)/);
+  assert.ok(html.includes('del_0'), 'the fold keeps the oldest rows, nothing truncated away');
+  assert.ok(html.indexOf('del_11') < html.indexOf('del_9'), 'newest adopted first');
+  assert.ok(html.indexOf('Older adopted (2)') < html.indexOf('del_1</code>'), 'the two oldest sit inside the fold');
 });
 
 test('the actions audit keeps motion in the open and folds settled history after a screenful', async () => {
