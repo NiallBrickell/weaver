@@ -17,6 +17,7 @@ import type {
   PrintoutChange,
   PrintoutFieldDelta,
   PrintoutMutationReceipt,
+  JsonValue,
   WorkstreamDoc,
 } from './types.js';
 import { executionPosition, isLegacyDollarBudgetAttention } from './executionSafety.js';
@@ -35,7 +36,7 @@ import {
 } from './printoutJournal.js';
 import { loadAllSecrets, loadSecrets, redactSecrets } from './secrets.js';
 import { listWorkstreams, load, printoutJournalDir, workstreamDir } from './store.js';
-import type { TailEvent } from './tail.js';
+import { withoutSdkEstimate, type TailEvent } from './tail.js';
 
 export interface WorkstreamPrintout {
   slug: string;
@@ -90,7 +91,7 @@ function readTailFile(file: string): TailEvent[] {
   try {
     return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).flatMap((line) => {
       try {
-        const event = JSON.parse(line) as TailEvent;
+        const event = withoutSdkEstimate(JSON.parse(line) as TailEvent);
         return event?.at && event?.ref && event?.kind ? [event] : [];
       } catch { return []; }
     });
@@ -207,7 +208,7 @@ function currentBoundary(doc: WorkstreamDoc): string[] {
       `- Coordinator conclusion account (informational): ${flat(doc.workstream.conclusion.summary)}`,
       `- Typed completion evidence IDs (validated at conclusion): ${doc.workstream.conclusion.evidenceIds.join(', ')}`,
     ] : []),
-    `- Diagnostic activity: ${doc.spend.coordinatorPasses} coordinator passes · $${doc.spend.totalCostUsd.toFixed(3)} SDK estimate · ${doc.spend.humanInterventions ?? 0} human interventions`,
+    `- Diagnostic activity: ${doc.spend.coordinatorPasses} coordinator passes · ${doc.spend.humanInterventions ?? 0} human interventions`,
     `- Provider backoffs: ${doc.capacity ? Object.values(doc.capacity.byModel).map((entry) => `${entry.wait.provider ?? 'unknown provider'} via ${entry.wait.executor ?? 'legacy executor'} · ${entry.wait.model} ${entry.wait.kind}, retry ${entry.wait.retryAt}`).join('; ') : 'none recorded'}`,
     `- Standing course: ${standing.length ? standing.map((decision) => `${decision.id} “${flat(decision.title)}”`).join('; ') : 'none recorded'}`,
     `- Open needs-you items: ${open.length ? open.map((item) => `${item.id} ${flat(item.summary)}`).join('; ') : 'none'}`,
@@ -219,6 +220,48 @@ function currentBoundary(doc: WorkstreamDoc): string[] {
 function displayValue(value: unknown): string {
   if (value === undefined) return 'absent';
   return flat(JSON.stringify(value));
+}
+
+const SDK_COST_KEYS = new Set(['costUsd', 'totalCostUsd', 'maxCostUsd']);
+
+function withoutSdkCost(value: JsonValue | undefined): JsonValue | undefined {
+  if (value === undefined || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((item) => withoutSdkCost(item) as JsonValue);
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !SDK_COST_KEYS.has(key))
+      .map(([key, item]) => [key, withoutSdkCost(item) as JsonValue]),
+  );
+}
+
+function visibleFieldDelta(delta: PrintoutFieldDelta): PrintoutFieldDelta | undefined {
+  const key = delta.path.split('/').at(-1);
+  if (key && SDK_COST_KEYS.has(key)) return undefined;
+  return {
+    path: delta.path,
+    ...(delta.before !== undefined ? { before: withoutSdkCost(delta.before) } : {}),
+    ...(delta.after !== undefined ? { after: withoutSdkCost(delta.after) } : {}),
+  };
+}
+
+function visibleChange(change: PrintoutChange): PrintoutChange | undefined {
+  const fields = change.fields.flatMap((delta) => {
+    const visible = visibleFieldDelta(delta);
+    return visible ? [visible] : [];
+  });
+  return fields.length ? { ...change, fields } : undefined;
+}
+
+function visibleReceipts(receipts: PrintoutMutationReceipt[]): PrintoutMutationReceipt[] {
+  return receipts
+    .map((receipt) => ({
+      ...receipt,
+      changes: receipt.changes.flatMap((change) => {
+        const visible = visibleChange(change);
+        return visible ? [visible] : [];
+      }),
+    }))
+    .filter((receipt) => receipt.changes.length || receipt.events.length);
 }
 
 function fieldDelta(delta: PrintoutFieldDelta): string {
@@ -255,17 +298,18 @@ export function renderWorkstreamPrintout(
   previous: { throughRevision: number; through: string } | undefined,
   missing: number[],
 ): string {
+  const renderedReceipts = visibleReceipts(receipts);
   const currentFallback = missing.length > 0;
   const legacyBaseline = !previous && currentFallback;
-  const assignments = currentChanged(doc.assignments, receipts, 'assignment', currentFallback);
+  const assignments = currentChanged(doc.assignments, renderedReceipts, 'assignment', currentFallback);
   const actionValues = assignments.filter((assignment) => assignment.kind === 'action');
   const workValues = assignments.filter((assignment) => assignment.kind !== 'action');
-  const deliverables = currentChanged(doc.deliverables, receipts, 'deliverable', currentFallback);
-  const decisions = currentChanged(doc.decisions, receipts, 'decision', currentFallback);
-  const interactions = currentChanged(doc.interactions, receipts, 'interaction', currentFallback);
-  const observations = currentChanged(doc.observations, receipts, 'observation', currentFallback);
-  const passes = currentChanged(doc.passes, receipts, 'pass', currentFallback);
-  const substantive = receipts.some((receipt) => receipt.changes.length || receipt.events.length) || observed.length || currentFallback;
+  const deliverables = currentChanged(doc.deliverables, renderedReceipts, 'deliverable', currentFallback);
+  const decisions = currentChanged(doc.decisions, renderedReceipts, 'decision', currentFallback);
+  const interactions = currentChanged(doc.interactions, renderedReceipts, 'interaction', currentFallback);
+  const observations = currentChanged(doc.observations, renderedReceipts, 'observation', currentFallback);
+  const passes = currentChanged(doc.passes, renderedReceipts, 'pass', currentFallback);
+  const substantive = renderedReceipts.some((receipt) => receipt.changes.length || receipt.events.length) || observed.length || currentFallback;
   const out = [
     `# Weaver printout — ${doc.workstream.title} (${doc.workstream.slug})`,
     `Period: ${previous ? `after ${previous.through}` : 'first printout'} through ${through}`,
@@ -281,8 +325,8 @@ export function renderWorkstreamPrintout(
     out.push(
       '',
       '## Current typed snapshot (gap fallback)',
-      'This is the complete current record, not a reconstruction of the missing intermediate revisions.',
-      ...block(JSON.stringify(doc, null, 2)),
+      'This is the current organizational record, not a reconstruction of the missing intermediate revisions.',
+      ...block(JSON.stringify(withoutSdkCost(doc as unknown as JsonValue), null, 2)),
     );
   }
   if (!substantive) {
@@ -302,10 +346,10 @@ export function renderWorkstreamPrintout(
     'This rotating trace can show tools and results that were still available. Only typed adoption and deterministic readback prove outcomes.',
     ...observed.map((event) => `- ${event.at} ${event.source} ${event.ref}: ${event.detail}`),
   );
-  if (receipts.length) out.push(
+  if (renderedReceipts.length) out.push(
     '',
-    '## Exact typed mutation timeline',
-    ...receipts.flatMap((receipt) => [
+    '## Exact organizational mutation timeline',
+    ...renderedReceipts.flatMap((receipt) => [
       `- revision ${receipt.revision} at ${receipt.at}`,
       ...receipt.changes.map((change) => `  ${describeChange(change)}`),
       ...receipt.events.map((event) => `  Recorded context [${event.type}]: ${flat(event.summary)}`),

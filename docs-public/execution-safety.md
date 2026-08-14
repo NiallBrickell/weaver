@@ -25,6 +25,6 @@ This complements the existing per-run and per-tick bounds: worker/coordinator tu
 
 ## Billing remains the provider's job
 
-Weaver retains coordinator-pass counts and SDK-reported dollar estimates in detailed records and stats as diagnostic telemetry. They do not gate execution and do not represent a bill, a balance, or remaining plan usage. If an executor uses API credits, configure the real spending limit with that model provider. Weaver never enables paid continuation or changes provider billing controls.
+Weaver does not present SDK-reported dollar estimates: they are not a bill, a balance, or remaining plan usage. Old documents retain their stored field for backward compatibility, but it neither appears in operator views nor gates execution. If an executor uses API credits, configure the real spending limit with that model provider. Weaver never enables paid continuation or changes provider billing controls.
 
 Older Workstream documents remain readable. Their historical lifetime cap fields are ignored for eligibility, and old dollar-exhaustion cards are retired automatically without counting as a human intervention. Old CLI, HTTP, or coordinator inputs that attempt to set a lifetime pass/dollar cap fail explicitly instead of pretending the limit still works.

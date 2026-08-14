@@ -712,9 +712,9 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
       // wait announces itself immediately, a repeat press is answered rather
       // than doubling the work, and the generator yields between workstreams
       // so this toast can actually paint.
-      if (inspectOpening.current) { setToast('knowledge pages are already generating…'); return; }
+      if (inspectOpening.current) { setToast('work board is already generating…'); return; }
       inspectOpening.current = true;
-      setToast(`generating knowledge pages (${selSlug ?? 'fleet'})…`);
+      setToast(`generating work board (${selSlug ?? 'fleet'})…`);
       void runInspect(selSlug)
         .then((out) => {
           if (process.platform === 'darwin') execFile('open', [out]);

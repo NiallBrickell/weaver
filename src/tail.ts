@@ -26,6 +26,12 @@ export interface TailEvent {
   detail: string;
 }
 
+/** Old tail files may contain the SDK estimate that result lines once showed. */
+export function withoutSdkEstimate(event: TailEvent): TailEvent {
+  if (event.kind !== 'result') return event;
+  return { ...event, detail: event.detail.replace(/ \(\$-?\d+(?:\.\d+)?\)$/, '') };
+}
+
 /** Rotation threshold: one overwritten `.1` generation, never unbounded growth. */
 const ROTATE_BYTES = 5 * 1024 * 1024;
 const POLL_MS = 500;
@@ -108,8 +114,8 @@ export function tailMessage(
   } else if (message.type === 'result') {
     const detail =
       message.subtype === 'success'
-        ? `${message.is_error ? 'ended with error' : 'done'} in ${message.num_turns} turns ($${message.total_cost_usd.toFixed(3)})`
-        : `${message.subtype} after ${message.num_turns} turns ($${message.total_cost_usd.toFixed(3)})`;
+        ? `${message.is_error ? 'ended with error' : 'done'} in ${message.num_turns} turns`
+        : `${message.subtype} after ${message.num_turns} turns`;
     emitTail(slug, source, ref, 'result', detail, extraSecrets);
   }
 }
@@ -128,7 +134,7 @@ function parseLines(lines: string[]): TailEvent[] {
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
-      out.push(JSON.parse(line) as TailEvent);
+      out.push(withoutSdkEstimate(JSON.parse(line) as TailEvent));
     } catch {
       // a torn or corrupt line is skipped, never fatal — this is a feed
     }

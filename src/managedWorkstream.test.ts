@@ -301,6 +301,10 @@ test('authority reaches exactly one hop — a grandparent cannot inspect or dire
   await makeWorkstream('top-hop');
   await makeManaged('top-hop', 'mid-hop');
   await makeManaged('mid-hop', 'leaf-hop');
+  await arrive('leaf-hop', (doc) => {
+    doc.spend.coordinatorPasses = 2;
+    doc.spend.totalCostUsd = 12.34;
+  });
 
   const before = await load('leaf-hop');
   await assert.rejects(
@@ -313,7 +317,8 @@ test('authority reaches exactly one hop — a grandparent cannot inspect or dire
   );
   // mid-hop, the actual direct manager, still can — proving the refusal above
   // is really about hop distance, not a broken check that refuses everyone.
-  await assert.doesNotReject(() => inspectManagedWorkstream('mid-hop', 'leaf-hop'));
+  const summary = await inspectManagedWorkstream('mid-hop', 'leaf-hop');
+  assert.deepEqual(summary.activity, { coordinatorPasses: 2 });
 
   const after = await load('leaf-hop');
   assert.equal(after.revision, before.revision);

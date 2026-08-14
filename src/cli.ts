@@ -125,7 +125,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver watch                               interactive dashboard + embedded runner; keys: ↑↓, a/x/d/s, p pause, P printout, q quit
   weaver watch --plain                       legacy read-only raw dashboard; q quits (use 'weaver printout [slug]' to catch up)
   weaver printout [slug] [--text]            open an HTML catch-up page; --text writes the plain report instead
-  weaver inspect [slug]                      knowledge inspector → self-contained HTML: decision lineage, policies, interventions, adoptions, action audit
+  weaver inspect [slug]                      visual work board → self-contained HTML: Workstreams, Assignments, evidence, and history
   weaver stats                               outcome scoreboard → self-contained HTML: interventions per adopted work product, approval split, policy evidence, per-workstream stats
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
@@ -911,7 +911,7 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
           `passes=${report.passes.length}\n`,
       );
       for (const p of report.passes) {
-        process.stdout.write(`  pass ${p.passId} [${p.outcome}] $${p.costUsd.toFixed(3)}${p.summary ? ` — ${p.summary}` : ''}\n`);
+        process.stdout.write(`  pass ${p.passId} [${p.outcome}]${p.summary ? ` — ${p.summary}` : ''}\n`);
       }
       break;
     }

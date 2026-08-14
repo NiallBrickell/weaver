@@ -95,7 +95,7 @@ export interface ManagedWorkstreamSummary {
   constraints: string[];
   tags: string[];
   executionSafety: ExecutionSafetyConfig;
-  activity: { coordinatorPasses: number; sdkCostEstimateUsd: number };
+  activity: { coordinatorPasses: number };
   openAttention: { id: string; kind: string; summary: string }[];
   conclusion?: { summary: string; evidenceIds: string[]; atVirtual: string };
   recentEvents: { type: string; summary: string; atVirtual: string }[];
@@ -127,7 +127,7 @@ export async function inspectManagedWorkstream(callingSlug: string, targetSlug: 
     constraints: ws.constraints,
     tags: ws.tags,
     executionSafety: executionSafetyConfig(ws),
-    activity: { coordinatorPasses: doc.spend.coordinatorPasses, sdkCostEstimateUsd: doc.spend.totalCostUsd },
+    activity: { coordinatorPasses: doc.spend.coordinatorPasses },
     openAttention: doc.attention
       .filter((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a))
       .map((a) => ({ id: a.id, kind: a.kind, summary: a.summary })),

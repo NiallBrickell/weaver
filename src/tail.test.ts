@@ -11,7 +11,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { emitTail, tailMessage, tailPath, type TailEvent } from './tail.js';
+import { emitTail, tailMessage, tailPath, withoutSdkEstimate, type TailEvent } from './tail.js';
 import { setSecret } from './secrets.js';
 import { createWorkstream } from './store.js';
 
@@ -124,7 +124,14 @@ test('tailMessage summarizes tool calls, prose snippets, and the result — noth
   assert.ok(events[1]!.detail.startsWith('Bash git log'));
   assert.ok(events[1]!.detail.length <= 'Bash '.length + 120);
   assert.equal(events[2]!.detail, 'Read /tmp/x.ts');
-  assert.equal(events[3]!.detail, 'done in 7 turns ($0.123)');
+  assert.equal(events[3]!.detail, 'done in 7 turns');
+});
+
+test('legacy tail result estimates are removed when read for display', () => {
+  assert.equal(
+    withoutSdkEstimate({ at: '2026-08-14T00:00:00.000Z', source: 'worker', ref: 'asg_1', kind: 'result', detail: 'done in 7 turns ($0.123)' }).detail,
+    'done in 7 turns',
+  );
 });
 
 test('ephemeral MCP credentials are redacted from the tail without entering the secret store', () => {

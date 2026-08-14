@@ -264,7 +264,7 @@ export function renderPrintoutHtml(report: PrintoutReport): string {
   const title = selected ? `${selected.title} — printout` : 'Weaver fleet printout';
   const knowledgeHref = selected ? `../../../${encodeURIComponent(selected.slug)}/inspect.html` : '../../../inspect.html';
   const body = `
-<nav class="page-nav"><a href="../../index.html">← All printouts</a><a href="${esc(knowledgeHref)}">Knowledge inspector</a></nav>
+<nav class="page-nav"><a href="../../index.html">← All printouts</a><a href="${esc(knowledgeHref)}">Work board</a></nav>
 <article class="edition"><p class="edition-date">${selected ? 'Workstream' : 'Fleet'} printout · through ${esc(formatWhen(report.through))}</p><h1 class="edition-title">${esc(selected?.title ?? 'What Weaver did since the last printout')}</h1><p class="lede">${selected ? `The complete record for ${esc(selected.slug)}` : `${report.workstreams.length} workstream${report.workstreams.length === 1 ? '' : 's'} plus global learning activity`}, frozen through ${esc(report.through)}. Everything follows in one continuous engineering document; no section is hidden.</p><div class="actions"><button id="copy-report" type="button">Copy plain-text report</button><span class="copy-status" id="copy-status" aria-live="polite"></span></div>
 ${report.workstreams.length > 1 ? `<nav class="contents" aria-label="Contents"><p class="eyebrow">In this printout</p><ol>${report.workstreams.map((workstream) => `<li><a href="#${esc(workstreamAnchor(workstream))}">${esc(workstream.title)}</a> — ${esc(workstream.status)}</li>`).join('')}${report.policies ? '<li><a href="#global-learning">Global learning activity</a></li>' : ''}</ol></nav>` : ''}
 ${report.workstreams.map((workstream) => workstreamSection(workstream, report.workstreams.length === 1)).join('\n')}
@@ -341,7 +341,7 @@ export async function renderPrintoutIndexHtml(records: PrintoutArchiveRecord[], 
   const title = (scope: string) => titles.get(scope) ?? scope;
   const ordered = [...groups.entries()].sort(([a], [b]) => a === 'fleet' ? -1 : b === 'fleet' ? 1 : title(a).localeCompare(title(b)));
   const body = `
-<nav class="page-nav"><a href="../inspect.html">← Knowledge inspector</a></nav>
+<nav class="page-nav"><a href="../inspect.html">← Work board</a></nav>
 <article class="edition"><p class="edition-date">Weaver history</p><h1 class="edition-title">Printouts</h1><p class="lede">Saved catch-up documents, newest first. They make Weaver's typed record readable without creating authority or changing workstream state.</p>
 ${ordered.length ? ordered.map(([scope, items]) => `<section class="archive-group" id="${esc(scope)}"><p class="eyebrow">${esc(scope)}</p><h2>${esc(title(scope))}</h2><ol class="archive-list">${items.map((item) => `<li><a class="archive-row" href="${esc(item.relativePath)}"><strong>${esc(formatWhen(item.through))}</strong><span>${item.workstreamCount} workstream${item.workstreamCount === 1 ? '' : 's'}</span></a></li>`).join('')}</ol></section>`).join('\n') : '<section class="archive-group"><h2>Printouts</h2><p class="empty">No printout has been opened yet. Press uppercase P in the dashboard or run weaver printout.</p></section>'}
 ${unreadable.length ? `<section class="archive-group"><h2 class="bad">Unreadable archives</h2><p class="hint">Skipped without hiding healthy printouts: ${unreadable.map((item) => `<code>${esc(item)}</code>`).join(' ')}</p></section>` : ''}</article>`;

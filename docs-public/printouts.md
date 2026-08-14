@@ -1,6 +1,6 @@
 # Printouts
 
-*A copyable account of what happened since you last checked*
+*A copyable account of what happened since the last delivered printout*
 
 A printout answers the practical catch-up question: what did Weaver investigate, produce, adopt, execute, verify, and leave unfinished since the last printout?
 
@@ -11,9 +11,9 @@ Press uppercase `P` in the default interactive `weaver watch`. It follows the cu
 - With an attention item or workstream selected, the report covers that workstream.
 - Press `↑` past the first row to select the `W E A V E R` fleet header; `P` then covers every workstream and global policy activity.
 
-Weaver freezes the report into a unique self-contained HTML file and opens it in your browser without replacing the dashboard. The page is a literal long-form engineering document: a narrow reading column, clear headings, and every selected workstream followed by its exact typed mutation timeline in ordinary document flow. There are no cards, accordions, or collapsed sections, so catching up means reading straight down rather than clicking into the record. Use **Copy plain-text report** or press uppercase `C` on the page to copy the complete underlying report. Lowercase `p` still pauses or resumes the selected workstream.
+Weaver freezes the report into a unique self-contained HTML file and opens it in your browser without replacing the dashboard. The page is a literal long-form engineering document: a narrow reading column, clear headings, and every selected workstream followed by its exact organizational mutation timeline in ordinary document flow. There are no cards, accordions, or collapsed sections, so catching up means reading straight down rather than clicking into the record. Use **Copy plain-text report** or press uppercase `C` on the page to copy the complete underlying report. Lowercase `p` still pauses or resumes the selected workstream.
 
-Every published window remains browseable from **Printouts** in the HTML knowledge inspector (`i`). The hub lives at `WEAVER_HOME/printouts/index.html`; its archives are immutable output artifacts and never become coordinator input or authority.
+Every published window remains browseable from **Catch up** in the visual work board (`i`). The hub lives at `WEAVER_HOME/printouts/index.html`; its archives are immutable output artifacts and never become coordinator input or authority. Opening or regenerating the live board does not acknowledge a window—the printout delivery boundary does.
 
 `weaver watch --plain` is the legacy read-only raw dashboard and has no `P` hotkey; use `weaver printout [slug]` alongside it.
 
@@ -27,7 +27,7 @@ weaver printout --text           # explicit raw terminal fallback
 
 ## Since the last printout
 
-Each workstream keeps an append-only sidecar receipt for every organizational revision. A receipt carries the exact typed before/after values, so eventless changes and intermediate states such as a failed readback followed by a passing one both survive. Fleet reports use the same contract for global policy imports, tagging, promotion, and supersession.
+Each workstream keeps an append-only sidecar receipt for every organizational revision. A receipt carries the exact typed before/after values, so eventless changes and intermediate states such as a failed readback followed by a passing one both survive. The operator report omits SDK dollar-estimate telemetry while preserving the organizational changes in the same receipt. Fleet reports use the same contract for global policy imports, tagging, promotion, and supersession.
 
 Preparing a report is read-only: it never bumps the Workstream revision or interrupts a coordinator. Weaver atomically publishes a unique archive and refreshes the stable hub, asks the operating system to open that immutable page, and only after a successful browser handoff acknowledges the delivered boundary outside organizational state. A failed handoff leaves the activity window pending and names the saved path; the next `P` repeats rather than losing data. `--text` uses the equivalent stdout-flush boundary. Anything arriving after the frozen revision remains for the next report. A second delivered printout with no intervening work says so plainly.
 

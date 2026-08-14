@@ -147,11 +147,10 @@ export interface FleetDay {
   autoApproved: number;
   humanApproved: number;
   passes: number;
-  costUsd: number;
 }
 
 function blank(day: string): FleetDay {
-  return { day, interventions: 0, conclusions: 0, adoptions: 0, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 0, costUsd: 0 };
+  return { day, interventions: 0, conclusions: 0, adoptions: 0, rejections: 0, autoApproved: 0, humanApproved: 0, passes: 0 };
 }
 
 /** Daily fleet activity from durable records, gap-filled up to `today`. */
@@ -179,12 +178,10 @@ export function fleetDays(docs: WorkstreamDoc[], today: string): FleetDay[] {
       }
       const ap = a.exec?.approval;
       if (ap) touch(ap.at)[ap.by === 'pilot' ? 'autoApproved' : 'humanApproved'] += 1;
-      for (const att of a.attempts) touch(att.startedAt).costUsd += att.costUsd ?? 0;
     }
     for (const p of doc.passes) {
       const row = touch(p.startedAt);
       row.passes += 1;
-      row.costUsd += p.costUsd ?? 0;
     }
   }
   if (!byDay.size) return [];
@@ -468,7 +465,6 @@ export interface WorkstreamRow {
    * outcome, not merely one with adopted work products. */
   concluded: boolean;
   passes: number;
-  costUsd: number;
   interventions: number;
   adopted: number;
   rejected: number;
@@ -496,7 +492,6 @@ export function workstreamRows(docs: WorkstreamDoc[]): WorkstreamRow[] {
         status: doc.workstream.status,
         concluded: !!doc.workstream.conclusion,
         passes: doc.spend.coordinatorPasses,
-        costUsd: doc.spend.totalCostUsd,
         interventions,
         adopted,
         rejected: doc.assignments.filter((a) => a.adoption.state === 'rejected').length,
@@ -520,7 +515,6 @@ export interface StatsPayload {
     workstreams: number;
     active: number;
     passes: number;
-    costUsd: number;
     interventions: number; // durable lifetime counters
     undated: number; // interventions without a durable timestamp
     /** Qualified typed conclusions — the SUCCESS denominator. */
@@ -535,10 +529,6 @@ export interface StatsPayload {
     interventionsPerAdopted: number | null;
     /** Week-ago value of the outcome curve (conclusion denominator, dated acts). */
     perOutcomeWeekAgo: number | null;
-    /** Total SDK-reported estimate / successful outcomes. */
-    costPerOutcome: number | null;
-    /** Leading indicator: SDK-reported estimate / adopted work products. */
-    costPerAdopted: number | null;
     passHealth: PassHealthTotals;
     reliability: WorkerReliability;
     attribution: Attribution;
@@ -556,7 +546,6 @@ export function computeStats(docs: WorkstreamDoc[], policies: PolicyRecord[], no
   const adoptions = days.reduce((n, d) => n + d.adoptions, 0);
   const successfulOutcomes = docs.filter((d) => d.workstream.conclusion).length;
   const counterInterventions = docs.reduce((n, d) => n + (d.spend.humanInterventions ?? 0), 0);
-  const costUsd = docs.reduce((n, d) => n + d.spend.totalCostUsd, 0);
   const rows = workstreamRows(docs);
   return {
     generatedAt: now.toISOString(),
@@ -576,7 +565,6 @@ export function computeStats(docs: WorkstreamDoc[], policies: PolicyRecord[], no
       workstreams: docs.length,
       active: docs.filter((d) => d.workstream.status === 'active').length,
       passes: docs.reduce((n, d) => n + d.spend.coordinatorPasses, 0),
-      costUsd,
       interventions: counterInterventions,
       undated: undatedInterventions(docs),
       successfulOutcomes,
@@ -589,8 +577,6 @@ export function computeStats(docs: WorkstreamDoc[], policies: PolicyRecord[], no
       interventionsPerOutcome: successfulOutcomes > 0 ? counterInterventions / successfulOutcomes : null,
       interventionsPerAdopted: adoptions > 0 ? counterInterventions / adoptions : null,
       perOutcomeWeekAgo: weekAgo?.ratio ?? null,
-      costPerOutcome: successfulOutcomes > 0 ? costUsd / successfulOutcomes : null,
-      costPerAdopted: adoptions > 0 ? costUsd / adoptions : null,
       passHealth: passHealthTotals(docs),
       reliability: workerReliability(docs),
       attribution: attributionSplit(docs),
@@ -1221,17 +1207,12 @@ export function renderStatsHtml(stats: StatsPayload): string {
       `<div class="delta">${rel.firstAttempt}/${rel.completed} completed first try · ${recoveryPct} retry recovery</div>`,
     ),
     tile(
-      'SDK estimate per successful outcome',
-      t.costPerOutcome == null ? '—' : `$${t.costPerOutcome.toFixed(2)}`,
-      `<div class="delta">${t.costPerAdopted == null ? '—' : `$${t.costPerAdopted.toFixed(2)}`} per adopted work product (leading indicator)</div>`,
-    ),
-    tile(
       'Coordinator pass health',
       String(ph.logicalFailure),
       `<div class="delta">logical failures · ${ph.providerBackoff} provider backoff · ${ph.conflicted} conflicted (revision check)</div>`,
     ),
     tile('Policies earned active', String(t.policiesActive), `<div class="delta">${t.policiesShadow} shadow · ${t.policiesSuperseded} superseded</div>`),
-    tile('Fleet SDK estimate', `$${t.costUsd.toFixed(0)}`, `<div class="delta">diagnostic, not provider billing · ${t.passes} passes · ${t.workstreams} workstreams (${t.active} active)</div>`),
+    tile('Coordinator passes', String(t.passes), `<div class="delta">${t.workstreams} workstreams (${t.active} active)</div>`),
   ].join('\n');
 
   const rowsHtml = stats.rows
@@ -1245,7 +1226,6 @@ export function renderStatsHtml(stats: StatsPayload): string {
 <td class="num">${r.interventions}</td>
 <td class="num">${r.perOutcome == null ? '—' : r.perOutcome.toFixed(1)}</td>
 <td class="num">${r.autoApproved}/${r.autoApproved + r.humanApproved}</td>
-<td class="num">$${r.costUsd.toFixed(2)}</td>
 </tr>`,
     )
     .join('\n');
@@ -1302,7 +1282,7 @@ ${chartSection('policies', 'Policy population', 'Every policy starts shadow (unp
 <h2>Per workstream</h2>
 <p class="hint">A workstream is a successful outcome only once it carries a qualified typed conclusion (the “Outcome” column); adopted work is a leading indicator beside it. The intervention count per adopted work product varies with task mix and required authority. The fleet trend is a prompt to investigate; this table is where to look when it moves.</p>
 <div class="scroll-x"><table>
-<thead><tr><th>Workstream</th><th>Outcome</th><th class="num">Passes</th><th class="num">Adopted work</th><th class="num">Rejected</th><th class="num">Interventions</th><th class="num">Per adoption</th><th class="num">Auto-approved</th><th class="num">SDK estimate</th></tr></thead>
+<thead><tr><th>Workstream</th><th>Outcome</th><th class="num">Passes</th><th class="num">Adopted work</th><th class="num">Rejected</th><th class="num">Interventions</th><th class="num">Per adoption</th><th class="num">Auto-approved</th></tr></thead>
 <tbody>${rowsHtml}</tbody>
 </table></div>
 </section>`

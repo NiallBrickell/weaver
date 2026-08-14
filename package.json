@@ -9,15 +9,19 @@
     "ink-text-input": "^6.0.0",
     "pg": "^8.22.0",
     "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@openai/codex-sdk": "0.147.0",
     "@opencode-ai/sdk": "1.18.15",
+    "@tailwindcss/cli": "^4.1.18",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.4",
     "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.3",
     "opencode-ai": "1.18.15",
+    "tailwindcss": "^4.1.18",
     "tsx": "^4.23.5",
     "typescript": "^5.9.0"
   },
@@ -27,6 +31,7 @@
   "license": "FSL-1.1-MIT",
   "bin": "./bin/weaver.mjs",
   "scripts": {
+    "build:ui": "tailwindcss -i src/ui/inspect/styles.css -o src/ui/inspect/tailwind.generated.css --minify",
     "eval:harness": "node --import tsx src/evals/cli.ts",
     "typecheck": "tsc --noEmit",
     "weaver": "tsx src/cli.ts",

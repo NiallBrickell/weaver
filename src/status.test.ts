@@ -108,7 +108,7 @@ function doc(wakes: Wake[]): WorkstreamDoc {
     attention: [],
     passes: [],
     events: [],
-    spend: { coordinatorPasses: 1, totalCostUsd: 0, humanInterventions: 0 },
+    spend: { coordinatorPasses: 1, totalCostUsd: 12.34, humanInterventions: 0 },
     capacity: Object.keys(capacity).length ? { state: 'backoff', byModel: capacity } : null,
     lease: null,
   };
@@ -139,6 +139,8 @@ test('legacy credit state renders the current plan-usage recovery contract', () 
   assert.match(status, /weaver capacity retry capacity-status/);
   assert.match(status, /wake at 2026-08-07T09:00: review the adopted evidence/);
   assert.match(status, /## Needs you\n  \(nothing — the workstream can proceed without you\)/);
+  assert.match(status, /Diagnostics: 1 coordinator passes · 0 human interventions/);
+  assert.doesNotMatch(status, /12\.34|SDK estimate/);
 });
 
 test('authentication failure gives the manual Claude login recovery and no token workflow', () => {
