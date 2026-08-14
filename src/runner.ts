@@ -381,6 +381,8 @@ export interface RunnerOptions {
   /** Exact substrates this process may claim. Defaults to the configured
    * seats; heterogeneous hosts opt into additional executors explicitly. */
   executorCapabilities?: ReadonlySet<string>;
+  /** Tick implementation; injectable only for deterministic runner tests. */
+  tickFn?: typeof tick;
 }
 
 /**
@@ -481,6 +483,7 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   const logError = opts.logError ?? ((l: string) => process.stderr.write(l + '\n'));
   const loadSample = opts.loadSample ?? (() => ({ load1: os.loadavg()[0]!, cores: os.cpus().length }));
   const executorCapabilities = opts.executorCapabilities ?? runnerExecutorCapabilities();
+  const tickFn = opts.tickFn ?? tick;
   // Last announced slot cap, so a throttle/recovery is logged on transition
   // only — never silently, and never once per iteration.
   let lastCap = opts.concurrency;
@@ -491,11 +494,6 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   // 19h behind a due wake while ten alphabetically-earlier streams re-took
   // all ten slots every iteration.
   const lastTickedAt = new Map<string, number>();
-  // Slot starvation guard: a tick that exceeds this is presumed hung (an SDK
-  // call that never returned); its SLOT is reclaimed so the rest of the fleet
-  // keeps moving. The stream's own tick lock still serializes it, and dead-pid
-  // /stale-attempt recovery repairs whatever the hung call abandoned.
-  const SLOT_TIMEOUT_MS = 45 * 60_000;
   let probing = false;
   let lastCredMtime = credentialsMtime();
   while (!opts.signal?.aborted) {
@@ -563,14 +561,13 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
         if (inFlight.size >= cap) break;
         inFlight.add(slug);
         lastTickedAt.set(slug, Date.now());
-        let settled = false;
-        const slotTimer = setTimeout(() => {
-          if (!settled) {
-            logError(`[run] ${slug}: tick exceeded ${SLOT_TIMEOUT_MS / 60_000}m — presumed hung; freeing its slot`);
-            inFlight.delete(slug);
-          }
-        }, SLOT_TIMEOUT_MS);
-        void tick(slug, { executorCapabilities })
+        // A concurrency slot belongs to the tick until that exact promise
+        // settles. The worker and coordinator own abortable, sleep-aware walls
+        // around the SDK calls that can hang; a second coarse timer here cannot
+        // stop the underlying tick. Reclaiming only the Set entry used to make
+        // accounting lie, allowing another tick to exceed the configured cap
+        // while the first process and its cross-process lock were still live.
+        void tickFn(slug, { executorCapabilities })
           .then((report) => {
             if (report.workersRun.length || report.passes.length || report.sendsExecuted || report.unknownsResolved) {
               log(
@@ -582,8 +579,6 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
             logError(`[run] ${slug}: ${e instanceof Error ? e.message : e}`);
           })
           .finally(() => {
-            settled = true;
-            clearTimeout(slotTimer);
             inFlight.delete(slug);
           });
       }
