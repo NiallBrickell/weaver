@@ -58,6 +58,13 @@ function assignment(
   };
 }
 
+function withoutTechnicalDetails(html: string): string {
+  return html.replace(
+    /<details[^>]*>\s*<summary[^>]*>Technical details<\/summary>[\s\S]*?<\/details>/g,
+    '',
+  );
+}
+
 beforeEach(() => freshHome());
 
 test('workstream page is a React/Tailwind assignment board over durable work', async () => {
@@ -102,11 +109,66 @@ test('workstream page is a React/Tailwind assignment board over durable work', a
   assert.match(html, /asg_working/);
   assert.match(html, /run_disposable/);
   assert.match(html, /Candidate ready for review/);
+  assert.match(html, /Proposed result/);
   assert.match(html, /Assignment archive/);
   assert.match(html, /asg_unadopted/);
   assert.match(html, /Lead with the durable outcome/);
   assert.doesNotMatch(html, /SDK estimate|totalCostUsd|~\$/);
   assert.doesNotMatch(html, /<svg|decision-data|--panel/);
+  assert.doesNotMatch(
+    withoutTechnicalDetails(html),
+    /\b(?:asg|dec|steer|pass|run|del|wake|att|int|obs|reply|pol|ws)_[a-z0-9_-]+\b/i,
+    'storage identifiers stay inside Technical details',
+  );
+});
+
+test('typed human direction is visible above timestamped current course and survives the event tail', async () => {
+  await makeWorkstream('course-clarity', 'Course clarity');
+  await arrive('course-clarity', (doc) => {
+    doc.decisions.push({
+      id: 'dec_recorded',
+      title: 'Keep the current implementation narrow',
+      rationale: 'Continue after asg_old unless steer_latest changes the course.',
+      madeBy: 'coordinator',
+      status: 'standing',
+      decidedAtVirtual: '2026-08-14T09:40:00.000Z',
+    });
+    doc.steering.push(
+      {
+        id: 'steer_read',
+        body: 'Start from the smallest honest design.',
+        by: 'niall',
+        at: '2026-08-14T09:41:00.000Z',
+        consumedByPass: 'pass_read',
+      },
+      {
+        id: 'steer_withdrawn',
+        body: 'Send this obsolete direction.',
+        by: 'niall',
+        at: '2026-08-14T09:42:00.000Z',
+        revokedAt: '2026-08-14T09:42:30.000Z',
+        revokedBy: 'niall',
+      },
+      {
+        id: 'steer_latest',
+        body: 'Step back and decide whether the extra field should exist.',
+        by: 'niall',
+        at: '2026-08-14T09:45:00.000Z',
+      },
+    );
+    doc.events = [];
+  });
+
+  const html = renderWorkstreamHtml(await load('course-clarity'), []);
+  assert.ok(html.indexOf('Your direction') < html.indexOf('Current recorded commitment'));
+  assert.match(html, /Step back and decide whether the extra field should exist/);
+  assert.match(html, /Waiting for Weaver/);
+  assert.match(html, /Read by Weaver/);
+  assert.match(html, /Withdrawn before Weaver read it/);
+  assert.match(html, /<time dateTime="2026-08-14T09:45:00.000Z"/);
+  assert.match(html, /snapshot r\d+ generated/);
+  assert.match(html, /Continue after the assignment unless the human direction changes the course/);
+  assert.doesNotMatch(withoutTechnicalDetails(html), /\b(?:asg|dec|steer|pass|run|del|wake|att|int|obs|reply|pol|ws)_[a-z0-9_-]+\b/i);
 });
 
 test('fleet page groups Workstreams by current position and folds concluded outcomes', async () => {
@@ -159,7 +221,7 @@ test('fleet page groups Workstreams by current position and folds concluded outc
   assert.match(html, />Ready</);
   assert.match(html, /Choose the launch boundary/);
   assert.match(html, /Check the provider reply/);
-  assert.match(html, /Complete asg_queued/);
+  assert.match(html, /Complete the assignment/);
   assert.match(html, /The outcome is verified/);
   assert.match(html, /data-board-search/);
   assert.doesNotMatch(html, /Since you left/);
@@ -277,7 +339,7 @@ test('a Workstream page states its next move when no human decision is pending',
     });
   });
   const html = renderWorkstreamHtml(await load('routine-position'), []);
-  assert.match(html, />Scheduled</);
+  assert.match(html, />Next check scheduled</);
   assert.match(html, />Waiting for</);
   assert.match(html, /Check the support inbox · in 1h/);
 });
@@ -339,8 +401,8 @@ test('site generation publishes all linked pages, managed relationships, and red
   const manager = fs.readFileSync(path.join(workstreamDir('manager'), 'inspect.html'), 'utf8');
   const child = fs.readFileSync(path.join(workstreamDir('child'), 'inspect.html'), 'utf8');
   assert.doesNotMatch(fleet + manager + child, /needle-secret-value/);
-  assert.match(manager, /manages 1/);
-  assert.match(child, /managed by manager/);
+  assert.match(manager, /coordinates 1 related Workstream/);
+  assert.match(child, /coordinated by manager/);
   assert.ok(!fs.existsSync(path.join(weaverHome(), 'inspect-viewed.json')), 'generation is not a viewing receipt');
 });
 
@@ -396,6 +458,6 @@ test('pass integrity warnings remain visible typed diagnostics', () => {
     ],
   } as unknown as WorkstreamDoc;
   assert.deepEqual(passIntegrityWarnings(doc), [
-    'pass_bad: completed without a summary — a clean finish always records one',
+    'pass_bad: completed without a summary — the record needs repair',
   ]);
 });

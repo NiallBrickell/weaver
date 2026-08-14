@@ -156,6 +156,36 @@ no execution has begun. Paused or scheduled work is Waiting. A Workstream can
 no longer render unscheduled while the terminal dashboard says bounded work
 exists.
 
+### Plain-language projection
+
+The primary surface names the person's position, not the schema. A fleet card
+has one **Now** sentence derived from typed attention, the active Assignment,
+or the next Wake; one timestamped **Course** line; and, when recent, the latest
+human direction or substantive typed movement. It does not show aggregate
+open/accepted/pinned counts because those are record inventory rather than a
+next move. The same acceptance boundary is named consistently: a worker offers
+a **Proposed result**, and coordinator adoption makes it a **Result accepted**
+or **Accepted work**.
+
+Storage ids (`asg_*`, `dec_*`, `pass_*`, `run_*`) remain available only under a
+closed **Technical details** disclosure. Compact prose replaces references to
+those ids with recognized nouns while preserving PR numbers, branches, issue
+numbers, and commit hashes. This is a display-only projection; it never rewrites
+stored evidence or becomes coordinator input.
+
+Human steering is projected from `WorkstreamDoc.steering`, never the bounded
+event tail. The newest unwithdrawn direction sits above the recorded course
+with its exact physical timestamp and says **Waiting for Weaver** or **Read by
+Weaver**. Read is deliberately weaker than applied: `consumedByPass` proves a
+pass received the steer, not that a particular decision implemented it.
+Withdrawn direction remains in typed history. Decisions retain their separate
+organizational timestamps, and the two clocks are never naively sorted into one
+authority timeline.
+
+The inspector is a static artifact, so every Workstream page names the source
+revision and generation time. An already-open tab does not claim to be live;
+regenerating it remains read-only and never advances the printout checkpoint.
+
 ## Implemented architecture
 
 `src/inspect.ts` is now only the store, redaction, and publication boundary.
@@ -196,3 +226,5 @@ The result is complete only when a person can point to the UI and answer:
    becoming current inventory?
 8. Can every page be understood without SDK-cost, pass-count, or session
    telemetry posing as progress?
+9. What did I most recently tell this Workstream, when, and has Weaver read it?
+10. Which recorded commitment currently controls, and when was it set?

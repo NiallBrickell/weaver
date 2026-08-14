@@ -456,7 +456,7 @@ test('status/watch/inspect render managed-by/manages as flat one-liners, never a
   assert.ok(!statusText.includes('top-mgr'));
 
   const html = renderWorkstreamHtml(leafDoc, [], managedByLeaf);
-  assert.match(html, /managed by mid-mgr/);
+  assert.match(html, /coordinated by mid-mgr/);
   assert.ok(!html.includes('top-mgr'));
 
   const view = await viewOf('leaf-child');

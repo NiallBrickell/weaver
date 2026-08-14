@@ -101,8 +101,8 @@ test('cards expose dependency acceptance and only the latest attempt', () => {
 
   const card = assignmentBoard({ assignments: [accepted, merelyCompleted, planned] }).lanes.planned[0]!;
   assert.deepEqual(card.dependencies, [
-    { id: 'asg_dep_accepted', accepted: true },
-    { id: 'asg_dep_rejected', accepted: false },
+    { id: 'asg_dep_accepted', objective: 'Objective for asg_dep_accepted', accepted: true },
+    { id: 'asg_dep_rejected', objective: 'Objective for asg_dep_rejected', accepted: false },
     { id: 'asg_missing', accepted: false },
   ]);
   assert.equal(card.attemptCount, 2);

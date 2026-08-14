@@ -2,35 +2,46 @@ import type { AssignmentBoardCard, AssignmentBoardLane } from '../../assignmentB
 import type { PolicyRecord } from '../../policies.js';
 import type { Decision, Deliverable, EventRecord, Interaction, Observation } from '../../types.js';
 import { Badge, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, cn } from '../components/index.js';
-import { firstLine, type WorkstreamPageView } from './model.js';
+import { displayText, firstLine, formatTimestamp, type WorkstreamPageView } from './model.js';
 import { Empty, PolicyRow, RecordSection, Shell } from './shared.js';
 
 function AssignmentCard({ card }: { card: AssignmentBoardCard }) {
   const variant = card.assignmentState === 'gated' ? 'attention' : card.adoptionState === 'accepted' ? 'success' : 'neutral';
   const objective = firstLine(card.objective, 180);
   const review = card.assignmentState === 'awaiting_review' || card.assignmentState === 'gated';
+  const stateLabel: Record<AssignmentBoardCard['assignmentState'], string> = {
+    gated: 'Approval needed',
+    queued: 'Ready to start',
+    running: 'Working',
+    awaiting_review: 'Weaver is reviewing',
+    completed: 'Completed',
+    failed: 'Failed',
+    cancelled: 'Cancelled',
+  };
   return (
     <Card className="bg-zinc-950">
       <CardHeader className="pb-3">
         <div className="flex flex-wrap gap-1.5">
-          <Badge variant={variant}>{card.assignmentState.replace('_', ' ')}</Badge>
-          {card.kind === 'action' ? <Badge variant="warning">Action</Badge> : null}
-          {card.adoptionState !== 'none' ? <Badge variant="outline">{card.adoptionState}</Badge> : null}
+          <Badge variant={variant}>{stateLabel[card.assignmentState]}</Badge>
+          {card.kind === 'action' ? <Badge variant="warning">External action</Badge> : null}
+          {card.adoptionState === 'accepted' ? <Badge variant="success">Accepted work</Badge> : null}
+          {card.adoptionState === 'proposed' ? <Badge variant="outline">Proposed result</Badge> : null}
+          {card.adoptionState === 'rejected' ? <Badge variant="attention">Result rejected</Badge> : null}
+          {card.adoptionState === 'superseded' ? <Badge variant="outline">Result replaced</Badge> : null}
         </div>
         <CardTitle className="text-sm">{objective}</CardTitle>
-        <CardDescription className="font-mono text-[11px] text-zinc-600">{card.id}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 text-xs">
         {objective !== card.objective ? (
           <details className="text-zinc-500">
             <summary className="cursor-pointer hover:text-zinc-300">Full objective</summary>
-            <p className="mt-2 whitespace-pre-wrap border-l border-zinc-800 pl-3 leading-5 text-zinc-400">{card.objective}</p>
+            <p className="mt-2 whitespace-pre-wrap border-l border-zinc-800 pl-3 leading-5 text-zinc-400">{displayText(card.objective)}</p>
           </details>
         ) : null}
         {card.acceptanceCriteria.length ? (
           review ? (
             <div>
-              <p className="mb-1 font-medium text-zinc-500">Acceptance</p>
+              <p className="mb-1 font-medium text-zinc-400">Done when</p>
               <ul className="space-y-1 text-zinc-400">
                 {card.acceptanceCriteria.slice(0, 3).map((criterion) => <li key={criterion}>· {firstLine(criterion, 140)}</li>)}
               </ul>
@@ -38,32 +49,31 @@ function AssignmentCard({ card }: { card: AssignmentBoardCard }) {
                 <details className="mt-1 text-zinc-500">
                   <summary className="cursor-pointer">{card.acceptanceCriteria.length - 3} more</summary>
                   <ul className="mt-1 space-y-1 border-l border-zinc-800 pl-3 text-zinc-400">
-                    {card.acceptanceCriteria.slice(3).map((criterion) => <li key={criterion}>· {criterion}</li>)}
+                    {card.acceptanceCriteria.slice(3).map((criterion) => <li key={criterion}>· {displayText(criterion)}</li>)}
                   </ul>
                 </details>
               ) : null}
             </div>
           ) : (
             <details className="text-zinc-500">
-              <summary className="cursor-pointer hover:text-zinc-300">Acceptance · {card.acceptanceCriteria.length}</summary>
+              <summary className="cursor-pointer hover:text-zinc-300">Done when · {card.acceptanceCriteria.length}</summary>
               <ul className="mt-2 space-y-1 border-l border-zinc-800 pl-3 text-zinc-400">
-                {card.acceptanceCriteria.map((criterion) => <li key={criterion}>· {criterion}</li>)}
+                {card.acceptanceCriteria.map((criterion) => <li key={criterion}>· {displayText(criterion)}</li>)}
               </ul>
             </details>
           )
         ) : null}
         {card.submission ? (
           <details open={review} className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5 text-zinc-300">
-            <summary className="cursor-pointer text-zinc-500">Submission</summary>
-            <p className="mt-2 whitespace-pre-wrap leading-5">{card.submission.summary}</p>
+            <summary className="cursor-pointer text-zinc-400">Worker result</summary>
+            <p className="mt-2 whitespace-pre-wrap leading-5">{displayText(card.submission.summary)}</p>
           </details>
         ) : null}
         {card.adoption.passId || card.adoption.reason || card.adoption.at || card.adoption.actor ? (
           <details className="text-zinc-500">
-            <summary className="cursor-pointer hover:text-zinc-300">Adoption · {card.adoption.state}</summary>
+            <summary className="cursor-pointer hover:text-zinc-300">Why this result was {card.adoption.state === 'accepted' ? 'accepted' : card.adoption.state}</summary>
             <div className="mt-2 space-y-1 border-l border-zinc-800 pl-3">
-              {card.adoption.reason ? <p className="whitespace-pre-wrap leading-5 text-zinc-400">{card.adoption.reason}</p> : null}
-              {card.adoption.passId ? <p className="font-mono text-[11px]">{card.adoption.passId}</p> : null}
+              {card.adoption.reason ? <p className="whitespace-pre-wrap leading-5 text-zinc-400">{displayText(card.adoption.reason)}</p> : null}
               {card.adoption.actor ? <p>{card.adoption.actor}</p> : null}
               {card.adoption.at ? <p>{card.adoption.at}</p> : null}
             </div>
@@ -72,8 +82,8 @@ function AssignmentCard({ card }: { card: AssignmentBoardCard }) {
         {card.dependencies.length ? (
           <p className="text-zinc-500">
             Depends on {card.dependencies.map((dependency) => (
-              <span key={dependency.id} className={cn('ml-1 font-mono', dependency.accepted ? 'text-emerald-400' : 'text-amber-400')}>
-                {dependency.id}
+              <span key={dependency.id} className={cn('ml-1', dependency.accepted ? 'text-emerald-400' : 'text-amber-400')}>
+                {firstLine(dependency.objective ?? 'an earlier assignment', 100)}
               </span>
             ))}
           </p>
@@ -90,7 +100,7 @@ function AssignmentCard({ card }: { card: AssignmentBoardCard }) {
             <details className="text-zinc-500">
               <summary className="cursor-pointer hover:text-zinc-300">Action details</summary>
               <div className="mt-2 space-y-2 border-l border-zinc-800 pl-3">
-                {card.action.ask ? <p><span className="font-medium text-zinc-400">Ask</span><br />{card.action.ask}</p> : null}
+                {card.action.ask ? <p><span className="font-medium text-zinc-400">Ask</span><br />{displayText(card.action.ask)}</p> : null}
                 {card.action.run ? <p><span className="font-medium text-zinc-400">Run</span><br /><span className="font-mono text-[11px]">{card.action.run}</span></p> : null}
                 <p><span className="font-medium text-zinc-400">Verify</span><br /><span className="font-mono text-[11px]">{card.action.verify}</span></p>
                 {card.action.readbackOutput ? <p><span className="font-medium text-zinc-400">Readback</span><br /><span className="whitespace-pre-wrap font-mono text-[11px]">{card.action.readbackOutput}</span></p> : null}
@@ -105,15 +115,23 @@ function AssignmentCard({ card }: { card: AssignmentBoardCard }) {
             <div className="mt-2 border-l border-zinc-800 pl-3 font-mono text-[11px]">
               {[...card.attempts].reverse().map((attempt) => (
                 <article key={attempt.runId} className="space-y-1 border-t border-zinc-800 py-2 first:border-t-0 first:pt-0">
-                  <p>{attempt.runId}</p>
+                  <p>Attempt {card.attempts.indexOf(attempt) + 1}</p>
                   <p>{attempt.model ?? 'model unknown'}</p>
                   <p>{attempt.terminalReason ?? (attempt.endedAt ? 'ended' : 'in flight')}</p>
-                  <p>{attempt.startedAt}</p>
+                  <time dateTime={attempt.startedAt}>{formatTimestamp(attempt.startedAt)}</time>
                 </article>
               ))}
             </div>
           </details>
         ) : null}
+        <details className="text-zinc-500">
+          <summary className="cursor-pointer hover:text-zinc-300">Technical details</summary>
+          <div className="mt-2 space-y-1 border-l border-zinc-800 pl-3 font-mono text-[11px]">
+            <p>{card.id}</p>
+            {card.adoption.passId ? <p>{card.adoption.passId}</p> : null}
+            {card.attempts.map((attempt) => <p key={attempt.runId}>{attempt.runId}</p>)}
+          </div>
+        </details>
       </CardContent>
     </Card>
   );
@@ -179,35 +197,74 @@ function AssignmentBoard({ view }: { view: WorkstreamPageView }) {
   );
 }
 
-function Direction({ decisions }: { decisions: Decision[] }) {
-  const standing = decisions.filter((decision) => decision.status === 'standing');
+function Direction({ view }: { view: WorkstreamPageView }) {
+  const statusLabel = {
+    waiting: 'Waiting for Weaver',
+    read: 'Read by Weaver',
+    withdrawn: 'Withdrawn before Weaver read it',
+  } as const;
+  const directionSummary = view.latestDirection ? firstLine(view.latestDirection.body, 360) : undefined;
   return (
     <Card id="direction" className="bg-zinc-900/30">
       <CardHeader>
         <CardDescription className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-600">Current course</CardDescription>
         <CardTitle className="text-base">Direction</CardTitle>
       </CardHeader>
-      <CardContent>
-        {standing.length ? (
-          <div className="space-y-3">
-            {standing.map((decision) => (
-              <article key={decision.id} className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3.5 py-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant={decision.madeBy === 'human' ? 'warning' : 'accent'}>{decision.madeBy}</Badge>
-                  <span className="font-mono text-[11px] text-zinc-600">{decision.id}</span>
-                </div>
-                <h3 className="mt-2 text-sm font-medium text-zinc-100">{decision.title}</h3>
-                <p className="mt-1 text-sm leading-6 text-zinc-400">{firstLine(decision.rationale, 260)}</p>
-                {firstLine(decision.rationale, 260) !== decision.rationale ? (
+      <CardContent className="space-y-5">
+        {view.latestDirection ? (
+          <section aria-labelledby="your-direction-title" className={cn(
+            'rounded-xl border px-4 py-3',
+            view.latestDirection.status === 'waiting'
+              ? 'border-amber-500/30 bg-amber-500/5'
+              : 'border-zinc-800 bg-zinc-950/70',
+          )}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 id="your-direction-title" className="text-sm font-semibold text-zinc-100">Your direction</h3>
+              <Badge variant={view.latestDirection.status === 'waiting' ? 'warning' : 'outline'}>
+                {statusLabel[view.latestDirection.status]}
+              </Badge>
+            </div>
+            <p className="mt-2 text-sm leading-6 text-zinc-300">{directionSummary}</p>
+            {directionSummary !== view.latestDirection.body ? (
+              <details className="mt-2 text-xs text-zinc-500">
+                <summary className="cursor-pointer">Full direction</summary>
+                <p className="mt-2 whitespace-pre-wrap border-l border-zinc-800 pl-3 text-sm leading-6 text-zinc-300">{view.latestDirection.body}</p>
+              </details>
+            ) : null}
+            <p className="mt-2 text-xs text-zinc-400">
+              {view.latestDirection.by} · <time dateTime={view.latestDirection.at} title={view.latestDirection.time}>{view.latestDirection.time} · {view.latestDirection.age} ago</time>
+            </p>
+          </section>
+        ) : null}
+        <section aria-labelledby="recorded-course-title">
+          <h3 id="recorded-course-title" className="mb-2 text-sm font-medium text-zinc-400">
+            {view.latestDirection?.status === 'waiting' ? 'Current recorded commitment · may be revised' : 'Current recorded commitment'}
+          </h3>
+          {view.course.length ? (
+            <div className="space-y-3">
+              {view.course.map(({ decision, time, age }) => (
+                <article key={decision.id} className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3.5 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-400">
+                    <Badge variant={decision.madeBy === 'human' ? 'warning' : 'accent'}>{decision.madeBy === 'human' ? 'You' : 'Weaver'}</Badge>
+                    <time dateTime={decision.decidedAtVirtual} title={time}>{time} · {age} ago</time>
+                  </div>
+                  <h4 className="mt-2 text-sm font-medium text-zinc-100">{firstLine(decision.title, 220)}</h4>
+                  <p className="mt-1 text-sm leading-6 text-zinc-400">{firstLine(decision.rationale, 260)}</p>
+                  {firstLine(decision.rationale, 260) !== displayText(decision.rationale) ? (
+                    <details className="mt-2 text-xs text-zinc-500">
+                      <summary className="cursor-pointer">Why this course</summary>
+                      <p className="mt-2 whitespace-pre-wrap border-l border-zinc-800 pl-3 leading-5 text-zinc-400">{displayText(decision.rationale)}</p>
+                    </details>
+                  ) : null}
                   <details className="mt-2 text-xs text-zinc-500">
-                    <summary className="cursor-pointer">Full rationale</summary>
-                    <p className="mt-2 whitespace-pre-wrap border-l border-zinc-800 pl-3 leading-5 text-zinc-400">{decision.rationale}</p>
+                    <summary className="cursor-pointer">Technical details</summary>
+                    <p className="mt-2 border-l border-zinc-800 pl-3 font-mono text-[11px]">{decision.id}</p>
                   </details>
-                ) : null}
-              </article>
-            ))}
-          </div>
-        ) : <p className="text-sm text-zinc-600">No standing direction.</p>}
+                </article>
+              ))}
+            </div>
+          ) : <p className="text-sm text-zinc-500">No standing direction.</p>}
+        </section>
       </CardContent>
     </Card>
   );
@@ -221,9 +278,12 @@ function Deliverables({ deliverables }: { deliverables: Deliverable[] }) {
     <article key={deliverable.id} className="flex items-start justify-between gap-4 border-t border-zinc-900 py-3 first:border-t-0 first:pt-0">
       <div className="min-w-0">
         <p className="truncate text-sm font-medium text-zinc-200">{deliverable.title}</p>
-        <p className="mt-1 font-mono text-[11px] text-zinc-600">{deliverable.path} · {deliverable.contentHash.slice(0, 8)}</p>
+        <details className="mt-1 text-xs text-zinc-500">
+          <summary className="cursor-pointer">Technical details</summary>
+          <p className="mt-1 font-mono text-[11px]">{deliverable.path} · {deliverable.contentHash.slice(0, 8)}</p>
+        </details>
       </div>
-      <Badge variant={deliverable.adopted ? 'success' : 'outline'}>{deliverable.adopted ? 'Pinned' : 'Candidate'}</Badge>
+      <Badge variant={deliverable.adopted ? 'success' : 'outline'}>{deliverable.adopted ? 'Accepted result' : 'Proposed result'}</Badge>
     </article>
   );
   return (
@@ -284,15 +344,37 @@ function Policies({ policies }: { policies: PolicyRecord[] }) {
   );
 }
 
+function DirectionHistory({ view }: { view: WorkstreamPageView }) {
+  const statusLabel = {
+    waiting: 'Waiting for Weaver',
+    read: 'Read by Weaver',
+    withdrawn: 'Withdrawn before Weaver read it',
+  } as const;
+  return (
+    <RecordSection title="Your direction history" count={view.directionHistory.length}>
+      {view.directionHistory.length ? view.directionHistory.map((direction) => (
+        <article key={`${direction.at}-${direction.body}`} className="border-t border-zinc-900 py-3 first:border-t-0 first:pt-0">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Badge variant={direction.status === 'waiting' ? 'warning' : 'outline'}>{statusLabel[direction.status]}</Badge>
+            <time dateTime={direction.at} title={direction.time} className="text-xs text-zinc-400">{direction.time} · {direction.age} ago</time>
+          </div>
+          <p className={cn('mt-2 text-sm leading-6', direction.status === 'withdrawn' ? 'text-zinc-500 line-through' : 'text-zinc-300')}>{direction.body}</p>
+          <p className="mt-1 text-xs text-zinc-400">{direction.by}</p>
+        </article>
+      )) : <Empty label="No human direction recorded." />}
+    </RecordSection>
+  );
+}
+
 function EventHistory({ events }: { events: EventRecord[] }) {
-  const humanKinds = /^(steering\.arrived|send\.(approved|rejected)|action\.(approved|rejected)|assignment\.(adopted|rejected)|attention\.resolved|priority\.)/;
+  const humanKinds = /^(send\.(approved|rejected)|action\.(approved|rejected)|assignment\.(adopted|rejected)|attention\.resolved|priority\.)/;
   const human = events.filter((event) => humanKinds.test(event.type)).slice(-20).reverse();
   return (
     <RecordSection title="Human activity" count={human.length}>
       {human.length ? human.map((event, index) => (
         <article key={`${event.at}-${index}`} className="border-t border-zinc-900 py-3 first:border-t-0 first:pt-0">
           <p className="text-sm text-zinc-300">{firstLine(event.summary, 220)}</p>
-          <p className="mt-1 font-mono text-[11px] text-zinc-600">{event.type}</p>
+          <p className="mt-1 text-xs text-zinc-400">{event.type.replaceAll('.', ' ')}</p>
           {firstLine(event.summary, 220) !== event.summary ? (
             <details className="mt-2 text-xs text-zinc-500"><summary className="cursor-pointer">Full record</summary><p className="mt-2 whitespace-pre-wrap border-l border-zinc-800 pl-3 leading-5 text-zinc-400">{event.summary}</p></details>
           ) : null}
@@ -303,7 +385,7 @@ function EventHistory({ events }: { events: EventRecord[] }) {
 }
 
 function DecisionHistory({ decisions }: { decisions: Decision[] }) {
-  const history = decisions.slice().reverse();
+  const history = [...decisions].sort((a, b) => b.decidedAtVirtual.localeCompare(a.decidedAtVirtual));
   const visible = history.slice(0, 10);
   const older = history.slice(10);
   const row = (decision: Decision) => (
@@ -311,12 +393,13 @@ function DecisionHistory({ decisions }: { decisions: Decision[] }) {
       <summary className="flex cursor-pointer items-center gap-2 text-sm">
         <Badge variant={decision.status === 'standing' ? 'accent' : 'outline'}>{decision.status}</Badge>
         <span className="min-w-0 flex-1 truncate text-zinc-300">{decision.title}</span>
-        <span className="font-mono text-[11px] text-zinc-600">{decision.id}</span>
+        <time dateTime={decision.decidedAtVirtual} title={formatTimestamp(decision.decidedAtVirtual)} className="text-xs text-zinc-400">{formatTimestamp(decision.decidedAtVirtual)}</time>
       </summary>
       <div className="mt-3 space-y-2 border-l border-zinc-800 pl-3 text-sm leading-6 text-zinc-400">
-        <p>{decision.rationale}</p>
-        {decision.supersedes ? <p className="text-xs text-zinc-600">Supersedes {decision.supersedes}</p> : null}
-        {decision.supersededBy ? <p className="text-xs text-zinc-600">Superseded by {decision.supersededBy}</p> : null}
+        <p>{displayText(decision.rationale)}</p>
+        {decision.supersedes ? <p className="text-xs text-zinc-500">Replaced an earlier course.</p> : null}
+        {decision.supersededBy ? <p className="text-xs text-zinc-500">Replaced by a later course.</p> : null}
+        <details className="text-zinc-500"><summary className="cursor-pointer">Technical details</summary><p className="mt-1 font-mono text-[11px]">{decision.id}</p></details>
       </div>
     </details>
   );
@@ -340,7 +423,6 @@ function DecisionHistory({ decisions }: { decisions: Decision[] }) {
 export function WorkstreamPage({ view, totalPolicyCount }: { view: WorkstreamPageView; totalPolicyCount: number }) {
   const { doc } = view;
   const ws = doc.workstream;
-  const accepted = view.assignments.lanes.accepted.length;
   const objective = firstLine(ws.objective, 320);
   const positionTitle = view.needs.length
     ? 'Needs you'
@@ -348,7 +430,7 @@ export function WorkstreamPage({ view, totalPolicyCount }: { view: WorkstreamPag
   return (
     <Shell
       title={ws.title}
-      subtitle={`${ws.slug} · ${ws.status}${ws.managedBy ? ` · managed by ${ws.managedBy.slug}` : ''}${view.managed.length ? ` · manages ${view.managed.length}` : ''}`}
+      subtitle={`${ws.status === 'active' ? 'Open' : ws.status === 'done' ? 'Done' : 'Paused'}${ws.managedBy ? ` · coordinated by ${ws.managedBy.slug}` : ''}${view.managed.length ? ` · coordinates ${view.managed.length} related Workstream${view.managed.length === 1 ? '' : 's'}` : ''} · snapshot r${doc.revision} generated ${formatTimestamp(view.generatedAt)}`}
       nav={[
         { href: '../inspect.html', label: '← Work' },
         { href: '#direction', label: 'Direction', count: doc.decisions.filter((decision) => decision.status === 'standing').length },
@@ -363,7 +445,7 @@ export function WorkstreamPage({ view, totalPolicyCount }: { view: WorkstreamPag
         <Card className="bg-zinc-900/30">
           <CardHeader>
             <div className="flex flex-wrap gap-1.5">
-              <Badge variant={ws.status === 'done' ? 'success' : ws.status === 'paused' ? 'warning' : 'accent'}>{ws.status}</Badge>
+              <Badge variant={ws.status === 'done' ? 'success' : ws.status === 'paused' ? 'warning' : 'accent'}>{ws.status === 'active' ? 'Open' : ws.status === 'done' ? 'Done' : 'Paused'}</Badge>
               {ws.tags.includes('routine') ? <Badge variant="outline">Routine</Badge> : null}
               {ws.priority && ws.priority !== 'normal' ? <Badge variant="warning">{ws.priority}</Badge> : null}
             </div>
@@ -403,7 +485,7 @@ export function WorkstreamPage({ view, totalPolicyCount }: { view: WorkstreamPag
             <CardFooter className="block border-emerald-500/20 bg-emerald-500/5">
               <p className="text-xs font-medium text-emerald-400">Outcome</p>
               <p className="mt-1 text-sm leading-6 text-zinc-300">{ws.conclusion.summary}</p>
-              <p className="mt-1 text-xs text-zinc-600">Evidence {ws.conclusion.evidenceIds.join(', ')}</p>
+              <p className="mt-1 text-xs text-zinc-400">{ws.conclusion.evidenceIds.length} supporting evidence record{ws.conclusion.evidenceIds.length === 1 ? '' : 's'}</p>
             </CardFooter>
           ) : null}
         </Card>
@@ -429,11 +511,15 @@ export function WorkstreamPage({ view, totalPolicyCount }: { view: WorkstreamPag
                 <p className="mt-1 text-sm leading-5 text-zinc-200">{view.position.next}</p>
               </div>
             )}
-            <p className="border-t border-zinc-800 pt-3 text-xs text-zinc-600">{accepted} accepted assignment{accepted === 1 ? '' : 's'} · {doc.deliverables.filter((deliverable) => deliverable.adopted).length} pinned deliverable{doc.deliverables.filter((deliverable) => deliverable.adopted).length === 1 ? '' : 's'}</p>
-            {view.integrityWarnings.map((warning) => <p key={warning} className="text-xs text-rose-300">{warning}</p>)}
+            {view.integrityWarnings.map((warning) => (
+              <div key={warning} className="text-xs text-rose-300">
+                <p>{firstLine(warning, 220)}</p>
+                <details className="mt-1 text-zinc-500"><summary className="cursor-pointer">Technical details</summary><p className="mt-1 font-mono text-[11px]">{warning}</p></details>
+              </div>
+            ))}
             {view.managed.length ? (
               <div className="border-t border-zinc-800 pt-3">
-                <p className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-zinc-600">Manages</p>
+                <p className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Related Workstreams</p>
                 <div className="flex flex-wrap gap-1.5">
                   {view.managed.map((child) => (
                     <a key={child.slug} href={`../${child.slug}/inspect.html`} className="inline-flex items-center gap-1.5 rounded-md border border-zinc-800 px-2 py-1 font-mono text-[11px] text-zinc-400 hover:border-zinc-700 hover:text-zinc-200">
@@ -447,7 +533,7 @@ export function WorkstreamPage({ view, totalPolicyCount }: { view: WorkstreamPag
         </Card>
       </section>
       <div className="mt-3">
-        <Direction decisions={doc.decisions} />
+        <Direction view={view} />
       </div>
       <AssignmentBoard view={view} />
       <section className="mt-8">
@@ -460,6 +546,7 @@ export function WorkstreamPage({ view, totalPolicyCount }: { view: WorkstreamPag
           <Interactions interactions={doc.interactions} />
           <Observations observations={doc.observations} />
           <Policies policies={view.policies} />
+          <DirectionHistory view={view} />
           <DecisionHistory decisions={doc.decisions} />
           <EventHistory events={doc.events} />
         </div>

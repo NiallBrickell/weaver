@@ -15,6 +15,8 @@ export type AdoptionState = Assignment['adoption']['state'];
 
 export interface AssignmentBoardDependency {
   id: string;
+  /** Human-recognizable intended work; the id is provenance, not the label. */
+  objective?: string;
   accepted: boolean;
 }
 
@@ -151,6 +153,7 @@ function card(assignment: Assignment, assignmentsById: Map<string, Assignment>):
     adoption: { ...assignment.adoption },
     dependencies: assignment.dependsOn.map((id) => ({
       id,
+      ...(assignmentsById.get(id)?.objective ? { objective: assignmentsById.get(id)!.objective } : {}),
       accepted: isAccepted(assignmentsById.get(id)),
     })),
     attempts: assignment.attempts.map(attemptView),
