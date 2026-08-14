@@ -171,12 +171,41 @@ test('aggregation groups by cohort, executor:model, harness version, and case ve
   ]);
   assert.equal(codex!.meanScore, 0.75); // mean of per-run scores 1 and 0.5; the null-score run is excluded
   assert.equal(codex!.medianDurationMs, 2_000);
+  assert.equal(codex!.p95DurationMs, 3_000);
   assert.equal(codex!.knownCostUsd, 0.01 + 0.02);
   assert.equal(codex!.costIncomplete, true);
+  assert.equal(codex!.costPerHardGatePassUsd, null);
+  assert.equal(codex!.failureCostUsd, 0.02);
   assert.equal(codex!.lastRunAt, '2026-08-12T00:00:01.000Z');
   assert.equal(claude!.target, 'claude-sdk:sonnet');
   assert.equal(claude!.meanScore, null);
   assert.equal(claude!.knownCostUsd, null);
+  assert.equal(claude!.failureCostUsd, 0);
+});
+
+test('economics charge failed attempts to each successful hard-gate result', () => {
+  const rows = aggregateLedger([
+    makeResult({ repetition: 1, durationMs: 1_000, execution: costOnlyExecution(0.05) }),
+    makeResult({ repetition: 2, durationMs: 2_000, execution: costOnlyExecution(0.10) }),
+    makeResult({ repetition: 3, durationMs: 30_000, execution: costOnlyExecution(0.20), passedHardGates: false }),
+  ]);
+  const [row] = rows;
+  assert.ok(Math.abs(row!.knownCostUsd! - 0.35) < Number.EPSILON);
+  assert.ok(Math.abs(row!.costPerHardGatePassUsd! - 0.175) < Number.EPSILON);
+  assert.equal(row!.failureCostUsd, 0.20);
+  assert.equal(row!.medianDurationMs, 2_000);
+  assert.equal(row!.p95DurationMs, 30_000);
+});
+
+test('unknown failure spend makes both total economics and failure cost unknown', () => {
+  const [row] = aggregateLedger([
+    makeResult({ repetition: 1, execution: costOnlyExecution(0.05) }),
+    makeResult({ repetition: 2, execution: costOnlyExecution(null), passedHardGates: false }),
+  ]);
+  assert.equal(row!.knownCostUsd, 0.05);
+  assert.equal(row!.costIncomplete, true);
+  assert.equal(row!.costPerHardGatePassUsd, null);
+  assert.equal(row!.failureCostUsd, null);
 });
 
 test('a failed cohort and a clean rerun remain separate evidence', () => {
@@ -223,6 +252,9 @@ test('the history table marks unknown costs and never renders a null as zero', (
   ]);
   const table = renderLedgerHistory(rows);
   assert.match(table, /\$0\.0500 \(\+unknown\)/);
+  assert.match(table, /P95 wall/);
+  assert.match(table, /Cost\/pass/);
+  assert.match(table, /Failure cost/);
   assert.match(table, /H:check=2\/2/);
   assert.match(table, /code-repair@v1/);
   assert.match(table, /—/);
