@@ -65,6 +65,36 @@ function actionHasMatchingApproval(asg: Assignment): boolean {
     && (asg.exec?.approvalMode !== 'human-only' || approval.by === 'human');
 }
 
+/** A non-confirming action readback proves neither that the effect landed nor
+ * that it is absent. Hold the one-shot action and surface exactly one durable
+ * reconciliation decision; a retry must be a new, separately approved act. */
+function holdActionForUnknownReadback(
+  doc: WorkstreamDoc,
+  assignmentId: string,
+  detail: string,
+): boolean {
+  const asg = doc.assignments.find((a) => a.id === assignmentId);
+  if (!asg) return false;
+  asg.state = 'failed';
+  const alreadyOpen = doc.attention.some(
+    (att) =>
+      att.kind === 'blocker' &&
+      att.status === 'open' &&
+      att.refId === assignmentId &&
+      att.summary.includes('readback did not confirm'),
+  );
+  if (alreadyOpen) return false;
+  doc.attention.push({
+    id: newId('att'),
+    kind: 'blocker',
+    summary: `Action ${assignmentId} may already have changed the outside world, but readback did not confirm it (${detail}). It remains failed and will not run again automatically; reconcile with the provider or a human, then create and separately approve a new action if another attempt is needed.`,
+    refId: assignmentId,
+    status: 'open',
+    createdAt: new Date().toISOString(),
+  });
+  return true;
+}
+
 
 function dueWakes(doc: WorkstreamDoc): typeof doc.wakes {
   const wallNow = new Date();
@@ -486,7 +516,7 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
     a2.exec!.verified = { ok, output: output.slice(0, 2000), at: new Date().toISOString() };
     event(
       ok ? 'action.verified' : 'action.verify_failed',
-      `${assignmentId} readback ${ok ? 'CONFIRMED' : 'FAILED'}: ${output.trim().slice(0, 200) || '(no output)'}`,
+      `${assignmentId} readback ${ok ? 'CONFIRMED' : 'UNKNOWN (verifier did not confirm)'}: ${output.trim().slice(0, 200) || '(no output)'}`,
       [assignmentId],
     );
   });
@@ -557,6 +587,7 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
       a.kind === 'action' &&
       a.state === 'queued' &&
       a.exec?.run &&
+      a.attempts.length === 0 &&
       actionHasMatchingApproval(a) &&
       // Actions the repo-egress deconfliction gate held are excluded here so
       // this function's own re-derived due list cannot execute what the gate
@@ -572,7 +603,7 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
     try {
       await mutate(slug, current.revision, (d, event) => {
         const a2 = d.assignments.find((x) => x.id === asg.id);
-        if (!a2 || a2.state !== 'queued' || !a2.exec?.run || !actionHasMatchingApproval(a2)) {
+        if (!a2 || a2.state !== 'queued' || !a2.exec?.run || a2.attempts.length > 0 || !actionHasMatchingApproval(a2)) {
           throw new Error(`${asg.id} is no longer an approved queued engine action`);
         }
         a2.state = 'running';
@@ -704,17 +735,15 @@ async function recoverCrashedAttempts(slug: string): Promise<number> {
       );
     });
     if (isAction) {
-      // Readback decides, and its verdicts are machine-decidable:
-      //   effect LANDED  → submit for coordinator review (nothing to redo);
-      //   effect ABSENT  → the human-approved, idempotent-by-design act simply
-      //                    didn't happen — re-queue it (approval attaches to
-      //                    the ACT, not the attempt), bounded by MAX_ATTEMPTS.
-      // Only repeated failure escalates to a human.
-      const MAX_ACTION_ATTEMPTS = 3;
+      // Readback can confirm that the effect landed. A non-zero or un-runnable
+      // verifier cannot prove absence: it leaves the external result UNKNOWN,
+      // keeps this one-shot action failed, and requires reconciliation.
       let landed = false;
+      let readbackDetail = 'verifier returned non-zero';
       try {
         landed = await verifyAction(slug, asg.id);
       } catch (e) {
+        readbackDetail = `verifier could not run: ${e instanceof Error ? e.message : e}`;
         process.stderr.write(`readback for crashed action ${asg.id} failed to run: ${e instanceof Error ? e.message : e}\n`);
       }
       await arrive(slug, (d, event) => {
@@ -725,24 +754,42 @@ async function recoverCrashedAttempts(slug: string): Promise<number> {
             summary: 'Worker crashed mid-run but readback CONFIRMED the effect landed; submitted by crash recovery for review.',
           };
           event('action.crash_effect_landed', `${asg.id} readback confirmed despite crash — awaiting review`, [asg.id]);
-        } else if (actionHasMatchingApproval(a2) && a2.attempts.length < MAX_ACTION_ATTEMPTS) {
-          a2.state = 'queued';
-          event('action.requeued_after_crash', `${asg.id} readback shows no effect — re-running the approved idempotent act (attempt ${a2.attempts.length + 1}/${MAX_ACTION_ATTEMPTS})`, [asg.id]);
         } else {
-          d.attention.push({
-            id: newId('att'),
-            kind: 'blocker',
-            summary: `Action ${asg.id} crashed ${a2.attempts.length}× and readback still shows no effect — needs your judgment before any further redo`,
-            refId: asg.id,
-            status: 'open',
-            createdAt: new Date().toISOString(),
-          });
+          if (holdActionForUnknownReadback(d, asg.id, readbackDetail)) {
+            event('action.crash_readback_unknown', `${asg.id} readback did not confirm after crash — held failed for provider/human reconciliation`, [asg.id]);
+          }
         }
       });
     }
     recovered++;
   }
   return recovered;
+}
+
+/** Compatibility repair for actions persisted by the former bounded-retry
+ * policy. Dispatch filters refuse them, but leaving them queued would make the
+ * workstream look runnable while it can never advance. Materialize the real
+ * state once: the prior attempt's external result needs reconciliation. */
+async function holdLegacyQueuedActionRetries(slug: string): Promise<number> {
+  const doc = await load(slug);
+  let held = 0;
+  for (const asg of doc.assignments.filter(
+    (a) => a.kind === 'action' && a.state === 'queued' && a.attempts.length > 0,
+  )) {
+    await arrive(slug, (d, event) => {
+      const current = d.assignments.find((a) => a.id === asg.id);
+      if (!current || current.state !== 'queued' || current.attempts.length === 0) return;
+      if (holdActionForUnknownReadback(d, asg.id, 'legacy queued state contains a prior action attempt')) {
+        event(
+          'action.legacy_retry_held',
+          `${asg.id} had a prior attempt but was still queued — held failed for provider/human reconciliation`,
+          [asg.id],
+        );
+      }
+      held++;
+    });
+  }
+  return held;
 }
 
 export function runnableAssignments(
@@ -756,6 +803,10 @@ export function runnableAssignments(
     // A persisted human-only gate cannot be satisfied by a stale/corrupt Pilot
     // approval. Re-check at scheduling, not only when the gate was cleared.
     .filter((a) => a.kind !== 'action' || actionHasMatchingApproval(a))
+    // Every action is one-shot. Legacy state may have a failed/crashed attempt
+    // re-queued under the old bounded-retry policy; never replay it under the
+    // same assignment and approval.
+    .filter((a) => a.kind !== 'action' || a.attempts.length === 0)
     // A provider outage never erases intended work, but it must defer the
     // next disposable attempt on that exact target. A reviewed fallback is
     // selected only when earlier pools are backed off; host capability then
@@ -896,6 +947,7 @@ async function tickLocked(
     let progressed = false;
 
     if ((await recoverCrashedAttempts(slug)) > 0) progressed = true;
+    if ((await holdLegacyQueuedActionRetries(slug)) > 0) progressed = true;
     // Compatibility repair happens before attention/manager delivery so an
     // old lifetime-dollar card cannot remain a false human blocker.
     if (await retireLegacyDollarBudgetCard(slug)) progressed = true;
@@ -917,7 +969,7 @@ async function tickLocked(
     // colliding open PR holds the action for the human rather than executing a
     // second competing write into the same files (invariant 8 across the seam).
     const engineActCandidates = (await load(slug)).assignments.filter(
-      (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && actionHasMatchingApproval(a),
+      (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.attempts.length === 0 && actionHasMatchingApproval(a),
     );
     const engineActs: string[] = [];
     for (const a of engineActCandidates) {
@@ -927,7 +979,7 @@ async function tickLocked(
     if (engineActCount > 0) {
       for (const id of engineActs.slice(0, engineActCount)) {
         const ok = await verifyAction(slug, id);
-        process.stderr.write(`[tick] engine action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
+        process.stderr.write(`[tick] engine action ${id} readback: ${ok ? 'CONFIRMED' : 'UNKNOWN'}\n`);
       }
       progressed = true;
     }
@@ -973,30 +1025,40 @@ async function tickLocked(
       // deterministic readback now so the reviewing pass sees verified truth.
       const after = (await load(slug)).assignments.find((a) => a.id === id);
       if (after?.kind === 'action' && after.exec) {
-        const ok = await verifyAction(slug, id);
-        process.stderr.write(`[tick] action ${id} readback: ${ok ? 'CONFIRMED' : 'FAILED'}\n`);
-        const latest = (await load(slug)).assignments.find((a) => a.id === id);
-        const wait = latest?.attempts.at(-1)?.infrastructure;
+        const wait = after.attempts.at(-1)?.infrastructure;
+        let ok = false;
+        let readbackDetail = 'verifier returned non-zero';
+        try {
+          ok = await verifyAction(slug, id);
+        } catch (error) {
+          readbackDetail = `verifier could not run: ${error instanceof Error ? error.message : error}`;
+          process.stderr.write(`[tick] action ${id} readback could not run: ${error instanceof Error ? error.message : error}\n`);
+        }
+        process.stderr.write(`[tick] action ${id} readback: ${ok ? 'CONFIRMED' : 'UNKNOWN'}\n`);
         // An action worker can lose model capacity after touching the world.
         // Passing readback means the effect landed: stop before any retry and
-        // submit the verified fact for adoption. Failed readback leaves the
-        // approved idempotent act deferred until the typed retry boundary.
-        if (ok && wait && latest?.state === 'queued') {
+        // submit the verified fact for adoption. Any other readback is UNKNOWN,
+        // so the already-failed one-shot action stays held for reconciliation.
+        if (wait) {
           await arrive(slug, (d, event) => {
             const a2 = d.assignments.find((a) => a.id === id)!;
-            a2.state = 'awaiting_review';
-            a2.submission = {
-              summary: 'The worker lost provider capacity after execution; deterministic readback confirmed the external effect landed.',
-            };
-            a2.adoption = { state: 'proposed' };
-            d.wakes.push({
-              id: newId('wake'),
-              reason: `action ${id} readback confirmed its effect after worker infrastructure backoff`,
-              condition: { type: 'immediate' },
-              status: 'pending',
-              createdAt: new Date().toISOString(),
-            });
-            event('action.recovered_by_readback', `${id} effect confirmed after ${wait.kind}; no retry`, [id]);
+            if (ok) {
+              a2.state = 'awaiting_review';
+              a2.submission = {
+                summary: 'The worker lost provider capacity after execution; deterministic readback confirmed the external effect landed.',
+              };
+              a2.adoption = { state: 'proposed' };
+              d.wakes.push({
+                id: newId('wake'),
+                reason: `action ${id} readback confirmed its effect after worker infrastructure backoff`,
+                condition: { type: 'immediate' },
+                status: 'pending',
+                createdAt: new Date().toISOString(),
+              });
+              event('action.recovered_by_readback', `${id} effect confirmed after ${wait.kind}; no retry`, [id]);
+            } else if (holdActionForUnknownReadback(d, id, readbackDetail)) {
+              event('action.infrastructure_readback_unknown', `${id} readback did not confirm after ${wait.kind} — held failed for provider/human reconciliation`, [id]);
+            }
           });
         }
       }

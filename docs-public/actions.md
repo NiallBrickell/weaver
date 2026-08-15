@@ -22,17 +22,17 @@ An `action` assignment is reserved for one *irreversible* egress to the outside 
 
 3. **Read back**
 
-   The assignment carries a `verify` command — a deterministic shell check the engine runs (`gh pr view --json state`, `test -f evidence.md`, ...). Its exit status is the only thing that can call the effect real. The worker's own report of success settles nothing.
+   The assignment carries a `verify` command — a deterministic shell check the engine runs (`gh pr view --json state`, `test -f evidence.md`, ...). Exit 0 is the only thing that can call the effect real. A non-zero result, a missing verifier, or a verifier that cannot run is **unknown**, not proof that the effect is absent; the worker's own report of success settles nothing.
 
 4. **Adopted**
 
-   Both coordinator adoption and the human override refuse an action whose readback hasn't run or failed. Adoption cannot outrank physics.
+   Both coordinator adoption and the human override refuse an action whose readback has not run or did not confirm the effect. Adoption cannot outrank physics.
 
 ## Crashes and idempotency
 
-A worker that dies mid-action is never blindly re-run — re-inspecting the world is always safe; re-doing the act is not. The crashed attempt is failed, the readback runs, and the truth (did the effect land?) comes from the world itself.
+A worker that dies or loses its model/provider mid-action is never blindly re-run — re-inspecting the world is always safe; re-doing the act is not. The attempt is durably held `failed` before readback. A confirming readback moves it to review; any non-confirming or un-runnable readback leaves the outside-world result unknown and raises one blocker for human/provider reconciliation.
 
-Actions are designed idempotent: the briefing names a stable external key (a branch name, a file path, an external ID) so that even a deliberate re-run cannot duplicate the effect.
+Actions are one-shot under their assignment and approval: persisted queued state with any prior attempt cannot run through either the model-worker or engine-command path. If reconciliation proves another attempt is needed, Weaver creates a new action with a fresh approval. Briefings still name stable external keys (a branch name, a file path, an external ID) as defense in depth; idempotency is not permission to auto-retry.
 
 ## Repo deconfliction
 
