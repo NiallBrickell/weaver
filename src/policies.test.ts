@@ -432,7 +432,7 @@ test('the effect vocabulary is closed: only verification, narrowing, or advice a
 // Doctrine: the operator's own words, and what outranks what.
 
 /** A rules-file policy â€” the operator's own standing rule, backfilled. */
-function doctrineRule(statement: string, tags = ['erdo']) {
+function doctrineRule(statement: string, tags = ['acme']) {
   return proposeBackfillPolicy({
     statement,
     tags,
@@ -452,7 +452,7 @@ test('doctrine is derived from provenance, never asserted: a rules file and a qu
   // the record. Without a quote it is a model's reading of a conversation.
   const quoted = await proposeBackfillPolicy({
     statement: 'Never push directly to main; branch first',
-    tags: ['erdo'], effectKind: 'advisory', effectDescription: 'x',
+    tags: ['acme'], effectKind: 'advisory', effectDescription: 'x',
     source: 'backfill:sessions', ref: 'session abc',
     quote: 'never push to main directly, always branch first',
     interventionSummary: 'backfilled from Claude Code session abc',
@@ -460,7 +460,7 @@ test('doctrine is derived from provenance, never asserted: a rules file and a qu
   assert.equal(isDoctrine(quoted), true);
   const unquoted = await proposeBackfillPolicy({
     statement: 'Prefer smaller pull requests',
-    tags: ['erdo'], effectKind: 'advisory', effectDescription: 'x',
+    tags: ['acme'], effectKind: 'advisory', effectDescription: 'x',
     source: 'backfill:sessions', ref: 'session def',
     interventionSummary: 'backfilled from Claude Code session def',
   });
@@ -470,7 +470,7 @@ test('doctrine is derived from provenance, never asserted: a rules file and a qu
   // same way, so the class does not depend on when a row was written.
   const legacy = await proposeBackfillPolicy({
     statement: 'Use yarn rather than npm in this repo',
-    tags: ['erdo'], effectKind: 'advisory', effectDescription: 'x',
+    tags: ['acme'], effectKind: 'advisory', effectDescription: 'x',
     source: 'backfill:sessions', ref: 'session ghi',
     interventionSummary: 'backfilled from Claude Code session ghi: "use yarn, not npm"',
   });
@@ -479,7 +479,7 @@ test('doctrine is derived from provenance, never asserted: a rules file and a qu
   // A teammate's practice is not this operator's rule.
   const seeded = await proposeBackfillPolicy({
     statement: 'Write a changelog entry with every release',
-    tags: ['erdo'], effectKind: 'advisory', effectDescription: 'x',
+    tags: ['acme'], effectKind: 'advisory', effectDescription: 'x',
     source: 'seed', ref: 'a-teammate', interventionSummary: 'seeded',
   });
   assert.equal(isDoctrine(seeded), false);
@@ -490,7 +490,7 @@ test('a live policy is doctrine only while it restates the human\'s directive â€
 
   const restated = await proposePolicy({
     statement: 'Always use a regular merge commit, never squash or rebase',
-    tags: ['erdo'], effectKind: 'advisory', effectDescription: 'x',
+    tags: ['acme'], effectKind: 'advisory', effectDescription: 'x',
     workstreamSlug: 'ws-a', passId: 'pass_a', steeringId: 'steer_a',
     directiveQuote: directive,
     interventionSummary: 'the human corrected the merge method',
@@ -502,7 +502,7 @@ test('a live policy is doctrine only while it restates the human\'s directive â€
   const elaborated = await proposePolicy({
     statement:
       'Never merge before CI is green and the review bar is met, and only via a coordinator-authored one-liner whose readback confirms the merged state',
-    tags: ['erdo'], effectKind: 'advisory', effectDescription: 'x',
+    tags: ['acme'], effectKind: 'advisory', effectDescription: 'x',
     workstreamSlug: 'ws-a', passId: 'pass_a', steeringId: 'steer_a',
     directiveQuote: directive,
     interventionSummary: 'the human corrected the merge method; this pass generalized it',
@@ -512,7 +512,7 @@ test('a live policy is doctrine only while it restates the human\'s directive â€
   // And without the human's words on the record there is nothing to check.
   const unsourced = await proposePolicy({
     statement: 'Always use a regular merge commit, never squash or rebase',
-    tags: ['erdo'], effectKind: 'advisory', effectDescription: 'x',
+    tags: ['acme'], effectKind: 'advisory', effectDescription: 'x',
     workstreamSlug: 'ws-a', passId: 'pass_a',
     interventionSummary: 'inferred',
   });
@@ -524,11 +524,11 @@ test('the projection puts doctrine first, binds it without evidence, and marks t
   const learned = await proposePolicy({
     statement: 'Never open a merge action before the review bar and green CI are confirmed, and require a readback of the merged state',
     mechanism: 'gh pr merge <n> --squash',
-    tags: ['erdo'], effectKind: 'add_verification', effectDescription: 'gate the merge',
+    tags: ['acme'], effectKind: 'add_verification', effectDescription: 'gate the merge',
     workstreamSlug: 'ws-src', passId: 'pass_1',
     interventionSummary: 'learned from a merge that went through cleanly',
   });
-  const decId = await citeInWorkstream('ws-other', learned.id, { tags: ['erdo'] });
+  const decId = await citeInWorkstream('ws-other', learned.id, { tags: ['acme'] });
   await outcome(learned.id, 'ws-other', decId, true);
   assert.equal(await statusOf(learned.id), 'active');
   assert.equal(await statusOf(doc.id), 'shadow'); // no evidence, and it needs none
@@ -539,7 +539,7 @@ test('the projection puts doctrine first, binds it without evidence, and marks t
   assert.match(render, new RegExp(`${doc.id} \\[doctrine/`));
   // The unproven doctrine rule carries no "unproven" apology, and the proven
   // learned policy is told it is subordinate where their scopes meet.
-  assert.match(render, /SUBORDINATE TO DOCTRINE on \[erdo\]/);
+  assert.match(render, /SUBORDINATE TO DOCTRINE on \[acme\]/);
   // The mechanism rides along, labelled as the revisable how.
   assert.match(render, /mechanism \(revisable, not the rule\): gh pr merge <n> --squash/);
 });
@@ -548,7 +548,7 @@ test('doctrine still cannot widen authority â€” the firewall does not care whose
   await assert.rejects(
     proposeBackfillPolicy({
       statement: 'A workstream MAY merge its own PR when CI is green',
-      tags: ['erdo'], effectKind: 'advisory', effectDescription: 'x',
+      tags: ['acme'], effectKind: 'advisory', effectDescription: 'x',
       source: 'backfill:rules', ref: '/repo/CLAUDE.md Â§ Git Practices',
       interventionSummary: 'backfilled',
     }),
@@ -571,11 +571,11 @@ test('a mechanism holds the command a statement may not, is revisable without ce
   const p = await proposePolicy({
     statement: 'Never open a merge action before the review bar and green CI are confirmed',
     mechanism: 'gh pr merge <n> --squash --repo org/repo',
-    tags: ['erdo'], effectKind: 'add_verification', effectDescription: 'gate the merge',
+    tags: ['acme'], effectKind: 'add_verification', effectDescription: 'gate the merge',
     workstreamSlug: 'ws-m', passId: 'pass_m',
     interventionSummary: 'i',
   });
-  const decId = await citeInWorkstream('ws-m2', p.id, { tags: ['erdo'] });
+  const decId = await citeInWorkstream('ws-m2', p.id, { tags: ['acme'] });
   await outcome(p.id, 'ws-m2', decId, true);
 
   // Correcting the how leaves the rule and its earned evidence alone.
@@ -598,10 +598,10 @@ test('a mechanism holds the command a statement may not, is revisable without ce
 
 test('a refreshed doctrine statement updates in place and contests the learned policies scoped to it â€” doctrine itself is never contested by the refresh', async () => {
   const doc = await doctrineRule('Use a regular merge commit; never squash-merge unless asked');
-  const sibling = await doctrineRule('Never force-push main', ['erdo']);
+  const sibling = await doctrineRule('Never force-push main', ['acme']);
   const learned = await proposePolicy({
     statement: 'Prefer a squashed history when landing a stack of review fixups',
-    tags: ['erdo'], effectKind: 'advisory', effectDescription: 'x',
+    tags: ['acme'], effectKind: 'advisory', effectDescription: 'x',
     workstreamSlug: 'ws-src', passId: 'pass_1', interventionSummary: 'i',
   });
   const elsewhere = await proposePolicy({
@@ -640,7 +640,7 @@ test('a refreshed doctrine statement updates in place and contests the learned p
     policyId: sibling.id,
     workstreamSlug: 'ws-neg',
     passId: 'pass_neg',
-    applyingDecisionId: await citeInWorkstream('ws-neg', sibling.id, { tags: ['erdo'] }),
+    applyingDecisionId: await citeInWorkstream('ws-neg', sibling.id, { tags: ['acme'] }),
     note: 'a force-push was needed here',
     interventionFree: false,
   });
@@ -660,7 +660,7 @@ test('a policy retired because its rules section vanished carries the reason, an
   assert.equal(stored.status, 'superseded');
   assert.equal(stored.supersededBy, undefined);
   assert.match(stored.supersededReason!, /no longer exists/);
-  const err = validatePolicyCitations([doc.id], [stored], ['erdo']);
+  const err = validatePolicyCitations([doc.id], [stored], ['acme']);
   assert.match(err!, /retired/);
-  assert.equal((await matchPolicies(['erdo'])).some((p) => p.id === doc.id), false);
+  assert.equal((await matchPolicies(['acme'])).some((p) => p.id === doc.id), false);
 });

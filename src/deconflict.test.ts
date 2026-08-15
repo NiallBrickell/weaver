@@ -110,22 +110,22 @@ test('isRepoEgressAction matches gh pr create / merge and git push in run or ver
 // is a WORKER-action — exec.run is undefined and the egress happens inside the
 // model run — so the ONLY durable signal is exec.verify, a PR/branch READBACK.
 // A narrow `gh pr create|merge` / `git push` match saw none of these, making
-// the gate a no-op on the exact incident shape. These are the literal verify
-// strings from the incident's actions, copied verbatim as fixtures.
+// the gate a no-op on the exact incident shape. These fixtures keep the
+// incident's exact command shapes; org and branch names are genericized.
 test('isRepoEgressAction fires on the incident PR/branch READBACK verifies', () => {
   const prUrlReadback =
-    "gh pr list --repo erdoai/erdo --head erdo-420-voice-live-transfer --state open --json url --jq '.[0].url' | grep .";
+    "gh pr list --repo acme/widgets --head widgets-420-voice-live-transfer --state open --json url --jq '.[0].url' | grep .";
   const headOidReadback =
-    'test "$(gh pr list --repo erdoai/erdo --head niall/erdo-414-x --json headRefOid --jq \'.[0].headRefOid\')" = "6e84abc"';
+    'test "$(gh pr list --repo acme/widgets --head niall/widgets-414-x --json headRefOid --jq \'.[0].headRefOid\')" = "6e84abc"';
   const pushRemoteRefReadback =
-    'git -C /work/wt fetch origin && git -C /work/wt merge-base --is-ancestor 6e84abc origin/niall/erdo-414-x';
+    'git -C /work/wt fetch origin && git -C /work/wt merge-base --is-ancestor 6e84abc origin/niall/widgets-414-x';
 
   assert.equal(isRepoEgressAction(action({ verify: prUrlReadback })), true);
   assert.equal(isRepoEgressAction(action({ verify: headOidReadback })), true);
   assert.equal(isRepoEgressAction(action({ verify: pushRemoteRefReadback })), true);
   // The matching push run (exec.run form) is still recognised.
   assert.equal(
-    isRepoEgressAction(action({ run: 'git -C /work/wt push origin niall/erdo-414-x:niall/erdo-414-x' })),
+    isRepoEgressAction(action({ run: 'git -C /work/wt push origin niall/widgets-414-x:niall/widgets-414-x' })),
     true,
   );
 });

@@ -366,7 +366,7 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
         // ALIVE. That leaned on per-command supervision catching anything
         // serious — and it does not always, because the operator's own
         // Claude Code settings can pass a command straight through before
-        // pilot's ruleset ever runs. An @erdoai/ui release reached npm that
+        // pilot's ruleset ever runs. A package release reached npm that way
         // way with no human in the loop: the action pushed a version tag,
         // CI did the publishing, and every individual command looked
         // ordinary. So ask pilot about the ACT as well: the objective is
