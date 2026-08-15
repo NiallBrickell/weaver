@@ -85,7 +85,7 @@ describe('provider proxy', () => {
         headers: { Authorization: `Bearer ${proxy.token}` },
         body: JSON.stringify({ model: 'openrouter/moonshotai/kimi-k3' }),
       });
-      assert.equal(overBudget.status, 429);
+      assert.equal(overBudget.status, 409);
       assert.equal(upstreamCalls.length, 1);
     } finally {
       await proxy.close();

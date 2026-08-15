@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server as HttpServer } from 'node:http';
-import type { SubmitReply, SubmitResultArgs, SubmitSurface } from '../../executor/types.js';
-import { redactSecrets } from '../../secrets.js';
+import type { SubmitReply, SubmitResultArgs, SubmitSurface } from './types.js';
+import { redactSecrets } from '../secrets.js';
 
 export interface ExtensionSubmitBridge {
   /** Base URL; the extension appends one of the two fixed submission paths. */

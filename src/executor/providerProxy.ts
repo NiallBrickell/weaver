@@ -92,7 +92,10 @@ export async function startProviderProxy(options: ProviderProxyOptions): Promise
         return;
       }
       if (requestCount >= options.maxRequests) {
-        respondJson(response, 429, { error: 'run inference request limit reached' });
+        // This is Weaver's local structural turn cap, not upstream capacity.
+        // A 429 would make the shared failure classifier persist a false
+        // provider backoff and park unrelated work.
+        respondJson(response, 409, { error: 'run inference request limit reached' });
         return;
       }
       requestCount += 1;

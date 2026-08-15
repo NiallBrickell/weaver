@@ -53,7 +53,7 @@ export class ClaudeSdkEvalExecutor implements EvalExecutor {
       startupMs: null,
       timeToSubmissionMs: submittedAtMs === null ? null : submittedAtMs - startedMs,
       usage: NULL_USAGE,
-      costUsd: outcome.costUsd > 0 ? outcome.costUsd : null,
+      costUsd: outcome.costUsd !== null && outcome.costUsd > 0 ? outcome.costUsd : null,
       sessionId: outcome.sessionId ?? null,
       terminalReason: outcome.error
         ? (req.abort.signal.aborted ? 'aborted' : 'error')

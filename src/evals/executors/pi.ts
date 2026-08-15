@@ -1,8 +1,16 @@
-import { PiRpcEvalExecutor, type PiRpcEvalExecutorDependencies } from './piRpc.js';
+import { PiExecutor, type PiExecutorDependencies } from '../../executor/pi.js';
+import type { EvalExecutionTelemetry, EvalExecutor } from '../types.js';
 
-/** Eval-only Pi adapter. Production worker selection deliberately cannot see it. */
-export class PiEvalExecutor extends PiRpcEvalExecutor {
-  constructor(dependencies: PiRpcEvalExecutorDependencies = {}) {
-    super('pi', 'pi', dependencies);
+/** Thin eval view over the exact production Pi executor. */
+export class PiEvalExecutor extends PiExecutor implements EvalExecutor {
+  declare readonly id: 'pi';
+
+  constructor(dependencies: PiExecutorDependencies = {}) {
+    super(dependencies);
+  }
+
+  override lastTelemetry(): EvalExecutionTelemetry | null {
+    const telemetry = super.lastTelemetry();
+    return telemetry ? { ...telemetry, executor: 'pi' } : null;
   }
 }

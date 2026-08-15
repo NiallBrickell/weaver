@@ -15,6 +15,7 @@ import { virtualNow } from './clock.js';
 import { LocalSdkExecutor } from './executor/localSdk.js';
 import { OpenHandsExecutor } from './executor/openHands.js';
 import { CodexExecutor } from './executor/codex.js';
+import { PiExecutor } from './executor/pi.js';
 import type { SubmitReply, SubmitSurface, WorkerExecutor } from './executor/types.js';
 import { armWall } from './wall.js';
 import {
@@ -80,7 +81,8 @@ export function selectExecutor(name = workerExecutorName()): WorkerExecutor {
   if (name === 'local-sdk') return new LocalSdkExecutor();
   if (name === 'codex-sdk') return new CodexExecutor();
   if (name === 'openhands') return new OpenHandsExecutor();
-  throw new Error(`unknown worker executor '${name}' from WEAVER_EXECUTOR/WEAVER_ACTION_EXECUTOR — supported: local-sdk, codex-sdk, openhands`);
+  if (name === 'pi') return new PiExecutor();
+  throw new Error(`unknown worker executor '${name}' from WEAVER_EXECUTOR/WEAVER_ACTION_EXECUTOR — supported: local-sdk, codex-sdk, openhands, pi`);
 }
 
 /**
@@ -136,7 +138,7 @@ export function operatorMcpServers(dirs: string[]): SecuredMcpConfiguration {
   return operatorMcpConfiguration(dirs, false);
 }
 
-/** OpenHands cannot fall back to Claude Code's hidden on-disk settings loader.
+/** Non-Claude executors cannot fall back to Claude Code's hidden on-disk settings loader.
  * The serializable user/local subset discovered in ~/.claude.json must
  * therefore fail before launch when malformed, rather than quietly becoming
  * an empty tool surface. Local Claude keeps its historical tolerant discovery
@@ -173,7 +175,7 @@ function operatorMcpConfiguration(
   } catch (caught) {
     if (strict) {
       throw new Error(
-        `OpenHands could not load the operator MCP configuration: ${caught instanceof Error ? caught.message : String(caught)}`,
+        `remote executor could not load the operator MCP configuration: ${caught instanceof Error ? caught.message : String(caught)}`,
       );
     }
     return { servers: {}, env: {} };
@@ -239,7 +241,7 @@ export async function finalizeWorkerRun(
   runId: string,
   outcome: {
     submitted: boolean;
-    costUsd: number;
+    costUsd: number | null;
     sessionId?: string;
     infrastructure: InfrastructureWait | null;
     capacityTarget?: CapacityTarget;
@@ -259,12 +261,12 @@ export async function finalizeWorkerRun(
     const attempt = a.attempts.find((t) => t.runId === runId);
     if (attempt) {
       attempt.endedAt = attempt.endedAt ?? new Date().toISOString();
-      attempt.costUsd = outcome.costUsd;
+      if (outcome.costUsd !== null) attempt.costUsd = outcome.costUsd;
       if (outcome.sessionId) attempt.sessionId = outcome.sessionId;
       if (outcome.infrastructure) attempt.infrastructure = outcome.infrastructure;
       if (outcome.terminalReason) attempt.terminalReason = outcome.terminalReason;
     }
-    d.spend.totalCostUsd += outcome.costUsd;
+    if (outcome.costUsd !== null) d.spend.totalCostUsd += outcome.costUsd;
     if (outcome.submitted) {
       clearCapacityBackoff(d, target);
       resolveCapacityAttention(d, target, 'worker');
@@ -415,12 +417,13 @@ export async function runWorker(
   const isAction = asg.kind === 'action';
   const workCwd = isAction ? asg.exec!.cwd : (readDirs[0] ?? neutralWorkspace(slug));
   // Local Claude and Codex inherit their complete configured MCP surface from
-  // their own runtimes. OpenHands cannot read the host settings, so Weaver
+  // their own runtimes. OpenHands and Pi cannot read Claude's host settings, so Weaver
   // explicitly discovers the serializable ~/.claude.json user/local subset
   // for a host relay. Do this before the attempt CAS: malformed remote config
   // must not leave a durable attempt stuck in `running` without a process.
-  const operatorMcp = (isAction || executorName === 'openhands')
-    ? operatorMcpConfiguration([workCwd, ...readDirs], executorName === 'openhands')
+  const explicitMcpExecutor = executorName === 'openhands' || executorName === 'pi';
+  const operatorMcp = (isAction || explicitMcpExecutor)
+    ? operatorMcpConfiguration([workCwd, ...readDirs], explicitMcpExecutor)
     : { servers: {}, env: {} };
   const executor = providedExecutor ?? selectExecutor(executorName);
   const startedAt = new Date();
@@ -589,7 +592,7 @@ export async function runWorker(
     ...(isAction ? repoConventions(asg.exec!.cwd) : []),
   ].join('\n');
 
-  let costUsd = 0;
+  let costUsd: number | null = null;
   let sessionId: string | undefined;
   let resultSubtype: string | undefined;
   const sdkFailure = new SdkFailureTracker();

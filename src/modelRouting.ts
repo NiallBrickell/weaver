@@ -13,7 +13,7 @@ import {
   type CapacityTarget,
 } from './modelConfig.js';
 
-export type RouteEvidenceExecutor = 'claude-sdk' | 'codex-sdk' | 'openhands';
+export type RouteEvidenceExecutor = 'claude-sdk' | 'codex-sdk' | 'openhands' | 'pi';
 
 export interface RouteEvidenceCase {
   id: string;
@@ -54,34 +54,66 @@ export const DEFAULT_EXECUTION_REQUIREMENTS: AssignmentExecutionRequirements = {
 
 /** Reviewed routing commitments. Each active entry is audited against the
  * append-only ledger in modelRouting.test.ts. */
-export const WORK_MODEL_ROUTES: readonly WorkModelRoute[] = [{
-  id: 'codex-5-6-sol-bounded-code-repair',
-  preference: 100,
-  match: { profiles: ['bounded-code-repair'], modalities: ['text'] },
-  target: { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
-  evidence: {
-    suiteRunId: '20260814T145942Z',
-    executor: 'codex-sdk',
-    model: 'gpt-5.6-sol',
-    harnessVersion: 'codex-sdk-0.147.0-weaver.3',
-    cases: [{
-      id: 'code-repair',
-      version: 1,
-      requiredHardGates: [
-        'weaver-submission',
-        'artifact-integrity',
-        'adoption-separation',
-        'target-identity',
-        'runtime-completion',
-        'workspace-scope',
-      ],
-      requiredGrades: ['hidden-tests', 'verification-evidence'],
-    }],
-    minRuns: 10,
+export const WORK_MODEL_ROUTES: readonly WorkModelRoute[] = [
+  {
+    id: 'codex-5-6-sol-bounded-code-repair',
+    preference: 100,
+    match: { profiles: ['bounded-code-repair'], modalities: ['text'] },
+    target: { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
+    evidence: {
+      suiteRunId: '20260814T145942Z',
+      executor: 'codex-sdk',
+      model: 'gpt-5.6-sol',
+      harnessVersion: 'codex-sdk-0.147.0-weaver.3',
+      cases: [{
+        id: 'code-repair',
+        version: 1,
+        requiredHardGates: [
+          'weaver-submission',
+          'artifact-integrity',
+          'adoption-separation',
+          'target-identity',
+          'runtime-completion',
+          'workspace-scope',
+        ],
+        requiredGrades: ['hidden-tests', 'verification-evidence'],
+      }],
+      minRuns: 10,
+    },
   },
-}];
+  {
+    id: 'pi-kimi-k3-bounded-code-repair',
+    preference: 100,
+    match: { profiles: ['bounded-code-repair'], modalities: ['text'] },
+    target: {
+      executor: 'pi',
+      provider: 'openrouter',
+      model: 'openrouter/moonshotai/kimi-k3',
+    },
+    evidence: {
+      suiteRunId: '20260815T105214Z',
+      executor: 'pi',
+      model: 'openrouter/moonshotai/kimi-k3',
+      harnessVersion: 'pi@0.84.2-weaver.4',
+      cases: [{
+        id: 'code-repair',
+        version: 1,
+        requiredHardGates: [
+          'weaver-submission',
+          'artifact-integrity',
+          'adoption-separation',
+          'target-identity',
+          'runtime-completion',
+          'workspace-scope',
+        ],
+        requiredGrades: ['hidden-tests', 'verification-evidence'],
+      }],
+      minRuns: 10,
+    },
+  },
+];
 
-const KNOWN_EXECUTORS = new Set(['local-sdk', 'codex-sdk', 'openhands']);
+const KNOWN_EXECUTORS = new Set(['local-sdk', 'codex-sdk', 'openhands', 'pi']);
 
 function normalizedRequirements(assignment: Assignment): AssignmentExecutionRequirements {
   return assignment.executionRequirements ?? DEFAULT_EXECUTION_REQUIREMENTS;

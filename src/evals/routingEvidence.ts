@@ -13,7 +13,7 @@ export interface RouteEvidenceFailure {
 
 function evalExecutorForProduction(executor: string): RouteEvidenceExecutor | null {
   if (executor === 'local-sdk') return 'claude-sdk';
-  if (executor === 'codex-sdk' || executor === 'openhands') return executor;
+  if (executor === 'codex-sdk' || executor === 'openhands' || executor === 'pi') return executor;
   return null;
 }
 

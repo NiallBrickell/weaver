@@ -485,7 +485,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
     }
 
     return {
-      costUsd: metrics.costUsd ?? 0,
+      costUsd: metrics.costUsd,
       ...(sessionId !== null ? { sessionId } : {}),
       ...(error !== null ? { error } : {}),
     };

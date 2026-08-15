@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { LocalSdkExecutor } from './executor/localSdk.js';
 import { OpenHandsExecutor } from './executor/openHands.js';
 import { CodexExecutor } from './executor/codex.js';
+import { PiExecutor } from './executor/pi.js';
 import {
   consumeDueWorkerInfrastructureWakes,
   finalizeWorkerRun,
@@ -53,6 +54,10 @@ describe('executor selection', () => {
 
   it('codex-sdk resolves to the local subscription-backed Codex executor', () => {
     withEnv('codex-sdk', () => assert.ok(selectExecutor() instanceof CodexExecutor));
+  });
+
+  it('pi resolves to the pinned provider-neutral API executor', () => {
+    withEnv('pi', () => assert.ok(selectExecutor() instanceof PiExecutor));
   });
 
   it('an unknown executor fails hard, naming the variable — never a silent local fallback', () => {
@@ -234,6 +239,65 @@ test('an OpenHands work assignment receives the applicable secured host MCP map'
   }
 });
 
+test('a Pi work assignment receives the applicable secured host MCP map', async () => {
+  const stateHome = workerHome();
+  const operatorHome = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-pi-operator-'));
+  const workspace = path.join(operatorHome, 'repo');
+  fs.mkdirSync(workspace, { recursive: true });
+  const credential = 'Bearer synthetic-pi-mcp-secret';
+  fs.writeFileSync(path.join(operatorHome, '.claude.json'), JSON.stringify({
+    mcpServers: {
+      tracker: {
+        type: 'http', url: 'https://example.invalid/mcp',
+        headers: { Authorization: credential },
+      },
+    },
+  }));
+  const previousHome = process.env.HOME;
+  process.env.HOME = operatorHome;
+  let request: WorkerExecutionRequest | undefined;
+  const executor: WorkerExecutor = {
+    id: 'pi',
+    async execute(req) {
+      request = req;
+      await req.submit.submitResult({
+        summary: 'Verified the Pi operator MCP request boundary.',
+        artifact: {
+          title: 'Pi MCP evidence', kind: 'report', file_name: 'pi-mcp.md',
+          content: `# Evidence\n\n${'Verified the secured MCP relay configuration. '.repeat(8)}`,
+        },
+      });
+      return { costUsd: 0 };
+    },
+  };
+
+  try {
+    await createWorkstream({
+      slug: 'worker-pi-mcp', title: 'worker-pi-mcp', objective: 'relay MCP into Pi',
+      tags: [], successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-pi-mcp', (d) => d.assignments.push({
+      id: 'asg_pi_mcp', objective: 'use the tracker', briefing: 'Inspect the project.',
+      kind: 'work', readDirs: [workspace], acceptanceCriteria: ['submit evidence'],
+      dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+    await runWorker('worker-pi-mcp', 'asg_pi_mcp', executor);
+
+    assert.ok(request);
+    assert.deepEqual(Object.keys(request.operatorMcpServers), ['tracker']);
+    assert.doesNotMatch(JSON.stringify(request.operatorMcpServers), /synthetic-pi-mcp-secret/);
+    assert.equal(request.env.WEAVER_INTERNAL_MCP_HEADER_1, credential);
+    assert.equal((await load('worker-pi-mcp')).assignments[0]!.attempts[0]!.executor, 'pi');
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(stateHome, { recursive: true, force: true });
+    fs.rmSync(operatorHome, { recursive: true, force: true });
+  }
+});
+
 test('a malformed remote MCP map fails before an OpenHands attempt is claimed', async () => {
   const stateHome = workerHome();
   const operatorHome = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-openhands-bad-mcp-'));
@@ -266,7 +330,7 @@ test('a malformed remote MCP map fails before an OpenHands attempt is claimed', 
 
     await assert.rejects(
       runWorker('worker-openhands-bad-mcp', 'asg_remote_bad_mcp', executor),
-      /OpenHands could not load the operator MCP configuration/,
+      /remote executor could not load the operator MCP configuration/,
     );
     assert.equal(launched, false);
     const assignment = (await load('worker-openhands-bad-mcp')).assignments[0]!;
@@ -383,6 +447,66 @@ test('a typed bounded repair pins the reviewed Codex route on its disposable att
     else process.env.WEAVER_WORKER_MODEL = previousModel;
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('a typed bounded repair pins the reviewed Pi/Kimi route on its disposable attempt', async () => {
+  const home = workerHome();
+  const operatorHome = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-pi-route-operator-'));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-pi-routed-worker-'));
+  const previousHome = process.env.HOME;
+  const previousExecutor = process.env.WEAVER_EXECUTOR;
+  const previousModel = process.env.WEAVER_WORKER_MODEL;
+  process.env.HOME = operatorHome;
+  process.env.WEAVER_EXECUTOR = 'pi';
+  process.env.WEAVER_WORKER_MODEL = 'zai-coding-plan/glm-5.3';
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      assert.equal(req.model, 'openrouter/moonshotai/kimi-k3');
+      const reply = await req.submit.submitResult({
+        summary: 'Applied and verified the bounded repair through the reviewed Pi route.',
+        artifact: {
+          title: 'Pi routed repair evidence', kind: 'report', file_name: 'pi-repair.md',
+          content: `# Repair\n\n${'Verified the bounded Pi repair against deterministic tests. '.repeat(6)}`,
+        },
+      });
+      assert.equal(reply.isError, undefined);
+      return { costUsd: null, sessionId: 'pi-routed-session' };
+    },
+  };
+  try {
+    await createWorkstream({
+      slug: 'pi-routed-worker', title: 'Pi routed worker', objective: 'repair one defect',
+      tags: [], successCriteria: [], constraints: [],
+      autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('pi-routed-worker', (d) => d.assignments.push({
+      id: 'asg_pi_routed', objective: 'repair one selector', briefing: 'Fix and verify it.',
+      kind: 'work',
+      executionRequirements: { profile: 'bounded-code-repair', modalities: ['text'] },
+      readDirs: [workspace], acceptanceCriteria: ['tests pass'], dependsOn: [],
+      state: 'queued', attempts: [], adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await runWorker('pi-routed-worker', 'asg_pi_routed', executor);
+    const attempt = (await load('pi-routed-worker')).assignments[0]!.attempts[0]!;
+    assert.deepEqual({
+      executor: attempt.executor, provider: attempt.provider, model: attempt.model,
+    }, {
+      executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3',
+    });
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousExecutor === undefined) delete process.env.WEAVER_EXECUTOR;
+    else process.env.WEAVER_EXECUTOR = previousExecutor;
+    if (previousModel === undefined) delete process.env.WEAVER_WORKER_MODEL;
+    else process.env.WEAVER_WORKER_MODEL = previousModel;
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(operatorHome, { recursive: true, force: true });
     fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
@@ -672,6 +796,24 @@ test('ordinary no-submission remains a failed assignment with immediate reconcil
     assert.equal(doc.assignments[0]!.attempts[0]!.terminalReason, 'no_submission');
     assert.equal(doc.wakes[0]!.condition.type, 'immediate');
     assert.equal(doc.wakes[0]!.infrastructure, undefined);
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('unknown provider cost remains absent instead of becoming free spend telemetry', async () => {
+  const home = workerHome();
+  try {
+    await runningWorker('worker-unknown-cost');
+    await finalizeWorkerRun('worker-unknown-cost', 'asg_worker', 'run_worker', {
+      submitted: false,
+      costUsd: null,
+      infrastructure: null,
+    });
+    const doc = await load('worker-unknown-cost');
+    assert.equal(doc.assignments[0]!.attempts[0]!.costUsd, undefined);
+    assert.equal(doc.spend.totalCostUsd, 0);
   } finally {
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });

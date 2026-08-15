@@ -119,7 +119,9 @@ export interface WorkerExecutionRequest {
  * claim a submission that never went through the harness submission API.
  */
 export interface WorkerExecutionOutcome {
-  costUsd: number;
+  /** Measured marginal provider cost. Null means the substrate/provider did
+   * not expose trustworthy billing data; it must never be rewritten as free. */
+  costUsd: number | null;
   /** Substrate session id — provenance only, never read back for state. */
   sessionId?: string;
   /** Loop failure, if any; the harness logs it and the no-submission path takes over. */
