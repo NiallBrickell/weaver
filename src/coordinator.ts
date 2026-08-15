@@ -525,7 +525,7 @@ export async function runCoordinatorPass(
             if (asg.kind === 'action') {
               // An action is real only if the deterministic readback said so.
               if (!asg.exec?.verified) throw new Error(`${asg.id} is an action whose readback has not run yet — it cannot be adopted`);
-              if (!asg.exec.verified.ok) throw new Error(`${asg.id} readback FAILED (${asg.exec.verified.output.slice(0, 200)}) — the effect is not confirmed; reject or investigate, do not adopt`);
+              if (!asg.exec.verified.ok) throw new Error(`${asg.id} readback did not CONFIRM the effect (${asg.exec.verified.output.slice(0, 200)}) — reconcile provider state or reject; do not adopt`);
             }
             const del = asg.submission.deliverableId
               ? d.deliverables.find((x) => x.id === asg.submission!.deliverableId)

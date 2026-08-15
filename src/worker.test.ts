@@ -534,7 +534,7 @@ test('a runner cannot claim an explicitly selected executor it did not declare',
   }
 });
 
-async function runningWorker(slug: string): Promise<void> {
+async function runningWorker(slug: string, kind: 'work' | 'action' = 'work'): Promise<void> {
   await createWorkstream({
     slug,
     title: slug,
@@ -546,10 +546,17 @@ async function runningWorker(slug: string): Promise<void> {
     budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
   await arrive(slug, (d) => d.assignments.push({
-    id: 'asg_worker', objective: 'produce evidence', briefing: 'n/a', kind: 'work',
+    id: 'asg_worker', objective: 'produce evidence', briefing: 'n/a', kind,
     acceptanceCriteria: ['n/a'], dependsOn: [], state: 'running',
     attempts: [{ runId: 'run_worker', startedAt: new Date().toISOString() }],
     adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    ...(kind === 'action' ? {
+      exec: {
+        cwd: process.env.WEAVER_HOME!,
+        verify: 'false',
+        approval: { by: 'human' as const, at: new Date().toISOString() },
+      },
+    } : {}),
   }));
 }
 
@@ -582,6 +589,69 @@ test('worker infrastructure failure preserves the assignment and schedules a typ
     assert.equal(doc.wakes[0]!.condition.type, 'time');
     assert.equal(doc.wakes[0]!.infrastructure!.sourceId, 'run_worker');
     assert.ok(!doc.wakes.some((wake) => wake.condition.type === 'immediate'));
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('action infrastructure failure is held failed while ordinary work remains queued for retry', async () => {
+  const home = workerHome();
+  try {
+    const infrastructure: InfrastructureWait = {
+      kind: 'usage_limit',
+      recovery: 'wait_or_enable_usage_credits',
+      source: 'worker',
+      sourceId: 'run_worker',
+      model: 'sonnet',
+      detectedAt: virtualNow().toISOString(),
+      retryAt: new Date(virtualNow().getTime() + 60_000).toISOString(),
+    };
+    await runningWorker('worker-action-infra', 'action');
+    await finalizeWorkerRun('worker-action-infra', 'asg_worker', 'run_worker', {
+      submitted: false,
+      costUsd: 0,
+      infrastructure,
+    });
+    await runningWorker('worker-work-infra');
+    await finalizeWorkerRun('worker-work-infra', 'asg_worker', 'run_worker', {
+      submitted: false,
+      costUsd: 0,
+      infrastructure: { ...infrastructure },
+    });
+
+    const action = (await load('worker-action-infra')).assignments[0]!;
+    const work = (await load('worker-work-infra')).assignments[0]!;
+    assert.equal(action.state, 'failed', 'an action must be durably held before engine readback');
+    assert.equal(action.attempts[0]!.terminalReason, 'infrastructure_backoff');
+    assert.equal(work.state, 'queued', 'ordinary intended work retains typed infrastructure retry behavior');
+    assert.equal(work.attempts[0]!.terminalReason, 'infrastructure_backoff');
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('runWorker refuses a legacy queued action that already has an attempt', async () => {
+  const home = workerHome();
+  let executed = false;
+  const executor: WorkerExecutor = {
+    async execute() {
+      executed = true;
+      return { costUsd: 0 };
+    },
+  };
+  try {
+    await runningWorker('worker-action-one-shot', 'action');
+    await arrive('worker-action-one-shot', (d) => {
+      d.assignments[0]!.state = 'queued';
+      d.assignments[0]!.attempts[0]!.endedAt = new Date().toISOString();
+      d.assignments[0]!.attempts[0]!.terminalReason = 'crashed';
+    });
+
+    assert.equal(await runWorker('worker-action-one-shot', 'asg_worker', executor), false);
+    assert.equal(executed, false);
+    assert.equal((await load('worker-action-one-shot')).assignments[0]!.attempts.length, 1);
   } finally {
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });

@@ -274,7 +274,13 @@ export async function finalizeWorkerRun(
     if (outcome.infrastructure) {
       const infrastructure = outcome.infrastructure;
       const explanation = infrastructureWaitSummary(infrastructure, slug);
-      a.state = 'queued';
+      // Work survives a disposable provider outage as intended work and may
+      // retry after the typed boundary. An action is different: this attempt
+      // may already have changed the outside world before capacity was lost,
+      // so queued would create a crash window in which the irreversible act
+      // could run again before deterministic readback. Hold it failed; the
+      // engine may promote it only if immediate readback confirms the effect.
+      a.state = a.kind === 'action' ? 'failed' : 'queued';
       if (attempt) attempt.terminalReason = 'infrastructure_backoff';
       const wakeId = newId('wake');
       d.wakes.push({
@@ -387,6 +393,10 @@ export async function runWorker(
   if (current.workstream.status !== 'active') return false;
   const currentAssignment = current.assignments.find((a) => a.id === assignmentId);
   if (currentAssignment?.state !== 'queued') return false;
+  // An action approval authorizes one attempt, not an automatic replay. Old
+  // persisted state may still contain queued actions parked by the former
+  // infrastructure retry path, so reject those before any launch setup.
+  if (currentAssignment.kind === 'action' && currentAssignment.attempts.length > 0) return false;
   const currentTarget = providedExecutor?.id
     ? capacityTarget
     : selectWorkerCapacityTarget(
@@ -423,6 +433,9 @@ export async function runWorker(
       }
       assertExecutionStartAllowed(d, startedAt);
       const a = d.assignments.find((x) => x.id === assignmentId)!;
+      if (a.kind === 'action' && a.attempts.length > 0) {
+        throw new Error(`${assignmentId} is an action with a prior attempt — provider/human reconciliation and a new approved action are required before retrying`);
+      }
       const now = virtualNow().toISOString();
       // A due infrastructure wake is a retry permit, not separate intended
       // work. This fresh attempt consumes matching permits; success creates its

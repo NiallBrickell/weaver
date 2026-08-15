@@ -647,7 +647,7 @@ test('a gated action never runs: tick launches no worker for it', async () => {
   assert.equal((await load('gated-ws')).assignments[0]!.state, 'gated');
 });
 
-test('readback records CONFIRMED on exit 0 and FAILED (with output) otherwise', async () => {
+test('readback records CONFIRMED on exit 0 and non-confirming evidence otherwise', async () => {
   await makeActionWorkstream('verify-ws', {
     exec: { cwd: process.env.WEAVER_HOME!, verify: 'echo effect-present', approval: { by: 'human', at: new Date().toISOString() } },
     state: 'awaiting_review',
@@ -699,13 +699,12 @@ test('crashed action, effect LANDED: never re-run — submitted for review on re
   assert.ok(!doc.attention.some((a) => a.refId === 'asg_act' && a.status === 'open'));
 });
 
-test('crashed action, effect ABSENT: the approved idempotent act is re-queued, bounded; exhaustion escalates', async () => {
-  // exec.run keeps the re-run on the ENGINE path — deterministic, no model.
-  await makeActionWorkstream('action-requeue-ws', {
+test('crashed action with a non-confirming verifier stays failed with one blocker and zero second attempts', async () => {
+  await makeActionWorkstream('action-unknown-ws', {
     state: 'running',
     exec: {
       cwd: process.env.WEAVER_HOME!,
-      run: 'echo redo',
+      run: 'echo unsafe-replay >> replayed.txt',
       verify: 'false',
       approval: { by: 'human', at: new Date().toISOString() },
     },
@@ -713,40 +712,68 @@ test('crashed action, effect ABSENT: the approved idempotent act is re-queued, b
   });
   process.env.WEAVER_ATTEMPT_STALE_MS = '1000';
   try {
-    await tick('action-requeue-ws', { maxPasses: 0 });
+    await tick('action-unknown-ws', { maxPasses: 0 });
+    await tick('action-unknown-ws', { maxPasses: 0 });
   } finally {
     delete process.env.WEAVER_ATTEMPT_STALE_MS;
   }
-  let doc = await load('action-requeue-ws');
-  // Approval attaches to the ACT: no human in the loop — the same tick
-  // re-queued it and the engine already re-executed (attempt 2).
-  assert.equal(doc.assignments[0]!.attempts.length, 2);
-  assert.equal(doc.assignments[0]!.attempts[1]!.model, 'engine');
-  assert.ok(!doc.attention.some((a) => a.kind === 'blocker' && a.status === 'open' && a.summary.includes('judgment')));
+  const doc = await load('action-unknown-ws');
+  assert.equal(doc.assignments[0]!.state, 'failed');
+  assert.equal(doc.assignments[0]!.attempts.length, 1, 'a non-confirming verifier must never authorize a second irreversible attempt');
+  assert.equal(fs.existsSync(path.join(process.env.WEAVER_HOME!, 'replayed.txt')), false);
+  const blockers = doc.attention.filter((a) => a.kind === 'blocker' && a.refId === 'asg_act' && a.status === 'open');
+  assert.equal(blockers.length, 1, 'reconciliation blocker is deduped across ticks');
+  assert.match(blockers[0]!.summary, /may already have changed the outside world.*will not run again automatically/);
+});
 
-  // Exhaustion: with MAX attempts already burned, escalate instead of looping.
-  await makeActionWorkstream('action-exhausted-ws', {
+test('crashed action with no runnable verifier stays failed and records zero second attempts', async () => {
+  await makeActionWorkstream('action-missing-verifier-ws', {
     state: 'running',
+    exec: undefined,
+    attempts: [{ runId: 'run_dead', startedAt: new Date(Date.now() - 60_000).toISOString() }],
+  });
+  process.env.WEAVER_ATTEMPT_STALE_MS = '1000';
+  try {
+    await tick('action-missing-verifier-ws', { maxPasses: 0 });
+  } finally {
+    delete process.env.WEAVER_ATTEMPT_STALE_MS;
+  }
+  const doc = await load('action-missing-verifier-ws');
+  assert.equal(doc.assignments[0]!.state, 'failed');
+  assert.equal(doc.assignments[0]!.attempts.length, 1);
+  const blockers = doc.attention.filter((a) => a.kind === 'blocker' && a.refId === 'asg_act' && a.status === 'open');
+  assert.equal(blockers.length, 1);
+  assert.match(blockers[0]!.summary, /verifier could not run/);
+});
+
+test('legacy queued actions with prior attempts are held failed, surfaced, and never engine-executed', async () => {
+  await makeActionWorkstream('action-one-shot-ws', {
+    state: 'queued',
     exec: {
       cwd: process.env.WEAVER_HOME!,
       verify: 'false',
       approval: { by: 'human', at: new Date().toISOString() },
     },
-    attempts: [
-      { runId: 'run_a', startedAt: new Date(Date.now() - 300_000).toISOString(), endedAt: new Date().toISOString(), terminalReason: 'crashed' },
-      { runId: 'run_b', startedAt: new Date(Date.now() - 200_000).toISOString(), endedAt: new Date().toISOString(), terminalReason: 'crashed' },
-      { runId: 'run_dead', startedAt: new Date(Date.now() - 60_000).toISOString() },
-    ],
+    attempts: [{ runId: 'run_failed', startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), terminalReason: 'crashed' }],
   });
-  process.env.WEAVER_ATTEMPT_STALE_MS = '1000';
-  try {
-    await tick('action-exhausted-ws', { maxPasses: 0 });
-  } finally {
-    delete process.env.WEAVER_ATTEMPT_STALE_MS;
-  }
-  doc = await load('action-exhausted-ws');
+  let doc = await load('action-one-shot-ws');
+  assert.deepEqual(runnableAssignments(doc), []);
+
+  await arrive('action-one-shot-ws', (d) => {
+    const action = d.assignments[0]!;
+    action.id = 'asg_engine';
+    action.exec!.run = 'echo unsafe-replay > replayed.txt';
+  });
+  await tick('action-one-shot-ws', { maxPasses: 0 });
+  doc = await load('action-one-shot-ws');
   assert.equal(doc.assignments[0]!.state, 'failed');
-  assert.ok(doc.attention.some((a) => a.refId === 'asg_act' && a.status === 'open'));
+  assert.equal(doc.assignments[0]!.attempts.length, 1);
+  assert.equal(fs.existsSync(path.join(process.env.WEAVER_HOME!, 'replayed.txt')), false);
+  assert.equal(
+    doc.attention.filter((a) => a.kind === 'blocker' && a.refId === 'asg_engine' && a.status === 'open').length,
+    1,
+  );
+  assert.ok(doc.events.some((event) => event.type === 'action.legacy_retry_held'));
 });
 
 test('a human-authored exec.run action is executed by the ENGINE (no worker) and judged by readback', async () => {
@@ -797,7 +824,7 @@ test('human adoption cannot outrank readback: an action without a passing verify
       verified: { ok: false, output: 'effect absent', at: new Date().toISOString() },
     },
   });
-  await assert.rejects(async () => adoptSubmission('adopt-guard-fail-ws', 'asg_act'), /readback FAILED/);
+  await assert.rejects(async () => adoptSubmission('adopt-guard-fail-ws', 'asg_act'), /readback did not CONFIRM/);
 
   await makeActionWorkstream('adopt-guard-ok-ws', {
     state: 'awaiting_review',

@@ -222,7 +222,7 @@ export async function adoptSubmission(slug: string, asgId: string, reason = 'ado
     if (asg.state !== 'awaiting_review' || !asg.submission) throw new Error(`${asgId} has no submission awaiting review`);
     if (asg.kind === 'action') {
       if (!asg.exec?.verified) throw new Error(`${asgId} is an ACTION whose readback has not run — its effect is unconfirmed and cannot be adopted (by anyone)`);
-      if (!asg.exec.verified.ok) throw new Error(`${asgId} is an ACTION whose readback FAILED: ${asg.exec.verified.output.trim().slice(0, 120)} — fix the world or reject; adoption cannot overrule readback`);
+      if (!asg.exec.verified.ok) throw new Error(`${asgId} is an ACTION whose readback did not CONFIRM the effect: ${asg.exec.verified.output.trim().slice(0, 120)} — reconcile the provider state or reject; adoption cannot overrule readback`);
     }
     const del = asg.submission.deliverableId
       ? d.deliverables.find((x) => x.id === asg.submission!.deliverableId)
