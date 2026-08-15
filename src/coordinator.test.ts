@@ -305,6 +305,36 @@ test('create_assignment persists a founder-reserved action as human-only', async
   const assignment = (await load('coordinator-capacity')).assignments[0]!;
   assert.equal(assignment.state, 'gated');
   assert.equal(assignment.exec?.approvalMode, 'human-only');
+  assert.equal((await load('coordinator-capacity')).attention.length, 1, 'an explicit human-only gate is immediately visible');
+});
+
+test('a routine PR action defaults to Pilot review without opening a human card', async () => {
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const create = req.tools.find((definition) => definition.name === 'create_assignment');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(create && finish);
+      const created = await create.handler({
+        objective: 'push the reviewed branch and open its pull request',
+        briefing: 'Push the exact clean branch head and open one PR with that head.',
+        kind: 'action',
+        acceptance_criteria: ['the remote PR exists at the exact local head'],
+        exec_cwd: home,
+        exec_verify: 'gh pr list --head fix/routine --json url --jq ".[0].url" | grep .',
+        approval_ask: 'Approve pushing the reviewed branch and opening its pull request. Only that branch and one PR may be created.',
+      }, {});
+      assert.equal(created.isError, undefined);
+      await finish.handler({ summary: 'Recorded the routine PR gate.', acknowledged_steering: true }, {});
+      return { costUsd: 0 };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const doc = await load('coordinator-capacity');
+  assert.equal(doc.assignments[0]!.exec?.approvalMode, 'pilot-or-human');
+  assert.equal(doc.attention.length, 0, 'Pilot-pending routine work is not a needs-you item');
 });
 
 test('create_assignment refuses a dependency already settled without acceptance', async () => {

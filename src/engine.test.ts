@@ -1029,6 +1029,7 @@ test('a WORKER action pilot refuses on its objective stays gated for the human',
     const asg = (await load('pilot-act-deny-ws')).assignments.find((a) => a.id === 'asg_act')!;
     assert.equal(asg.state, 'gated');
     assert.equal(asg.exec!.approval, undefined);
+    assert.equal((await load('pilot-act-deny-ws')).attention.filter((a) => a.refId === asg.id && a.status === 'open').length, 1);
   });
 });
 
@@ -1063,6 +1064,14 @@ test('pilot unreachable → fails closed: gated, no verdict recorded, retried la
     const asg = (await load('pilot-down-ws')).assignments[0]!;
     assert.equal(asg.state, 'gated');
     assert.equal(asg.exec!.pilotVerdict, undefined);
+    assert.ok(asg.exec!.pilotUnavailableSince);
+    assert.equal((await load('pilot-down-ws')).attention.length, 0, 'one transient failure is not a human task');
+
+    await arrive('pilot-down-ws', (d) => {
+      d.assignments[0]!.exec!.pilotUnavailableSince = new Date(Date.now() - 121_000).toISOString();
+    });
+    await tick('pilot-down-ws', { maxPasses: 0 });
+    assert.equal((await load('pilot-down-ws')).attention.filter((a) => a.refId === 'asg_act' && a.status === 'open').length, 1);
   } finally {
     delete process.env.WEAVER_PILOT_URL;
   }

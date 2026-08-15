@@ -48,6 +48,21 @@ import { secureMcpHeaderCredentials, type SecuredMcpConfiguration } from './mcpC
 
 export { workerModel } from './modelConfig.js';
 
+/** Preserve enough redacted substrate output to diagnose launch failures.
+ * The old 80-character prefix routinely ended inside a harmless warning and
+ * discarded the fatal line that followed it. Bound the durable field, but say
+ * exactly when and by how much it was bounded. */
+export function workerExceptionReason(
+  error: unknown,
+  redactionSecrets: Record<string, string>,
+): string {
+  const clean = redactSecrets(error instanceof Error ? error.message : String(error), redactionSecrets);
+  const limit = 4_000;
+  return `exception: ${clean.length <= limit
+    ? clean
+    : `${clean.slice(0, limit)}… [truncated ${clean.length - limit} characters]`}`;
+}
+
 /**
  * Which substrate runs the worker's model loop. The seam exists so remote
  * executors can slot in later; the authority model does not change with the
@@ -649,12 +664,12 @@ export async function runWorker(
       // local throw — capture for the capacity tracker, keep the message.
       sdkFailure.capture(new Error(outcome.error));
       process.stderr.write(`worker ${runId} error: ${outcome.error}\n`);
-      resultSubtype = resultSubtype ?? `exception: ${outcome.error.slice(0, 80)}`;
+      resultSubtype = resultSubtype ?? workerExceptionReason(outcome.error, redactionSecrets);
     }
   } catch (e) {
     sdkFailure.capture(e);
     process.stderr.write(`worker ${runId} error: ${e instanceof Error ? e.message : e}\n`);
-    resultSubtype = resultSubtype ?? `exception: ${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`;
+    resultSubtype = resultSubtype ?? workerExceptionReason(e, redactionSecrets);
   } finally {
     wall.disarm();
   }

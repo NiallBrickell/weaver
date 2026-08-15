@@ -201,7 +201,11 @@ export function buildProjection(
       ? a.exec.verified
         ? ` readback:${a.exec.verified.ok ? 'CONFIRMED' : `FAILED (${a.exec.verified.output.trim().slice(0, 80)})`}`
         : a.state === 'gated'
-          ? ' AWAITING HUMAN APPROVAL'
+          ? a.exec.approvalMode === 'human-only'
+            ? ' AWAITING EXPLICIT HUMAN APPROVAL'
+            : a.exec.pilotVerdict && a.exec.pilotVerdict.decision !== 'approve'
+              ? ` PILOT ESCALATED TO HUMAN (${a.exec.pilotVerdict.decision})`
+              : ' AWAITING PILOT REVIEW'
           : ' readback:not-yet-run'
       : '';
     // WHY the last attempt died is dispatch-shaping information:

@@ -14,7 +14,7 @@ An `action` assignment is reserved for one *irreversible* egress to the outside 
 
 1. **Gated**
 
-   Every action is created gated with a mandatory plain-language approval card — what approving allows, why the workstream wants it, the blast radius. The operator's pilot reviews routine actions first: safe ones may auto-approve (recorded as `by:pilot`, so the audit trail names who let it run), and anything outside its standing rules fails closed to the human. When an operator directive or workstream constraint explicitly reserves an action for founder/manual approval, Weaver records it as `human-only`; Pilot cannot clear that gate, though it still supervises the approved run's individual calls. Either way the gate is checked structurally in both the scheduler and the worker — nothing runs under the wrong authority.
+   Every action is created gated with a mandatory plain-language approval request — what approving allows, why the workstream wants it, the blast radius. The operator's pilot reviews routine actions first: safe ones may auto-approve (recorded as `by:pilot`, so the audit trail names who let it run), while a Pilot denial or sustained Pilot outage opens a needs-you card and fails closed to the human. When an operator directive or workstream constraint explicitly reserves an action for founder/manual approval, Weaver records it as `human-only` and opens the card immediately; Pilot cannot clear that gate, though it still supervises the approved run's individual calls. Either way the gate is checked structurally in both the scheduler and the worker — nothing runs under the wrong authority.
 
 2. **Executed**
 

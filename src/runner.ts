@@ -383,6 +383,8 @@ export interface RunnerOptions {
   executorCapabilities?: ReadonlySet<string>;
   /** Tick implementation; injectable only for deterministic runner tests. */
   tickFn?: typeof tick;
+  /** Source-revision probe; injectable only for deterministic runner tests. */
+  sourceStale?: () => boolean;
 }
 
 /**
@@ -484,6 +486,7 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   const loadSample = opts.loadSample ?? (() => ({ load1: os.loadavg()[0]!, cores: os.cpus().length }));
   const executorCapabilities = opts.executorCapabilities ?? runnerExecutorCapabilities();
   const tickFn = opts.tickFn ?? tick;
+  const sourceStale = opts.sourceStale ?? runnerSourceStale;
   // Last announced slot cap, so a throttle/recovery is logged on transition
   // only — never silently, and never once per iteration.
   let lastCap = opts.concurrency;
@@ -496,7 +499,19 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   const lastTickedAt = new Map<string, number>();
   let probing = false;
   let lastCredMtime = credentialsMtime();
+  let staleAnnounced = false;
   while (!opts.signal?.aborted) {
+    if (sourceStale()) {
+      if (!staleAnnounced) {
+        logError('[run] Weaver source changed since startup — stopping before further dispatch; restart Weaver');
+        staleAnnounced = true;
+      }
+      // In-flight ticks already own crash-recoverable work. Start nothing new
+      // and let them settle before releasing the singleton runner lock.
+      if (inFlight.size === 0) return;
+      await waitForNextIteration(opts.intervalMs, opts.signal);
+      continue;
+    }
     try {
       try {
         fs.writeFileSync(heartbeatPath(), String(Date.now()));

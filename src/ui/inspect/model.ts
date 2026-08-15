@@ -4,6 +4,7 @@ import { virtualNow } from '../../clock.js';
 import { isLegacyDollarBudgetAttention } from '../../executionSafety.js';
 import { isDoctrine, type PolicyRecord } from '../../policies.js';
 import type { Decision, Steering, WorkstreamDoc } from '../../types.js';
+import { actionNeedsHuman } from '../../actionApproval.js';
 
 export interface ManagedWorkstreamLink {
   slug: string;
@@ -207,7 +208,7 @@ export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
       }
     }
     for (const assignment of doc.assignments) {
-      if (assignment.state !== 'gated' || assignment.exec?.pilotVerdict?.decision === 'approve') continue;
+      if (!actionNeedsHuman(assignment)) continue;
       if (representedRefs.has(assignment.id)) continue;
       needs.push({
         slug,
