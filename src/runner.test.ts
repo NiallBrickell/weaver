@@ -167,6 +167,28 @@ test('an embedded runner whose owner aborts returns instead of pinning the proce
   );
 });
 
+test('a runner whose checkout changed stops before heartbeat or dispatch', async () => {
+  await make('stale-source');
+  const errors: string[] = [];
+  let ticks = 0;
+  await runLoop({
+    intervalMs: 10,
+    concurrency: 1,
+    sourceStale: () => true,
+    tickFn: async () => {
+      ticks++;
+      return { cycles: 0, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
+    },
+    log: () => {},
+    logError: (line) => errors.push(line),
+  });
+  assert.equal(ticks, 0);
+  assert.ok(!fs.existsSync(path.join(home, '.runner.heartbeat')));
+  assert.deepEqual(errors, [
+    '[run] Weaver source changed since startup — stopping before further dispatch; restart Weaver',
+  ]);
+});
+
 test('a stale lock left by a heartbeating dead runner is reclaimed, not wedged', async () => {
   const { spawnSync } = await import('node:child_process');
   const { acquireRunnerLock, liveRunnerPid } = await import('./runner.js');

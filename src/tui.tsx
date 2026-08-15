@@ -41,6 +41,7 @@ import { publishPrintoutHtml } from './printoutHtml.js';
 import { acquireRunnerLock, liveRunnerPid, promoteOnRunnerVacancy, runLoop, runnerLoopHealthy, runnerSourceStale } from './runner.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
 import type { ProviderCapacityObservation, WorkstreamDoc } from './types.js';
+import { actionAwaitingPilot } from './actionApproval.js';
 
 const STALE_ATTEMPT_MS = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
 
@@ -330,11 +331,11 @@ async function snapshot(): Promise<Snapshot> {
       // It reaches NEEDS YOU only when pilot escalated it, or when no verdict
       // arrived within the grace window (pilot down ⇒ fail closed, visibly).
       const ageMs = Date.now() - new Date(a.createdAtVirtual).getTime();
-      const noVerdict = !a.exec?.pilotVerdict;
+      const awaitingPilot = actionAwaitingPilot(a);
       // Healthy pilot ⇒ long grace (it WILL rule; only a stuck runner should
       // surface this). Pilot silent >90s ⇒ short grace, fail closed visibly.
       const grace = Date.now() - pilotOkAt < 90_000 ? 600_000 : 120_000;
-      if (noVerdict && ageMs < grace) {
+      if (awaitingPilot && ageMs < grace) {
         pendingPilot.push(`⧗ awaiting pilot: "${a.objective.slice(0, 70)}"`);
         continue;
       }
@@ -1054,6 +1055,14 @@ export async function runTui(): Promise<void> {
         signal: runnerAbort.signal,
         log: () => {},
         logError: () => {},
+      }).then(() => {
+        if (runnerAbort.signal.aborted) return;
+        // A source-stale loop has drained every in-flight tick before it
+        // returns. Release the singleton so a runner on the new revision can
+        // take over; this old dashboard remains a read-only viewer until exit.
+        release?.();
+        release = null;
+        instance?.rerender(<App embeddedRunner={false} />);
       });
     };
     if (release) {

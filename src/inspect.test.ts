@@ -277,7 +277,7 @@ test('gated actions and pending sends are human attention, not execution state',
   await arrive('egress', (doc) => {
     const gated = assignment('asg_action', 'gated');
     gated.kind = 'action';
-    gated.exec = { cwd: '/repo', verify: 'gh pr view 7', ask: 'Approve publishing the release?' };
+    gated.exec = { cwd: '/repo', verify: 'gh pr view 7', ask: 'Approve publishing the release?', approvalMode: 'human-only' };
     doc.assignments.push(gated);
     doc.attention.push({
       id: 'att_action',
@@ -301,6 +301,19 @@ test('gated actions and pending sends are human attention, not execution state',
   assert.equal(view.lanes['needs-you'].length, 1);
   assert.equal(view.needs.length, 2);
   assert.deepEqual(view.needs.map((need) => need.kind), ['action', 'send']);
+});
+
+test('a routine gated action waiting for Pilot is not human attention', async () => {
+  await makeWorkstream('pilot-pending');
+  await arrive('pilot-pending', (doc) => {
+    const gated = assignment('asg_action', 'gated');
+    gated.kind = 'action';
+    gated.exec = { cwd: '/repo', verify: 'gh pr view 7', ask: 'Open the reviewed pull request?', approvalMode: 'pilot-or-human' };
+    doc.assignments.push(gated);
+  });
+  const view = fleetBoard([await load('pilot-pending')], [], new Map());
+  assert.equal(view.needs.length, 0);
+  assert.equal(view.lanes['needs-you'].length, 0);
 });
 
 test('human attention keeps a concluded Workstream out of the folded Done list', async () => {

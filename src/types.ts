@@ -139,13 +139,16 @@ export interface Assignment {
     /** One-shot pilot verdict (approve or not) so a denial isn't re-asked
      * every tick; a denied action simply stays gated for the human. */
     pilotVerdict?: { decision: string; reason: string; at: Iso };
+    /** First failed Pilot contact for this gate. A sustained outage eventually
+     * opens a human card; a transient outage remains internal retry state. */
+    pilotUnavailableSince?: Iso;
     verified?: { ok: boolean; output: string; at: Iso };
   };
   acceptanceCriteria: string[];
   dependsOn: Id[];
   /** Work state — distinct from any worker run's own status. */
   state:
-    | 'gated' // action awaiting human approval; can never run in this state
+    | 'gated' // action awaiting Pilot or human approval; can never run in this state
     | 'queued'
     | 'running'
     | 'awaiting_review'

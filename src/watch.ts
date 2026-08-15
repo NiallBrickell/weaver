@@ -20,6 +20,7 @@ import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
 import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
+import { actionNeedsHuman } from './actionApproval.js';
 
 const R = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -123,13 +124,18 @@ export async function viewOf(slug: string): Promise<WsView> {
   const details: string[] = [];
 
   let needsYou = 0;
+  const representedRefs = new Set<string>();
   for (const a of doc.attention.filter((x) => x.status === 'open' && !isLegacyDollarBudgetAttention(x))) {
+    if (a.refId && representedRefs.has(a.refId)) continue;
+    if (a.refId) representedRefs.add(a.refId);
     needsYou++;
     const first = a.summary.split('\n')[0]!;
     details.push(`${RED}▸ [${a.kind}]${R} ${fit(first, 14 + a.kind.length)}`);
     details.push(`  ${DIM}→ weaver status ${slug}   (resolve: weaver resolve ${slug} ${a.id})${R}`);
   }
-  for (const a of doc.assignments.filter((x) => x.state === 'gated')) {
+  for (const a of doc.assignments.filter(actionNeedsHuman)) {
+    if (representedRefs.has(a.id)) continue;
+    representedRefs.add(a.id);
     needsYou++;
     details.push(`${RED}▸ gated action${R} ${fit(`"${a.objective}"`, 20)}`);
     details.push(`  ${DIM}→ weaver approve-action ${slug} ${a.id}${R}`);

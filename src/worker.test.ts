@@ -11,12 +11,23 @@ import {
   finalizeWorkerRun,
   runWorker,
   selectExecutor,
+  workerExceptionReason,
 } from './worker.js';
 import { setExecutorSecret } from './secrets.js';
 import { arrive, createWorkstream, load, readArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { InfrastructureWait } from './types.js';
 import type { WorkerExecutionRequest, WorkerExecutor } from './executor/types.js';
+
+test('worker failure provenance keeps the fatal line after warnings and redacts secrets', () => {
+  const reason = workerExceptionReason(
+    'WARNING: proceeding, even though we could not create PATH alias.\nThe actual fatal cause appears after the old eighty-character cutoff: credential SECRET_VALUE rejected by child process.',
+    { TEST_TOKEN: 'SECRET_VALUE' },
+  );
+  assert.match(reason, /actual fatal cause appears/);
+  assert.match(reason, /«secret:TEST_TOKEN»/);
+  assert.doesNotMatch(reason, /SECRET_VALUE/);
+});
 
 describe('executor selection', () => {
   const withEnv = (value: string | undefined, fn: () => void) => {
