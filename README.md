@@ -81,6 +81,7 @@ yarn install
 weaver create --slug my-stream --title "..." --objective "..." [--tag routine]
 weaver steer my-stream "context, repo paths, what done looks like"
 weaver run                # resident runner: ticks every active workstream (10 in parallel)
+bin/weaver-up.sh          # one-command fleet bring-up: ensures a resident runner is live and opens the dashboard (`--no-watch`/`--restart`)
 weaver pause [slug]       # pause one stream, or every stream active right now
 weaver resume <slug>      # resume one paused stream
 weaver watch              # interactive dashboard: the needs-you queue + fleet at a glance
