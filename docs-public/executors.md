@@ -185,6 +185,11 @@ erases that bearer-bearing environment record before the ordinary Bash tool can
 run. The same extension exposes Weaver's submission tools and every supported
 operator MCP tool through authenticated host relays. Upstream commands, URLs,
 headers, environments, and durable credentials do not enter Pi's configuration.
+A configured operator server that cannot be reached at launch (expired login,
+upstream outage) degrades the same way it does for codex-sdk and local-sdk
+workers: the run proceeds without it, the unavailable server is named in the
+launch log and in the worker's system prompt, and one dead server never blocks
+unrelated assignments.
 
 Pi keeps repository context files so a project's `AGENTS.md`/`CLAUDE.md`
 instructions apply, but disables personal extensions, skills, prompt templates,
@@ -241,7 +246,11 @@ Requirements:
   their complete tool lists and read/write calls to the container; commands,
   URLs, headers, environment values, and durable credentials never enter its
   configuration. Unsupported OAuth and dynamic-header variants fail before
-  container launch rather than silently dropping tools.
+  container launch rather than silently dropping tools. A configured server
+  that cannot be reached at launch (expired login, upstream outage) degrades:
+  the run proceeds without it, the unavailable server is named in the launch
+  log and in the worker's brief, and it never blocks unrelated work — the
+  same behavior codex-sdk and local-sdk workers already had.
 - The durable provider key never enters the container. A host-side proxy holds
   it in memory and gives the run a random, inference-only bearer, then closes
   with the container. The proxy accepts only chat-completion/response calls for

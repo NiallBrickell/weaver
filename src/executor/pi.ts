@@ -658,8 +658,30 @@ export class PiRpcExecutor implements WorkerExecutor {
         maxRequests: req.maxTurns,
       });
       redactionSecrets.WEAVER_PI_PROVIDER_PROXY_TOKEN = providerProxy.token;
+      const unavailableOperatorServers: string[] = [];
       for (const [name, config] of Object.entries(req.operatorMcpServers)) {
-        const relay = await this.mcpRelayStarter(config, { env: req.env });
+        let relay: McpRelay;
+        try {
+          relay = await this.mcpRelayStarter(config, { env: req.env });
+        } catch (error) {
+          // An unreachable operator MCP server is a lost capability, not a
+          // failed launch: codex-sdk and local-sdk workers start with the
+          // server absent and the run proceeds, so a dead OAuth grant on one
+          // optional server must not block every assignment on this executor.
+          // Credential-substitution safety is unchanged inside startMcpRelay
+          // (secrets never appear in the thrown message); degradation is
+          // explicit — stderr note here, and the confined worker is told the
+          // tools are absent so it cannot claim work that needed them.
+          const reason = redactSecrets(
+            error instanceof Error ? error.message : String(error),
+            scoped.redactionSecrets,
+          );
+          unavailableOperatorServers.push(name);
+          process.stderr.write(
+            `pi executor: operator MCP server '${name}' unavailable at launch (${reason}) — proceeding without it\n`,
+          );
+          continue;
+        }
         operatorRelays.push({ name, relay });
         redactionSecrets[`WEAVER_PI_MCP_RELAY_TOKEN_${operatorRelays.length}`] = relay.token;
       }
@@ -702,6 +724,9 @@ export class PiRpcExecutor implements WorkerExecutor {
           req.systemPrompt.append,
           'Submit only through weaver_append_section and weaver_submit_result. Stop after a successful submission.',
           `Stop after no more than ${req.maxTurns} provider turns.`,
+          ...(unavailableOperatorServers.length
+            ? [`Operator MCP servers unavailable during this run: ${unavailableOperatorServers.join(', ')}. Their tools are absent — do not claim work that required them; report the gap via submit_result.`]
+            : []),
         ].join('\n\n'),
         maxTurns: req.maxTurns,
         env: runtimeEnv,
