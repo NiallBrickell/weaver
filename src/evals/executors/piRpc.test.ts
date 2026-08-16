@@ -400,6 +400,13 @@ test('Prime Inference receives its own key and not another provider credential',
 test('Pi relays every operator MCP server with disposable bearers and closes partial startup', async () => {
   const calls: string[] = [];
   const durableMcpCredential = 'durable-mcp-credential';
+  const stderrLines: string[] = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = ((chunk: unknown) => {
+    stderrLines.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  let runtimeSystemPrompt: string | null = null;
   const executor = new PiEvalExecutor({
     executorSecrets: { OPENROUTER_API_KEY: 'durable-provider-key' },
     async startProviderProxy() {
@@ -420,26 +427,64 @@ test('Pi relays every operator MCP server with disposable bearers and closes par
     },
     async startBridge() {
       calls.push('bridge.start');
-      throw new Error('bridge must not start');
+      return { url: 'http://127.0.0.1:4556/mcp', token: 'submit-token', async close() {} };
+    },
+    async startRuntime(input) {
+      calls.push('runtime.start');
+      runtimeSystemPrompt = input.systemPrompt;
+      return {
+        harnessVersion: 'pi-eval',
+        sessionId: null,
+        async run() {
+          return {
+            error: null,
+            usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, reasoningOutputTokens: 0 },
+            providerResolved: 'openrouter',
+            modelResolved: 'moonshotai/kimi-k3',
+            costUsd: null,
+          };
+        },
+        async abort() {},
+        async close() { calls.push('runtime.close'); },
+      };
     },
   });
 
-  const outcome = await executor.execute(request({
-    env: {
-      PATH: process.env.PATH,
-      WEAVER_INTERNAL_MCP_HEADER_1: durableMcpCredential,
-    },
-    operatorMcpServers: {
-      first: { name: 'first' },
-      second: { name: 'second' },
-    },
-  }));
+  let outcome: Awaited<ReturnType<typeof executor.execute>>;
+  try {
+    outcome = await executor.execute(request({
+      env: {
+        PATH: process.env.PATH,
+        WEAVER_INTERNAL_MCP_HEADER_1: durableMcpCredential,
+      },
+      operatorMcpServers: {
+        first: { name: 'first' },
+        second: { name: 'second' },
+      },
+    }));
+  } finally {
+    process.stderr.write = originalWrite;
+  }
 
-  assert.equal(outcome.error?.includes(durableMcpCredential), false);
-  assert.match(outcome.error ?? '', /«secret:WEAVER_INTERNAL_MCP_HEADER_1»/);
+  // A dead operator MCP server degrades: the run proceeds without it, the
+  // confined worker is told which server is absent, and neither the stderr
+  // note nor the outcome may carry the durable credential.
+  assert.equal(outcome!.error, undefined);
+  const note = stderrLines.join('');
+  assert.match(note, /operator MCP server 'second' unavailable/);
+  assert.doesNotMatch(note, new RegExp(durableMcpCredential));
+  assert.match(note, /«secret:WEAVER_INTERNAL_MCP_HEADER_1»/);
+  assert.match(runtimeSystemPrompt ?? '', /unavailable during this run: second/);
+  assert.doesNotMatch(runtimeSystemPrompt ?? '', new RegExp(durableMcpCredential));
   assert.deepEqual(calls, [
-    'provider.start', 'relay.first.start', 'relay.second.start',
-    'relay.first.close', 'provider.close',
+    'provider.start',
+    'relay.first.start',
+    'relay.second.start',
+    'bridge.start',
+    'runtime.start',
+    'runtime.close',
+    'relay.first.close',
+    'provider.close',
   ]);
 });
 

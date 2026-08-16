@@ -300,10 +300,12 @@ describe('OpenHands eval executor', () => {
     assert.equal(executor.lastTelemetry()?.terminalReason, 'unsupported');
   });
 
-  it('closes earlier operator relays if a later configured server cannot start', async () => {
+  it('degrades past a dead operator MCP server and still tears every relay down', async () => {
     let relayStarts = 0;
     let firstRelayClosed = 0;
-    let downstreamStarts = 0;
+    let relayUrlsPassedToContainer = 0;
+    let liveRelayPassedToContainer = false;
+    let initialMessage: string | null = null;
     const executor = new OpenHandsEvalExecutor({
       apiKey: 'provider-secret',
       baseUrl: 'https://provider.example/v1',
@@ -315,14 +317,49 @@ describe('OpenHands eval executor', () => {
           async close() { firstRelayClosed += 1; },
         };
       },
-      startProviderProxy: async () => {
-        downstreamStarts += 1;
-        throw new Error('must not start');
-      },
-      runCommand: async () => {
-        downstreamStarts += 1;
+      startProviderProxy: async () => ({
+        url: 'http://host.docker.internal:41923/proxy',
+        token: 'proxy-token',
+        modelResolved: () => 'openai/gpt-test',
+        async close() {},
+      }),
+      startSubmitBridge: async () => ({
+        url: 'http://host.docker.internal:41924/mcp', token: 'bridge-token',
+        async close() {},
+      }),
+      runCommand: async (command: string, args: string[]) => {
+        if (command.includes('docker') && args[0] === 'port') {
+          return { exitCode: 0, stdout: '0.0.0.0:41925\n', stderr: '' };
+        }
         return { exitCode: 0, stdout: '', stderr: '' };
       },
+      fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+        const target = String(url);
+        if (target.endsWith('/api/conversations') && init?.method === 'POST') {
+          const raw = String(init.body);
+          const body = JSON.parse(raw) as Record<string, unknown>;
+          const findMcpConfig = (node: unknown): Record<string, unknown> | null => {
+            if (!node || typeof node !== 'object') return null;
+            if ('mcp_config' in (node as Record<string, unknown>)) {
+              return (node as Record<string, unknown>).mcp_config as Record<string, unknown>;
+            }
+            for (const child of Object.values(node as Record<string, unknown>)) {
+              const found = findMcpConfig(child);
+              if (found) return found;
+            }
+            return null;
+          };
+          const mcpConfig = findMcpConfig(body) ?? {};
+          initialMessage = (body.initial_message as { content?: { text?: string }[] } | undefined)?.content?.[0]?.text ?? null;
+          relayUrlsPassedToContainer = Object.keys(mcpConfig).length;
+          liveRelayPassedToContainer = raw.includes('first-relay-token');
+          return new Response(JSON.stringify({ id: 'conv-1' }), { status: 200 });
+        }
+        if (/\/api\/conversations\//.test(target)) {
+          return new Response(JSON.stringify({ id: 'conv-1', execution_status: 'finished', stats: {} }), { status: 200 });
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      }) as unknown as typeof fetch,
       now: () => 1_000,
     });
     const req = request();
@@ -333,11 +370,15 @@ describe('OpenHands eval executor', () => {
 
     const outcome = await executor.execute(req);
 
+    // One dead server must not fail the launch: the container is created with
+    // the live relay only, the prompt names the absent server, and the started
+    // relay is still closed afterwards.
     assert.equal(relayStarts, 2);
-    assert.equal(firstRelayClosed, 1);
-    assert.equal(downstreamStarts, 0);
-    assert.equal(outcome.error, 'failed to connect to configured MCP server');
-    assert.equal(executor.lastTelemetry()?.terminalReason, 'error');
+    assert.match(initialMessage ?? '', /unavailable during this run: second/);
+    assert.equal(relayUrlsPassedToContainer >= 2, true, 'weaver submit bridge plus the live relay');
+    assert.equal(liveRelayPassedToContainer, true);
+    assert.equal(outcome.error ?? '', '');
+    assert.ok(firstRelayClosed >= 1);
   });
 
   it('scrubs durable and per-run credentials from every submission field and relay reply', async () => {

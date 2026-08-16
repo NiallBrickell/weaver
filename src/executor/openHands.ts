@@ -200,12 +200,36 @@ export class OpenHandsExecutor implements WorkerExecutor {
       providerConfiguration = this.providerConfiguration(req.model);
       if (req.abort.signal.aborted) throw abortError();
 
+      const unavailableOperatorServers: string[] = [];
       for (const [name, config] of Object.entries(req.operatorMcpServers)) {
-        const relay = await this.mcpRelayStarter(config, {
-          env: req.env,
-          bindHost: '0.0.0.0',
-          advertiseHost: 'host.docker.internal',
-        });
+        let relay: McpRelay;
+        try {
+          relay = await this.mcpRelayStarter(config, {
+            env: req.env,
+            bindHost: '0.0.0.0',
+            advertiseHost: 'host.docker.internal',
+          });
+        } catch (error) {
+          // Same rule as the pi executor: an unreachable operator MCP server
+          // is a lost capability, not a failed launch. codex-sdk/local-sdk
+          // workers run with the server absent; a dead OAuth grant on one
+          // optional server must not block every assignment. Degradation is
+          // explicit — stderr note here, and the container prompt is told the
+          // tools are absent so it cannot claim work that needed them.
+          const secrets: Record<string, string> = { ...this.executorSecretsLoader() };
+          for (const [envName, value] of Object.entries(req.env)) {
+            if (envName.startsWith('WEAVER_INTERNAL_MCP_') && value !== undefined) secrets[envName] = value;
+          }
+          const reason = redactSecrets(
+            error instanceof Error ? error.message : String(error),
+            secrets,
+          );
+          unavailableOperatorServers.push(name);
+          process.stderr.write(
+            `openhands executor: operator MCP server '${name}' unavailable at launch (${reason}) — proceeding without it\n`,
+          );
+          continue;
+        }
         operatorRelays.push({ name, relay });
       }
 
@@ -323,6 +347,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
             workspacePlan,
             providerProxy,
             operatorRelays,
+            unavailableOperatorServers,
           )),
         },
         req.abort.signal,
@@ -544,6 +569,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
     workspacePlan: WorkspaceMountPlan,
     providerProxy: ProviderProxy,
     operatorRelays: readonly NamedMcpRelay[],
+    unavailableOperatorServers: readonly string[],
   ): Record<string, unknown> {
     return {
       agent: {
@@ -588,7 +614,12 @@ export class OpenHandsExecutor implements WorkerExecutor {
       },
       initial_message: {
         role: 'user',
-        content: [{ type: 'text', text: workspacePlan.prompt }],
+        content: [{
+          type: 'text',
+          text: workspacePlan.prompt + (unavailableOperatorServers.length
+            ? `\n\nOperator MCP servers unavailable during this run: ${unavailableOperatorServers.join(', ')}. Their tools are absent — do not claim work that required them; report the gap via submit_result.`
+            : ''),
+        }],
       },
       max_iterations: req.maxTurns,
       stuck_detection: true,
