@@ -229,7 +229,13 @@ export class CodexExecutor implements WorkerExecutor {
         ? (req.abort.signal.aborted ? 'aborted' : 'error')
         : 'completed';
     } catch (caught) {
-      error = errorMessage(caught);
+      // Same rule as the coordinator: the exit-code exception carries only
+      // stderr, which has no capacity signal; a `turn.failed`/`error` event
+      // already observed on the stream is the real diagnosis and must survive
+      // for capacity classification (usage limit → infrastructure backoff, not
+      // worker failure strikes).
+      const thrown = errorMessage(caught);
+      error = error ? `${error} (stream exit: ${thrown})` : thrown;
       terminalReason = req.abort.signal.aborted ? 'aborted' : 'error';
     } finally {
       if (bridge) {

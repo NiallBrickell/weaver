@@ -211,6 +211,42 @@ describe('CodexCoordinatorExecutor', () => {
     assert.equal(homeCleaned, 1);
   });
 
+  test('keeps the turn.failed provider diagnosis when the stream exits non-zero', async () => {
+    // Reproduces the 2026-08-15 outage: a usage-limited Codex subscription
+    // reports `turn.failed` on stdout, then the SDK throws an exit-code error
+    // whose message is stderr-only ("Reading prompt from stdin…"). The event
+    // diagnosis must survive so capacity classification sees the usage limit
+    // (infrastructure backoff, no strikes) instead of a logical pass error.
+    async function* events(): AsyncGenerator<ThreadEvent> {
+      yield { type: 'thread.started', thread_id: 'thread-usage-limited' };
+      yield {
+        type: 'turn.failed',
+        error: {
+          message: "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 21st, 2026 1:27 AM.",
+        },
+      };
+      throw new Error('Codex Exec exited with code 1: Reading prompt from stdin...');
+    }
+    const executor = new CodexCoordinatorExecutor({
+      startBridge: async () => ({
+        url: 'http://127.0.0.1:43125/mcp', token: 'token',
+        async close() {},
+      }),
+      prepareHome: () => ({
+        path: '/tmp/isolated-codex-home-3',
+        cleanup() {},
+      }),
+      createCodex: () => ({
+        startThread: () => ({ async runStreamed() { return streamed(events()); } }),
+      }),
+    });
+
+    const outcome = await executor.execute(request());
+
+    assert.match(outcome.error ?? '', /You've hit your usage limit/);
+    assert.match(outcome.error ?? '', /stream exit: Codex Exec exited with code 1/);
+  });
+
   test('selects only explicit supported coordinator executors', () => {
     assert.equal(selectCoordinatorExecutor('local-sdk').id, 'local-sdk');
     assert.equal(selectCoordinatorExecutor('codex-sdk').id, 'codex-sdk');
