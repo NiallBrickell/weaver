@@ -264,7 +264,15 @@ export class CodexCoordinatorExecutor implements CoordinatorExecutor {
       }
       if (!completed && !error) error = 'Codex coordinator stream ended without turn.completed';
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      // The SDK throws `Codex Exec exited with code N: <stderr>` only AFTER the
+      // event stream has yielded the real failure. A usage limit arrives as a
+      // `turn.failed` event whose message is the only capacity signal — stderr
+      // is just "Reading prompt from stdin…", and letting the exit text clobber
+      // the event diagnosis defeats infrastructure classification, burning pass
+      // strikes on a provider outage. The event-reported failure wins; the exit
+      // detail is only kept when the stream itself never said why.
+      const thrown = caught instanceof Error ? caught.message : String(caught);
+      error = error ? `${error} (stream exit: ${thrown})` : thrown;
     } finally {
       if (bridge) {
         try { await bridge.close(); }

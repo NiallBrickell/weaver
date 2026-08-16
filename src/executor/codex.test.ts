@@ -13,6 +13,66 @@ function streamed(events: AsyncGenerator<ThreadEvent>): RunStreamedResult {
   return { events };
 }
 
+test('Codex worker keeps the turn.failed provider diagnosis when the stream exits non-zero', async () => {
+  // The exit-code exception carries only stderr ("Reading prompt from
+  // stdin…"), which has no capacity signal; the turn.failed message is what
+  // routes a usage limit to infrastructure backoff instead of worker strikes.
+  const bridge: SubmitBridge = {
+    url: 'http://127.0.0.1:43211/mcp',
+    token: 'bridge-secret',
+    async close() {},
+  };
+  const executor = new CodexExecutor({
+    startBridge: async () => bridge,
+    createCodex: () => ({
+      startThread() {
+        return {
+          async runStreamed() {
+            async function* events(): AsyncGenerator<ThreadEvent> {
+              yield { type: 'thread.started', thread_id: 'thread-usage-limited' };
+              yield {
+                type: 'turn.failed',
+                error: {
+                  message: "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 21st, 2026 1:27 AM.",
+                },
+              };
+              throw new Error('Codex Exec exited with code 1: Reading prompt from stdin...');
+            }
+            return streamed(events());
+          },
+        };
+      },
+    }),
+  });
+  const req: WorkerExecutionRequest = {
+    workstreamSlug: 'codex-usage-limit',
+    assignmentId: 'asg_codex_usage_limit',
+    prompt: 'Complete the ordinary coding assignment.',
+    systemPrompt: { type: 'preset', preset: 'claude_code', append: 'System rules' },
+    model: 'gpt-5.6-sol',
+    tools: { type: 'preset', preset: 'claude_code' },
+    allowedTools: ['mcp__weaver__*'],
+    permissionMode: 'bypassPermissions',
+    settingSources: ['user', 'project', 'local'],
+    strictMcpConfig: false,
+    maxTurns: 80,
+    cwd: '/fixture/worktree',
+    additionalDirectories: [],
+    env: { PATH: '/usr/bin' },
+    operatorMcpServers: {},
+    submit: {
+      async appendSection() { return { text: 'appended' }; },
+      async submitResult() { return { text: 'submitted' }; },
+    },
+    abort: new AbortController(),
+  };
+
+  const outcome = await executor.execute(req);
+
+  assert.match(outcome.error ?? '', /You've hit your usage limit/);
+  assert.match(outcome.error ?? '', /stream exit: Codex Exec exited with code 1/);
+});
+
 test('Codex ordinary workers use the exact host-process thread boundary without dropping workspace paths', async () => {
   let threadOptions: ThreadOptions | undefined;
   const bridge: SubmitBridge = {
