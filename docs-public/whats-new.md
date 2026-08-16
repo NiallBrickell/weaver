@@ -32,3 +32,12 @@ Self-reported success is structurally worthless here — which is exactly what m
 - A closed effect vocabulary means a policy can add verification or narrow authority, but can never spend, send, merge, or widen access — however confident it becomes. Learning recommends; it never permits.
 
 See [The learning loop](./learning.md) for the full mechanism and why it's deliberately shaped as an RL substrate.
+
+## 4. Choose the model loop without changing the Workstream
+
+Fresh coordinators and workers can run through local Claude, local Codex, the
+pinned Pi API executor, or an OpenHands container while the durable Workstream
+contract stays the same. Reviewed model routes are typed, versioned commitments:
+the first Pi route sends text-only bounded code repair to Kimi K3 only when Pi
+is already the configured substrate, and never changes the action executor.
+[Where model loops run](./executors.md) documents the boundaries and setup.

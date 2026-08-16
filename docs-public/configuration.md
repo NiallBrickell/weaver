@@ -64,7 +64,7 @@ pending (see [Claude capacity & billing](./claude-capacity.md)).
 
 | Variable | Default | What it sets |
 | --- | --- | --- |
-| `WEAVER_EXECUTOR` | `local-sdk` | Where a worker's model loop runs — `local-sdk` (Claude), `codex-sdk` (local Codex), or `openhands` (pinned container). See [Where workers run](./executors.md) |
+| `WEAVER_EXECUTOR` | `local-sdk` | Where a worker's model loop runs — `local-sdk` (Claude), `codex-sdk` (local Codex), `pi` (pinned provider-neutral host process), or `openhands` (pinned container). See [Where workers run](./executors.md) |
 | `WEAVER_RUNNER_EXECUTORS` | configured coordinator, worker, and action executors | Comma-separated substrates this process may claim. Add reviewed route executors such as `openhands` explicitly on a capable host |
 | `WEAVER_ACTION_EXECUTOR` | `local-sdk` | Separate Pilot-supervised action runtime; automatic model routes never apply to actions |
 | `WEAVER_ACTION_MODEL` | `sonnet` | Model for declared action workers |
@@ -79,6 +79,16 @@ OpenHands provider credentials are values, not settings. Store OpenRouter's as
 for every attempt without restarting the runner. The older transient
 `WEAVER_MODEL_API_KEY` / `LLM_API_KEY` environment inputs remain compatible,
 but never belong in `.env`.
+
+Pi targets are provider-qualified: for example
+`openrouter/moonshotai/kimi-k3`, `zai/glm-5.3`, or
+`zai-coding-plan/glm-5.3`. Store `OPENROUTER_API_KEY`, `ZHIPU_API_KEY`, or
+Pi's native `ZAI_API_KEY` in executor-only scope. The `zai` and
+`zai-coding-plan` prefixes remain separate capacity and billing pools.
+When Pi is the configured substrate, the reviewed text-only bounded-repair
+route selects `openrouter/moonshotai/kimi-k3`; every Pi runner must therefore
+have its executor-only OpenRouter credential as well as any fallback-provider
+credential. General and image work continue to the configured fallback.
 
 New work stores a typed execution profile and modalities. Weaver checks matching
 reviewed routes inside the configured `WEAVER_EXECUTOR` substrate, then advances

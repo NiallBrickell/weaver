@@ -186,6 +186,7 @@ test('the pure compatibility classifier is a categorized superset of the old reg
   assert.equal(classifyCapacityFailure('401 unauthorized'), 'auth');
   assert.equal(classifyCapacityFailure('529 overloaded'), 'other');
   assert.equal(classifyCapacityFailure('quota exceeded'), 'rate_limit');
+  assert.equal(classifyCapacityFailure('409 run inference request limit reached'), null);
   assert.equal(classifyCapacityFailure('ordinary model error'), null);
   assert.equal(classifyCapacityFailure('', true), null);
 });

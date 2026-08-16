@@ -11,8 +11,8 @@ loop runs*, and this bakeoff is how a new runtime earns that place with evidence
 anecdote.
 
 The bakeoff supports six explicit targets: the Claude SDK baseline, Codex SDK, OpenCode,
-OpenHands, Pi, and Prime Agent. Running the suite never changes production configuration. Codex
-and OpenHands run through the same executor classes available to real Workstreams; OpenCode, Pi,
+OpenHands, Pi, and Prime Agent. Running the suite never changes production configuration. Codex,
+OpenHands, and Pi run through the same executor classes available to real Workstreams; OpenCode
 and Prime Agent remain eval-only.
 
 ## Run the suite
@@ -43,23 +43,24 @@ state path, provider key, SSH agent, or unrelated ambient credential. Weaver wai
 process to exit before deleting that home. The server sees only disposable inference and
 submission bearers; it remains an explicitly labelled `host-process`, not a managed sandbox.
 Subscription-backed Codex and Claude use their existing local logins. Pi and Prime targets require
-`provider/model` names. Each runs with a fresh empty harness home and uses only the selected
-provider's key from executor-secret scope:
+`provider/model` names. Each runs with a fresh empty harness home; Pi keeps the selected durable
+provider key in Weaver's host proxy and gives the child only a disposable bearer:
 
 ```bash
 weaver secret set OPENROUTER_API_KEY --executor
 yarn eval:harness --target pi=openrouter/moonshotai/kimi-k3
 ```
 
-Each Pi/Prime case starts one invocation-local RPC process with `--no-session`. Prime's public CLI
-normally delegates RPC sessions to its daemon, so Weaver calls Prime's public embedding entrypoint
-inside the fresh child; a process-local no-op extension factory selects the documented in-process
-runtime and adds no tool or state. Weaver disables extension, skill, prompt, theme, and context-file
-discovery and explicitly loads only its authenticated submission extension. Prime Agent is never
-launched with a goal, autonomous mode, a schedule, a daemon socket, continue, resume, or fork. Its
-process and RPC state are torn down after the assignment, so none of Prime's session machinery can
-become Workstream memory; its RPC session identifier is not recorded in the worker outcome or eval
-telemetry.
+Each Pi/Prime case starts one invocation-local RPC process with `--no-session`. Production Pi uses
+the exact pinned package and run-bound extension: it registers the disposable provider, Weaver
+submission tools, and authenticated host-relayed operator MCP tools, then removes the bearer-bearing
+environment records before Bash can run. Personal extensions, skills, prompts, themes, sessions,
+and provider configuration stay disabled; repository context files remain available to production
+Pi. Prime's public CLI normally delegates RPC sessions to its daemon, so Weaver calls its public
+embedding entrypoint inside the fresh child. Prime Agent is never launched with a goal, autonomous
+mode, a schedule, a daemon socket, continue, resume, or fork. Its process and RPC state are torn
+down after the assignment, and its RPC session identifier is not recorded in the worker outcome or
+eval telemetry.
 
 The local OpenHands target invokes the pinned official Agent Server image through a Docker-compatible
 runtime (OrbStack on macOS) and needs an executor-only model-provider key:
@@ -127,6 +128,7 @@ successful result:
 
 | Exact target and cohort | Hard-gate passes | Median / p95 wall | Total cost | Cost per pass | Failure spend |
 | --- | ---: | ---: | ---: | ---: | ---: |
+| `pi:openrouter/moonshotai/kimi-k3` `.4` (`20260815T105214Z`) | 10/10 | 38.2s / 82.0s | $1.5809* | $0.1581* | — |
 | `codex-sdk:gpt-5.6-sol` `.3` (`20260814T145942Z`) | 10/10 | 114.0s / 166.9s | — | — | — |
 | `opencode:zai-coding-plan/glm-5.3` `.3` (`20260814T213026Z`) | 10/10 | 55.0s / 62.3s | — | — | — |
 | `openhands:openrouter/z-ai/glm-5.2` (`20260814T145843Z`) | 10/10 | 33.3s / 42.5s | $0.3025 | $0.0303 | — |
@@ -135,8 +137,10 @@ successful result:
 | `openhands:openrouter/moonshotai/kimi-k2.7-code` (`20260814T145842Z`) | 8/10 | 58.1s / 95.3s | $0.3551 | $0.0444 | $0.1094 |
 | `openhands:openrouter/moonshotai/kimi-k3` (`20260814T125803Z`) | 2/3 | 111.9s / 382.0s | $0.4144 | $0.2072 | $0.2517 |
 
-Codex and Z.ai Coding Plan do not expose a per-run subscription bill, so `—` is unknown rather than
-zero. GLM-5.3 passed the full vector 10/10 at a 55.0s median, 52% below Codex's 114.0s median.
+`*` is the exact before/after OpenRouter account-usage delta for the complete Pi cohort, not
+per-run telemetry; the ledger keeps those run costs unknown because the proxy response supplied no
+trustworthy bill. Codex and Z.ai Coding Plan do not expose a per-run subscription bill, so `—` is
+unknown rather than zero. GLM-5.3 passed the full vector 10/10 at a 55.0s median, 52% below Codex's 114.0s median.
 OpenHands/GLM-5.2 remains the fastest clean cohort at 33.3s and the cheapest measured OpenRouter
 cohort at $0.0303/pass. These compare runtime-plus-model targets, not models in isolation: OpenCode
 is a trusted host process while OpenHands is a local container. Kimi K2.7 Code and Kimi K3 both
@@ -144,7 +148,13 @@ repaired code in failed repetitions but exited without a valid `submit_result`; 
 cohorts remain negative routing evidence.
 
 The Codex `.3` cohort qualifies the reviewed text-only bounded-repair route when Codex is already
-the configured worker substrate. The OpenHands rows above were collected under the older `.2`
+the configured worker substrate. Pi's `.4` Kimi K3 cohort independently qualifies the same typed
+profile when Pi is already configured: 10/10 complete vectors, with an observed $1.5809 account
+delta ($0.1581/pass). The earlier Pi `.3` row is stale because accepted submission did not yet stop
+the disposable provider loop structurally. The Pi/GLM-5.3 `.2` cohort passed 9/10 and then reached
+the Coding Plan window limit; it remains negative, stale evidence and backs no route.
+
+The OpenHands rows above were collected under the older `.2`
 single-mount/submission-only epoch. OpenHands `.3` adds plural mounts and a credential-isolating
 host relay for serializable user/local MCP entries, making those rows stale for route qualification;
 no OpenRouter model is automatically routed until a fresh `.3` cohort exists and the remaining
@@ -196,6 +206,6 @@ Weaver does not implement its own sandbox for this work. The evals exercise main
 CLIs plus the official OpenHands Agent Server runtime; production containment remains the chosen
 runtime provider's responsibility. Pi and Prime also reject action assignments before starting a
 bridge or process because neither adapter exposes live Pilot supervision. Their fresh homes hide
-personal harness logins and unrelated provider keys, but the selected key is still present in the
-host child process for provider authentication; use these candidates only with the frozen trusted
-eval corpus until an inference proxy or isolated runtime removes that key from model tool reach.
+personal harness logins and unrelated provider keys. Production Pi additionally confines the
+selected durable key behind the host proxy; its child receives only a disposable, model-pinned
+inference bearer.

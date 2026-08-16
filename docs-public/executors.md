@@ -26,6 +26,7 @@ missing work, but it cannot adopt the checkpoint as a completed result.
 | --- | --- | --- |
 | `local-sdk` *(default)* | The local Claude Agent SDK `query()` in this process's environment | Host process — the launching machine is the boundary |
 | `codex-sdk` | A fresh local Codex SDK thread using the machine's ChatGPT login | Host process — the launching machine is the boundary |
+| `pi` | A fresh RPC process from the pinned Pi package using one provider-qualified API target | Host process — the launching machine is the boundary |
 | `openhands` | A pinned OpenHands Agent Server container, one per assignment | Agent server — the primary directory is mounted at `/workspace`, independent declared sources at `/weaver-sources/N`; the container is `--rm` and always torn down |
 
 An unknown value fails hard before the attempt starts, on purpose: a silent
@@ -96,10 +97,11 @@ Cross-executor automatic preference remains closed until Weaver stores that
 execution policy durably with the Workstream. An environment-only switch would
 let configuration skew turn model choice into a Postgres tick-lock race.
 
-Pi and Prime Agent are available only in the harness-eval vocabulary. They are
-not accepted values for `WEAVER_EXECUTOR`, cannot coordinate a Workstream, and
-cannot run actions. Their fresh RPC adapters must first pass a complete reviewed
-cohort before any separate production-promotion change is considered.
+Prime Agent remains available only in the harness-eval vocabulary. Pi is a
+production worker substrate but not a coordinator or action substrate. It is
+explicitly selected; within that configured substrate, text-only bounded code
+repair selects the reviewed Kimi K3 route backed by the complete production
+adapter cohort. No route changes the configured executor.
 
 ## Running locally with Codex
 
@@ -152,6 +154,57 @@ read-only helper; it is not part of the controller or worker execution path.
 > current TypeScript SDK has no per-tool authority callback and refuses an
 > action before launch if explicitly selected; it never runs irreversible
 > egress without Pilot supervision.
+
+## Running API-backed workers with Pi
+
+Pi is the smallest local API substrate: Weaver packages version `0.84.2`, starts
+one fresh `--no-session` RPC process per assignment, and never depends on a
+global Pi install. It requires Node 22.19 or newer and no container runtime.
+
+Store the provider key, then select a provider-qualified target:
+
+```bash
+# Z.ai general API credits
+weaver secret set ZHIPU_API_KEY --executor
+export WEAVER_EXECUTOR=pi
+export WEAVER_WORKER_MODEL=zai/glm-5.3
+
+# Or OpenRouter
+weaver secret set OPENROUTER_API_KEY --executor
+export WEAVER_WORKER_MODEL=openrouter/moonshotai/kimi-k3
+```
+
+Pi's native `ZAI_API_KEY` name is accepted as an alias. The separate
+`zai-coding-plan/glm-5.3` target uses Z.ai's Coding Plan endpoint; keeping that
+prefix distinct ensures plan capacity never clears or blocks general API
+credits. Provider-specific model names are never guessed or silently changed.
+
+The durable provider key remains in Weaver's host-side inference proxy. The Pi
+process receives a random model-pinned bearer, and the sole run-bound extension
+erases that bearer-bearing environment record before the ordinary Bash tool can
+run. The same extension exposes Weaver's submission tools and every supported
+operator MCP tool through authenticated host relays. Upstream commands, URLs,
+headers, environments, and durable credentials do not enter Pi's configuration.
+
+Pi keeps repository context files so a project's `AGENTS.md`/`CLAUDE.md`
+instructions apply, but disables personal extensions, skills, prompt templates,
+themes, sessions, and provider configuration. Declared additional source paths
+remain normal absolute host paths. This is deliberately reported as
+`host-process`, not filesystem containment.
+
+The actual upstream response must state a model id before Weaver records a
+resolved target. Run cost remains unknown because the custom run-bound provider
+does not expose a trustworthy bill; unknown is never rewritten as `$0.00`.
+Pi has no Pilot per-tool supervision callback, so any action-shaped request is
+refused before a key, proxy, relay, bridge, temporary home, or child process is
+created. Keep `WEAVER_ACTION_EXECUTOR=local-sdk`.
+
+The reviewed `pi@0.84.2-weaver.4` cohort routes text-only bounded code repair to
+`openrouter/moonshotai/kimi-k3` when `WEAVER_EXECUTOR=pi`; general and image work
+still use `WEAVER_WORKER_MODEL`. Every Pi runner in a shared fleet must therefore
+hold executor-only credentials for both its configured fallback and each active
+Pi route. The executor declaration is intentionally not a provider capability
+negotiation layer.
 
 ## Running workers in OpenHands
 
@@ -224,7 +277,7 @@ Requirements:
   that inspects every local API and runtime file can recover only a disposable
   inference bearer, never the durable OpenRouter key.
 - **Actions use a separate supervised target.** A declared action needs live,
-  per-call Pilot supervision, which Codex and the container path cannot route
+  per-call Pilot supervision, which Codex, Pi, and the container path cannot route
   yet. The default action target remains local Claude regardless of the work
   fallback or performance routes. Explicitly selecting an unsupported action
   executor fails closed — capability is never authority.

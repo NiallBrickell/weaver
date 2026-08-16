@@ -610,7 +610,7 @@ export class OpenCodeEvalExecutor implements EvalExecutor {
     };
 
     return {
-      costUsd: costUsd ?? 0,
+      costUsd,
       ...(sessionId ? { sessionId } : {}),
       ...(failure ? { error: failure } : {}),
     };

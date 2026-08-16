@@ -110,8 +110,8 @@ export function createEvalExecutor(target: EvalTarget): EvalExecutor {
       const executorSecrets = loadExecutorSecrets();
       return new OpenHandsEvalExecutor({ loadExecutorSecrets: () => executorSecrets });
     }
-    case 'pi': return new PiEvalExecutor();
-    case 'prime-agent': return new PrimeAgentEvalExecutor();
+    case 'pi': return new PiEvalExecutor({ executorSecrets: loadExecutorSecrets() });
+    case 'prime-agent': return new PrimeAgentEvalExecutor({ executorSecrets: loadExecutorSecrets() });
   }
 }
 

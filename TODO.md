@@ -59,6 +59,15 @@ Pilot. The gates below are therefore no longer promotion blockers but the
 hardening that widens that scope to enforced isolation and supervised remote
 actions.
 
+**Decision (2026-08-15): Pi is the provider-neutral local API executor.** It is
+an explicit `WEAVER_EXECUTOR=pi` host-process substrate, not a replacement for
+the managed-sandbox track. Weaver pins the package, starts one fresh RPC process
+per assignment, keeps provider credentials behind a run-bound host proxy, and
+relays the ordinary serializable MCP surface without Docker. It fails actions
+closed. The first reviewed production route sends text-only bounded code repair
+to Kimi K3 when Pi is already the configured worker substrate; no route crosses
+executors.
+
 Remaining hardening (was "promotion gates", now post-promotion):
 
 - [x] Add an adversarial confinement case with an outside-workspace sentinel and secret. The
@@ -105,6 +114,17 @@ Remaining hardening (was "promotion gates", now post-promotion):
   substrate for cooperative work; supervised remote actions and an enforced (`managed-sandbox`)
   boundary remain the gates that widen that scope. Ongoing comparison of quality, latency, cost,
   operability, and capacity continues through the bakeoff among the surviving candidates.
+- [x] Promote Pi as the explicit provider-neutral API worker. The eval adapter is a thin wrapper
+  over the production class; the package/RPC epoch is pinned, every run is fresh, durable provider
+  and MCP credentials remain in host proxies/relays, and unknown billing stays null. The default
+  remains `local-sdk`, coordinator selection is unchanged, and actions fail before side effects.
+- [x] Qualify the exact Pi/Kimi K3 production epoch and add the reviewed same-substrate route. Exact
+  `.4` cohort `20260815T105214Z` passed 10/10 with every hard gate and both quality checks at 38.2s
+  median / 82.0s p95. The OpenRouter account delta was $1.5809 ($0.1581/pass); run telemetry keeps
+  cost unknown because the proxy response does not expose a trustworthy per-request bill.
+- [ ] Requalify Pi/GLM-5.3 on the current `.4` epoch after the Coding Plan window resets. The `.2`
+  cohort passed 9/10: one quality miss and one plan-limit terminal failure. It is retained as
+  negative history and cannot back a route.
 - [ ] Before an automatic route can select OpenHands, finish preserving the ordinary worker surface
   across the remote seam. Every declared source directory now mounts, and serializable user/local
   stdio/HTTP/SSE servers relay host-side with full read/write tool semantics and no durable container
@@ -119,6 +139,8 @@ Remaining hardening (was "promotion gates", now post-promotion):
   and the checked-in registry cites complete versioned cohorts with exact hard-gate and quality
   vectors. The first Codex route was withdrawn when its worker sandbox boundary changed; a fresh
   10/10 `.3` full-access cohort now backs its replacement for text-only bounded code repair.
+  Pi's first route is independently backed by the complete 10/10 Kimi K3 `.4` cohort and is visible
+  only to runners whose configured worker substrate is already `pi`.
   It applies only when `codex-sdk` is already the configured worker substrate, so a stock local-SDK
   runner cannot strand work and process-local config cannot create a cross-executor preference race.
   Appending eval rows alone never changes production routing, and OpenHands model evidence cannot

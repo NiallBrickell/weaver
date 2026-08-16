@@ -62,6 +62,9 @@ const TEST_ROUTE: WorkModelRoute = {
 const ACTIVE_CODEX_ROUTE = WORK_MODEL_ROUTES.find(
   (route) => route.id === 'codex-5-6-sol-bounded-code-repair',
 )!;
+const ACTIVE_PI_ROUTE = WORK_MODEL_ROUTES.find(
+  (route) => route.id === 'pi-kimi-k3-bounded-code-repair',
+)!;
 
 function cleanResult(
   repetition: number,
@@ -162,6 +165,33 @@ describe('reviewed worker routes', () => {
     }
   });
 
+  test('the qualified Kimi route is active only inside a configured Pi substrate', () => {
+    const previousExecutor = process.env.WEAVER_EXECUTOR;
+    const previousModel = process.env.WEAVER_WORKER_MODEL;
+    process.env.WEAVER_EXECUTOR = 'pi';
+    process.env.WEAVER_WORKER_MODEL = 'zai-coding-plan/glm-5.3';
+    try {
+      assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair')), [
+        { executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3' },
+        { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
+      ]);
+      assert.deepEqual(workerTargetsForAssignment(assignment('general')), [
+        { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
+      ]);
+      assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair', ['text', 'image'])), [
+        { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
+      ]);
+      assert.equal(ACTIVE_PI_ROUTE.evidence.suiteRunId, '20260815T105214Z');
+      assert.equal(ACTIVE_PI_ROUTE.evidence.harnessVersion, 'pi@0.84.2-weaver.4');
+      assert.equal(ACTIVE_PI_ROUTE.evidence.minRuns, 10);
+    } finally {
+      if (previousExecutor === undefined) delete process.env.WEAVER_EXECUTOR;
+      else process.env.WEAVER_EXECUTOR = previousExecutor;
+      if (previousModel === undefined) delete process.env.WEAVER_WORKER_MODEL;
+      else process.env.WEAVER_WORKER_MODEL = previousModel;
+    }
+  });
+
   test('only typed bounded text repair selects the preferred Codex target', () => {
     const previousExecutor = process.env.WEAVER_EXECUTOR;
     const previousModel = process.env.WEAVER_WORKER_MODEL;
@@ -223,8 +253,8 @@ describe('reviewed worker routes', () => {
       process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR = 'codex-sdk';
       assert.deepEqual([...runnerExecutorCapabilities()], ['codex-sdk', 'local-sdk']);
 
-      process.env.WEAVER_RUNNER_EXECUTORS = ' openhands, codex-sdk,openhands ';
-      assert.deepEqual([...runnerExecutorCapabilities()], ['openhands', 'codex-sdk']);
+      process.env.WEAVER_RUNNER_EXECUTORS = ' openhands, pi,codex-sdk,openhands ';
+      assert.deepEqual([...runnerExecutorCapabilities()], ['openhands', 'pi', 'codex-sdk']);
       process.env.WEAVER_RUNNER_EXECUTORS = 'managed-agents';
       assert.throws(() => runnerExecutorCapabilities(), /unknown runner executor 'managed-agents'/);
       process.env.WEAVER_RUNNER_EXECUTORS = ' , ';

@@ -296,7 +296,7 @@ test('OpenCode eval aborts, deletes, and closes every allocated resource after a
     'provider.close',
   ]);
   assert.deepEqual(outcome, {
-    costUsd: 0,
+    costUsd: null,
     sessionId: 'ses_abort',
     error: 'provider stream interrupted',
   });
@@ -384,7 +384,7 @@ test('Z.AI Coding Plan stays behind the run proxy and reports subscription cost 
     providerID: 'zai-coding-plan',
     modelID: 'glm-5.3',
   });
-  assert.equal(outcome.costUsd, 0);
+  assert.equal(outcome.costUsd, null);
   assert.equal(executor.lastTelemetry()!.costUsd, null);
   assert.equal(executor.lastTelemetry()!.providerResolved, 'zai-coding-plan');
   assert.equal(executor.lastTelemetry()!.modelResolved, 'glm-5.3');

@@ -1,28 +1,39 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type {
+  ExecutorTelemetry,
+  ExecutorUsage,
   SubmitSurface,
   WorkerExecutionOutcome,
   WorkerExecutionRequest,
-} from '../../executor/types.js';
-import { loadExecutorSecrets, redactSecrets } from '../../secrets.js';
-import type {
-  EvalExecutionTelemetry,
-  EvalExecutor,
-  EvalExecutorId,
-  EvalUsage,
-} from '../types.js';
+  WorkerExecutor,
+} from './types.js';
+import { loadExecutorSecrets, redactSecrets } from '../secrets.js';
+import { startMcpRelay, type McpRelay } from './mcpRelay.js';
+import {
+  startProviderProxy,
+  type ProviderProxy,
+  type ProviderProxyOptions,
+} from './providerProxy.js';
 import {
   startExtensionSubmitBridge,
   type ExtensionSubmitBridge,
 } from './extensionSubmitBridge.js';
 
-const EXTENSION_PATH = resolve(import.meta.dirname, '../extensions/weaverSubmit.ts');
+const EXTENSION_PATH = resolve(import.meta.dirname, 'piExtension.ts');
 const PRIME_RPC_ENTRY_PATH = resolve(import.meta.dirname, 'primeAgentRpcEntry.mjs');
-const NULL_USAGE: EvalUsage = {
+const PI_RPC_ENTRY_PATH = fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent/rpc-entry'));
+const PI_RUNTIME_VERSION = (() => {
+  const manifest = JSON.parse(
+    readFileSync(resolve(dirname(PI_RPC_ENTRY_PATH), '../package.json'), 'utf8'),
+  ) as { version?: unknown };
+  if (typeof manifest.version !== 'string') throw new Error('packaged Pi runtime has no version');
+  return manifest.version;
+})();
+const NULL_USAGE: ExecutorUsage = {
   inputTokens: null,
   outputTokens: null,
   cachedInputTokens: null,
@@ -77,7 +88,38 @@ const ALL_PROVIDER_CREDENTIALS = new Set([
   'PRIME_API_KEY',
   'AZURE_OPENAI_API_KEY',
   'AI_GATEWAY_API_KEY',
+  'ZHIPU_API_KEY',
 ]);
+
+interface PiProviderConfiguration {
+  apiKey: string;
+  apiKeyNames: readonly string[];
+  upstreamBaseUrl: string;
+}
+
+const PI_PROVIDERS: Record<string, Omit<PiProviderConfiguration, 'apiKey'>> = {
+  openrouter: {
+    apiKeyNames: ['OPENROUTER_API_KEY'],
+    upstreamBaseUrl: 'https://openrouter.ai/api/v1',
+  },
+  zai: {
+    apiKeyNames: ['ZHIPU_API_KEY', 'ZAI_API_KEY'],
+    upstreamBaseUrl: 'https://api.z.ai/api/paas/v4',
+  },
+  'zai-coding-plan': {
+    apiKeyNames: ['ZHIPU_API_KEY', 'ZAI_API_KEY'],
+    upstreamBaseUrl: 'https://api.z.ai/api/coding/paas/v4',
+  },
+  'prime-inference': {
+    apiKeyNames: ['PRIME_API_KEY'],
+    upstreamBaseUrl: 'https://api.pinference.ai/api/v1',
+  },
+};
+
+interface NamedMcpRelay {
+  name: string;
+  relay: McpRelay;
+}
 
 interface RpcRecord {
   type?: unknown;
@@ -109,8 +151,10 @@ interface RpcState {
 export interface PiRpcRunResult {
   providerResolved: string | null;
   modelResolved: string | null;
-  usage: EvalUsage;
+  usage: ExecutorUsage;
   costUsd: number | null;
+  /** True only when Pi reported an aborted agent turn, not a provider error. */
+  aborted?: boolean;
   error: string | null;
 }
 
@@ -135,12 +179,16 @@ export interface StartPiRpcRuntimeInput {
 
 export type StartPiRpcRuntime = (input: StartPiRpcRuntimeInput) => Promise<PiRpcRuntime>;
 
-export interface PiRpcEvalExecutorDependencies {
+export interface PiExecutorDependencies {
   startRuntime?: StartPiRpcRuntime;
   startBridge?: (
     submit: SubmitSurface,
     options: { redactionSecrets: Record<string, string> },
   ) => Promise<ExtensionSubmitBridge>;
+  startProviderProxy?: (options: ProviderProxyOptions) => Promise<ProviderProxy>;
+  startMcpRelay?: typeof startMcpRelay;
+  loadExecutorSecrets?: typeof loadExecutorSecrets;
+  /** Deterministic test override; production reloads from disk per attempt. */
   executorSecrets?: Record<string, string>;
   now?: () => number;
 }
@@ -203,37 +251,19 @@ function stringEnv(env: WorkerExecutionRequest['env']): Record<string, string> {
 
 function scopedEnvironment(
   req: WorkerExecutionRequest,
-  provider: string,
   executorSecrets: Record<string, string>,
 ): { env: Record<string, string>; redactionSecrets: Record<string, string> } {
   const env = stringEnv(req.env);
-  const allowed = new Set(PROVIDER_CREDENTIALS[provider] ?? []);
   for (const name of ALL_PROVIDER_CREDENTIALS) {
-    if (!allowed.has(name)) delete env[name];
-  }
-  for (const name of allowed) {
-    if (executorSecrets[name] !== undefined) env[name] = executorSecrets[name]!;
+    delete env[name];
   }
   const redactionSecrets: Record<string, string> = { ...executorSecrets };
-  for (const name of allowed) {
-    if (env[name] !== undefined) redactionSecrets[name] = env[name]!;
+  for (const [name, value] of Object.entries(env)) {
+    if (!name.startsWith('WEAVER_INTERNAL_MCP_')) continue;
+    redactionSecrets[name] = value;
+    delete env[name];
   }
   return { env, redactionSecrets };
-}
-
-function executableVersion(command: string, env: Record<string, string>): Promise<string> {
-  return new Promise((resolveVersion, reject) => {
-    const child = spawn(command, ['--version'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
-    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
-    child.once('error', reject);
-    child.once('close', (code) => {
-      if (code === 0 && stdout.trim()) resolveVersion(stdout.trim());
-      else reject(new Error(`${command} --version failed (${code ?? 'signal'}): ${stderr.trim() || 'no output'}`));
-    });
-  });
 }
 
 function findExecutable(command: string, env: Record<string, string>): string {
@@ -273,7 +303,7 @@ function primeAgentInstallation(env: Record<string, string>): {
 
 export function summarizePiRpcUsage(
   messages: Array<{ usage?: unknown }>,
-): { usage: EvalUsage; costUsd: number | null } {
+): { usage: ExecutorUsage; costUsd: number | null } {
   let sawUsage = false;
   let input = 0;
   let output = 0;
@@ -344,12 +374,12 @@ class CliRpcRuntime implements PiRpcRuntime {
 
   static async start(input: StartPiRpcRuntimeInput): Promise<CliRpcRuntime> {
     const prime = input.command === 'prime-agent' ? primeAgentInstallation(input.env) : null;
-    const version = prime?.version ?? await executableVersion(input.command, input.env);
+    const version = prime?.version ?? PI_RUNTIME_VERSION;
     const harnessArgs = buildPiRpcArgs(input);
-    const command = input.command === 'prime-agent' ? process.execPath : input.command;
+    const command = process.execPath;
     const args = input.command === 'prime-agent'
       ? [PRIME_RPC_ENTRY_PATH, ...harnessArgs]
-      : harnessArgs;
+      : [PI_RPC_ENTRY_PATH, ...harnessArgs];
     const env = prime
       ? { ...input.env, WEAVER_PRIME_AGENT_MODULE_URL: prime.moduleUrl }
       : input.env;
@@ -358,7 +388,7 @@ class CliRpcRuntime implements PiRpcRuntime {
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    const runtime = new CliRpcRuntime(child, `${input.command}@${version}-weaver.1`);
+    const runtime = new CliRpcRuntime(child, `${input.command}@${version}-weaver.4`);
     try {
       const response = await runtime.send('get_state', { type: 'get_state' });
       runtime.state = validatePiRpcState(input, response.data);
@@ -372,7 +402,7 @@ class CliRpcRuntime implements PiRpcRuntime {
 
   async run(prompt: string, signal: AbortSignal): Promise<PiRpcRunResult> {
     if (signal.aborted) {
-      return { providerResolved: null, modelResolved: null, usage: { ...NULL_USAGE }, costUsd: null, error: 'RPC run was aborted before prompt' };
+      return { providerResolved: null, modelResolved: null, usage: { ...NULL_USAGE }, costUsd: null, aborted: true, error: 'RPC run was aborted before prompt' };
     }
     const ended = new Promise<RpcRecord>((resolveEnd, reject) => {
       this.agentEnd = { resolve: resolveEnd, reject };
@@ -398,6 +428,7 @@ class CliRpcRuntime implements PiRpcRuntime {
         modelResolved: optionalString(last?.responseModel) ?? optionalString(last?.model),
         usage: totals.usage,
         costUsd: totals.costUsd,
+        aborted: stopReason === 'aborted',
         error: failure,
       };
     } finally {
@@ -500,41 +531,54 @@ export function buildPiRpcArgs(input: StartPiRpcRuntimeInput): string[] {
     ? ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']
     : ['ipython'];
   return [
-    '--mode', 'rpc',
+    ...(input.command === 'prime-agent' ? ['--mode', 'rpc'] : []),
     '--no-session',
     '--provider', input.provider,
     '--model', input.model,
     '--append-system-prompt', input.systemPrompt,
     '--no-extensions', '--extension', input.extensionPath,
-    '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files',
-    '--tools', [...builtinTools, 'weaver_append_section', 'weaver_submit_result'].join(','),
+    '--no-skills', '--no-prompt-templates', '--no-themes',
+    ...(input.command === 'prime-agent'
+      ? [
+          '--no-context-files',
+          '--tools', [...builtinTools, 'weaver_append_section', 'weaver_submit_result'].join(','),
+        ]
+      : []),
     ...(input.command === 'prime-agent' ? ['--cwd', input.cwd] : []),
   ];
 }
 
 export const startCliPiRpcRuntime: StartPiRpcRuntime = (input) => CliRpcRuntime.start(input);
 
-export class PiRpcEvalExecutor implements EvalExecutor {
-  readonly id: EvalExecutorId;
-  private telemetry: EvalExecutionTelemetry | null = null;
+export class PiRpcExecutor implements WorkerExecutor {
+  readonly id: string;
+  private telemetry: ExecutorTelemetry | null = null;
   private readonly startRuntime: StartPiRpcRuntime;
-  private readonly startBridge: NonNullable<PiRpcEvalExecutorDependencies['startBridge']>;
-  private readonly executorSecrets: Record<string, string>;
+  private readonly startBridge: NonNullable<PiExecutorDependencies['startBridge']>;
+  private readonly providerProxyStarter: NonNullable<PiExecutorDependencies['startProviderProxy']>;
+  private readonly mcpRelayStarter: NonNullable<PiExecutorDependencies['startMcpRelay']>;
+  private readonly executorSecretsLoader: typeof loadExecutorSecrets;
   private readonly now: () => number;
 
   constructor(
     id: 'pi' | 'prime-agent',
     private readonly command: 'pi' | 'prime-agent',
-    dependencies: PiRpcEvalExecutorDependencies = {},
+    dependencies: PiExecutorDependencies = {},
   ) {
     this.id = id;
     this.startRuntime = dependencies.startRuntime ?? startCliPiRpcRuntime;
     this.startBridge = dependencies.startBridge ?? startExtensionSubmitBridge;
-    this.executorSecrets = dependencies.executorSecrets ?? loadExecutorSecrets();
+    this.providerProxyStarter = dependencies.startProviderProxy ?? startProviderProxy;
+    this.mcpRelayStarter = dependencies.startMcpRelay ?? startMcpRelay;
+    this.executorSecretsLoader = dependencies.loadExecutorSecrets ?? (
+      dependencies.executorSecrets
+        ? () => ({ ...dependencies.executorSecrets })
+        : loadExecutorSecrets
+    );
     this.now = dependencies.now ?? Date.now;
   }
 
-  lastTelemetry(): EvalExecutionTelemetry | null {
+  lastTelemetry(): ExecutorTelemetry | null {
     return this.telemetry;
   }
 
@@ -546,11 +590,14 @@ export class PiRpcEvalExecutor implements EvalExecutor {
       this.telemetry = this.makeTelemetry(req, startedMs, startedAt, 'unsupported', message);
       return { costUsd: 0, error: message };
     };
-    if (req.supervise) {
-      return unsupported(`${this.id} is eval-only and does not support action-worker supervision`);
+    if (req.supervise || req.permissionMode !== 'bypassPermissions') {
+      return unsupported(`${this.id} executor does not support action-worker supervision`);
+    }
+    if (Object.keys(req.operatorMcpServers).some((name) => name.toLowerCase() === 'weaver')) {
+      return unsupported("operator MCP server name 'weaver' is reserved for the submission surface");
     }
     if (req.abort.signal.aborted) {
-      const message = `${this.id} eval run was aborted before launch`;
+      const message = `${this.id} run was aborted before launch`;
       this.telemetry = this.makeTelemetry(req, startedMs, startedAt, 'aborted', message);
       return { costUsd: 0, error: message };
     }
@@ -563,12 +610,20 @@ export class PiRpcEvalExecutor implements EvalExecutor {
       return { costUsd: 0, error: message };
     }
 
-    const scoped = scopedEnvironment(req, target.provider, this.executorSecrets);
+    let providerConfiguration: PiProviderConfiguration;
+    const executorSecrets = this.executorSecretsLoader();
+    try {
+      this.validateWorkspace(req);
+      providerConfiguration = this.providerConfiguration(target.provider, executorSecrets);
+    }
+    catch (error) { return unsupported(errorMessage(error)); }
+
+    const scoped = scopedEnvironment(req, executorSecrets);
     const redactionSecrets = { ...scoped.redactionSecrets };
     let isolatedRoot: string;
     let isolatedHome: string;
     try {
-      isolatedRoot = mkdtempSync(join(tmpdir(), `weaver-${this.id}-eval-`));
+      isolatedRoot = mkdtempSync(join(tmpdir(), `weaver-${this.id}-run-`));
       isolatedHome = join(isolatedRoot, 'home');
       mkdirSync(isolatedHome, { mode: 0o700 });
     } catch (error) {
@@ -586,14 +641,28 @@ export class PiRpcEvalExecutor implements EvalExecutor {
       },
     };
     let bridge: ExtensionSubmitBridge | null = null;
+    let providerProxy: ProviderProxy | null = null;
+    const operatorRelays: NamedMcpRelay[] = [];
     let runtime: PiRpcRuntime | null = null;
     let startupMs: number | null = null;
     let run: PiRpcRunResult | null = null;
     let failure: string | null = null;
-    let terminalReason: EvalExecutionTelemetry['terminalReason'] = 'completed';
+    let terminalReason: ExecutorTelemetry['terminalReason'] = 'completed';
     const cleanupFailures: string[] = [];
 
     try {
+      providerProxy = await this.providerProxyStarter({
+        upstreamBaseUrl: providerConfiguration.upstreamBaseUrl,
+        upstreamApiKey: providerConfiguration.apiKey,
+        allowedModels: [target.model],
+        maxRequests: req.maxTurns,
+      });
+      redactionSecrets.WEAVER_PI_PROVIDER_PROXY_TOKEN = providerProxy.token;
+      for (const [name, config] of Object.entries(req.operatorMcpServers)) {
+        const relay = await this.mcpRelayStarter(config, { env: req.env });
+        operatorRelays.push({ name, relay });
+        redactionSecrets[`WEAVER_PI_MCP_RELAY_TOKEN_${operatorRelays.length}`] = relay.token;
+      }
       bridge = await this.startBridge(observedSubmit, { redactionSecrets });
       redactionSecrets.WEAVER_HARNESS_SUBMIT_TOKEN = bridge.token;
       redactionSecrets.WEAVER_HARNESS_SUBMIT_URL = bridge.url;
@@ -608,8 +677,21 @@ export class PiRpcEvalExecutor implements EvalExecutor {
         PI_CODING_AGENT_SESSION_DIR: join(isolatedRoot, 'pi-sessions'),
         PRIME_AGENT_CODING_AGENT_DIR: join(isolatedRoot, 'prime-agent'),
         PRIME_AGENT_SESSION_DIR: join(isolatedRoot, 'prime-sessions'),
+        PI_OFFLINE: '1',
+        PI_TELEMETRY: '0',
         WEAVER_HARNESS_SUBMIT_URL: bridge.url,
         WEAVER_HARNESS_SUBMIT_TOKEN: bridge.token,
+        WEAVER_PI_PROVIDER_CONFIG: JSON.stringify({
+          provider: target.provider,
+          model: target.model,
+          baseUrl: providerProxy.url,
+          apiKey: providerProxy.token,
+        }),
+        WEAVER_PI_MCP_RELAYS: JSON.stringify(operatorRelays.map(({ name, relay }) => ({
+          name,
+          url: relay.url,
+          token: relay.token,
+        }))),
       };
       runtime = await this.startRuntime({
         command: this.command,
@@ -627,10 +709,17 @@ export class PiRpcEvalExecutor implements EvalExecutor {
       });
       startupMs = this.now() - startedMs;
       run = await runtime.run(req.prompt, req.abort.signal);
-      if (run.error) {
+      // The production extension aborts the agent loop immediately after the
+      // harness accepts submit_result. Pi reports that intentional stop as an
+      // operation error on some providers, so the accepted durable submission
+      // — not provider-specific abort wording — is the terminal success fact.
+      if (run.error && submissionMs === null) {
         failure = redactSecrets(run.error, redactionSecrets);
         terminalReason = req.abort.signal.aborted ? 'aborted' : 'error';
         await runtime.abort();
+      } else if (!providerProxy.modelResolved()) {
+        failure = 'Pi provider response did not report a model identity; refusing false resolved-model provenance';
+        terminalReason = 'error';
       }
     } catch (error) {
       failure = redactSecrets(errorMessage(error), redactionSecrets);
@@ -645,6 +734,14 @@ export class PiRpcEvalExecutor implements EvalExecutor {
         try { await bridge.close(); }
         catch (error) { cleanupFailures.push(`submit bridge close: ${redactSecrets(errorMessage(error), redactionSecrets)}`); }
       }
+      for (const { name, relay } of operatorRelays.reverse()) {
+        try { await relay.close(); }
+        catch (error) { cleanupFailures.push(`MCP relay ${name} close: ${redactSecrets(errorMessage(error), redactionSecrets)}`); }
+      }
+      if (providerProxy) {
+        try { await providerProxy.close(); }
+        catch (error) { cleanupFailures.push(`provider proxy close: ${redactSecrets(errorMessage(error), redactionSecrets)}`); }
+      }
       try { rmSync(isolatedRoot, { recursive: true, force: true }); }
       catch (error) { cleanupFailures.push(`isolated home cleanup: ${redactSecrets(errorMessage(error), redactionSecrets)}`); }
     }
@@ -654,7 +751,11 @@ export class PiRpcEvalExecutor implements EvalExecutor {
     }
 
     const endedMs = this.now();
-    const costUsd = run?.costUsd ?? null;
+    // The run-bound custom provider intentionally carries no pricing catalog.
+    // Any Pi-family computed zero is therefore not a bill or evidence of free
+    // usage, including the eval-only Prime adapter on the same proxy seam.
+    const costUsd = null;
+    const resolvedModel = providerProxy?.modelResolved() ?? null;
     // Pi's opaque fresh-run id is useful adapter provenance. Prime session
     // machinery is deliberately not Workstream memory, even as telemetry.
     const durableSessionId = this.command === 'prime-agent' ? null : runtime?.sessionId ?? null;
@@ -662,8 +763,8 @@ export class PiRpcEvalExecutor implements EvalExecutor {
       executor: this.id,
       providerRequested: target.provider,
       modelRequested: req.model,
-      providerResolved: run?.providerResolved ?? null,
-      modelResolved: run?.modelResolved ?? null,
+      providerResolved: resolvedModel ? target.provider : null,
+      modelResolved: resolvedModel,
       harnessVersion: runtime?.harnessVersion ?? 'unknown',
       isolation: 'host-process',
       startedAt,
@@ -678,19 +779,52 @@ export class PiRpcEvalExecutor implements EvalExecutor {
       error: failure,
     };
     return {
-      costUsd: costUsd ?? 0,
+      costUsd,
       ...(durableSessionId ? { sessionId: durableSessionId } : {}),
       ...(failure ? { error: failure } : {}),
     };
+  }
+
+  private providerConfiguration(
+    provider: string,
+    executorSecrets: Record<string, string>,
+  ): PiProviderConfiguration {
+    const known = PI_PROVIDERS[provider];
+    if (!known) {
+      throw new Error(
+        `Pi provider '${provider}' has no executor-only proxy configuration`,
+      );
+    }
+    const apiKeyName = known.apiKeyNames.find((name) => executorSecrets[name]);
+    const apiKey = apiKeyName ? executorSecrets[apiKeyName] : undefined;
+    if (!apiKey) {
+      throw new Error(
+        `Pi executor requires ${known.apiKeyNames.join(' or ')} in executor-only secrets ` +
+          '(`weaver secret set <NAME> --executor`)',
+      );
+    }
+    return { ...known, apiKey };
+  }
+
+  private validateWorkspace(req: WorkerExecutionRequest): void {
+    for (const [label, directory] of [
+      ['working directory', req.cwd ?? process.cwd()],
+      ...req.additionalDirectories.map((item) => ['additional directory', item]),
+    ] as Array<[string, string]>) {
+      let stat;
+      try { stat = statSync(directory); }
+      catch { throw new Error(`Pi ${label} does not exist: ${directory}`); }
+      if (!stat.isDirectory()) throw new Error(`Pi ${label} is not a directory: ${directory}`);
+    }
   }
 
   private makeTelemetry(
     req: WorkerExecutionRequest,
     startedMs: number,
     startedAt: string,
-    terminalReason: EvalExecutionTelemetry['terminalReason'],
+    terminalReason: ExecutorTelemetry['terminalReason'],
     error: string,
-  ): EvalExecutionTelemetry {
+  ): ExecutorTelemetry {
     const endedMs = this.now();
     return {
       executor: this.id,
@@ -710,5 +844,13 @@ export class PiRpcEvalExecutor implements EvalExecutor {
       terminalReason,
       error,
     };
+  }
+}
+
+/** Production API-backed worker. One fresh Pi RPC process is created and
+ * destroyed for every assignment; its session id is provenance only. */
+export class PiExecutor extends PiRpcExecutor {
+  constructor(dependencies: PiExecutorDependencies = {}) {
+    super('pi', 'pi', dependencies);
   }
 }

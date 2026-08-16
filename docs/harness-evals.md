@@ -10,8 +10,8 @@ The durable brain is now genuinely shareable across machines — the knowledge l
 `StateStore` (plain Postgres via `WEAVER_STORE`), and a fleet of disposable bots keeps its memory in
 one Weaver over the network-ingress seam (`weaver serve`, [`src/ingress.ts`](../src/ingress.ts)).
 The remaining seam is where a worker's model loop actually runs. That choice has now been made:
-`selectExecutor()` knows `local-sdk` (default), local `codex-sdk`, and `openhands`, the first remote
-substrate. This bakeoff is how those choices earned — and how any future change keeps earning — evidence instead of arriving by
+`selectExecutor()` knows `local-sdk` (default), local `codex-sdk`, provider-neutral `pi`, and
+`openhands`, the first container substrate. This bakeoff is how those choices earned — and how any future change keeps earning — evidence instead of arriving by
 anecdote.
 
 The candidates are:
@@ -23,13 +23,13 @@ The candidates are:
   assignment, with provider inference behind a run-bound host proxy;
 - `openhands`: the pinned official OpenHands Agent Server OCI image, one fresh container and
   conversation per assignment;
-- `pi`: the installed Pi CLI in invocation-local RPC mode with `--no-session`; and
+- `pi`: the pinned Pi package in invocation-local RPC mode with `--no-session`; and
 - `prime-agent`: the installed Prime Agent CLI in invocation-local RPC mode with `--no-session`,
   never its goals, autonomous loop, schedules, or daemon.
 
 The harness wiring lives under [`src/evals/`](../src/evals/), but production runtimes live under
-[`src/executor/`](../src/executor/). Codex and OpenHands eval adapters are thin wrappers over those
-production classes, so the bakeoff exercises the exact code real workers run. OpenCode, Pi, and
+[`src/executor/`](../src/executor/). Codex, OpenHands, and Pi eval adapters are thin wrappers over
+those production classes, so the bakeoff exercises the exact code real workers run. OpenCode and
 Prime remain eval-only. An eval result never mutates `WEAVER_EXECUTOR` or a routing commitment.
 
 ## What is being tested
@@ -125,15 +125,17 @@ Code login.
 
 Pi and Prime require an explicit `provider/model` target. Each run gets a temporary empty harness
 home, so personal Pi/Prime login files and configuration are never exposed to model tools. Store
-the selected provider key with `weaver secret set NAME --executor`; the adapter removes every other
-known provider credential from the child environment and injects only the selected provider's
-value. All executor-secret values, the per-run submission bearer, and its
-URL are scrubbed from tool arguments, replies, submissions, and telemetry errors.
+the selected provider key with `weaver secret set NAME --executor`. Production Pi keeps the durable
+value behind a model-pinned host proxy; the child gets only a disposable bearer, and the extension
+deletes that bearer-bearing environment record before Bash is available. All executor-secret
+values and per-run submission/MCP/provider bearers are scrubbed from tool arguments, replies,
+submissions, and telemetry errors.
 
-Both adapters launch a new RPC subprocess with `--no-session` for every case, disable automatic
-extension/skill/prompt/theme/context discovery, and explicitly load Weaver's one submission
-extension. That extension reaches only two fixed authenticated localhost routes backed by the
-current run's `SubmitSurface`. Closing a case closes the RPC process and the bridge. Prime's public
+Both adapters launch a new RPC subprocess with `--no-session` for every case and disable automatic
+extension/skill/prompt/theme discovery. Pi retains repository context files and explicitly loads
+one production extension that registers its run-bound provider, two authenticated submission
+tools, and the complete frozen catalog from each authenticated host MCP relay. Closing a case
+closes the RPC process, bridge, relays, proxy, and temporary home. Prime's public
 CLI normally delegates RPC to its daemon, so Weaver starts the public embedding entrypoint inside
 the child with a process-local no-op extension factory, which deliberately selects Prime's
 in-process path without adding a tool or state. Prime's goal, autonomous, schedule, daemon,
@@ -253,6 +255,7 @@ The current exact bounded code-repair economics are:
 
 | Target / cohort | Hard-gate passes | Median / p95 wall | Total cost | Cost/pass | Failure cost |
 | --- | ---: | ---: | ---: | ---: | ---: |
+| `pi:openrouter/moonshotai/kimi-k3` `.4` / `20260815T105214Z` | 10/10 | 38.2s / 82.0s | $1.5809* | $0.1581* | — |
 | `codex-sdk:gpt-5.6-sol` `.3` / `20260814T145942Z` | 10/10 | 114.0s / 166.9s | — | — | — |
 | `opencode:zai-coding-plan/glm-5.3` `.3` / `20260814T213026Z` | 10/10 | 55.0s / 62.3s | — | — | — |
 | `openhands:openrouter/z-ai/glm-5.2` / `20260814T145843Z` | 10/10 | 33.3s / 42.5s | $0.3025 | $0.0303 | — |
@@ -261,7 +264,9 @@ The current exact bounded code-repair economics are:
 | `openhands:openrouter/moonshotai/kimi-k2.7-code` / `20260814T145842Z` | 8/10 | 58.1s / 95.3s | $0.3551 | $0.0444 | $0.1094 |
 | `openhands:openrouter/moonshotai/kimi-k3` / `20260814T125803Z` | 2/3 | 111.9s / 382.0s | $0.4144 | $0.2072 | $0.2517 |
 
-Codex and Z.ai Coding Plan expose subscription quota rather than a per-run dollar bill, so their
+`*` is the exact OpenRouter account-usage delta across the complete cohort, measured immediately
+before and after it. Per-attempt Pi telemetry remains null because the run-bound proxy response did
+not supply a trustworthy bill. Codex and Z.ai Coding Plan expose subscription quota rather than a per-run dollar bill, so their
 missing values remain unknown rather than being presented as free. GLM-5.3's exact OpenCode cohort
 passed the full vector 10/10 with a 55.0s median — 52% below Codex's 114.0s median — while the older
 OpenHands/GLM-5.2 cohort remains the fastest clean run at 33.3s and the cheapest measured
@@ -285,7 +290,20 @@ provider/model, repaired `src/select.mjs`, passed the hidden tests, and reached 
 terminal state, but never called `submit_result`. Its 3/6 hard-gate and 1/2 quality vector, 382s wall
 time, and $0.2517 cost remain in the ledger beside the two passes. The full cohort cost $0.4144.
 Because evidence is audited per complete suite, the two successful rows cannot be cherry-picked;
-no Kimi route is active.
+that OpenHands cohort backs no route.
+
+Pi's exact production adapter later ran Kimi K3 under a different, pinned boundary. Epoch `.3`
+exposed a structural stop bug: after Weaver accepted `submit_result`, Pi requested another provider
+turn and surfaced the subsequent abort as a runtime failure. Epoch `pi@0.84.2-weaver.4` makes an
+accepted durable submission terminal and aborts the disposable loop from the extension. Complete
+cohort `20260815T105214Z` then passed all six hard gates and both quality checks in 10/10 runs at a
+38.2s median / 82.0s p95. The observed OpenRouter account delta was $1.5809, or $0.1581/pass. That
+cohort backs the checked-in Kimi route only when Pi is already the configured worker executor.
+
+The Pi/GLM-5.3 `.2` cohort passed 9/10: one repetition omitted verification evidence and the final
+repetition hit Z.ai's five-hour Coding Plan limit after submitting. Both the failed vector and stale
+adapter epoch remain in the ledger; GLM-5.3 has no Pi production route until a current complete
+cohort passes after the plan resets.
 
 Model qualification and executor qualification are separate gates. A clean OpenRouter model cohort
 proves behavior through the tested OpenHands surface; it does not prove that the adapter carries the
@@ -315,7 +333,7 @@ structurally. Supervised actions likewise remain a scope-widening gate for Codex
 reason to pretend ordinary work is unsupported.
 
 The important architectural finding so far is that task capability and action authority remain
-orthogonal. Codex and OpenHands production executors (and the OpenCode, Pi, and Prime eval adapters) support
+orthogonal. Codex, Pi, and OpenHands production executors (and the OpenCode and Prime eval adapters) support
 ordinary work, but reject action assignments before launch because they do not yet expose Weaver's live Pilot
 supervision contract. Fail-closed is an honest missing capability; silently allowing the action
 would invalidate the bakeoff.
@@ -356,15 +374,15 @@ would invalidate the bakeoff.
   test and live canary both prove that sequence. It remains a trusted `host-process`, not structural
   confinement or a production worker with the full operator MCP surface.
 - Pi and Prime share extension and RPC concepts but not durable semantics. The adapter uses their
-  JSONL RPC protocol only as a disposable process-control channel, records the provider/model from
-  the completed assistant message plus the installed CLI version, and then destroys that channel.
-  Prime's richer resident/goal features would duplicate and weaken the Workstream layer if resumed.
-- Pi and Prime are host processes, not credential sandboxes. Their temporary home prevents access
-  to personal harness logins and the adapter removes unrelated provider keys, but the one selected
-  key is necessarily present in the child environment and therefore reachable by native shell or
-  IPython tools. Run these candidates only against the frozen trusted eval corpus. Production
-  promotion requires a provider proxy or an isolated runtime that keeps the durable key outside
-  the model tool process.
+  JSONL RPC protocol only as a disposable process-control channel and then destroys that channel.
+  Provider identity is accepted only from the host proxy's actual upstream response, not the
+  configured catalog or RPC state. Prime's richer resident/goal features would duplicate and weaken
+  the Workstream layer if resumed.
+- Pi and Prime are host processes, not filesystem sandboxes. Their temporary home prevents access
+  to personal harness logins and the adapter removes unrelated provider keys. Production Pi also
+  keeps the selected durable key behind a host proxy; its extension retains only a disposable
+  run bearer in memory and erases the bearer-bearing environment record before Bash starts. Prime
+  remains eval-only and retains its narrower trusted-corpus boundary.
 - Prime Agent 0.7.2's ordinary CLI delegates even `--mode rpc --no-session` to its daemon. The
   public `main(args, { extensionFactories })` embedding API deliberately stays in-process when a
   process-local factory is present. Weaver starts that entrypoint in a new child with a no-op

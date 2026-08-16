@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { SubmitResultArgs } from '../../executor/types.js';
+import type { SubmitResultArgs } from './types.js';
 import { startExtensionSubmitBridge } from './extensionSubmitBridge.js';
 
 test('extension submission bridge authenticates its two routes and scrubs every persisted field and reply', async () => {

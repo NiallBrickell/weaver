@@ -317,6 +317,8 @@ function providerName(provider: string | undefined): string {
     case 'anthropic': return 'Claude';
     case 'openai': return 'OpenAI';
     case 'openrouter': return 'OpenRouter';
+    case 'zai':
+    case 'zai-coding-plan': return 'Z.ai';
     case 'moonshot':
     case 'moonshotai': return 'Moonshot';
     default: return provider && provider !== 'unknown'

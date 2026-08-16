@@ -619,7 +619,7 @@ describe('OpenHands eval executor', () => {
 
     const outcome = await executor.execute(req);
 
-    assert.equal(outcome.costUsd, 0);
+    assert.equal(outcome.costUsd, null);
     assert.equal(outcome.sessionId, 'conversation-abort');
     assert.match(outcome.error ?? '', /cancelled by harness wall/);
     assert.equal(executor.lastTelemetry()?.terminalReason, 'aborted');
