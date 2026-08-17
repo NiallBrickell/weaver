@@ -61,8 +61,19 @@ test('resolving a blocker card wakes the stranded stream', async () => {
   assert.equal(doc.attention[0]!.status, 'resolved');
 });
 
-test('resolving a review card stays wake-free — review acts wake elsewhere', async () => {
+test('resolving a review card without a note stays wake-free — review acts wake elsewhere', async () => {
   await strandedWith('review', 'att_review');
   await resolveAttention('stranded', 'att_review');
   assert.equal((await load('stranded')).wakes.filter((w) => w.status === 'pending').length, 0);
+});
+
+test('a resolution carrying a note is an answer and wakes the stream regardless of kind', async () => {
+  await strandedWith('review', 'att_decision');
+  await resolveAttention('stranded', 'att_decision', 'approved: promote the flag globally');
+
+  const doc = await load('stranded');
+  const pending = doc.wakes.filter((w) => w.status === 'pending');
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]!.condition.type, 'immediate');
+  assert.match(pending[0]!.reason, /att_decision resolved .*promote the flag globally/);
 });
