@@ -76,6 +76,18 @@ const RATE_TEXT = /rate.?limit|quota|429/i;
 const NETWORK_TEXT =
   /ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|stream disconnected|unable to connect to api|error sending request|temporary failure in name resolution/i;
 const PROVIDER_TEXT = /overloaded|529|server error|service unavailable/i;
+// GitHub's REST/GraphQL edge answers "HTTP 503: No server is currently
+// available to service your request" during provider incidents — a shape the
+// action verifier meets that the model-capacity regexes above don't cover.
+const TRANSIENT_HTTP_TEXT = /HTTP 5\d\d|no server is currently available/i;
+
+/** True when the text describes transient network/provider infrastructure —
+ * a reason to retry the operation, never evidence about the durable world.
+ * Used by the action verifier so a readback that fails on a provider blip
+ * retries instead of filing a may-have-changed-the-world card. */
+export function isTransientInfrastructureText(text: string): boolean {
+  return NETWORK_TEXT.test(text) || PROVIDER_TEXT.test(text) || TRANSIENT_HTTP_TEXT.test(text);
+}
 
 function capacityFamily(category: CapacityCategory): CapacityCategory {
   return category === 'sdk_credit_exhausted' ? 'usage_limit' : category;
