@@ -200,10 +200,15 @@ export async function resolveAttention(slug: string, attId: string, note = ''): 
     // For blocker/budget cards the resolution IS the unblock signal, and it
     // may be the stream's only remaining lifeline: a strike-tripled stream has
     // no pending wakes, and its open card suppresses the quiescence backstop —
-    // resolving without waking would strand it forever. Approval/review/
-    // capacity cards are settled by acts that already wake (approve, reject,
-    // steer, capacity retry), so they stay wake-free here.
-    if (att.kind === 'blocker' || att.kind === 'budget') {
+    // resolving without waking would strand it forever. Approval/capacity
+    // cards resolved WITHOUT a note are settled by acts that already wake
+    // (approve, reject, steer, capacity retry), so they stay wake-free here.
+    // But a resolution CARRYING A NOTE is itself the human's answer — a
+    // decision-shaped review card ("pick one of A/B/C") has no approve/reject
+    // verb, so the note is the only place the decision lands, and skipping the
+    // wake stranded an approved production flag promotion for three hours
+    // while the stream sat with no pending wakes. New direction always wakes.
+    if (att.kind === 'blocker' || att.kind === 'budget' || note.trim() !== '') {
       wake(d, `${att.kind} ${attId} resolved by ${actor()}${note ? `: ${note.slice(0, 120)}` : ''} — reconcile`);
     }
   });
