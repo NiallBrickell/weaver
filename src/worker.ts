@@ -692,6 +692,16 @@ export async function runWorker(
 
   const wallFired = wall.fired();
   if (wallFired && !submitted) {
+    // Once the wall has fired, any exception the executor surfaced is a
+    // consequence of the intentional abort (rejected RPCs, isolated-home
+    // cleanup races), not an independent crash: the wall could only fire
+    // while execution was still in flight, so an earlier genuine crash would
+    // have disarmed it. The typed wall outcome must win over the
+    // exception-derived subtype or the coordinator escalates a routine
+    // overrun as a mysterious infrastructure failure (observed: 4 identical
+    // "Request aborted; isolated home cleanup: ENOTEMPTY" pages at exactly
+    // 40 minutes).
+    resultSubtype = 'wall_timeout';
     const checkpointLength = sections.join('\n\n').trim().length;
     if (checkpointLength >= 200) {
       const reply = await persistSubmission({
@@ -705,7 +715,6 @@ export async function runWorker(
       }, 'checkpoint');
       if (!reply.isError) resultSubtype = 'wall_timeout_checkpoint';
     }
-    resultSubtype = resultSubtype ?? 'wall_timeout';
   }
 
   const capacitySource = {
