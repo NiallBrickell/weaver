@@ -8,6 +8,7 @@ import {
   classifyCapacityFailure,
   clearCapacityBackoff,
   infrastructureWaitSummary,
+  isTransientInfrastructureText,
   providerCapacityHeadline,
   recordCapacityBackoff,
   retryCapacityNow,
@@ -577,4 +578,27 @@ test('an explicit retry makes typed waits due without claiming recovery', () => 
   assert.equal(doc.assignments[0]!.attempts[0]!.infrastructure!.retryAt, source.now.toISOString());
   assert.equal(doc.capacity!.byModel.sonnet!.wait.retryAt, source.now.toISOString());
   assert.equal(doc.capacity!.state, 'backoff');
+});
+
+test('transient infrastructure text covers the observed GitHub-edge and network shapes', () => {
+  const transient = [
+    'HTTP 503: No server is currently available to service your request. Sorry about that.',
+    'HTTP 502: Server Error',
+    'getaddrinfo ENOTFOUND api.github.com',
+    'connect ECONNRESET 140.82.121.6:443',
+    'stream disconnected',
+  ];
+  for (const text of transient) {
+    assert.equal(isTransientInfrastructureText(text), true, text);
+  }
+  const verdicts = [
+    'HTTP 404: Not Found',
+    'HTTP 401: Bad credentials',
+    'expected head 88a1373b0, found cd7fb858c',
+    'gh: command not found',
+    '',
+  ];
+  for (const text of verdicts) {
+    assert.equal(isTransientInfrastructureText(text), false, text);
+  }
 });

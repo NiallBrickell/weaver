@@ -35,6 +35,7 @@ import {
   assignmentCannotBecomeAccepted,
   assignmentDependenciesSatisfied,
   capacityBackoffFor,
+  isTransientInfrastructureText,
   selectWorkerCapacityTarget,
 } from './capacity.js';
 import { runnerExecutorCapabilities } from './modelRouting.js';
@@ -496,19 +497,32 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
 
   let ok = false;
   let output = '';
-  try {
-    output = execSync(asg.exec.verify, {
-      cwd: asg.exec.cwd,
-      shell: actionShell(),
-      timeout: 60_000,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...secrets },
-    });
-    ok = true;
-  } catch (e) {
-    const err = e as { stdout?: string; stderr?: string; message?: string };
-    output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
+  // A verifier that fails on transient provider infrastructure (a GitHub 503,
+  // a DNS blip) says nothing about the action's effect — and a false UNKNOWN
+  // here files a may-have-changed-the-world card a human must reconcile by
+  // hand (two filed on one day of GitHub 503s). Retry those shapes with a
+  // pause before concluding; any other failure is a real verdict, once.
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      output = execSync(asg.exec.verify, {
+        cwd: asg.exec.cwd,
+        shell: actionShell(),
+        timeout: 60_000,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, ...secrets },
+      });
+      ok = true;
+      break;
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string; message?: string };
+      output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
+      if (attempt < 3 && isTransientInfrastructureText(output)) {
+        await new Promise((resolve) => setTimeout(resolve, 10_000 * attempt));
+        continue;
+      }
+      break;
+    }
   }
   output = redactSecrets(output, redactionSecrets);
   await arrive(slug, (d, event) => {
