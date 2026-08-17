@@ -69,6 +69,12 @@ const SESSION_TEXT = /session limit|hit your session limit|5-?hour limit/i;
 const USAGE_TEXT =
   /out of (?:usage credits|extra usage)|credits?_required|\bcredits?\b|billing|usage allocation (?:has been )?disabled|usage limit|requires usage credits|run \/usage-credits|exceeded your .* limit|you(?:'|’)ve (?:reached|hit) your [\w -]*limit|(?:weekly|monthly|daily) limit|limit ·? ?resets/i;
 const RATE_TEXT = /rate.?limit|quota|429/i;
+// A machine-wide connectivity loss (sleep/wake DNS dropout, router blip) hits
+// every provider identically and clears on its own; treating it as logical
+// failure burned three-strike pages on an outage the operator cannot act on
+// minute-to-minute. These are provider/network waits — back off, no strikes.
+const NETWORK_TEXT =
+  /ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|stream disconnected|unable to connect to api|error sending request|temporary failure in name resolution/i;
 const PROVIDER_TEXT = /overloaded|529|server error|service unavailable/i;
 
 function capacityFamily(category: CapacityCategory): CapacityCategory {
@@ -89,6 +95,7 @@ export function classifyCapacityFailure(
   if (SESSION_TEXT.test(errorText)) return 'session_limit';
   if (USAGE_TEXT.test(errorText)) return 'usage_limit';
   if (RATE_TEXT.test(errorText)) return 'rate_limit';
+  if (NETWORK_TEXT.test(errorText)) return 'other';
   if (AUTH_TEXT.test(errorText)) return 'auth';
   if (PROVIDER_TEXT.test(errorText)) return 'other';
   return null;

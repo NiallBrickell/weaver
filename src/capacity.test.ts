@@ -186,6 +186,11 @@ test('the pure compatibility classifier is a categorized superset of the old reg
   assert.equal(classifyCapacityFailure('401 unauthorized'), 'auth');
   assert.equal(classifyCapacityFailure('529 overloaded'), 'other');
   assert.equal(classifyCapacityFailure('quota exceeded'), 'rate_limit');
+  // Machine-wide connectivity loss (observed 2026-08-16 overnight: DNS
+  // dropout hit both Claude and Codex) is infrastructure, not work failure.
+  assert.equal(classifyCapacityFailure('API Error: Unable to connect to API (ENOTFOUND)'), 'other');
+  assert.equal(classifyCapacityFailure('stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)'), 'other');
+  assert.equal(classifyCapacityFailure('fetch failed: getaddrinfo EAI_AGAIN api.example.com'), 'other');
   assert.equal(classifyCapacityFailure('409 run inference request limit reached'), null);
   assert.equal(classifyCapacityFailure('ordinary model error'), null);
   assert.equal(classifyCapacityFailure('', true), null);

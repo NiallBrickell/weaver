@@ -191,6 +191,8 @@ export interface PiExecutorDependencies {
   /** Deterministic test override; production reloads from disk per attempt. */
   executorSecrets?: Record<string, string>;
   now?: () => number;
+  /** Test seam for the isolated-root removal (ENOTEMPTY race simulation). */
+  removeDirectory?: (path: string) => void;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -559,6 +561,7 @@ export class PiRpcExecutor implements WorkerExecutor {
   private readonly mcpRelayStarter: NonNullable<PiExecutorDependencies['startMcpRelay']>;
   private readonly executorSecretsLoader: typeof loadExecutorSecrets;
   private readonly now: () => number;
+  private readonly removeDirectory: (path: string) => void;
 
   constructor(
     id: 'pi' | 'prime-agent',
@@ -576,6 +579,8 @@ export class PiRpcExecutor implements WorkerExecutor {
         : loadExecutorSecrets
     );
     this.now = dependencies.now ?? Date.now;
+    this.removeDirectory = dependencies.removeDirectory
+      ?? ((path: string) => rmSync(path, { recursive: true, force: true }));
   }
 
   lastTelemetry(): ExecutorTelemetry | null {
@@ -747,8 +752,16 @@ export class PiRpcExecutor implements WorkerExecutor {
         terminalReason = 'error';
       }
     } catch (error) {
-      failure = redactSecrets(errorMessage(error), redactionSecrets);
-      terminalReason = req.abort.signal.aborted ? 'aborted' : 'error';
+      // The intentional post-submission abort can arrive as a thrown
+      // AbortError rather than run.error (the RPC promise rejects when the
+      // extension stops the loop). The same rule as above applies: an
+      // accepted durable submission is the terminal success fact, and the
+      // abort wording is provenance, never a failure that would trigger a
+      // retry of already-submitted (possibly world-changing) work.
+      if (submissionMs === null) {
+        failure = redactSecrets(errorMessage(error), redactionSecrets);
+        terminalReason = req.abort.signal.aborted ? 'aborted' : 'error';
+      }
       if (runtime) await runtime.abort().catch(() => undefined);
     } finally {
       if (runtime) {
@@ -767,12 +780,23 @@ export class PiRpcExecutor implements WorkerExecutor {
         try { await providerProxy.close(); }
         catch (error) { cleanupFailures.push(`provider proxy close: ${redactSecrets(errorMessage(error), redactionSecrets)}`); }
       }
-      try { rmSync(isolatedRoot, { recursive: true, force: true }); }
-      catch (error) { cleanupFailures.push(`isolated home cleanup: ${redactSecrets(errorMessage(error), redactionSecrets)}`); }
+      await this.removeIsolatedRoot(isolatedRoot, cleanupFailures, redactionSecrets);
     }
     if (cleanupFailures.length) {
-      failure = [failure, ...cleanupFailures].filter(Boolean).join('; ');
-      terminalReason = 'error';
+      if (submissionMs === null) {
+        // No accepted submission: the cleanup detail belongs on the failure
+        // the attempt already is, so a leaked environment stays visible.
+        failure = [failure, ...cleanupFailures].filter(Boolean).join('; ');
+        terminalReason = 'error';
+      } else {
+        // An accepted submission is the terminal success fact; a leftover
+        // temp dir must not flip submitted work into a failure that invites
+        // a duplicate dispatch. Surface the leak without corrupting the
+        // attempt record.
+        process.stderr.write(
+          `pi executor: isolated home cleanup incomplete after accepted submission (${cleanupFailures.join('; ')})\n`,
+        );
+      }
     }
 
     const endedMs = this.now();
@@ -808,6 +832,31 @@ export class PiRpcExecutor implements WorkerExecutor {
       ...(durableSessionId ? { sessionId: durableSessionId } : {}),
       ...(failure ? { error: failure } : {}),
     };
+  }
+
+  /** Removing the isolated root races the dying RPC child on macOS
+   * (ENOTEMPTY while the process's last writes land). A bounded retry clears
+   * the race; a persistent failure is recorded for the caller to price —
+   * as attempt error detail when nothing was submitted, or as a stderr leak
+   * note once an accepted submission is the terminal fact. */
+  private async removeIsolatedRoot(
+    isolatedRoot: string,
+    cleanupFailures: string[],
+    redactionSecrets: Record<string, string>,
+  ): Promise<void> {
+    const attempts = 3;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        this.removeDirectory(isolatedRoot);
+        return;
+      } catch (error) {
+        if (attempt === attempts) {
+          cleanupFailures.push(`isolated home cleanup: ${redactSecrets(errorMessage(error), redactionSecrets)}`);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+      }
+    }
   }
 
   private providerConfiguration(

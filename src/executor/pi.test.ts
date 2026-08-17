@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { PiExecutor } from './pi.js';
-import type { WorkerExecutionRequest } from './types.js';
+import type { SubmitSurface, WorkerExecutionRequest } from './types.js';
 
 function request(overrides: Partial<WorkerExecutionRequest> = {}): WorkerExecutionRequest {
   return {
@@ -95,5 +95,117 @@ describe('PiExecutor operator MCP degradation', () => {
     assert.match(systemPrompt ?? '', /unavailable during this run: sentry/);
     assert.doesNotMatch(systemPrompt ?? '', /healthy/);
     assert.equal(executor.lastTelemetry()?.terminalReason, 'completed');
+  });
+
+  test('an accepted submission is the terminal fact even when the post-submit abort throws', async () => {
+    // The production extension aborts the agent loop right after the harness
+    // accepts submit_result; on some providers that surfaces as a rejected
+    // RPC promise ("This operation was aborted") instead of run.error.
+    // Mislabeling it failed re-dispatches already-submitted work — the exact
+    // duplicate-egress hazard the existing run.error rule exists to prevent.
+    let capturedSubmit: SubmitSurface | null = null;
+    const executor = new PiExecutor({
+      executorSecrets: { ZAI_API_KEY: 'zai-secret' },
+      startProviderProxy: async () => ({
+        url: 'http://127.0.0.1:43911/proxy',
+        token: 'proxy-token',
+        modelResolved: () => 'glm-5.3',
+        async close() {},
+      }),
+      startMcpRelay: async () => {
+        throw new Error('unreachable in this test');
+      },
+      startBridge: async (submit) => {
+        capturedSubmit = submit;
+        return { url: 'http://127.0.0.1:43912/mcp', token: 'bridge-token', async close() {} };
+      },
+      startRuntime: async () => ({
+        harnessVersion: 'pi-test',
+        sessionId: 'pi-session',
+        async run() {
+          const reply = await capturedSubmit!.submitResult({
+            summary: 'Done.',
+            artifact: {
+              title: 'Evidence', kind: 'report', file_name: 'evidence.md',
+              content: `# Evidence\n\n${'Verified. '.repeat(8)}`,
+            },
+          });
+          assert.equal(reply.isError, undefined);
+          throw new Error('This operation was aborted');
+        },
+        async abort() {},
+        async close() {},
+      }),
+    });
+
+    const outcome = await executor.execute(request({ cwd: workdir }));
+
+    assert.equal(outcome.error, undefined);
+    assert.equal(executor.lastTelemetry()?.terminalReason, 'completed');
+    assert.notEqual(executor.lastTelemetry()?.timeToSubmissionMs, null);
+  });
+
+  test('cleanup races never flip an accepted submission into a failed attempt', async () => {
+    // macOS ENOTEMPTY: the dying RPC child's last writes race rmSync. A
+    // leftover temp dir is a leak worth surfacing on stderr — but joining it
+    // into `failure` turned submitted work into a retriable failure, inviting
+    // duplicate dispatch of already-published work.
+    const stderrLines: string[] = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = ((chunk: unknown) => {
+      stderrLines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    let capturedSubmit: SubmitSurface | null = null;
+    const executor = new PiExecutor({
+      executorSecrets: { ZAI_API_KEY: 'zai-secret' },
+      removeDirectory: () => {
+        throw Object.assign(new Error('ENOTEMPTY, Directory not empty'), { code: 'ENOTEMPTY' });
+      },
+      startProviderProxy: async () => ({
+        url: 'http://127.0.0.1:43913/proxy',
+        token: 'proxy-token',
+        modelResolved: () => 'glm-5.3',
+        async close() {},
+      }),
+      startBridge: async (submit) => {
+        capturedSubmit = submit;
+        return { url: 'http://127.0.0.1:43914/mcp', token: 'bridge-token', async close() {} };
+      },
+      startRuntime: async () => ({
+        harnessVersion: 'pi-test',
+        sessionId: null,
+        async run() {
+          const reply = await capturedSubmit!.submitResult({
+            summary: 'Done.',
+            artifact: {
+              title: 'Evidence', kind: 'report', file_name: 'evidence.md',
+              content: `# Evidence\n\n${'Verified. '.repeat(8)}`,
+            },
+          });
+          assert.equal(reply.isError, undefined);
+          return {
+            error: null,
+            usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, reasoningOutputTokens: 0 },
+            providerResolved: 'zai-coding-plan',
+            modelResolved: 'glm-5.3',
+            costUsd: null,
+          };
+        },
+        async abort() {},
+        async close() {},
+      }),
+    });
+
+    let outcome: Awaited<ReturnType<typeof executor.execute>>;
+    try {
+      outcome = await executor.execute(request({ cwd: workdir }));
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    assert.equal(outcome!.error, undefined);
+    assert.equal(executor.lastTelemetry()?.terminalReason, 'completed');
+    assert.match(stderrLines.join(''), /cleanup incomplete after accepted submission/);
   });
 });
