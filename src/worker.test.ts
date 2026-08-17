@@ -907,6 +907,58 @@ test('worker wall preserves appended evidence as a typed, non-adoptable checkpoi
   }
 });
 
+test('an exception surfaced by the wall abort is typed wall_timeout, not a crash', async () => {
+  const home = workerHome();
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-worker-wallabort-'));
+  // Mirrors the pi executor under the wall: the RPC promise rejects with the
+  // abort (plus cleanup-race noise) instead of resolving, and no section was
+  // ever appended. The attempt must read as the wall, never as an
+  // infrastructure-looking exception the coordinator would escalate.
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      await new Promise<void>((resolve, reject) => {
+        const guard = setTimeout(() => reject(new Error('worker wall did not fire')), 1_000);
+        const onAbort = () => {
+          clearTimeout(guard);
+          resolve();
+        };
+        if (req.abort.signal.aborted) onAbort();
+        else req.abort.signal.addEventListener('abort', onAbort, { once: true });
+      });
+      throw new Error('Request aborted; isolated home cleanup: ENOTEMPTY, Directory not empty');
+    },
+  };
+
+  try {
+    await createWorkstream({
+      slug: 'worker-wall-abort', title: 'worker-wall-abort',
+      objective: 'exceed the wall without submitting', tags: [],
+      successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-wall-abort', (d) => d.assignments.push({
+      id: 'asg_wallabort', objective: 'long reconciliation step',
+      briefing: 'Run past the wall.', kind: 'work',
+      readDirs: [workspace], acceptanceCriteria: ['never reached'],
+      dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await runWorker('worker-wall-abort', 'asg_wallabort', executor, undefined, {
+      wallMs: 40,
+      wallTickMs: 10,
+    });
+
+    const doc = await load('worker-wall-abort');
+    const assignment = doc.assignments[0]!;
+    assert.equal(assignment.state, 'failed');
+    assert.equal(assignment.attempts[0]!.terminalReason, 'wall_timeout');
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test('a worker retry consumes worker capacity permits but preserves coordinator wakes', async () => {
   const home = workerHome();
   try {

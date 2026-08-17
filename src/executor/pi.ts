@@ -580,7 +580,11 @@ export class PiRpcExecutor implements WorkerExecutor {
     );
     this.now = dependencies.now ?? Date.now;
     this.removeDirectory = dependencies.removeDirectory
-      ?? ((path: string) => rmSync(path, { recursive: true, force: true }));
+      // The RPC child's own subprocesses can outlive it and keep writing into
+      // the isolated home while the tree is being removed (macOS surfaces the
+      // race as ENOTEMPTY). rmSync's built-in retry absorbs the transient
+      // window; the outer removeIsolatedRoot loop handles anything longer.
+      ?? ((path: string) => rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 }));
   }
 
   lastTelemetry(): ExecutorTelemetry | null {
@@ -785,9 +789,11 @@ export class PiRpcExecutor implements WorkerExecutor {
     if (cleanupFailures.length) {
       if (submissionMs === null) {
         // No accepted submission: the cleanup detail belongs on the failure
-        // the attempt already is, so a leaked environment stays visible.
+        // the attempt already is, so a leaked environment stays visible. An
+        // intentional abort stays typed as aborted — the cleanup race it
+        // provoked is a consequence, not the cause.
         failure = [failure, ...cleanupFailures].filter(Boolean).join('; ');
-        terminalReason = 'error';
+        if (terminalReason !== 'aborted') terminalReason = 'error';
       } else {
         // An accepted submission is the terminal success fact; a leftover
         // temp dir must not flip submitted work into a failure that invites
