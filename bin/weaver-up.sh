@@ -81,7 +81,9 @@ echo "🌐 Weaver fleet: $REPO"
 if $RESTART; then
   pid="$(runner_pid)"
   if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; then
-    echo "🔁 Restart: stopping runner pid $pid…"
+    # ${pid} braced: macOS bash 3.2 folds a multibyte char that directly
+    # follows an unbraced name into the variable ("pid…: unbound variable").
+    echo "🔁 Restart: stopping runner pid ${pid}…"
     run kill "$pid"
     if ! $DRY_RUN; then
       for _ in $(seq 1 20); do ps -p "$pid" >/dev/null 2>&1 || break; sleep 0.5; done
