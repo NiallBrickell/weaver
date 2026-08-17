@@ -17,6 +17,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { tick } from './engine.js';
+import { sweepPrConflicts } from './prConflicts.js';
 import { sdkEnv } from './secrets.js';
 import { arrive, listWorkstreams, load, weaverHome } from './store.js';
 import { virtualNow } from './clock.js';
@@ -504,6 +505,9 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   // 19h behind a due wake while ten alphabetically-earlier streams re-took
   // all ten slots every iteration.
   const lastTickedAt = new Map<string, number>();
+  // Open-PR conflict watch throttle (see prConflicts.ts). Runner memory only.
+  const prConflictProbedAt = new Map<string, number>();
+  let prConflictSweepInFlight = false;
   let probing = false;
   let lastCredMtime = credentialsMtime();
   let staleAnnounced = false;
@@ -530,6 +534,14 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       // has since used successfully is released without spending a call.
       const fleetRecovered = await fleetRecoveredSlugs();
       if (fleetRecovered.size) await releaseFleetRecovered(fleetRecovered, log);
+      // Open-PR conflict watch: probes are gh calls, so they run off the loop
+      // (never blocking an iteration) and at most one sweep is in flight.
+      if (!prConflictSweepInFlight) {
+        prConflictSweepInFlight = true;
+        void sweepPrConflicts(prConflictProbedAt, log)
+          .catch((e) => logError(`[run] PR conflict sweep failed: ${e instanceof Error ? e.message : e}`))
+          .finally(() => { prConflictSweepInFlight = false; });
+      }
       const backedOff = probing ? [] : await infraBackoffSlugs();
       if (backedOff.length) {
         const credMtime = credentialsMtime();
