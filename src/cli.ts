@@ -776,7 +776,24 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
         `weaver run — ticking active workstreams every ${interval / 1000}s, ${concurrency} in parallel; ` +
         `executors=${[...executorCapabilities].join(',')} (Ctrl-C to stop)\n`,
       );
-      await runLoop({ intervalMs: interval, concurrency, executorCapabilities });
+      // A bare kill used to take the process down mid-action — the orphaned
+      // push then cost a human a manual provider reconciliation. First signal
+      // drains in-flight ticks through runLoop's bounded window; a second
+      // signal is the standard force-exit escape hatch.
+      const stopper = new AbortController();
+      let stopping = false;
+      const requestStop = (sig: string) => {
+        if (stopping) {
+          process.stderr.write(`\n[run] second ${sig} — forcing exit\n`);
+          process.exit(130);
+        }
+        stopping = true;
+        process.stdout.write(`\n[run] ${sig} — draining in-flight ticks before exit (signal again to force)\n`);
+        stopper.abort();
+      };
+      process.on('SIGINT', () => requestStop('SIGINT'));
+      process.on('SIGTERM', () => requestStop('SIGTERM'));
+      await runLoop({ intervalMs: interval, concurrency, executorCapabilities, signal: stopper.signal });
       break;
     }
     case 'serve': {
