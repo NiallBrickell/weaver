@@ -794,7 +794,14 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       process.on('SIGINT', () => requestStop('SIGINT'));
       process.on('SIGTERM', () => requestStop('SIGTERM'));
       await runLoop({ intervalMs: interval, concurrency, executorCapabilities, signal: stopper.signal });
-      break;
+      // runLoop returning is the decision to stop, but it cannot END the
+      // process: an in-flight worker's SDK child process is a live handle that
+      // pins the event loop past any drain window, so a drained runner sat
+      // stalled-with-heartbeat-frozen for 8+ minutes until a second signal.
+      // Exit explicitly — the abandoned attempt is exactly what action/worker
+      // crash recovery reconciles on the next runner's first tick.
+      process.stdout.write('[run] loop stopped — exiting\n');
+      process.exit(0);
     }
     case 'serve': {
       const token = process.env.WEAVER_SERVE_TOKEN;
