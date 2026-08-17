@@ -385,6 +385,13 @@ export interface RunnerOptions {
   tickFn?: typeof tick;
   /** Source-revision probe; injectable only for deterministic runner tests. */
   sourceStale?: () => boolean;
+  /** How long the loop waits for in-flight ticks after `signal` aborts before
+   * giving up. An abandoned tick can hold a mid-push ACTION whose orphan
+   * costs a human a manual provider reconciliation (three in one day when
+   * restarts killed the runner mid-action), so exit waits for the short ones.
+   * Default 3 minutes: covers action executions and coordinator passes while
+   * never pinning a restart behind a 40-minute worker wall. */
+  drainMs?: number;
 }
 
 /**
@@ -603,5 +610,20 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       logError(`[run] loop iteration failed: ${e instanceof Error ? e.message : e}`);
     }
     await waitForNextIteration(opts.intervalMs, opts.signal);
+  }
+  // Drain: the loop was told to stop, but in-flight ticks may hold live
+  // external acts. Give the short-lived ones a bounded window to settle so a
+  // routine restart stops orphaning mid-push actions.
+  if (inFlight.size) {
+    log(`[run] stopping — draining ${inFlight.size} in-flight tick(s) (${[...inFlight].join(', ')})`);
+    const deadline = Date.now() + (opts.drainMs ?? 180_000);
+    while (inFlight.size && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (inFlight.size) {
+      logError(`[run] drain window elapsed — exiting with ${inFlight.size} tick(s) still in flight: ${[...inFlight].join(', ')} (crash recovery reconciles their attempts)`);
+    } else {
+      log('[run] drained cleanly');
+    }
   }
 }

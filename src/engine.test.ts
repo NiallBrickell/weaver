@@ -15,6 +15,7 @@ import {
   flagImpossibleDependencies,
   runnableAssignments,
   tick,
+  preflightApprovedAction,
   verifyAction,
 } from './engine.js';
 import { runCoordinatorPass } from './coordinator.js';
@@ -175,6 +176,39 @@ test('verifyAction refuses an approved action that never executed', async () => 
     attempts: [],
   });
   await assert.rejects(verifyAction('verify-noattempt-ws', 'asg_act'), /no execution attempt/);
+});
+
+test('preflight confirms an approved action whose postcondition already holds, without executing', async () => {
+  await makeActionWorkstream('preflight-satisfied-ws', {
+    exec: { cwd: process.env.WEAVER_HOME!, verify: 'echo already-there', approval: { by: 'human', at: new Date().toISOString() } },
+    state: 'queued',
+    attempts: [],
+  });
+  assert.equal(await preflightApprovedAction('preflight-satisfied-ws', 'asg_act'), true);
+  const asg = (await load('preflight-satisfied-ws')).assignments.find((a) => a.id === 'asg_act')!;
+  assert.equal(asg.state, 'awaiting_review');
+  assert.equal(asg.attempts.length, 0, 'the action must never have executed');
+  assert.equal(asg.exec!.verified?.ok, true);
+  assert.match(asg.submission!.summary, /never re-run/);
+});
+
+test('preflight is a no-op when the postcondition does not hold yet', async () => {
+  await makeActionWorkstream('preflight-pending-ws', {
+    exec: { cwd: process.env.WEAVER_HOME!, verify: 'false', approval: { by: 'human', at: new Date().toISOString() } },
+    state: 'queued',
+    attempts: [],
+  });
+  assert.equal(await preflightApprovedAction('preflight-pending-ws', 'asg_act'), false);
+  const asg = (await load('preflight-pending-ws')).assignments.find((a) => a.id === 'asg_act')!;
+  assert.equal(asg.state, 'queued', 'a pending action stays queued for ordinary execution');
+  assert.equal(asg.exec!.verified, undefined);
+});
+
+test('preflight refuses a gated, unapproved action — same boundary as readback', async () => {
+  await makeActionWorkstream('preflight-gated-ws', {}); // gated, no approval
+  assert.equal(await preflightApprovedAction('preflight-gated-ws', 'asg_act'), false);
+  const asg = (await load('preflight-gated-ws')).assignments.find((a) => a.id === 'asg_act')!;
+  assert.equal(asg.state, 'gated', 'an unapproved action never runs its model-authored verifier');
 });
 
 test('an approved send executes once and records the provider ref', async () => {

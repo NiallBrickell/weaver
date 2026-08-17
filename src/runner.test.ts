@@ -167,6 +167,50 @@ test('an embedded runner whose owner aborts returns instead of pinning the proce
   );
 });
 
+test('an aborted runner drains in-flight ticks before returning', async () => {
+  await make('drain-me');
+  const abort = new AbortController();
+  let tickSettled = false;
+  const loop = runLoop({
+    intervalMs: 10,
+    concurrency: 1,
+    signal: abort.signal,
+    tickFn: async () => {
+      // Abort lands while this tick is mid-flight; the loop must wait for it.
+      abort.abort();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      tickSettled = true;
+      return { cycles: 0, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
+    },
+    log: () => {},
+    logError: () => {},
+  });
+  await loop;
+  assert.equal(tickSettled, true, 'runLoop returned while a tick still held live work');
+});
+
+test('the drain window is bounded — a hung tick cannot pin the exit forever', async () => {
+  await make('drain-hung');
+  const abort = new AbortController();
+  const errors: string[] = [];
+  const started = Date.now();
+  await runLoop({
+    intervalMs: 10,
+    concurrency: 1,
+    signal: abort.signal,
+    drainMs: 200,
+    tickFn: async () => {
+      abort.abort();
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+      return { cycles: 0, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
+    },
+    log: () => {},
+    logError: (line) => errors.push(line),
+  });
+  assert.ok(Date.now() - started < 5_000, 'drain must give up at the bounded window');
+  assert.ok(errors.some((l) => l.includes('drain window elapsed')), 'the abandoned tick is reported, never silent');
+});
+
 test('a runner whose checkout changed stops before heartbeat or dispatch', async () => {
   await make('stale-source');
   const errors: string[] = [];

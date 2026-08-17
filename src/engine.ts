@@ -471,6 +471,91 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
  * the same principle as email readback — after an act (or a crash), truth
  * comes from re-inspecting the world, never from re-doing the act.
  */
+/** The one place a verifier command actually runs. A verifier that fails on
+ * transient provider infrastructure (a GitHub 503, a DNS blip) says nothing
+ * about the action's effect — and a false UNKNOWN files a
+ * may-have-changed-the-world card a human must reconcile by hand (two filed
+ * on one day of GitHub 503s). Retry those shapes with a pause before
+ * concluding; any other failure is a real verdict, once. */
+async function execActionVerifier(
+  verify: string,
+  cwd: string,
+  secrets: Record<string, string>,
+  redactionSecrets: Record<string, string>,
+): Promise<{ ok: boolean; output: string }> {
+  let ok = false;
+  let output = '';
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      output = execSync(verify, {
+        cwd,
+        shell: actionShell(),
+        timeout: 60_000,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, ...secrets },
+      });
+      ok = true;
+      break;
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string; message?: string };
+      output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
+      if (attempt < 3 && isTransientInfrastructureText(output)) {
+        await new Promise((resolve) => setTimeout(resolve, 10_000 * attempt));
+        continue;
+      }
+      break;
+    }
+  }
+  return { ok, output: redactSecrets(output, redactionSecrets) };
+}
+
+/**
+ * PRE-EXECUTION POSTCONDITION CHECK. An approved action's verifier is the
+ * machine-checkable statement of the world it intends to create. When that
+ * statement already holds BEFORE the action runs — a human merged the PR by
+ * hand, an orphaned earlier attempt landed, a sibling stream got there first —
+ * executing would at best no-op and at worst double-fire an irreversible act
+ * (observed: two approvals executed against already-merged PRs in one day).
+ * Confirm the existing effect and hand it to review instead of running.
+ *
+ * Authority: this runs model-authored shell, so it carries exactly the
+ * verifyAction eligibility gate — a matching approval is REQUIRED. A gated,
+ * unapproved action's verifier never runs here (see the boundary comment on
+ * verifyAction); staleness of gated actions stays a human-visible fact.
+ */
+export async function preflightApprovedAction(slug: string, assignmentId: string): Promise<boolean> {
+  const doc = await load(slug);
+  const asg = doc.assignments.find((a) => a.id === assignmentId);
+  if (!asg?.exec || asg.kind !== 'action') return false;
+  if (asg.state !== 'queued' || asg.attempts.length > 0 || !actionHasMatchingApproval(asg)) return false;
+  const secrets = loadSecrets(slug);
+  const redactionSecrets = loadRedactionSecrets(slug);
+  const { ok, output } = await execActionVerifier(asg.exec.verify, asg.exec.cwd, secrets, redactionSecrets);
+  // Not satisfied is the normal case — proceed to execution with no ceremony.
+  // A transient verifier failure lands here too, which is safe: the action
+  // simply executes as approved and the ordinary readback follows it.
+  if (!ok) return false;
+  let satisfied = false;
+  await arrive(slug, (d, event) => {
+    const a2 = d.assignments.find((x) => x.id === assignmentId);
+    if (!a2?.exec || a2.state !== 'queued' || a2.attempts.length > 0 || !actionHasMatchingApproval(a2)) return;
+    a2.state = 'awaiting_review';
+    a2.exec.verified = { ok: true, output: output.slice(0, 2000), at: new Date().toISOString() };
+    a2.submission = a2.submission ?? {
+      summary:
+        'Postcondition already holds: the approved action was never executed because its own verifier confirmed the intended effect already exists in the world. Review the readback output and adopt the existing effect or dispatch different work; never re-run this action.',
+    };
+    event(
+      'action.already_satisfied',
+      `${assignmentId} postcondition already holds — execution skipped, existing effect submitted for review: ${output.trim().slice(0, 160) || '(no output)'}`,
+      [assignmentId],
+    );
+    satisfied = true;
+  });
+  return satisfied;
+}
+
 export async function verifyAction(slug: string, assignmentId: string): Promise<boolean> {
   const doc = await load(slug);
   const asg = doc.assignments.find((a) => a.id === assignmentId);
@@ -495,36 +580,7 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
   const redactionSecrets = loadRedactionSecrets(slug);
 
 
-  let ok = false;
-  let output = '';
-  // A verifier that fails on transient provider infrastructure (a GitHub 503,
-  // a DNS blip) says nothing about the action's effect — and a false UNKNOWN
-  // here files a may-have-changed-the-world card a human must reconcile by
-  // hand (two filed on one day of GitHub 503s). Retry those shapes with a
-  // pause before concluding; any other failure is a real verdict, once.
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      output = execSync(asg.exec.verify, {
-        cwd: asg.exec.cwd,
-        shell: actionShell(),
-        timeout: 60_000,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, ...secrets },
-      });
-      ok = true;
-      break;
-    } catch (e) {
-      const err = e as { stdout?: string; stderr?: string; message?: string };
-      output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
-      if (attempt < 3 && isTransientInfrastructureText(output)) {
-        await new Promise((resolve) => setTimeout(resolve, 10_000 * attempt));
-        continue;
-      }
-      break;
-    }
-  }
-  output = redactSecrets(output, redactionSecrets);
+  const { ok, output } = await execActionVerifier(asg.exec.verify, asg.exec.cwd, secrets, redactionSecrets);
   await arrive(slug, (d, event) => {
     const a2 = d.assignments.find((x) => x.id === assignmentId)!;
     a2.exec!.verified = { ok, output: output.slice(0, 2000), at: new Date().toISOString() };
@@ -613,6 +669,12 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
     // boundary before execution, not trusted from the tick's initial load.
     const current = await load(slug);
     if (current.workstream.status !== 'active') break;
+    // Postcondition already true: confirm the existing effect, never re-run
+    // the human-authored command against a world that has moved on.
+    if (await preflightApprovedAction(slug, asg.id)) {
+      executed++;
+      continue;
+    }
     const runId = newId('run');
     try {
       await mutate(slug, current.revision, (d, event) => {
@@ -991,9 +1053,16 @@ async function tickLocked(
     }
     const engineActCount = engineActs.length ? await executeHumanActions(slug, new Set(engineActs)) : 0;
     if (engineActCount > 0) {
-      for (const id of engineActs.slice(0, engineActCount)) {
-        const ok = await verifyAction(slug, id);
-        process.stderr.write(`[tick] engine action ${id} readback: ${ok ? 'CONFIRMED' : 'UNKNOWN'}\n`);
+      // Read back only the actions that actually executed this tick: a
+      // preflight-satisfied action never runs, has no attempt, and verifyAction
+      // correctly refuses it — the count-based slice used to assume execution
+      // order matched the gate list.
+      const executedNow = (await load(slug)).assignments.filter(
+        (a) => engineActs.includes(a.id) && a.attempts.length > 0 && !a.exec?.verified,
+      );
+      for (const a of executedNow) {
+        const ok = await verifyAction(slug, a.id);
+        process.stderr.write(`[tick] engine action ${a.id} readback: ${ok ? 'CONFIRMED' : 'UNKNOWN'}\n`);
       }
       progressed = true;
     }
@@ -1031,6 +1100,14 @@ async function tickLocked(
       // collision clears; skip past this id without counting it as progress.
       const runnableAsg = (await load(slug)).assignments.find((a) => a.id === id);
       if (runnableAsg && !(await guardRepoEgress(slug, runnableAsg))) continue;
+      // Approved action whose postcondition already holds: confirm the
+      // existing effect instead of launching a worker to re-create it.
+      if (runnableAsg?.kind === 'action' && runnableAsg.attempts.length === 0
+        && await preflightApprovedAction(slug, id)) {
+        process.stderr.write(`[tick] action ${id} postcondition already holds — execution skipped\n`);
+        progressed = true;
+        continue;
+      }
       process.stderr.write(`[tick] running worker for ${id}…\n`);
       const started = await runWorker(slug, id, undefined, executorCapabilities);
       if (!started) break cycles;
