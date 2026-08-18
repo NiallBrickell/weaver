@@ -17,10 +17,12 @@ function order(streams: Stream[]): string[] {
   return streams.map(([s]) => s).sort(byPriorityThenFairness(priority, lastTicked));
 }
 
-/** Sort then allocate — the two steps the runner performs on each iteration. */
+/** Sort then allocate — the two steps the runner performs on each iteration,
+ * including the least-recently-ticked fairness order the floor rotates on. */
 function grant(streams: Stream[], cap: number): string[] {
   const priority = new Map(streams.map(([s, p]) => [s, priorityRank(p)]));
-  return allocateSlots(order(streams), priority, cap);
+  const fairnessDue = [...streams].sort((a, b) => a[2] - b[2]).map(([s]) => s);
+  return allocateSlots(order(streams), priority, cap, fairnessDue);
 }
 
 /** Background streams nobody ranked, oldest-ticked (so first in line) first. */
@@ -102,9 +104,16 @@ test('the fleet keeps its floor, so a long-running high band can never freeze th
   assert.ok(granted.includes('sweep-0'), 'and the floor goes to whoever has waited longest');
 });
 
-test('with nothing ranked high the allocation is exactly the take it always was', () => {
+test('with nothing ranked high, priority leads the head and the floor rotates by age', () => {
+  // Formerly the take was pure priority order, which is how a saturated
+  // 'normal' band starved 'low' forever (the 2026-08-18 quiet-routines
+  // incident). Now the head is still priority-ordered, but the last cap/4
+  // slots go to the least-recently-ticked due streams whatever their band.
   const fleet: Stream[] = [...background(12), ['deprioritized', 'low', 0], ['unranked', undefined, 3]];
-  assert.deepEqual(grant(fleet, 10), order(fleet).slice(0, 10));
+  const granted = grant(fleet, 10);
+  assert.deepEqual(granted.slice(0, 8), order(fleet).slice(0, 8), 'the head is still priority-then-fairness');
+  assert.ok(granted.includes('deprioritized'), 'the oldest low stream rotates through the floor');
+  assert.equal(granted.length, 10);
   assert.deepEqual(grant(background(4), 10), order(background(4)), 'an unsaturated fleet all runs');
 });
 
@@ -125,4 +134,23 @@ test('a cap too small to partition degrades to the ranking, which is what the hu
   assert.deepEqual(grant(fleet, 1), ['urgent'], 'the only slot follows the ranking');
   assert.deepEqual(grant(fleet, 2), ['urgent', 'sweep-0'], 'two slots split one each');
   assert.deepEqual(grant(fleet, 0), [], 'no budget grants nothing rather than one of everything');
+});
+
+test('a saturated normal band cannot starve the low band — the floor rotates by age', () => {
+  // The live case (2026-08-18): eleven busy 'normal' streams against ten (or
+  // load-throttled fewer) slots, all evening. The 'low' routines — the sentry
+  // sweep, the daily update, thread-review — were never ticked at all, and a
+  // crashed action sat unrecovered for hours with zero telemetry.
+  const normals: Stream[] = Array.from({ length: 11 }, (_, i) => [`busy-${i}`, 'normal', 100 + i] as Stream);
+  const granted = grant([...normals, ['sentry-sweep', 'low', 1]], 8);
+  assert.ok(
+    granted.includes('sentry-sweep'),
+    'the least-recently-ticked low stream must rotate through the fairness floor',
+  );
+  assert.equal(granted.length, 8);
+});
+
+test('when everyone fits, no floor arithmetic changes anything', () => {
+  const granted = grant([['a', 'normal', 2], ['b', 'low', 1]], 5);
+  assert.deepEqual([...granted].sort(), ['a', 'b']);
 });

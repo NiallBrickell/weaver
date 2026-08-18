@@ -199,16 +199,37 @@ export function byPriorityThenFairness(
  *
  * Expects `due` already ordered by `byPriorityThenFairness` and preserves that
  * order within each band, so least-recently-ticked still decides who goes.
+ *
+ * STARVATION FLOOR ACROSS BANDS: priority-first ordering means a saturated
+ * higher band starves everything below it — with twenty due streams, ten (or
+ * load-throttled fewer) slots, and eleven 'normal' streams busy all evening,
+ * the 'low' band never got a slot at all, and the streams parked there were
+ * the standing routines (sentry-sweep, the daily update, thread-review): a
+ * crashed action sat unrecovered for hours with zero telemetry because its
+ * stream was simply never ticked. So whenever the queue overflows the cap,
+ * the last max(1, cap/4) slots are granted purely least-recently-ticked
+ * across every band (`fairnessDue`), making starvation impossible: any due
+ * stream, whatever its rank, eventually becomes the oldest and rotates
+ * through the floor. Priority still owns the rest of the budget.
  */
 export function allocateSlots(
   due: readonly string[],
   priority: ReadonlyMap<string, number>,
   cap: number,
+  fairnessDue: readonly string[] = due,
 ): string[] {
   if (cap <= 0) return [];
+  const withFairnessFloor = (head: readonly string[], budget: number): string[] => {
+    if (due.length <= budget) return due.slice(0, budget);
+    const floor = Math.max(1, Math.floor(budget / 4));
+    const granted = head.slice(0, Math.max(1, budget - floor));
+    const taken = new Set(granted);
+    const rotation = fairnessDue.filter((slug) => !taken.has(slug));
+    return granted.concat(rotation.slice(0, budget - granted.length));
+  };
   const isHigh = (slug: string) => (priority.get(slug) ?? priorityRank('normal')) === priorityRank('high');
   const highDue = due.filter(isHigh);
-  if (!highDue.length) return due.slice(0, cap);
+  if (!highDue.length) return withFairnessFloor(due, cap);
   // A quarter of the budget, at least one slot: enough for the rest of the
   // fleet to keep rotating its backstop polls (they are granted
   // least-recently-ticked, so the floor rotates rather than favouring anyone)
@@ -219,8 +240,12 @@ export function allocateSlots(
   // human asking for high priority meant by it — so the high band is never
   // reserved down to nothing either.
   const highGranted = highDue.slice(0, Math.max(1, cap - fleetFloor));
-  const rest = due.filter((slug) => !isHigh(slug));
-  return highGranted.concat(rest.slice(0, Math.min(fleetFloor, cap - highGranted.length)));
+  const taken = new Set(highGranted);
+  // The fleet floor rotates least-recently-ticked across the non-high bands
+  // (an ungranted HIGH stream never eats the floor — the floor exists for the
+  // rest of the fleet), so 'normal' saturation cannot starve 'low' either.
+  const rotation = fairnessDue.filter((slug) => !taken.has(slug) && !isHigh(slug));
+  return highGranted.concat(rotation.slice(0, Math.min(fleetFloor, cap - highGranted.length)));
 }
 
 function credentialsMtime(): number {
@@ -591,7 +616,10 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       // being filled first-come. The partition applies to what THIS iteration
       // grants; ticks still running from earlier ones keep occupying the
       // budget, and the break below remains what bounds the total.
-      for (const slug of allocateSlots(due, priority, cap)) {
+      const fairnessDue = [...due].sort(
+        (a, b) => (lastTickedAt.get(a) ?? 0) - (lastTickedAt.get(b) ?? 0),
+      );
+      for (const slug of allocateSlots(due, priority, cap, fairnessDue)) {
         if (inFlight.size >= cap) break;
         inFlight.add(slug);
         lastTickedAt.set(slug, Date.now());
