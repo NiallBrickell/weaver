@@ -169,12 +169,31 @@ async function runIntake(message: string, done?: string): Promise<void> {
   }
   const { onboard } = await import('./onboard.js');
   const stopProgress = progress('deriving the workstream from your message (one model pass)');
-  let d;
+  let r;
   try {
-    d = await onboard(message, done?.trim());
+    r = await onboard(message, done?.trim());
   } finally {
     stopProgress();
   }
+  if (r.action === 'steered') {
+    process.stdout.write(
+      [
+        `↪ ${r.slug}${r.reopened ? '  (reopened)' : ''} — ${r.title}`,
+        ``,
+        `An existing workstream already owns this — your message arrived there as steering${r.reopened ? ', and the workstream was reopened with its history intact' : ''}.`,
+        ``,
+        `It's running. Watch: weaver watch · weaver status ${r.slug}`,
+        ``,
+      ].join('\n'),
+    );
+    return;
+  }
+  if (r.fallbackReason) {
+    process.stderr.write(
+      `⚠ model derivation failed (${r.fallbackReason}) — slug and title are the deterministic fallback (first words of your message)\n`,
+    );
+  }
+  const d = r.derived;
   process.stdout.write(
     [
       `▶ ${d.slug}${d.routine ? '  (routine)' : ''} — ${d.title}`,

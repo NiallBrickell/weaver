@@ -26,6 +26,10 @@ The house pack is machine-local config, not source: put a `house.json` under `WE
 }
 ```
 
+The same derivation pass de-dupes against your fleet. If the message is really an update to, a duplicate of, or a direct follow-up on work an existing workstream already owns — "we shipped X but it isn't working" when a stream shipped X — it is **delivered to that workstream as founder steering** instead of forking a near-duplicate stream, and a done or paused stream is reopened with its history intact (the CLI prints `↪ <slug>` instead of `▶ <slug>` when this happens). Merely related topics still get their own stream, and when in doubt Weaver creates rather than attaches; `weaver steer <slug> "<msg>"` remains the way to target a stream explicitly.
+
+Derivation degrades safely: if the model pass fails (offline, capacity), the workstream still starts immediately — the slug and title become the first words of your message, the objective is your message verbatim, and the CLI prints a warning saying the deterministic fallback named the stream. A failed derivation never blocks starting work, and never silently changes what the stream will do — only what it is called.
+
 An optional second argument overrides the done-bar when the default (fixed, merged through review, evidence in the PR) isn't what you mean — `weaver do "<message>" "verified live in the product afterwards, read-only"`. Production is never touched during verification unless that second sentence explicitly asks, and then only read-only.
 
 For anything longer than a sentence, run **`weaver do` with no arguments**: it prompts for the message and reads it raw from stdin — type or paste freely across lines, finish with Ctrl-D (or a line containing only `.`). This is the safe path for real messages, because a shell-quoted argument is parsed by the shell first: `$36.69` inside double quotes becomes `.69`, an embedded quote ends the argument. Stdin has no such grammar — what you paste is what the brief preserves. Either way, derivation is one model pass (20–60s) with a progress spinner, so thinking never looks like a hang.

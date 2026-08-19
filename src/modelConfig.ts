@@ -29,6 +29,17 @@ export function workerModel(): string {
   return process.env.WEAVER_WORKER_MODEL ?? 'sonnet';
 }
 
+/** Model for harness-internal text passes (intake derivation, `weaver ask`)
+ * that always run through the machine's LOCAL Claude SDK login. The worker
+ * model is reused only when that SDK can run it: a provider-prefixed worker
+ * model (`zai-coding-plan/…`, `openrouter/…`) belongs to another executor,
+ * and handing it to the local SDK fails every pass — intake then silently
+ * degrades to its deterministic word-mash fallback. */
+export function localTextModel(): string {
+  const w = workerModel();
+  return providerFromModel(w) === null ? w : 'sonnet';
+}
+
 export function workerExecutorName(): string {
   return process.env.WEAVER_EXECUTOR ?? 'local-sdk';
 }
