@@ -236,6 +236,42 @@ describe('reviewed worker routes', () => {
     }
   });
 
+  test('the operator worker ladder is appended after the configured seat and deduped', () => {
+    const names = ['WEAVER_EXECUTOR', 'WEAVER_WORKER_MODEL', 'WEAVER_WORKER_FALLBACKS'] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.WEAVER_EXECUTOR = 'codex-sdk';
+      process.env.WEAVER_WORKER_MODEL = 'gpt-5.5';
+      process.env.WEAVER_WORKER_FALLBACKS =
+        'codex-sdk:gpt-5.5, pi:zai-coding-plan/glm-5.3, pi:openrouter/moonshotai/kimi-k3';
+      // Order: reviewed eval routes, the configured seat, then the ladder —
+      // with the ladder's repeat of the configured seat deduped away. The
+      // ladder may cross executors: it is operator machine config, unlike
+      // automatic eval routes.
+      assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair')), [
+        { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
+        { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5' },
+        { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
+        { executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3' },
+      ]);
+      assert.deepEqual(workerTargetsForAssignment(assignment('general')), [
+        { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5' },
+        { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
+        { executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3' },
+      ]);
+      // Actions never gain a ladder: the supervised target stays alone.
+      assert.deepEqual(workerTargetsForAssignment(assignment('general', ['text'], 'action')), [
+        { executor: 'local-sdk', provider: 'anthropic', model: 'sonnet' },
+      ]);
+    } finally {
+      for (const name of names) {
+        const value = previous[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
   test('runner capabilities default to configured seats and explicit declarations fail closed', () => {
     const names = [
       'WEAVER_RUNNER_EXECUTORS',
@@ -243,15 +279,26 @@ describe('reviewed worker routes', () => {
       'WEAVER_ACTION_EXECUTOR',
       'WEAVER_COORDINATOR_EXECUTOR',
       'WEAVER_COORDINATOR_FALLBACK_EXECUTOR',
+      'WEAVER_COORDINATOR_FALLBACKS',
+      'WEAVER_WORKER_FALLBACKS',
     ] as const;
     const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
     try {
-      delete process.env.WEAVER_RUNNER_EXECUTORS;
+      for (const name of names) delete process.env[name];
       process.env.WEAVER_EXECUTOR = 'codex-sdk';
       process.env.WEAVER_ACTION_EXECUTOR = 'local-sdk';
       process.env.WEAVER_COORDINATOR_EXECUTOR = 'codex-sdk';
       process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR = 'codex-sdk';
       assert.deepEqual([...runnerExecutorCapabilities()], ['codex-sdk', 'local-sdk']);
+
+      // Every executor named in the coordinator chain and the worker ladder
+      // joins the default declaration: a host configured to degrade onto a
+      // substrate must be willing to claim it.
+      process.env.WEAVER_COORDINATOR_FALLBACKS = 'local-sdk:claude-opus-5';
+      process.env.WEAVER_WORKER_FALLBACKS = 'pi:openrouter/moonshotai/kimi-k3';
+      assert.deepEqual([...runnerExecutorCapabilities()], ['codex-sdk', 'local-sdk', 'pi']);
+      delete process.env.WEAVER_COORDINATOR_FALLBACKS;
+      delete process.env.WEAVER_WORKER_FALLBACKS;
 
       process.env.WEAVER_RUNNER_EXECUTORS = ' openhands, pi,codex-sdk,openhands ';
       assert.deepEqual([...runnerExecutorCapabilities()], ['openhands', 'pi', 'codex-sdk']);

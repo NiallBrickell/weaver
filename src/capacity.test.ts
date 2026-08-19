@@ -330,6 +330,57 @@ test('capacity presentation distinguishes fallback degradation from a real block
   }
 });
 
+test('a three-seat chain blocks the coordinator only when every seat is parked', () => {
+  const previousChain = process.env.WEAVER_COORDINATOR_FALLBACKS;
+  process.env.WEAVER_COORDINATOR_FALLBACKS = 'codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5';
+  try {
+    const nowIso = source.now.toISOString();
+    const chainWait = (
+      executor: string, provider: string, model: string, sourceId: string, retryAt: string,
+    ) => ({
+      kind: 'rate_limit' as const, recovery: 'automatic_retry' as const,
+      source: 'coordinator' as const, sourceId,
+      executor, provider, model, detectedAt: nowIso, retryAt,
+    });
+    const primaryWait = chainWait(
+      'local-sdk', 'anthropic', 'claude-fable-5', 'pass_primary',
+      new Date(source.now.getTime() + 60_000).toISOString(),
+    );
+    const doc = {
+      assignments: [], capacity: null, workstream: { slug: 'chain-view' },
+      steering: [], managerDirections: [],
+      wakes: [{ status: 'pending', infrastructure: primaryWait, condition: { type: 'time', dueAtVirtual: primaryWait.retryAt } }],
+    } as unknown as WorkstreamDoc;
+
+    // Only the primary parked → degraded, naming the FIRST available seat.
+    recordCapacityBackoff(doc, primaryWait);
+    const oneParked = capacityPresentation(doc, nowIso);
+    assert.equal(oneParked.blocking, undefined);
+    assert.match(oneParked.details[0]!, /coordinator primary .* · fallback gpt-5\.6-sol available/);
+
+    // Two of three parked → still degradation, now naming the third seat.
+    recordCapacityBackoff(doc, chainWait(
+      'codex-sdk', 'openai', 'gpt-5.6-sol', 'pass_second',
+      new Date(source.now.getTime() + 90_000).toISOString(),
+    ));
+    const twoParked = capacityPresentation(doc, nowIso);
+    assert.equal(twoParked.blocking, undefined);
+    assert.match(twoParked.details[0]!, /fallback claude-opus-5 available/);
+
+    // All three parked → blocked, on the earliest retryAt in the chain.
+    const thirdRetryAt = new Date(source.now.getTime() + 30_000).toISOString();
+    recordCapacityBackoff(doc, chainWait(
+      'local-sdk', 'anthropic', 'claude-opus-5', 'pass_third', thirdRetryAt,
+    ));
+    const blocked = capacityPresentation(doc, nowIso).blocking!;
+    assert.match(blocked.summary, /^coordinator /);
+    assert.equal(blocked.retryAt, thirdRetryAt, 'the earliest seat recovery is the next real transition');
+  } finally {
+    if (previousChain === undefined) delete process.env.WEAVER_COORDINATOR_FALLBACKS;
+    else process.env.WEAVER_COORDINATOR_FALLBACKS = previousChain;
+  }
+});
+
 test('capacity presentation chooses the earliest transition across roles and does not hide runnable coordination', () => {
   const names = [
     'WEAVER_EXECUTOR',

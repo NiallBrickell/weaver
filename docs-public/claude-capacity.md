@@ -25,7 +25,7 @@ A usage, session, rate-limit, overload, or authentication failure is infrastruct
 1. Weaver closes the disposable model attempt without accepting any claimed work.
 2. The assignment and organizational position remain in durable typed state. No SDK session or model context stays alive.
 3. Weaver records a typed backoff wake and executor/provider/model-scoped `WorkstreamDoc.capacity` entry. A Claude wait cannot park or be cleared by an OpenHands/Kimi run that happens to use the same model label.
-4. A limited primary coordinator degrades to `claude-opus-5` (or `WEAVER_COORDINATOR_FALLBACK_MODEL`) while that fallback is available. Each pass records the model it actually used. Both coordinator models limited means genuine parking; fallback never cascades into account or credential rotation.
+4. A limited primary coordinator degrades down its ordered fallback chain — `claude-opus-5` by default, or the seats in `WEAVER_COORDINATOR_FALLBACKS` (legacy `WEAVER_COORDINATOR_FALLBACK_MODEL` while the chain is unset) — to the first seat whose pool is not limited. Each pass records the model it actually used. Every seat in the chain limited means genuine parking; fallback never cascades into account or credential rotation.
 5. Weaver retries the limited execution target at the earliest future reset reported by its provider. If the provider supplies no usable reset, Weaver uses a bounded fallback delay.
 6. A fresh process continues from the stored projection when the wake becomes due. Another rejection parks it again; a successful real run clears the matching capacity state and restores the primary when it is available.
 

@@ -36,11 +36,13 @@ beforeEach(async () => {
     WEAVER_COORDINATOR_MODEL: process.env.WEAVER_COORDINATOR_MODEL,
     WEAVER_COORDINATOR_FALLBACK_EXECUTOR: process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR,
     WEAVER_COORDINATOR_FALLBACK_MODEL: process.env.WEAVER_COORDINATOR_FALLBACK_MODEL,
+    WEAVER_COORDINATOR_FALLBACKS: process.env.WEAVER_COORDINATOR_FALLBACKS,
   };
   delete process.env.WEAVER_COORDINATOR_EXECUTOR;
   delete process.env.WEAVER_COORDINATOR_MODEL;
   delete process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR;
   delete process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
+  delete process.env.WEAVER_COORDINATOR_FALLBACKS;
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-coordinator-capacity-'));
   process.env.WEAVER_HOME = home;
   await createWorkstream({
@@ -199,6 +201,91 @@ test('a limited Anthropic primary can degrade to an exact Codex/OpenAI target', 
     null,
     'a fallback-only runner must reserve a healthy primary for its capable host',
   );
+});
+
+test('a three-deep chain degrades seat by seat and returns the primary only when all are parked', async () => {
+  process.env.WEAVER_COORDINATOR_FALLBACKS = 'codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5';
+  const now = virtualNow().toISOString();
+  const future = new Date(virtualNow().getTime() + 60 * 60_000).toISOString();
+  const parked = (executor: string, provider: string, model: string) => ({
+    wait: {
+      kind: 'rate_limit' as const, recovery: 'automatic_retry' as const,
+      source: 'coordinator' as const, sourceId: 'pass_x',
+      executor, provider, model, detectedAt: now, retryAt: future,
+    },
+    consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now,
+  });
+  const doc = await load('coordinator-capacity');
+
+  // No capacity state → primary.
+  assert.deepEqual(pickCoordinatorTarget(doc, now), {
+    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+  });
+
+  // Primary parked → the second seat.
+  doc.capacity = {
+    state: 'backoff',
+    byModel: {
+      'local-sdk:anthropic:claude-fable-5': parked('local-sdk', 'anthropic', 'claude-fable-5'),
+    },
+  };
+  assert.deepEqual(pickCoordinatorTarget(doc, now), {
+    executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',
+  });
+
+  // First two parked → the third seat.
+  doc.capacity.byModel['codex-sdk:openai:gpt-5.6-sol'] = parked('codex-sdk', 'openai', 'gpt-5.6-sol');
+  assert.deepEqual(pickCoordinatorTarget(doc, now), {
+    executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5',
+  });
+
+  // Every seat parked → the primary; the normal backoff machinery owns it.
+  doc.capacity.byModel['local-sdk:anthropic:claude-opus-5'] = parked('local-sdk', 'anthropic', 'claude-opus-5');
+  assert.deepEqual(pickCoordinatorTarget(doc, now), {
+    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+  });
+});
+
+test('a mid-chain capacity failure wakes immediately when a later seat is free', async () => {
+  process.env.WEAVER_COORDINATOR_FALLBACKS = 'codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5';
+  // Park the primary so the pass selects the second seat.
+  await arrive('coordinator-capacity', (doc) => {
+    recordCoordinatorCapacityBackoff(doc, wait('rate_limit', 1), 'wake_primary');
+  });
+  const executor: CoordinatorExecutor = {
+    id: 'codex-sdk',
+    async execute() {
+      throw new Error('429 rate limit exceeded');
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'error');
+  const doc = await load('coordinator-capacity');
+  const pass = doc.passes.at(-1)!;
+  assert.equal(pass.executor, 'codex-sdk');
+  assert.equal(pass.model, 'gpt-5.6-sol');
+  assert.equal(pass.infrastructure!.kind, 'rate_limit');
+  assert.equal(pass.infrastructure!.executor, 'codex-sdk');
+  // Both the primary and the second seat now hold typed waits...
+  const parkedTargets = Object.values(doc.capacity!.byModel).map((entry) =>
+    `${entry.wait.executor}:${entry.wait.model}`,
+  ).sort();
+  assert.deepEqual(parkedTargets, ['codex-sdk:gpt-5.6-sol', 'local-sdk:claude-fable-5']);
+  // ...and the degrade wake names the third seat, so the next pass continues.
+  const degradeWake = doc.wakes.find((w) =>
+    w.status === 'pending' && w.condition.type === 'immediate' &&
+    /continue on fallback/.test(w.reason),
+  );
+  assert.ok(degradeWake, 'a free later seat must produce an immediate continuation wake');
+  assert.match(
+    degradeWake!.reason,
+    /continue on fallback local-sdk:claude-opus-5 while codex-sdk:gpt-5\.6-sol capacity recovers/,
+  );
+  // The next selection indeed lands on that named seat.
+  assert.deepEqual(pickCoordinatorTarget(doc, virtualNow().toISOString()), {
+    executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5',
+  });
 });
 
 test('a runner without the selected coordinator executor cannot claim a pass lease', async () => {

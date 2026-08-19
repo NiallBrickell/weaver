@@ -24,8 +24,7 @@ import type {
 } from './types.js';
 import { isPendingSteering } from './steering.js';
 import {
-  coordinatorCapacityTarget,
-  coordinatorFallbackCapacityTarget,
+  coordinatorTargets,
   targetOfWait,
   type CapacityTarget,
 } from './modelConfig.js';
@@ -523,16 +522,20 @@ export function capacityPresentation(
   executorCapabilities: ReadonlySet<string> = runnerExecutorCapabilities(),
 ): CapacityPresentation {
   const now = new Date(nowIso);
-  const primaryTarget = coordinatorCapacityTarget();
-  const fallbackTarget = coordinatorFallbackCapacityTarget();
-  const primaryEntry = capacityBackoffFor(doc, primaryTarget);
-  const fallbackEntry = capacityBackoffFor(doc, fallbackTarget);
-  const primary = activeWait(primaryEntry, nowIso);
-  const fallback = sameTarget(primaryTarget, fallbackTarget)
-    ? primary
-    : activeWait(fallbackEntry, nowIso);
+  // The deduped coordinator chain, primary first. Every coordinator judgment
+  // below walks this list: blocked only when EVERY seat has an active wait,
+  // degraded when the primary waits but a later seat is available.
+  const currentCoordinatorTargets = coordinatorTargets();
+  const chainEntries = currentCoordinatorTargets.map((target) =>
+    [target, capacityBackoffFor(doc, target)] as const,
+  );
+  const chainWaits = chainEntries.map(([, entry]) => activeWait(entry, nowIso));
+  const primary = chainWaits[0];
+  const firstAvailableIndex = chainWaits.findIndex((wait) => wait === undefined);
+  const firstAvailableTarget = firstAvailableIndex >= 0
+    ? currentCoordinatorTargets[firstAvailableIndex]
+    : undefined;
   const details: string[] = [];
-  const currentCoordinatorTargets = [primaryTarget, fallbackTarget];
   const coordinatorIntent =
     doc.steering.some(isPendingSteering) ||
     (doc.managerDirections ?? []).some((direction) => !direction.consumedByPass) ||
@@ -547,22 +550,23 @@ export function capacityPresentation(
         (wake.condition.type === 'wall_time' && wake.condition.dueAt <= new Date().toISOString());
     });
 
-  if (coordinatorIntent && primary && !sameTarget(primaryTarget, fallbackTarget) && !fallback) {
-    details.push(`${waitPosition(primary, 'coordinator primary', now)} · fallback ${fallbackTarget.model} available`);
+  if (coordinatorIntent && primary && firstAvailableTarget) {
+    details.push(`${waitPosition(primary, 'coordinator primary', now)} · fallback ${firstAvailableTarget.model} available`);
   }
-  const coordinatorBlockingWaits: InfrastructureWait[] = sameTarget(primaryTarget, fallbackTarget)
-    ? (primary ? [primary] : [])
-    : (primary && fallback ? [primary, fallback] : []);
-  coordinatorBlockingWaits.sort((a, b) => a.retryAt.localeCompare(b.retryAt));
+  // Blocked only when every seat in the chain has an active wait; the earliest
+  // retryAt among them is the next real transition.
+  const coordinatorBlockingWaits: InfrastructureWait[] = firstAvailableTarget
+    ? []
+    : chainWaits
+      .filter((wait): wait is InfrastructureWait => wait !== undefined)
+      .sort((a, b) => a.retryAt.localeCompare(b.retryAt));
   const coordinatorBlocked = coordinatorIntent ? coordinatorBlockingWaits[0] : undefined;
   if (coordinatorIntent) {
     for (const wait of coordinatorBlockingWaits) {
       details.push(waitPosition(wait, 'coordinator', now));
     }
   }
-  const selectedCoordinatorTarget = !primary
-    ? primaryTarget
-    : (!sameTarget(primaryTarget, fallbackTarget) && !fallback ? fallbackTarget : undefined);
+  const selectedCoordinatorTarget = firstAvailableTarget;
   const executorWaits: string[] = [];
   const coordinatorExecutorWait = (
     coordinatorIntent &&
@@ -625,12 +629,11 @@ export function capacityPresentation(
     : undefined;
   if (executorUnavailable) details.push(executorUnavailable.summary);
 
-  const coordinatorEntries = sameTarget(primaryTarget, fallbackTarget)
-    ? [['coordinator', primaryEntry] as const]
-    : [
-        ['coordinator primary', primaryEntry] as const,
-        ['coordinator fallback', fallbackEntry] as const,
-      ];
+  const coordinatorEntries = chainEntries.length === 1
+    ? [['coordinator', chainEntries[0]![1]] as const]
+    : chainEntries.map(([, entry], index) =>
+        [index === 0 ? 'coordinator primary' : 'coordinator fallback', entry] as const,
+      );
   const relevantEntries = [
     ...(coordinatorIntent ? coordinatorEntries : []),
     ...workerEntries,
