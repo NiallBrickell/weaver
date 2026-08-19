@@ -65,6 +65,27 @@ fresh host from a laptop where identity is already registered,
 `weaver login --render-remote-env` emits the credentials and model config as
 env lines for piping over SSH (it refuses to print to a terminal).
 
+## Joining the fleet from another machine
+
+Any machine that can reach the database — directly, or through a tunnel you
+bring up (an SSH port-forward, a cloud SQL proxy) — can join the fleet with one
+command:
+
+```bash
+weaver link "postgres://user:pass@host:5432/weaver"
+weaver login    # then register this machine's execution identity, if it has none
+```
+
+`link` proves the connection before persisting anything: it opens the store
+through the same layer every other command uses, enumerates the workstreams,
+and loads the most recent one back as evidence of real fleet data. It is
+strictly **read-only** — linking never writes to the fleet it is joining. On
+success it writes `WEAVER_STORE` into the repo `.env` (passwords are never
+echoed back). `weaver link` with no argument reports where `WEAVER_STORE`
+points now and re-checks reachability; `weaver link --unlink` returns the
+machine to its local filesystem store. Resident processes snapshot `.env` at
+launch, so restart `weaver run` / `weaver watch` after linking.
+
 ## One fleet, one runner per host
 
 The runner takes a pid lock per `WEAVER_HOME`, so only one `weaver run` lives per

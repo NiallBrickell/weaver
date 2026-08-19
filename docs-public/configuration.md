@@ -67,7 +67,7 @@ pending (see [Claude capacity & billing](./claude-capacity.md)).
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `WEAVER_HOME` | `<repo>/state` | State root for the default filesystem backend |
-| `WEAVER_STORE` | *(unset → fs)* | `postgres://…` or `sqlite:<path>` to share or consolidate the fleet — see [Hosted state](./hosted-state.md) |
+| `WEAVER_STORE` | *(unset → fs)* | `postgres://…` or `sqlite:<path>` to share or consolidate the fleet — see [Hosted state](./hosted-state.md). Set it with **`weaver link <url>`**, which proves the store is reachable (read-only) before writing it into `.env`; `weaver link` alone reports the current target, `weaver link --unlink` removes it |
 
 ### Execution and actions
 

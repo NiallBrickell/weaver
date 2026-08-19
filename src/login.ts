@@ -230,13 +230,14 @@ function keychainHasClaudeLogin(): boolean {
   }
 }
 
-interface ExecutorStatus {
+export interface ExecutorStatus {
   name: string;
   ok: boolean;
   detail: string;
 }
 
-function executorStatuses(secrets: Record<string, string>): ExecutorStatus[] {
+/** Exported for `weaver link`, which reuses the same auth-standing detection. */
+export function executorStatuses(secrets: Record<string, string>): ExecutorStatus[] {
   const out: ExecutorStatus[] = [];
 
   // Registered identity is reported first because it is what sdkEnv actually
@@ -296,8 +297,9 @@ function renderStatuses(statuses: ExecutorStatus[]): string {
     .join('\n');
 }
 
-/** Where a config value came from — the repo `.env`, explicit env, or default. */
-function configSource(name: string): '.env' | 'env' | 'default' {
+/** Where a config value came from — the repo `.env`, explicit env, or default.
+ * Exported for `weaver link`, which reports where WEAVER_STORE points. */
+export function configSource(name: string): '.env' | 'env' | 'default' {
   const live = process.env[name];
   if (live === undefined) return 'default';
   try {
