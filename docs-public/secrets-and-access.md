@@ -40,6 +40,28 @@ gets a temporary home, a minimal environment, and only disposable proxy and
 submission bearers. Normal OpenCode auth files and Weaver's state path are not
 visible to that process.
 
+## Registered execution identity
+
+A headless host has no Claude Code login to borrow, and ambient
+`ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` exports are stripped from every
+SDK subprocess (see [Billing](#billing)). The deliberate exception is identity
+the operator **registers** in the executor-only store:
+
+```bash
+weaver login                                            # interactive front door
+weaver secret set CLAUDE_CODE_OAUTH_TOKEN --executor    # from `claude setup-token`
+weaver secret set ANTHROPIC_API_KEY --executor          # or an API key
+```
+
+Exactly one registered credential is injected into SDK children — the
+subscription token wins when both are registered — so the billing principal
+stays unambiguous. Registration is an explicit act against a `0600` file, not
+something an exported variable or a worker's output can do, which is why it
+does not weaken the anti-hijack strip. Remove it with
+`weaver secret rm CLAUDE_CODE_OAUTH_TOKEN --executor` (or pick "use this
+machine's Claude login" in `weaver login`, which removes any registered
+identity) and the machine's own login applies again.
+
 ## Operator access
 
 An approved action acts *as you, on your machine* — so it gets what you have:
@@ -67,7 +89,7 @@ Weaver does not add a second process sandbox in this MVP; the environment that l
 
 ## Billing
 
-Everything rides one ambient operator principal: the local Claude Code login. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN` are stripped from every spawned session, so a stray exported credential cannot silently switch billing or identity. Weaver never mints or stores Claude tokens, pools credentials, or cycles accounts around a usage limit.
+Everything rides one operator principal: the local Claude Code login, or the one identity the operator registered in the executor store ([above](#registered-execution-identity)). `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN` are stripped from every spawned session, so a stray exported credential cannot silently switch billing or identity — only the registered store supplies one, and only one. Weaver never mints or stores Claude tokens beyond that explicit registration, pools credentials, or cycles accounts around a usage limit.
 
 Anthropic's proposed separate Agent SDK allowance is currently paused, so SDK work continues to draw from shared Claude plan limits. Weaver does not present SDK-reported dollar estimates because they are neither provider billing nor plan headroom. See [Claude capacity & billing](./claude-capacity.md) for current provider guidance and [Execution safety](./execution-safety.md) for Weaver's rolling runaway guard.
 

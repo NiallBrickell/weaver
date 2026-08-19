@@ -17,7 +17,7 @@
 export const KNOWN_COMMANDS = new Set([
   'do', 'ask', 'create', 'list', 'status', 'capacity', 'log', 'tail', 'show', 'steer', 'approve',
   'assign-action', 'constraint', 'approve-action', 'reject-action', 'reject-send', 'reply', 'observe',
-  'adopt', 'budget', 'execution-safety', 'policies', 'backfill', 'secret', 'run', 'serve', 'resolve', 'tag', 'pause',
+  'adopt', 'budget', 'execution-safety', 'policies', 'backfill', 'secret', 'login', 'run', 'serve', 'resolve', 'tag', 'pause',
   'resume', 'watch', 'inspect', 'printout', 'stats', 'advance', 'tick', 'help', '--help', 'priority',
 ]);
 

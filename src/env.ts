@@ -15,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** The repo-root `.env`, resolved relative to this module (src/ → ..). */
-function defaultEnvPath(): string {
+export function defaultEnvPath(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.env');
 }
 

@@ -168,12 +168,28 @@ function removeSecretAt(name: string, p: string): boolean {
  * operator's ambient CLAUDE_CONFIG_DIR remains the sole local-login selector.
  * (SDK `env` REPLACES the subprocess environment, hence the process.env
  * spread.)
+ *
+ * The one exception is REGISTERED identity: a CLAUDE_CODE_OAUTH_TOKEN or
+ * ANTHROPIC_API_KEY the operator explicitly placed in the executor-only secret
+ * store (`weaver login` / `weaver secret set <NAME> --executor`) is injected
+ * here so a headless host with no Claude login can still run local-sdk work.
+ * That does not weaken the anti-hijack invariant — registration is a
+ * deliberate operator act against the 0600 store, not something an ambient
+ * export or a caller-passed extra can do (both are still stripped above).
+ * Exactly one credential is injected — the subscription token wins over an
+ * API key — so the billing principal stays unambiguous.
  */
 export function sdkEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env, ...extra };
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  const registered = loadExecutorSecrets();
+  if (registered.CLAUDE_CODE_OAUTH_TOKEN) {
+    env.CLAUDE_CODE_OAUTH_TOKEN = registered.CLAUDE_CODE_OAUTH_TOKEN;
+  } else if (registered.ANTHROPIC_API_KEY) {
+    env.ANTHROPIC_API_KEY = registered.ANTHROPIC_API_KEY;
+  }
   return env;
 }
 

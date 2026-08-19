@@ -119,6 +119,9 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver backfill --tags <t1,t2> [--rules <path>]... [--claude-projects <dir>] [--limit N] [--dry-run]
                                              seed shadow policies from existing practice: rules files (CLAUDE.md/AGENTS.md, deterministic) and/or recent Claude Code transcripts (one model pass, default 5 sessions).
                                              Re-running REFRESHES rules-file doctrine: edited rules update in place, deleted sections retire, and a changed rule contests the learned policies scoped to it (--dry-run shows that blast radius first)
+  weaver login                               interactive setup: pick this host's executor, register credentials (0600 store, input hidden), choose models → .env
+  weaver login --status                      per-executor auth status + model config with sources (names only, never values)
+  weaver login --render-remote-env           emit KEY=value lines to provision a headless host (refuses a TTY — pipe it, e.g. over SSH)
   weaver secret set <NAME> [--ws slug | --executor]   store from stdin; --executor is adapter-only and never exposed to workers
   weaver secret list [--ws slug | --executor]         list secret NAMES (values are never printed)
   weaver secret rm <NAME> [--ws slug | --executor]    remove a secret
@@ -761,6 +764,12 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
         default:
           fail('secret subcommand must be set|list|rm');
       }
+      break;
+    }
+
+    case 'login': {
+      const { runLogin } = await import('./login.js');
+      await runLogin(rest);
       break;
     }
 
