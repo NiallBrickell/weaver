@@ -5,6 +5,8 @@ import {
   coordinatorTargets,
   parseCapacityTargetList,
   workerFallbackTargets,
+  workerModel,
+  workerModelComplex,
 } from './modelConfig.js';
 
 const NAMES = [
@@ -14,6 +16,8 @@ const NAMES = [
   'WEAVER_COORDINATOR_FALLBACK_EXECUTOR',
   'WEAVER_COORDINATOR_FALLBACKS',
   'WEAVER_WORKER_FALLBACKS',
+  'WEAVER_WORKER_MODEL',
+  'WEAVER_WORKER_MODEL_COMPLEX',
 ] as const;
 
 function withEnv(values: Partial<Record<(typeof NAMES)[number], string>>, fn: () => void): void {
@@ -107,6 +111,16 @@ test('a set chain is ordered primary-first, deduped, and makes the legacy pair i
     assert.deepEqual(coordinatorFallbackCapacityTarget(), {
       executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
     });
+  });
+});
+
+test('the complex worker tier falls back to the standard worker model when unset', () => {
+  withEnv({}, () => {
+    assert.equal(workerModelComplex(), workerModel());
+  });
+  withEnv({ WEAVER_WORKER_MODEL: 'sonnet', WEAVER_WORKER_MODEL_COMPLEX: 'opus' }, () => {
+    assert.equal(workerModelComplex(), 'opus');
+    assert.equal(workerModel(), 'sonnet');
   });
 });
 

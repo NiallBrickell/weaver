@@ -11,6 +11,8 @@ import {
   workerCapacityTarget,
   workerExecutorName,
   workerFallbackTargets,
+  workerModel,
+  workerModelComplex,
   type CapacityTarget,
 } from './modelConfig.js';
 
@@ -120,6 +122,16 @@ function normalizedRequirements(assignment: Assignment): AssignmentExecutionRequ
   return assignment.executionRequirements ?? DEFAULT_EXECUTION_REQUIREMENTS;
 }
 
+/** The model the operator's configured worker seat supplies for this
+ * assignment's typed requirements: declared high complexity selects the
+ * complex-tier model, everything else the standard one. The requirement never
+ * names a model; this is where the operator's config answers it. */
+export function workerSeatModelForAssignment(assignment: Assignment): string {
+  return assignment.kind !== 'action' && normalizedRequirements(assignment).complexity === 'high'
+    ? workerModelComplex()
+    : workerModel();
+}
+
 function routeMatches(
   route: WorkModelRoute,
   requirements: AssignmentExecutionRequirements,
@@ -186,7 +198,10 @@ export function workerTargetsForAssignment(
 ): CapacityTarget[] {
   if (assignment.kind === 'action') return [actionCapacityTarget()];
   const requirements = normalizedRequirements(assignment);
-  const fallback = workerCapacityTarget();
+  // Declared high complexity swaps the configured seat's MODEL only: same
+  // executor (provider re-derived), reviewed routes and the operator's
+  // explicit fallback ladder unchanged.
+  const fallback = workerCapacityTarget(workerSeatModelForAssignment(assignment));
   const candidates = [...routes]
     // AUTOMATIC eval-route selection changes the model only within the
     // configured worker substrate: a checked-in performance route crossing

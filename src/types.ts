@@ -71,9 +71,16 @@ export type AssignmentExecutionProfile =
 
 export type AssignmentInputModality = 'text' | 'image';
 
+/** How demanding the work is, as a typed requirement — never a model name.
+ * `high` marks work whose acceptance depends on deep multi-file reasoning,
+ * design judgment, or hard debugging; routing may seat it on the operator's
+ * configured complex-tier model. Absent means standard. */
+export type AssignmentExecutionComplexity = 'standard' | 'high';
+
 export interface AssignmentExecutionRequirements {
   profile: AssignmentExecutionProfile;
   modalities: AssignmentInputModality[];
+  complexity?: AssignmentExecutionComplexity;
 }
 
 export interface Attempt {

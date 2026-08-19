@@ -16,13 +16,14 @@ function assignment(
   profile: NonNullable<Assignment['executionRequirements']>['profile'] = 'general',
   modalities: NonNullable<Assignment['executionRequirements']>['modalities'] = ['text'],
   kind: Assignment['kind'] = 'work',
+  complexity?: NonNullable<Assignment['executionRequirements']>['complexity'],
 ): Assignment {
   return {
     id: 'asg_route',
     objective: 'route one bounded unit',
     briefing: 'A complete brief.',
     kind,
-    executionRequirements: { profile, modalities },
+    executionRequirements: { profile, modalities, ...(complexity ? { complexity } : {}) },
     acceptanceCriteria: ['verified'],
     dependsOn: [],
     state: 'queued',
@@ -263,6 +264,56 @@ describe('reviewed worker routes', () => {
       assert.deepEqual(workerTargetsForAssignment(assignment('general', ['text'], 'action')), [
         { executor: 'local-sdk', provider: 'anthropic', model: 'sonnet' },
       ]);
+    } finally {
+      for (const name of names) {
+        const value = previous[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  test('declared high complexity upgrades only the configured seat model', () => {
+    const names = [
+      'WEAVER_EXECUTOR',
+      'WEAVER_WORKER_MODEL',
+      'WEAVER_WORKER_MODEL_COMPLEX',
+      'WEAVER_WORKER_FALLBACKS',
+    ] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      for (const name of names) delete process.env[name];
+      process.env.WEAVER_EXECUTOR = 'codex-sdk';
+      process.env.WEAVER_WORKER_MODEL = 'gpt-5.5';
+      process.env.WEAVER_WORKER_MODEL_COMPLEX = 'gpt-5.6-pro';
+      process.env.WEAVER_WORKER_FALLBACKS = 'pi:openrouter/moonshotai/kimi-k3';
+      // The complex-tier model replaces the configured seat only: reviewed
+      // routes keep their reviewed targets ahead of it, the operator ladder
+      // follows unchanged, and the executor (and derived provider) stay put.
+      assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair', ['text'], 'work', 'high')), [
+        { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
+        { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-pro' },
+        { executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3' },
+      ]);
+      assert.deepEqual(workerTargetsForAssignment(assignment('general', ['text'], 'work', 'high')), [
+        { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-pro' },
+        { executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3' },
+      ]);
+      // Standard — declared or absent — keeps the standard seat exactly.
+      const standardSeat = [
+        { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5' },
+        { executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3' },
+      ];
+      assert.deepEqual(workerTargetsForAssignment(assignment('general', ['text'], 'work', 'standard')), standardSeat);
+      assert.deepEqual(workerTargetsForAssignment(assignment('general')), standardSeat);
+      // Actions never enter routing: the supervised target ignores complexity.
+      assert.deepEqual(workerTargetsForAssignment(assignment('general', ['text'], 'action', 'high')), [
+        { executor: 'local-sdk', provider: 'anthropic', model: 'sonnet' },
+      ]);
+      // Without a configured complex tier, high-complexity work runs on the
+      // standard worker model rather than failing or inventing a target.
+      delete process.env.WEAVER_WORKER_MODEL_COMPLEX;
+      assert.deepEqual(workerTargetsForAssignment(assignment('general', ['text'], 'work', 'high')), standardSeat);
     } finally {
       for (const name of names) {
         const value = previous[name];
