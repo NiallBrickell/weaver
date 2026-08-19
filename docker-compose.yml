@@ -1,0 +1,57 @@
+# One fleet on any Docker host:
+#
+#   1. cp .env.example compose.env, or generate the credential half on an
+#      already-configured machine:  weaver login --render-remote-env > compose.env
+#   2. echo "WEAVER_PG_PASSWORD=$(openssl rand -hex 16)" >> .env
+#   3. docker compose up -d
+#
+# `compose.env` carries execution identity + model config (never committed);
+# Postgres is the durable fleet — laptops join it with `weaver link`.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: weaver
+      POSTGRES_PASSWORD: ${WEAVER_PG_PASSWORD:?set WEAVER_PG_PASSWORD in .env}
+      POSTGRES_DB: weaver
+    volumes:
+      - weaver-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U weaver"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  weaver-run:
+    image: ghcr.io/niallbrickell/weaver:latest
+    build: .
+    restart: unless-stopped
+    command: ["run", "--interval", "5"]
+    env_file: compose.env
+    environment:
+      WEAVER_STORE: postgres://weaver:${WEAVER_PG_PASSWORD}@postgres:5432/weaver
+    volumes:
+      - weaver-run-state:/var/lib/weaver
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  weaver-serve:
+    image: ghcr.io/niallbrickell/weaver:latest
+    build: .
+    restart: unless-stopped
+    command: ["serve", "--host", "0.0.0.0", "--port", "9723"]
+    env_file: compose.env
+    environment:
+      WEAVER_STORE: postgres://weaver:${WEAVER_PG_PASSWORD}@postgres:5432/weaver
+    ports:
+      - "127.0.0.1:9723:9723"   # widen deliberately when bots need remote reach
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  weaver-pg-data:
+  weaver-run-state:

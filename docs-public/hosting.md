@@ -38,13 +38,53 @@ that executes work.
 
 ```bash
 export WEAVER_STORE="postgres://user:pass@host:5432/weaver"   # the shared fleet
-export ANTHROPIC_API_KEY="sk-ant-…"    # runner only — hosts have no Claude login to inherit
 export WEAVER_SERVE_TOKEN="<a-strong-secret>"                 # serve only — the bot bearer token
 ```
 
-On your laptop the SDK borrows your Claude Code login, so no key is needed. A
-host has no login to borrow, so the **runner** needs `ANTHROPIC_API_KEY`. The
-**serve** process runs no model and does not.
+On your laptop the SDK borrows your Claude Code login, so no credential is
+needed. A host has no login to borrow — but exporting `ANTHROPIC_API_KEY` in
+the runner's environment does **not** work: Weaver strips ambient Claude
+credentials (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`CLAUDE_CODE_OAUTH_TOKEN`) from every SDK subprocess, so a stray export can
+never silently switch the billing principal. The supported path is to
+**register** the identity in the executor-only secret store on the host:
+
+```bash
+weaver login          # interactive: pick the executor, paste the credential (never echoed)
+# or directly:
+weaver secret set CLAUDE_CODE_OAUTH_TOKEN --executor   # from `claude setup-token` — subscription billing
+weaver secret set ANTHROPIC_API_KEY --executor         # or an API key — API billing
+```
+
+A registered credential is a deliberate operator act against a `0600` file, so
+it is the one exception the strip allows: exactly one principal is injected
+into SDK children (the subscription token wins if both are registered). See
+[Registered execution identity](./secrets-and-access.md#registered-execution-identity).
+The **serve** process runs no model and needs no identity. To provision a
+fresh host from a laptop where identity is already registered,
+`weaver login --render-remote-env` emits the credentials and model config as
+env lines for piping over SSH (it refuses to print to a terminal).
+
+## Joining the fleet from another machine
+
+Any machine that can reach the database — directly, or through a tunnel you
+bring up (an SSH port-forward, a cloud SQL proxy) — can join the fleet with one
+command:
+
+```bash
+weaver link "postgres://user:pass@host:5432/weaver"
+weaver login    # then register this machine's execution identity, if it has none
+```
+
+`link` proves the connection before persisting anything: it opens the store
+through the same layer every other command uses, enumerates the workstreams,
+and loads the most recent one back as evidence of real fleet data. It is
+strictly **read-only** — linking never writes to the fleet it is joining. On
+success it writes `WEAVER_STORE` into the repo `.env` (passwords are never
+echoed back). `weaver link` with no argument reports where `WEAVER_STORE`
+points now and re-checks reachability; `weaver link --unlink` returns the
+machine to its local filesystem store. Resident processes snapshot `.env` at
+launch, so restart `weaver run` / `weaver watch` after linking.
 
 ## One fleet, one runner per host
 
@@ -70,6 +110,47 @@ Reviewed automatic routes select models only within the configured worker
 substrate. Cross-executor preference waits for durable Workstream execution
 policy rather than trusting process-local environment agreement.
 
+## Deploying on a GCP VM
+
+[`bin/weaver-gcp.sh`](../bin/weaver-gcp.sh) turns the whole story into one
+command per step, with an isolation posture worth copying even if you host
+elsewhere: the VM carries **no service account and no scopes** (a compromised
+workload cannot call any GCP API as anything), sits on **its own VPC** whose
+only ingress rule is IAP SSH (no public ports — laptops reach Postgres and
+`serve` through an authenticated tunnel), and receives secrets **over SSH
+stdin** into a `0600` env file, never via instance metadata.
+
+```bash
+# on the laptop that already has identity registered (weaver login):
+bin/weaver-gcp.sh create      # VM + Postgres + systemd units, idempotent
+bin/weaver-gcp.sh push-env    # pipe credentials + model config to the box
+bin/weaver-gcp.sh status      # services + runner heartbeat
+bin/weaver-gcp.sh join        # print the paste-ready commands for a second machine
+bin/weaver-gcp.sh tunnel      # localhost:6543 → fleet Postgres, :9723 → serve
+```
+
+Defaults (project, zone, VM name, machine type, network) are `WEAVER_GCP_*`
+variables at the top of the script. `update` pulls the latest code and
+restarts; `logs` tails the runner journal; on the box itself, `weaver status
+<slug>` works as-is — the CLI sees the same env the services run with.
+
+## Deploying with Docker Compose (any host)
+
+The repo ships a [`Dockerfile`](../Dockerfile) (published as
+`ghcr.io/niallbrickell/weaver`) and a [`docker-compose.yml`](../docker-compose.yml)
+that runs the full fleet — Postgres, runner, serve — on any Docker host:
+
+```bash
+weaver login --render-remote-env > compose.env   # on a configured machine
+echo "WEAVER_PG_PASSWORD=$(openssl rand -hex 16)" >> .env
+docker compose up -d
+```
+
+`serve` is published on `127.0.0.1:9723` only; widening that to the world is a
+deliberate edit, not a default. The `openhands` executor needs a Docker daemon
+of its own and stays a VM-level substrate — run `local-sdk` / `codex-sdk` / `pi`
+work in the composed runner.
+
 ## Deploying on Railway
 
 Railway fits this cleanly — a Postgres plugin and two services in one project.
@@ -84,10 +165,19 @@ start: `yarn weaver run`). Set variables:
 
 ```
 WEAVER_STORE = ${{Postgres.DATABASE_URL}}     # reference the database plugin
-ANTHROPIC_API_KEY = sk-ant-…
 WEAVER_COORDINATOR_MODEL = claude-fable-5      # optional; this is the default
 WEAVER_WORKER_MODEL = sonnet                   # optional; this is the default
 ```
+
+Setting `ANTHROPIC_API_KEY` as a Railway service variable alone is **not**
+enough — Weaver strips ambient Claude credentials from SDK children (see
+above), so the runner would boot but every model pass would fail to
+authenticate. Register the identity into the executor store on the service's
+volume instead: open a shell on the runner service once and run
+`weaver secret set ANTHROPIC_API_KEY --executor` (or register a
+`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` the same way). Note the
+store lives under `WEAVER_HOME` (default `<repo>/state`), so the service needs
+a persistent volume there for the registration to survive redeploys.
 
 The runner needs no inbound port — it dials out to Postgres and to the model. It
 should be a single always-on instance (do not scale it past one replica; the pid

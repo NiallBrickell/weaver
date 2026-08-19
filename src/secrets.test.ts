@@ -22,6 +22,7 @@ import {
   removeExecutorSecret,
   removeSecret,
   sdkEnv,
+  stripClaudeCredentials,
   secretNames,
   setExecutorSecret,
   setSecret,
@@ -173,6 +174,67 @@ test('sdkEnv extras cannot reintroduce API or OAuth credentials', () => {
   assert.ok(!('ANTHROPIC_AUTH_TOKEN' in env));
   assert.ok(!('CLAUDE_CODE_OAUTH_TOKEN' in env));
   assert.equal(env.SAFE_EXTRA, 'kept');
+});
+
+test('registered CLAUDE_CODE_OAUTH_TOKEN is injected while ambient credentials stay stripped', () => {
+  const previous = process.env.ANTHROPIC_API_KEY;
+  try {
+    process.env.ANTHROPIC_API_KEY = 'ambient-api-key';
+    setExecutorSecret('CLAUDE_CODE_OAUTH_TOKEN', 'registered-oauth-123');
+    const env = sdkEnv();
+    assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'registered-oauth-123');
+    assert.ok(!('ANTHROPIC_API_KEY' in env), 'ambient API key must never ride along');
+    assert.ok(!('ANTHROPIC_AUTH_TOKEN' in env));
+  } finally {
+    if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previous;
+  }
+});
+
+test('registered ANTHROPIC_API_KEY is injected only when no oauth token is registered', () => {
+  setExecutorSecret('ANTHROPIC_API_KEY', 'registered-api-key-456');
+  const apiOnly = sdkEnv();
+  assert.equal(apiOnly.ANTHROPIC_API_KEY, 'registered-api-key-456');
+  assert.ok(!('CLAUDE_CODE_OAUTH_TOKEN' in apiOnly));
+
+  // One unambiguous principal: the subscription token wins when both exist.
+  setExecutorSecret('CLAUDE_CODE_OAUTH_TOKEN', 'registered-oauth-123');
+  const both = sdkEnv();
+  assert.equal(both.CLAUDE_CODE_OAUTH_TOKEN, 'registered-oauth-123');
+  assert.ok(!('ANTHROPIC_API_KEY' in both), 'two live principals would make billing ambiguous');
+});
+
+test('caller extras still cannot reintroduce credentials, and still win elsewhere, with identity registered', () => {
+  setExecutorSecret('CLAUDE_CODE_OAUTH_TOKEN', 'registered-oauth-123');
+  const previous = process.env.SDKENV_COLLIDING_EXTRA;
+  try {
+    process.env.SDKENV_COLLIDING_EXTRA = 'ambient-value';
+    const env = sdkEnv({
+      CLAUDE_CODE_OAUTH_TOKEN: 'extra-oauth-token',
+      ANTHROPIC_API_KEY: 'extra-api-key',
+      SDKENV_COLLIDING_EXTRA: 'extra-wins',
+    });
+    // Only the registered store supplies identity — never a caller-passed extra.
+    assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'registered-oauth-123');
+    assert.ok(!('ANTHROPIC_API_KEY' in env));
+    // Non-credential extras keep overriding ambient values exactly as before.
+    assert.equal(env.SDKENV_COLLIDING_EXTRA, 'extra-wins');
+  } finally {
+    if (previous === undefined) delete process.env.SDKENV_COLLIDING_EXTRA;
+    else process.env.SDKENV_COLLIDING_EXTRA = previous;
+  }
+});
+
+test('registered Claude identity never crosses into an OpenAI-steered process env', () => {
+  // The codex executors receive sdkEnv output and must strip the injected
+  // principal back out — this is the exact call they make.
+  setExecutorSecret('CLAUDE_CODE_OAUTH_TOKEN', 'registered-oauth-123');
+  const env = sdkEnv();
+  assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'registered-oauth-123');
+  stripClaudeCredentials(env);
+  assert.ok(!('CLAUDE_CODE_OAUTH_TOKEN' in env));
+  assert.ok(!('ANTHROPIC_API_KEY' in env));
+  assert.ok(!('ANTHROPIC_AUTH_TOKEN' in env));
 });
 
 test('redactSecrets scrubs every value, longest first, and skips tiny values', () => {

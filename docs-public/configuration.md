@@ -33,6 +33,15 @@ store via `weaver secret set <NAME> --ws <slug>`; model-provider keys use
 `weaver secret set <NAME> --executor`, whose names and values are both hidden
 from workers — see [Secrets & access](./secrets-and-access.md).
 
+You don't have to write any of this by hand: **`weaver login`** walks through
+it — pick the executor this host runs work through, register the credential it
+needs (into the `0600` executor store, never `.env`), and choose the model
+settings below, which it writes into `.env` in place. `weaver login --status`
+shows the per-executor auth standing and where each setting came from (`.env`,
+environment, or default), and `weaver login --render-remote-env` emits the
+registered credentials plus this machine's model config as env lines for
+provisioning a headless host (it refuses to print to a terminal — pipe it).
+
 ## Settings
 
 ### Models
@@ -67,7 +76,7 @@ one needs its credentials present on this host.
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `WEAVER_HOME` | `<repo>/state` | State root for the default filesystem backend |
-| `WEAVER_STORE` | *(unset → fs)* | `postgres://…` or `sqlite:<path>` to share or consolidate the fleet — see [Hosted state](./hosted-state.md) |
+| `WEAVER_STORE` | *(unset → fs)* | `postgres://…` or `sqlite:<path>` to share or consolidate the fleet — see [Hosted state](./hosted-state.md). Set it with **`weaver link <url>`**, which proves the store is reachable (read-only) before writing it into `.env`; `weaver link` alone reports the current target, `weaver link --unlink` removes it |
 
 ### Execution and actions
 
