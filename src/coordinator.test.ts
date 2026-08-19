@@ -360,6 +360,39 @@ test('create_assignment persists typed requirements without choosing a model', a
   assert.deepEqual(assignment.executionRequirements, {
     profile: 'bounded-code-repair',
     modalities: ['text'],
+    complexity: 'standard',
+  });
+  assert.equal(assignment.attempts.length, 0, 'durable requirements do not preselect a disposable target');
+});
+
+test('create_assignment persists declared high complexity without choosing a model', async () => {
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const create = req.tools.find((definition) => definition.name === 'create_assignment');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(create);
+      assert.ok(finish);
+      const created = await create.handler({
+        objective: 'redesign the retry seam across the executor adapters',
+        briefing: 'Trace every adapter, judge the shared seam, and restructure it.',
+        kind: 'work',
+        execution_complexity: 'high',
+        acceptance_criteria: ['every adapter passes its deterministic retry tests'],
+      }, {});
+      assert.equal(created.isError, undefined);
+      await finish.handler({ summary: 'Dispatched demanding typed work.', acknowledged_steering: true }, {});
+      return { costUsd: 0, sessionId: 'typed-complexity' };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const assignment = (await load('coordinator-capacity')).assignments.at(-1)!;
+  assert.deepEqual(assignment.executionRequirements, {
+    profile: 'general',
+    modalities: ['text'],
+    complexity: 'high',
   });
   assert.equal(assignment.attempts.length, 0, 'durable requirements do not preselect a disposable target');
 });

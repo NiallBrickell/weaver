@@ -93,7 +93,7 @@ function routineDoc(cycles: number): WorkstreamDoc {
     objective: 'LIVE queued work UNIQUE_LIVE_MARKER',
     briefing: 'b',
     kind: 'work',
-    executionRequirements: { profile: 'bounded-code-repair', modalities: ['text'] },
+    executionRequirements: { profile: 'bounded-code-repair', modalities: ['text'], complexity: 'high' },
     acceptanceCriteria: [],
     dependsOn: [],
     state: 'awaiting_review',
@@ -164,7 +164,9 @@ test('bounded projection still carries live work and standing commitments', () =
   // Live unresolved work survives.
   assert.match(p, /UNIQUE_LIVE_MARKER/);
   assert.match(p, /LIVE candidate awaiting review/);
-  assert.match(p, /requirements:bounded-code-repair\/text/);
+  // Declared complexity is part of the durable position — a fresh coordinator
+  // must see it from the projection, never from a transcript.
+  assert.match(p, /requirements:bounded-code-repair\/text\/high-complexity/);
   assert.match(p, /latest-target:codex-sdk\/openai\/gpt-5\.6-sol/);
 });
 

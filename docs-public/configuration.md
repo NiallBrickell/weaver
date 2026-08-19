@@ -61,6 +61,7 @@ and keeps reconciling while the earlier seats' retries are pending (see
 | `WEAVER_COORDINATOR_FALLBACK_MODEL` | `claude-opus-5` | Legacy single fallback model, used only while `WEAVER_COORDINATOR_FALLBACKS` is unset |
 | `WEAVER_COORDINATOR_FALLBACK_EXECUTOR` | primary executor | Runtime for that legacy fallback; may differ from the primary |
 | `WEAVER_WORKER_MODEL` | `sonnet` | Fallback model for general/unmatched work; reviewed typed routes may select another exact target |
+| `WEAVER_WORKER_MODEL_COMPLEX` | *(unset → `WEAVER_WORKER_MODEL`)* | Stronger worker seat for assignments the coordinator declares `complexity: high` — same `WEAVER_EXECUTOR` substrate, only the model changes |
 | `WEAVER_WORKER_FALLBACKS` | *(unset → no ladder)* | Ordered worker seats tried after the configured `WEAVER_EXECUTOR`/`WEAVER_WORKER_MODEL` seat when earlier targets are capacity-parked — e.g. `codex-sdk:gpt-5.6-sol,pi:zai-coding-plan/glm-5.3,pi:openrouter/moonshotai/kimi-k3`. See [Where workers run](./executors.md) |
 | `WEAVER_ASK_MODEL` | `sonnet` | The model behind `weaver do`/`weaver ask` intake |
 
@@ -108,7 +109,12 @@ route selects `openrouter/moonshotai/kimi-k3`; every Pi runner must therefore
 have its executor-only OpenRouter credential as well as any fallback-provider
 credential. General and image work continue to the configured fallback.
 
-New work stores a typed execution profile and modalities. Weaver checks matching
+New work stores a typed execution profile, modalities, and a complexity tier.
+The coordinator may mark an assignment `complexity: high` when its acceptance
+depends on deep multi-file reasoning, design judgment, or hard debugging; the
+requirement never names a model, and your `WEAVER_WORKER_MODEL_COMPLEX` — when
+set — supplies the stronger seat on the same configured executor, while routine
+work stays on `WEAVER_WORKER_MODEL`. Weaver checks matching
 reviewed routes inside the configured `WEAVER_EXECUTOR` substrate, then advances
 past a target only while that exact model pool has an active typed backoff. The
 first available target is reserved for a runner that declares its substrate; an

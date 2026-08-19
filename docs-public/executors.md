@@ -39,6 +39,16 @@ new work — requirements such as `bounded-code-repair` plus `text`, never a mod
 name inferred from briefing prose. Weaver selects the target once before the
 attempt claim and stores executor, provider, and model on that attempt.
 
+The same typed requirements carry a complexity tier. Work the coordinator
+declares `complexity: high` — acceptance depending on deep multi-file
+reasoning, design judgment, or hard debugging — takes the operator's
+`WEAVER_WORKER_MODEL_COMPLEX` seat instead of `WEAVER_WORKER_MODEL`, on the
+same configured executor with its provider re-derived. The requirement selects
+the seat; the operator's config supplies the model, and with no complex tier
+configured the work simply runs on the standard worker model. Reviewed
+evidence-backed routes and the explicit `WEAVER_WORKER_FALLBACKS` ladder are
+unchanged by the tier, and actions never enter routing at all.
+
 The checked-in registry contains a text-only `bounded-code-repair` preference
 for `codex-sdk:gpt-5.6-sol`, backed by a clean 10-run cohort from the full-access
 worker epoch. It applies when `codex-sdk` is already `WEAVER_EXECUTOR`; automatic

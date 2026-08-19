@@ -213,7 +213,7 @@ export function buildProjection(
     const lastReason = a.attempts[a.attempts.length - 1]?.terminalReason;
     const died = a.state === 'failed' && lastReason ? ` last-attempt:${lastReason}` : '';
     const requirements = a.executionRequirements
-      ? ` requirements:${a.executionRequirements.profile}/${a.executionRequirements.modalities.join('+')}`
+      ? ` requirements:${a.executionRequirements.profile}/${a.executionRequirements.modalities.join('+')}${a.executionRequirements.complexity === 'high' ? '/high-complexity' : ''}`
       : a.kind === 'work' ? ' requirements:general/text' : '';
     const latest = a.attempts.at(-1);
     const target = latest?.executor && latest.provider && latest.model

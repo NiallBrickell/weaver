@@ -29,6 +29,13 @@ export function workerModel(): string {
   return process.env.WEAVER_WORKER_MODEL ?? 'sonnet';
 }
 
+/** Model for work declared `complexity: 'high'` — the operator's stronger
+ * worker seat on the SAME configured executor. Unset, high-complexity work
+ * simply runs on the standard worker model. */
+export function workerModelComplex(): string {
+  return process.env.WEAVER_WORKER_MODEL_COMPLEX ?? workerModel();
+}
+
 /** Model for harness-internal text passes (intake derivation, `weaver ask`)
  * that always run through the machine's LOCAL Claude SDK login. The worker
  * model is reused only when that SDK can run it: a provider-prefixed worker

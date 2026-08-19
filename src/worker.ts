@@ -32,10 +32,9 @@ import { noteFleetRecovery } from './fleetCapacity.js';
 import {
   workerCapacityTarget,
   workerExecutorName,
-  workerModel,
   type CapacityTarget,
 } from './modelConfig.js';
-import { runnerExecutorCapabilities } from './modelRouting.js';
+import { runnerExecutorCapabilities, workerSeatModelForAssignment } from './modelRouting.js';
 import { loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
@@ -362,9 +361,11 @@ export async function runWorker(
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
   // Requirements choose one exact target before state moves. An explicitly
   // injected executor (the eval harness and deterministic tests) remains an
-  // explicit target rather than being silently re-routed.
+  // explicit target rather than being silently re-routed — but the seat's
+  // MODEL still answers the assignment's typed requirements, so declared
+  // high complexity is not silently dropped on this path either.
   const routedTarget = providedExecutor?.id
-    ? workerCapacityTarget(workerModel(), providedExecutor.id)
+    ? workerCapacityTarget(workerSeatModelForAssignment(asg), providedExecutor.id)
     : selectWorkerCapacityTarget(doc, asg, virtualNow().toISOString(), declaredExecutors);
   if (!routedTarget) return false;
   const executorName = providedExecutor?.id ?? routedTarget.executor;
