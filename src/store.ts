@@ -235,6 +235,29 @@ export async function tryTickLock(slug: string): Promise<(() => Promise<void>) |
   return getStore().tryTickLock(slug);
 }
 
+/** The shape intake derives and rename accepts: the strict grammar also
+ * structurally excludes a secret value riding in as a name, which is why the
+ * backend rename may skip the serialized-doc secrets assertion. */
+const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+
+/**
+ * Move a workstream to a new slug. The slug is the mutable NAME of a durable
+ * identity — `workstream.id` is the identity — so renaming changes how the
+ * fleet addresses the stream, never what it is: revision history, assignments,
+ * decisions, artifacts, and the event tail all travel with it, and the old
+ * name survives in the `workstream.renamed` event. Refused mid-tick (the tick
+ * lock covers workers, so nothing in flight still holds the old name) and on
+ * an occupied target. Cross-doc pointer repair (manager links, policy
+ * attribution) is humanActs.renameWorkstream — this is the storage move only.
+ */
+export async function rename(oldSlug: string, newSlug: string): Promise<WorkstreamDoc> {
+  if (!SLUG_RE.test(newSlug)) {
+    throw new Error(`invalid slug '${newSlug}' — lowercase letters, digits, and inner hyphens, max 40 chars`);
+  }
+  if (newSlug === oldSlug) throw new Error(`'${oldSlug}' already has that slug`);
+  return getStore().rename(oldSlug, newSlug);
+}
+
 /**
  * The ONLY write path for the global policy store — a concurrency-safe
  * read-modify-write the backend serializes (fs: process lock; pg: revision

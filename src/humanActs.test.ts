@@ -10,8 +10,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { resolveAttention } from './humanActs.js';
-import { arrive, createWorkstream, load } from './store.js';
+import { renameWorkstream, resolveAttention } from './humanActs.js';
+import { loadPolicies } from './policies.js';
+import { arrive, createWorkstream, load, mutatePolicies } from './store.js';
 
 let home: string;
 
@@ -76,4 +77,79 @@ test('a resolution carrying a note is an answer and wakes the stream regardless 
   assert.equal(pending.length, 1);
   assert.equal(pending[0]!.condition.type, 'immediate');
   assert.match(pending[0]!.reason, /att_decision resolved .*promote the flag globally/);
+});
+
+// --- renameWorkstream: cross-document pointer repair on top of the store move ---
+
+async function seedSimple(slug: string): Promise<void> {
+  await createWorkstream({
+    slug,
+    title: `title of ${slug}`,
+    objective: 'o',
+    tags: ['test'],
+    successCriteria: [],
+    constraints: [],
+    autonomy: { sendsRequireApproval: true },
+    budget: { maxCoordinatorPasses: 10, maxCostUsd: 10 },
+  });
+}
+
+test('renameWorkstream repairs manager pointers and notices on other docs', async () => {
+  await seedSimple('manager-old');
+  await seedSimple('managed-child');
+  await seedSimple('bystander');
+  await arrive('managed-child', (d) => {
+    d.workstream.managedBy = { slug: 'manager-old', sinceVirtual: new Date().toISOString() };
+    d.managerDirections = [
+      { id: 'dir_1', fromWorkstreamSlug: 'manager-old', body: 'advisory', atVirtual: new Date().toISOString() },
+    ];
+  });
+  await arrive('manager-old', (d) => {
+    d.managerNotices = [
+      {
+        id: 'not_1',
+        dedupKey: 'k',
+        kind: 'finished',
+        fromWorkstreamSlug: 'managed-child',
+        summary: 's',
+        receivedAtVirtual: new Date().toISOString(),
+      },
+    ];
+  });
+
+  const r = await renameWorkstream('manager-old', 'manager-new');
+  assert.equal(r.title, 'title of manager-old');
+  assert.deepEqual(r.pointersUpdated, ['managed-child']); // the bystander is untouched
+  const child = await load('managed-child');
+  assert.equal(child.workstream.managedBy!.slug, 'manager-new');
+  assert.equal(child.managerDirections![0]!.fromWorkstreamSlug, 'manager-new');
+  assert.ok(child.events.some((e) => e.type === 'workstream.manager_renamed'));
+  // The renamed manager keeps its own notices (they reference the child, not itself).
+  assert.equal((await load('manager-new')).managerNotices![0]!.fromWorkstreamSlug, 'managed-child');
+  assert.ok(!child.wakes.some((w) => w.status === 'pending')); // naming is not steering: no wake
+});
+
+test('renameWorkstream carries policy attribution to the new name', async () => {
+  await seedSimple('proposer-old');
+  await mutatePolicies((s) => {
+    s.policies.push({
+      id: 'pol_rename',
+      statement: 'test policy',
+      scope: { tags: ['test'] },
+      effect: { kind: 'advisory', description: 'd' },
+      widensAuthority: false,
+      status: 'shadow',
+      provenance: { workstreamSlug: 'proposer-old', passId: 'pass_1', interventionSummary: 'i' },
+      evidence: [
+        { workstreamSlug: 'proposer-old', passId: 'pass_1', note: 'n', interventionFree: true, at: new Date().toISOString() },
+      ],
+      createdAt: new Date().toISOString(),
+    });
+  });
+
+  const r = await renameWorkstream('proposer-old', 'proposer-new');
+  assert.equal(r.policiesUpdated, 1);
+  const pol = (await loadPolicies()).policies.find((p) => p.id === 'pol_rename')!;
+  assert.equal('workstreamSlug' in pol.provenance && pol.provenance.workstreamSlug, 'proposer-new');
+  assert.equal(pol.evidence[0]!.workstreamSlug, 'proposer-new');
 });

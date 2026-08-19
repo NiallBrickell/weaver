@@ -31,7 +31,7 @@ import { changedById, printoutChanges, writeJournalReceipt } from '../printoutJo
 import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
-import { policyJournalDir, printoutJournalDir } from './fs.js';
+import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
 import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './types.js';
 
 /**
@@ -303,6 +303,59 @@ export class PgStore implements StateStore {
         await client.end().catch(() => {});
       }
     };
+  }
+
+  async rename(oldSlug: string, newSlug: string): Promise<WorkstreamDoc> {
+    await this.ensureReady();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // The tick lock covers the whole tick, workers included: an xact-scoped
+      // try on the same advisory key conflicts with a held session lock, so a
+      // mid-tick rename is refused — and ours self-releases at COMMIT/ROLLBACK,
+      // never outliving the transaction.
+      const l = await client.query('SELECT pg_try_advisory_xact_lock(hashtext($1)) AS ok', [
+        `weaver-tick:${oldSlug}`,
+      ]);
+      if (l.rows[0]?.ok !== true) {
+        throw new Error(`workstream '${oldSlug}' is mid-tick — retry when the tick finishes`);
+      }
+      // FOR UPDATE pins the row: no concurrent write can land between this
+      // read and the UPDATE, so the rename needs no CAS of its own.
+      const r = await client.query('SELECT doc, revision FROM workstreams WHERE slug = $1 FOR UPDATE', [oldSlug]);
+      if (r.rowCount === 0) throw new Error(`no workstream '${oldSlug}' in the Postgres store`);
+      const clash = await client.query('SELECT 1 FROM workstreams WHERE slug = $1', [newSlug]);
+      if (clash.rowCount !== 0) throw new Error(`workstream '${newSlug}' already exists`);
+      const doc = r.rows[0].doc as WorkstreamDoc;
+      const stored = r.rows[0].revision as number;
+      const before = structuredClone(doc);
+      const emitted: EventRecord[] = [];
+      eventHelperFor(doc, emitted)('workstream.renamed', `renamed from '${oldSlug}' to '${newSlug}'`);
+      doc.workstream.slug = newSlug;
+      doc.revision = stored + 1;
+      await client.query(
+        'UPDATE workstreams SET slug = $1, doc = $2::jsonb, revision = revision + 1 WHERE slug = $3',
+        [newSlug, JSON.stringify(doc), oldSlug],
+      );
+      await client.query('UPDATE artifacts SET slug = $1 WHERE slug = $2', [newSlug, oldSlug]);
+      // Receipt before COMMIT, into the OLD slug's machine-local journal — the
+      // sidecar directory moves to the new name after commit.
+      writeJournalReceipt(printoutJournalDir(oldSlug), {
+        revision: doc.revision,
+        at: new Date().toISOString(),
+        atVirtual: virtualNow().toISOString(),
+        changes: printoutChanges(before, doc),
+        events: emitted,
+      } satisfies PrintoutMutationReceipt);
+      await client.query('COMMIT');
+      moveLocalSidecars(oldSlug, newSlug);
+      return doc;
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 
   async close(): Promise<void> {

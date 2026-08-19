@@ -42,7 +42,7 @@ import { changedById, printoutChanges, writeJournalReceipt } from '../printoutJo
 import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
-import { policyJournalDir, printoutJournalDir } from './fs.js';
+import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
 import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './types.js';
 
 /**
@@ -319,6 +319,51 @@ export class SqliteStore implements StateStore {
       // successor's row.
       this.db.prepare('DELETE FROM tick_locks WHERE slug = ? AND pid = ?').run(slug, process.pid);
     };
+  }
+
+  async rename(oldSlug: string, newSlug: string): Promise<WorkstreamDoc> {
+    const doc = this.txn(() => {
+      const row = this.db.prepare('SELECT doc, revision FROM workstreams WHERE slug = ?').get(oldSlug) as
+        | { doc: string; revision: number }
+        | undefined;
+      if (!row) throw new Error(`no workstream '${oldSlug}' in the SQLite store`);
+      if (this.db.prepare('SELECT 1 FROM workstreams WHERE slug = ?').get(newSlug)) {
+        throw new Error(`workstream '${newSlug}' already exists`);
+      }
+      // The tick lock covers the whole tick, workers included: a live holder
+      // still references the old slug, so a mid-tick rename is refused. Same
+      // probe-and-reclaim discipline as tryTickLock, inside the same write lock.
+      const lock = this.db.prepare('SELECT pid FROM tick_locks WHERE slug = ?').get(oldSlug) as
+        | { pid: number }
+        | undefined;
+      if (lock) {
+        let holderLive = false;
+        try { process.kill(lock.pid, 0); holderLive = true; } catch { /* dead holder */ }
+        if (holderLive) throw new Error(`workstream '${oldSlug}' is mid-tick — retry when the tick finishes`);
+        this.db.prepare('DELETE FROM tick_locks WHERE slug = ? AND pid = ?').run(oldSlug, lock.pid);
+      }
+      const d = JSON.parse(row.doc) as WorkstreamDoc;
+      const before = structuredClone(d);
+      const emitted: EventRecord[] = [];
+      eventHelperFor(d, emitted)('workstream.renamed', `renamed from '${oldSlug}' to '${newSlug}'`);
+      d.workstream.slug = newSlug;
+      d.revision = row.revision + 1;
+      this.db.prepare('UPDATE workstreams SET slug = ?, doc = ?, revision = ? WHERE slug = ?')
+        .run(newSlug, JSON.stringify(d), d.revision, oldSlug);
+      this.db.prepare('UPDATE artifacts SET slug = ? WHERE slug = ?').run(newSlug, oldSlug);
+      // Receipt before COMMIT, into the OLD slug's machine-local journal — the
+      // whole sidecar directory moves to the new name after commit.
+      writeJournalReceipt(printoutJournalDir(oldSlug), {
+        revision: d.revision,
+        at: new Date().toISOString(),
+        atVirtual: virtualNow().toISOString(),
+        changes: printoutChanges(before, d),
+        events: emitted,
+      } satisfies PrintoutMutationReceipt);
+      return d;
+    });
+    moveLocalSidecars(oldSlug, newSlug);
+    return doc;
   }
 
   async close(): Promise<void> {

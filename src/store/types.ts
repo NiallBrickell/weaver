@@ -99,6 +99,15 @@ export interface StateStore {
   mutatePolicies(fn: (store: PolicyStore) => void): Promise<PolicyStore>;
   /** Cross-process tick exclusion; null when another live process holds it. */
   tryTickLock(slug: string): Promise<(() => Promise<void>) | null>;
+  /** Move one workstream's whole stored identity to a new slug: the doc's
+   * `workstream.slug`, its artifacts, and (fs) its state directory move
+   * together, with a `workstream.renamed` event, a bumped revision, and a
+   * printout receipt — the old name survives as lineage, never as state. The
+   * backend must refuse an occupied target and a workstream whose tick lock a
+   * live process holds (the tick lock covers the whole tick, workers included,
+   * so everything in flight still references the old slug). Slug VALIDATION is
+   * the shared layer's job (src/store.ts rename), not the backend's. */
+  rename(oldSlug: string, newSlug: string): Promise<WorkstreamDoc>;
   /** Release held resources (connection pools). Optional: the fs backend has none. */
   close?(): Promise<void>;
 }

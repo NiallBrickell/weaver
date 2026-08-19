@@ -7,7 +7,8 @@
 
 import { userInfo } from 'node:os';
 import { virtualNow } from './clock.js';
-import { arrive, listWorkstreams, load, mutate, newId, RevisionConflictError } from './store.js';
+import { loadPolicies, type PolicyRecord } from './policies.js';
+import { arrive, listWorkstreams, load, mutate, mutatePolicies, newId, rename, RevisionConflictError } from './store.js';
 import type { WorkstreamCore } from './types.js';
 
 /**
@@ -379,4 +380,81 @@ export async function pauseAllWorkstreams(): Promise<PauseAllWorkstreamsResult> 
   result.done.sort();
   result.failures.sort((a, b) => a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0);
   return result;
+}
+
+export interface RenameWorkstreamResult {
+  oldSlug: string;
+  newSlug: string;
+  title: string;
+  /** Slugs of other workstreams whose manager pointers/notices were repaired. */
+  pointersUpdated: string[];
+  /** Policies whose attribution (provenance/evidence/contest) followed the rename. */
+  policiesUpdated: number;
+}
+
+/**
+ * Rename a workstream — a human act on the fleet's naming, not on any one
+ * stream's course (so it does not count as an intervention and wakes nothing).
+ * The store moves the identity atomically and refuses mid-tick; this layer
+ * then repairs every cross-document reference to the old name: manager links
+ * and manager notices/directions on other docs, and the global policy store's
+ * attribution — that last one matters because shadow → active promotion
+ * compares source slugs, and a stale name there would let a stream certify a
+ * policy it proposed itself.
+ */
+export async function renameWorkstream(oldSlug: string, newSlug: string): Promise<RenameWorkstreamResult> {
+  const doc = await rename(oldSlug, newSlug);
+
+  const pointersUpdated: string[] = [];
+  for (const slug of (await listWorkstreams()).sort()) {
+    if (slug === newSlug) continue;
+    let other;
+    try {
+      other = await load(slug);
+    } catch {
+      continue; // one unreadable doc must not wedge the repair of the rest
+    }
+    const touches =
+      other.workstream.managedBy?.slug === oldSlug ||
+      (other.managerDirections ?? []).some((m) => m.fromWorkstreamSlug === oldSlug) ||
+      (other.managerNotices ?? []).some((n) => n.fromWorkstreamSlug === oldSlug);
+    if (!touches) continue;
+    await arrive(slug, (d, event) => {
+      if (d.workstream.managedBy?.slug === oldSlug) d.workstream.managedBy.slug = newSlug;
+      for (const m of d.managerDirections ?? []) {
+        if (m.fromWorkstreamSlug === oldSlug) m.fromWorkstreamSlug = newSlug;
+      }
+      for (const n of d.managerNotices ?? []) {
+        if (n.fromWorkstreamSlug === oldSlug) n.fromWorkstreamSlug = newSlug;
+      }
+      event('workstream.manager_renamed', `${actor()} renamed '${oldSlug}' to '${newSlug}' — pointers updated`);
+    });
+    pointersUpdated.push(slug);
+  }
+
+  const refersToOld = (p: PolicyRecord): boolean =>
+    ('workstreamSlug' in p.provenance && p.provenance.workstreamSlug === oldSlug) ||
+    p.evidence.some((e) => e.workstreamSlug === oldSlug) ||
+    p.contested?.workstreamSlug === oldSlug;
+  let policiesUpdated = 0;
+  if ((await loadPolicies()).policies.some(refersToOld)) {
+    // Guarded: only touch the global store (and bump its revision) when a
+    // policy actually cites the old name.
+    await mutatePolicies((store) => {
+      policiesUpdated = 0; // the mutator may re-run against fresh state
+      for (const p of store.policies) {
+        if (!refersToOld(p)) continue;
+        policiesUpdated += 1;
+        if ('workstreamSlug' in p.provenance && p.provenance.workstreamSlug === oldSlug) {
+          p.provenance.workstreamSlug = newSlug;
+        }
+        for (const e of p.evidence) {
+          if (e.workstreamSlug === oldSlug) e.workstreamSlug = newSlug;
+        }
+        if (p.contested?.workstreamSlug === oldSlug) p.contested.workstreamSlug = newSlug;
+      }
+    });
+  }
+
+  return { oldSlug, newSlug, title: doc.workstream.title, pointersUpdated, policiesUpdated };
 }

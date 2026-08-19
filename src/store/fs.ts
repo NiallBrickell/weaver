@@ -262,4 +262,70 @@ export class FsStore implements StateStore {
     const release = acquireProcessLock(dir);
     return release ? async () => release() : null;
   }
+
+  async rename(oldSlug: string, newSlug: string): Promise<WorkstreamDoc> {
+    // The home-scoped create lock: a rename brings one identity into existence
+    // and retires another, so it must not race a create (or another rename)
+    // targeting either name.
+    const home = weaverHome();
+    fs.mkdirSync(home, { recursive: true });
+    const releaseCreate = acquireProcessLock(path.join(home, '.create.lock'), { timeoutMs: 10_000 });
+    if (!releaseCreate) throw new Error('create lock timeout');
+    try {
+      if (!fs.existsSync(docPath(oldSlug))) throw new Error(`no workstream '${oldSlug}' under ${home}`);
+      if (fs.existsSync(workstreamDir(newSlug))) throw new Error(`workstream '${newSlug}' already exists`);
+      // The tick lock covers the whole tick, workers included: holding it here
+      // proves nothing in flight still references the old slug.
+      const releaseTick = acquireProcessLock(path.join(workstreamDir(oldSlug), '.tick.lock'));
+      if (!releaseTick) throw new Error(`workstream '${oldSlug}' is mid-tick — retry when the tick finishes`);
+      try {
+        const doc = withWriteLock(oldSlug, () => {
+          const d = this.loadSync(oldSlug);
+          const before = structuredClone(d);
+          const emitted: EventRecord[] = [];
+          eventHelperFor(d, emitted)('workstream.renamed', `renamed from '${oldSlug}' to '${newSlug}'`);
+          d.workstream.slug = newSlug;
+          d.revision += 1;
+          writeAtomic(oldSlug, d, {
+            revision: d.revision,
+            at: new Date().toISOString(),
+            atVirtual: virtualNow().toISOString(),
+            changes: printoutChanges(before, d),
+            events: emitted,
+          });
+          return d;
+        });
+        // Doc first, directory second: a crash between the two leaves the
+        // renamed doc inside the old directory, which re-running the rename
+        // heals — the reverse order would strand a directory whose contents
+        // still answer to a name that no longer loads.
+        fs.renameSync(workstreamDir(oldSlug), workstreamDir(newSlug));
+        return doc;
+      } finally {
+        // The directory rename carried our held tick lock into the new
+        // location, so releasing the old path is a no-op by design (the unique
+        // owner file is simply absent there) — remove the moved lock we still
+        // own so the next tick isn't blocked until this process exits.
+        releaseTick();
+        fs.rmSync(path.join(workstreamDir(newSlug), '.tick.lock'), { recursive: true, force: true });
+      }
+    } finally {
+      releaseCreate();
+    }
+  }
+}
+
+/**
+ * Move the machine-local fs sidecars (printout journal, tail feed, secrets
+ * overlay) that the sqlite/pg backends keep under WEAVER_HOME/<slug> alongside
+ * their database-held truth. Best-effort by design: sidecars are provenance
+ * and machine-local convenience, never durable state, so an absent source or
+ * an occupied target leaves things where they are rather than failing the
+ * rename that already committed.
+ */
+export function moveLocalSidecars(oldSlug: string, newSlug: string): void {
+  const from = workstreamDir(oldSlug);
+  const to = workstreamDir(newSlug);
+  if (!fs.existsSync(from) || fs.existsSync(to)) return;
+  fs.renameSync(from, to);
 }

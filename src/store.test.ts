@@ -33,6 +33,7 @@ import {
   mutate,
   mutatePolicies,
   newId,
+  rename,
   tryTickLock,
   verifyArtifact,
   workstreamDir,
@@ -434,6 +435,48 @@ function contractSuite(backend: Backend): void {
     const created = (await listWorkstreams()).filter((s) => slugs.includes(s));
     assert.equal(created.length, 1); // never a silent second identity
     assert.equal(await findBySourceKey(key), created[0]);
+  });
+
+  test('rename moves the whole identity: doc, artifacts, listing — old name survives only as lineage', async () => {
+    await makeWorkstream();
+    const { relPath, hash } = await writeArtifact('test-ws', 'note.md', 'adopted content');
+    const revBefore = (await load('test-ws')).revision;
+    await rename('test-ws', 'renamed-ws');
+    assert.ok((await listWorkstreams()).includes('renamed-ws'));
+    assert.equal((await listWorkstreams()).includes('test-ws'), false);
+    await assert.rejects(load('test-ws'), /no workstream/);
+    const doc = await load('renamed-ws');
+    assert.equal(doc.workstream.slug, 'renamed-ws');
+    assert.equal(doc.revision, revBefore + 1);
+    assert.ok(doc.events.some((e) => e.type === 'workstream.renamed' && e.summary.includes('test-ws')));
+    assert.ok(await verifyArtifact('renamed-ws', relPath, hash)); // artifacts moved, pins intact
+    // The renamed stream is fully live under its new name: writable and tickable.
+    await arrive('renamed-ws', (d, event) => event('after.rename', 'still writable'));
+    const release = await tryTickLock('renamed-ws');
+    assert.ok(release, 'tick lock must be acquirable under the new name');
+    await release!();
+  });
+
+  test('rename refuses an occupied target, an invalid slug, and a missing source — mutating nothing', async () => {
+    await makeWorkstream();
+    await makeWorkstream('other-ws');
+    await assert.rejects(rename('test-ws', 'other-ws'), /already exists/);
+    await assert.rejects(rename('test-ws', 'Bad Slug!'), /invalid slug/);
+    await assert.rejects(rename('test-ws', '-edge-hyphen'), /invalid slug/);
+    await assert.rejects(rename('missing-ws', 'anything'), /no workstream/);
+    assert.ok((await listWorkstreams()).includes('test-ws'));
+    assert.equal((await load('test-ws')).workstream.slug, 'test-ws');
+  });
+
+  test('rename is refused mid-tick: in-flight work still references the old slug', async () => {
+    await makeWorkstream();
+    const release = await tryTickLock('test-ws');
+    assert.ok(release);
+    await assert.rejects(rename('test-ws', 'renamed-ws'), /mid-tick/);
+    assert.ok((await listWorkstreams()).includes('test-ws')); // refused = untouched
+    await release!();
+    await rename('test-ws', 'renamed-ws'); // the moment the tick ends, the rename lands
+    assert.ok((await listWorkstreams()).includes('renamed-ws'));
   });
 }
 
