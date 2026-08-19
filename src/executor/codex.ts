@@ -17,6 +17,7 @@ import {
   type ThreadOptions,
 } from '@openai/codex-sdk';
 import { performance } from 'node:perf_hooks';
+import { stripClaudeCredentials } from '../secrets.js';
 import { startSubmitBridge, type SubmitBridge } from './submitBridge.js';
 import type {
   ExecutorTelemetry,
@@ -148,6 +149,9 @@ export class CodexExecutor implements WorkerExecutor {
       // billing path while telemetry still reports zero marginal SDK cost.
       delete env.OPENAI_API_KEY;
       delete env.CODEX_API_KEY;
+      // Registered Claude identity (sdkEnv) must not enter an OpenAI-steered
+      // process — cross-principal credentials stop at the executor boundary.
+      stripClaudeCredentials(env);
       const codex = this.createCodex({
         // Passing the harness-built environment preserves the operator's local
         // Codex login/config while preventing the SDK from independently

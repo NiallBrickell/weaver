@@ -4,7 +4,8 @@
 #
 #   weaver-gcp create             create + provision the VM (idempotent-ish)
 #   weaver-gcp push-env           render /etc/weaver/env on the VM from local creds
-#   weaver-gcp tunnel             forward Postgres (5432) + serve (8787) to localhost
+#   weaver-gcp tunnel             forward Postgres + serve to localhost
+#   weaver-gcp join               print the exact commands a second machine runs
 #   weaver-gcp ssh [cmd…]         SSH into the VM (IAP tunnel)
 #   weaver-gcp status             VM + services + runner heartbeat
 #   weaver-gcp logs [unit]        tail a unit's journal (default weaver-run)
@@ -251,6 +252,26 @@ cmd_tunnel() {
   "${GSSH[@]}" -- -N -L 6543:127.0.0.1:5432 -L 9723:127.0.0.1:9723
 }
 
+# ── join ──────────────────────────────────────────────────────────────────────
+# Everything a second machine needs, ready to paste. The store password is
+# fetched over SSH and embedded in the link URL — which `weaver link` persists
+# into the (gitignored) repo .env and always prints redacted.
+cmd_join() {
+  local pw
+  pw="$("${GSSH[@]}" --command 'sudo cat /etc/weaver/pg-password' 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$pw" ] || { echo "❌ could not read the fleet Postgres password (is the VM up?)" >&2; exit 1; }
+  cat <<EOF
+On the joining machine (needs: this repo cloned, gcloud authed with IAP access):
+
+  # 1. keep a tunnel to the fleet open
+  bin/weaver-gcp.sh tunnel
+
+  # 2. in another terminal — join the fleet, then register execution identity
+  weaver link "postgres://weaver:${pw}@127.0.0.1:6543/weaver"
+  weaver login
+EOF
+}
+
 # ── small ones ────────────────────────────────────────────────────────────────
 cmd_ssh()     { "${GSSH[@]}" "$@"; }
 cmd_logs()    { "${GSSH[@]}" --command "sudo journalctl -u ${1:-weaver-run} -n 100 -f"; }
@@ -279,6 +300,7 @@ case "${1:-}" in
   create)   shift; cmd_create "$@";;
   push-env) shift; cmd_push_env "$@";;
   tunnel)   shift; cmd_tunnel "$@";;
+  join)     shift; cmd_join "$@";;
   ssh)      shift; cmd_ssh "$@";;
   logs)     shift; cmd_logs "$@";;
   restart)  shift; cmd_restart "$@";;

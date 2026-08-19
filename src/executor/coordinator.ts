@@ -13,6 +13,7 @@ import {
 import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { stripClaudeCredentials } from '../secrets.js';
 import { startToolBridge, type BridgeToolDefinition, type ToolBridge } from './toolBridge.js';
 
 const CODEX_COORDINATOR_TOKEN_ENV = 'WEAVER_CODEX_COORDINATOR_TOKEN';
@@ -175,6 +176,9 @@ export class CodexCoordinatorExecutor implements CoordinatorExecutor {
       const env = stringEnv(req.env);
       delete env.OPENAI_API_KEY;
       delete env.CODEX_API_KEY;
+      // Registered Claude identity (sdkEnv) must not enter an OpenAI-steered
+      // process — cross-principal credentials stop at the executor boundary.
+      stripClaudeCredentials(env);
       env.CODEX_HOME = home.path;
       env[CODEX_COORDINATOR_TOKEN_ENV] = bridge.token;
 

@@ -110,6 +110,47 @@ Reviewed automatic routes select models only within the configured worker
 substrate. Cross-executor preference waits for durable Workstream execution
 policy rather than trusting process-local environment agreement.
 
+## Deploying on a GCP VM
+
+[`bin/weaver-gcp.sh`](../bin/weaver-gcp.sh) turns the whole story into one
+command per step, with an isolation posture worth copying even if you host
+elsewhere: the VM carries **no service account and no scopes** (a compromised
+workload cannot call any GCP API as anything), sits on **its own VPC** whose
+only ingress rule is IAP SSH (no public ports — laptops reach Postgres and
+`serve` through an authenticated tunnel), and receives secrets **over SSH
+stdin** into a `0600` env file, never via instance metadata.
+
+```bash
+# on the laptop that already has identity registered (weaver login):
+bin/weaver-gcp.sh create      # VM + Postgres + systemd units, idempotent
+bin/weaver-gcp.sh push-env    # pipe credentials + model config to the box
+bin/weaver-gcp.sh status      # services + runner heartbeat
+bin/weaver-gcp.sh join        # print the paste-ready commands for a second machine
+bin/weaver-gcp.sh tunnel      # localhost:6543 → fleet Postgres, :9723 → serve
+```
+
+Defaults (project, zone, VM name, machine type, network) are `WEAVER_GCP_*`
+variables at the top of the script. `update` pulls the latest code and
+restarts; `logs` tails the runner journal; on the box itself, `weaver status
+<slug>` works as-is — the CLI sees the same env the services run with.
+
+## Deploying with Docker Compose (any host)
+
+The repo ships a [`Dockerfile`](../Dockerfile) (published as
+`ghcr.io/niallbrickell/weaver`) and a [`docker-compose.yml`](../docker-compose.yml)
+that runs the full fleet — Postgres, runner, serve — on any Docker host:
+
+```bash
+weaver login --render-remote-env > compose.env   # on a configured machine
+echo "WEAVER_PG_PASSWORD=$(openssl rand -hex 16)" >> .env
+docker compose up -d
+```
+
+`serve` is published on `127.0.0.1:9723` only; widening that to the world is a
+deliberate edit, not a default. The `openhands` executor needs a Docker daemon
+of its own and stays a VM-level substrate — run `local-sdk` / `codex-sdk` / `pi`
+work in the composed runner.
+
 ## Deploying on Railway
 
 Railway fits this cleanly — a Postgres plugin and two services in one project.

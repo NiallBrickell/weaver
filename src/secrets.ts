@@ -179,11 +179,23 @@ function removeSecretAt(name: string, p: string): boolean {
  * Exactly one credential is injected — the subscription token wins over an
  * API key — so the billing principal stays unambiguous.
  */
-export function sdkEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = { ...process.env, ...extra };
+/**
+ * Registered identity is injected for the Claude SDK only. An executor that
+ * hands the environment to a different principal's agent process (Codex) must
+ * strip it back out — a Claude credential has no business inside a process an
+ * OpenAI model steers. Before registered injection existed, sdkEnv guaranteed
+ * these names were absent, so the codex adapters never had to; now the
+ * guarantee lives here, named, instead of implicitly in each adapter.
+ */
+export function stripClaudeCredentials(env: Record<string, string | undefined>): void {
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
+}
+
+export function sdkEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env, ...extra };
+  stripClaudeCredentials(env);
   const registered = loadExecutorSecrets();
   if (registered.CLAUDE_CODE_OAUTH_TOKEN) {
     env.CLAUDE_CODE_OAUTH_TOKEN = registered.CLAUDE_CODE_OAUTH_TOKEN;

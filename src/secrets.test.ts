@@ -22,6 +22,7 @@ import {
   removeExecutorSecret,
   removeSecret,
   sdkEnv,
+  stripClaudeCredentials,
   secretNames,
   setExecutorSecret,
   setSecret,
@@ -222,6 +223,18 @@ test('caller extras still cannot reintroduce credentials, and still win elsewher
     if (previous === undefined) delete process.env.SDKENV_COLLIDING_EXTRA;
     else process.env.SDKENV_COLLIDING_EXTRA = previous;
   }
+});
+
+test('registered Claude identity never crosses into an OpenAI-steered process env', () => {
+  // The codex executors receive sdkEnv output and must strip the injected
+  // principal back out — this is the exact call they make.
+  setExecutorSecret('CLAUDE_CODE_OAUTH_TOKEN', 'registered-oauth-123');
+  const env = sdkEnv();
+  assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'registered-oauth-123');
+  stripClaudeCredentials(env);
+  assert.ok(!('CLAUDE_CODE_OAUTH_TOKEN' in env));
+  assert.ok(!('ANTHROPIC_API_KEY' in env));
+  assert.ok(!('ANTHROPIC_AUTH_TOKEN' in env));
 });
 
 test('redactSecrets scrubs every value, longest first, and skips tiny values', () => {
