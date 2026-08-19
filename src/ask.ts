@@ -16,7 +16,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { sdkEnv } from './secrets.js';
 import { listWorkstreams, weaverHome, workstreamDir } from './store.js';
 import type { WorkstreamDoc } from './types.js';
-import { workerModel } from './worker.js';
+import { localTextModel } from './modelConfig.js';
 import { isLegacyDollarBudgetAttention } from './executionSafety.js';
 
 function digestOne(slug: string, dir: string): string {
@@ -71,7 +71,7 @@ export async function ask(question: string): Promise<string> {
   for await (const msg of query({
     prompt: [`# Fleet digest`, digest, ``, `# Operator's question`, question].join('\n'),
     options: {
-      model: process.env.WEAVER_ASK_MODEL ?? workerModel(),
+      model: process.env.WEAVER_ASK_MODEL ?? localTextModel(),
       systemPrompt: ASK_SYSTEM,
       tools: ['Read', 'Grep', 'Glob'],
       allowedTools: ['Read', 'Grep', 'Glob'],

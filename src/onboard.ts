@@ -5,18 +5,24 @@
  * criteria, and routine-ness are derived: by one fast model pass when the
  * machine's Claude login is available, deterministically when it is not — a
  * failed derivation must never block starting work, so the fallback is the
- * message verbatim. Constraints are the HOUSE PACK, never model-generated:
- * the operating rules of this machine do not vary with how a task is phrased.
- * The pack itself is machine-local config (`house.json` under WEAVER_HOME),
- * never source — a public harness cannot hardcode one operator's repos.
+ * message verbatim (and the CLI says so: a silent fallback reads as a bug in
+ * naming, not a degraded mode). The same pass de-dupes against the fleet: a
+ * message that is really an update to work an existing workstream already
+ * owns is delivered to that workstream as founder steering instead of
+ * forking a near-duplicate stream. Constraints are the HOUSE PACK, never
+ * model-generated: the operating rules of this machine do not vary with how
+ * a task is phrased. The pack itself is machine-local config (`house.json`
+ * under WEAVER_HOME), never source — a public harness cannot hardcode one
+ * operator's repos.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { sdkEnv } from './secrets.js';
-import { arrive, createWorkstream, listWorkstreams, newId } from './store.js';
-import { workerModel } from './worker.js';
+import { arrive, createWorkstream, listWorkstreams, load, newId } from './store.js';
+import { localTextModel } from './modelConfig.js';
+import { addSteering, setPaused } from './humanActs.js';
 import { newExecutionSafety } from './executionSafety.js';
 
 /** The machine's standing rules and repo knowledge, applied to every stream
@@ -70,6 +76,30 @@ export interface Derived {
   routine: boolean;
 }
 
+/** One existing stream as the derivation pass sees it for de-duping. */
+export interface FleetCandidate {
+  slug: string;
+  status: string;
+  title: string;
+  createdAt: string;
+}
+
+/** The model either defines a new workstream or names the existing one this
+ * message really belongs to. */
+export type ParsedDerivation =
+  | { kind: 'create'; derived: Derived }
+  | { kind: 'attach'; slug: string };
+
+export type OnboardResult =
+  | {
+      action: 'created';
+      derived: Derived;
+      /** Present when the model pass failed and the deterministic word-mash
+       * fallback named the stream — the CLI surfaces this to the operator. */
+      fallbackReason?: string;
+    }
+  | { action: 'steered'; slug: string; title: string; reopened: boolean };
+
 /** Kebab, [a-z0-9-], bounded, non-empty; '-2', '-3'… on collision. */
 export function sanitizeSlug(raw: string, taken: Set<string>): string {
   let s = raw
@@ -104,25 +134,59 @@ export function deriveFallback(message: string, taken: Set<string>, done?: strin
 }
 
 /** Strict-ish parse of the model's JSON (fenced or bare). */
-export function parseDerivation(text: string, taken: Set<string>): Derived | null {
+export function parseDerivation(text: string, taken: Set<string>): ParsedDerivation | null {
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) return null;
   try {
-    const j = JSON.parse(m[0]) as Partial<Derived>;
+    const j = JSON.parse(m[0]) as Partial<Derived> & { attachTo?: unknown };
+    if (typeof j.attachTo === 'string') {
+      // Attaching only ever targets a workstream that actually exists — a
+      // hallucinated slug falls through to ordinary creation.
+      return taken.has(j.attachTo) ? { kind: 'attach', slug: j.attachTo } : null;
+    }
     if (typeof j.slug !== 'string' || typeof j.title !== 'string' || typeof j.objective !== 'string') return null;
     return {
-      slug: sanitizeSlug(j.slug, taken),
-      title: j.title.slice(0, 90),
-      objective: j.objective,
-      successCriteria: Array.isArray(j.successCriteria) ? j.successCriteria.filter((c): c is string => typeof c === 'string').slice(0, 4) : [],
-      routine: j.routine === true,
+      kind: 'create',
+      derived: {
+        slug: sanitizeSlug(j.slug, taken),
+        title: j.title.slice(0, 90),
+        objective: j.objective,
+        successCriteria: Array.isArray(j.successCriteria) ? j.successCriteria.filter((c): c is string => typeof c === 'string').slice(0, 4) : [],
+        routine: j.routine === true,
+      },
     };
   } catch {
     return null;
   }
 }
 
-async function deriveWithModel(message: string, taken: Set<string>, house: HousePack, done?: string): Promise<Derived | null> {
+/** Newest-first digest of the fleet for the de-dupe decision, bounded so a
+ * long tail of old concluded work never bloats a cheap derivation pass. */
+async function fleetCandidates(slugs: string[]): Promise<FleetCandidate[]> {
+  const out: FleetCandidate[] = [];
+  for (const slug of slugs) {
+    try {
+      const d = await load(slug);
+      out.push({
+        slug,
+        status: d.workstream.status,
+        title: d.workstream.title.replace(/\s+/g, ' ').slice(0, 90),
+        createdAt: d.workstream.createdAt,
+      });
+    } catch {
+      // An unreadable stream can't be a de-dupe target.
+    }
+  }
+  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 60);
+}
+
+async function deriveWithModel(
+  message: string,
+  taken: Set<string>,
+  house: HousePack,
+  candidates: FleetCandidate[],
+  done?: string,
+): Promise<{ parsed: ParsedDerivation | null; error?: string }> {
   const prompt = [
     `Turn this raw task message from the founder into a workstream definition. Reply with ONLY a JSON object: {"slug", "title", "objective", "successCriteria": [..], "routine": bool}.`,
     ``,
@@ -141,15 +205,28 @@ async function deriveWithModel(message: string, taken: Set<string>, house: House
         : ' Default bar for code work: root-caused/implemented, PR merged through the review loop, verification evidence in the PR. Do NOT include verifying in production unless the founder asked for it.'
     }`,
     `- routine: true ONLY if the message describes recurring work (weekly, nightly, "keep doing X") — then state the cadence inside the objective and note that each completed cycle schedules the next via a time wake.`,
+    ...(candidates.length
+      ? [
+          ``,
+          `Existing workstreams in this fleet (slug [status] title):`,
+          ...candidates.map((c) => `- ${c.slug} [${c.status}] ${c.title}`),
+          ``,
+          `If the founder's message is an update to, a duplicate of, or a direct follow-up on ONE of these — the same work or the same outcome, not merely a related topic — reply instead with ONLY {"attachTo": "<slug>"}. The message is then delivered to that workstream as founder steering, and a done or paused workstream is reopened with its history intact. When unsure, create a new workstream.`,
+        ]
+      : []),
     ``,
     `Message: ${JSON.stringify(message)}`,
   ].join('\n');
   try {
     let text = '';
+    let errText = '';
     for await (const msg of query({
       prompt,
       options: {
-        model: workerModel(),
+        // NOT workerModel(): the worker model may be provider-prefixed for a
+        // non-Claude executor, and this pass always runs through the local
+        // Claude SDK — see localTextModel().
+        model: localTextModel(),
         tools: [],
         allowedTools: [],
         permissionMode: 'dontAsk',
@@ -160,20 +237,47 @@ async function deriveWithModel(message: string, taken: Set<string>, house: House
         env: sdkEnv(),
       },
     })) {
-      if (msg.type === 'result' && 'result' in msg && typeof msg.result === 'string' && !msg.is_error) text = msg.result;
+      if (msg.type === 'result' && 'result' in msg && typeof msg.result === 'string') {
+        if (msg.is_error) errText = msg.result;
+        else text = msg.result;
+      }
     }
-    return parseDerivation(text, taken);
-  } catch {
-    return null;
+    const parsed = parseDerivation(text, taken);
+    return {
+      parsed,
+      error: parsed
+        ? undefined
+        : text
+          ? 'model reply was not a usable derivation'
+          : errText || 'model pass produced no result',
+    };
+  } catch (e) {
+    return { parsed: null, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
+/** Deliver the founder's message as steering to the existing stream that
+ * already owns this work, reopening it first when it is paused or concluded
+ * (conclusion lineage is kept — this is `weaver resume` + `weaver steer`,
+ * not a new identity). */
+export async function attachToExisting(slug: string, message: string, done?: string): Promise<OnboardResult> {
+  const doc = await load(slug);
+  const reopened = doc.workstream.status !== 'active';
+  if (reopened) await setPaused(slug, false);
+  await addSteering(slug, done ? `${message}\n\nDone means: ${done}` : message);
+  return { action: 'steered', slug, title: doc.workstream.title, reopened };
+}
+
 /** Create a workstream from one raw message (plus an optional explicit
- * statement of what done means). Returns what was decided. */
-export async function onboard(message: string, done?: string): Promise<Derived> {
-  const taken = new Set(await listWorkstreams());
+ * statement of what done means) — or route the message to the existing
+ * workstream it is really about. Returns what was decided. */
+export async function onboard(message: string, done?: string): Promise<OnboardResult> {
+  const slugs = await listWorkstreams();
+  const taken = new Set(slugs);
   const house = loadHouse();
-  const d = (await deriveWithModel(message, taken, house, done)) ?? deriveFallback(message, taken, done);
+  const { parsed, error } = await deriveWithModel(message, taken, house, await fleetCandidates(slugs), done);
+  if (parsed?.kind === 'attach') return attachToExisting(parsed.slug, message, done);
+  const d = parsed?.derived ?? deriveFallback(message, taken, done);
   await createWorkstream({
     slug: d.slug,
     title: d.title,
@@ -194,5 +298,5 @@ export async function onboard(message: string, done?: string): Promise<Derived> 
     });
     event('wake.scheduled', 'initial reconciliation wake');
   });
-  return d;
+  return { action: 'created', derived: d, fallbackReason: parsed ? undefined : error };
 }
