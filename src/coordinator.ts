@@ -906,7 +906,11 @@ export async function runCoordinatorPass(
             .string()
             .optional()
             .describe('stable identity of the external thing this stands for, e.g. "linear:<issue-uuid>". Creation is idempotent on it, so re-reading the same tracker on every pass opens the work exactly once.'),
-          objective: z.string(),
+          objective: z
+            .string()
+            .describe(
+              'the outcome the new stream owns. State the outcome and the evidence so far — never bake your current hypothesis in as established fact: the new coordinator treats this text as ground truth, so a pre-pinned culprit ("fix the X-driven failure") forecloses the investigation it should run. For remediation of any aggregate signal (an error stream, rejected batches, a cost spike), require measuring the by-cause distribution FIRST and letting the numbers pick the target — one observed instance of a cause is not the cause. (Real cost: a log-ingestion remediation stream was briefed onto the one attribute key seen in a single error message; measurement later showed that key caused 0.4% of the drops, and the shipped fix had to be reverted for a structural one.)',
+            ),
           success_criteria: z.array(z.string()).default([]),
           constraints: z.array(z.string()).default([]),
           tags: z.array(z.string()).default([]).describe('scope tags for policy matching. Include \'routine\' whenever the objective is recurring (a cadence, "keep X healthy", periodic sweeps/intake) — the dashboard files routine streams in their own section, and an untagged recurring stream clutters the main board as if it were one-shot work'),
