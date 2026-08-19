@@ -5,11 +5,12 @@ import type {
   AssignmentExecutionProfile,
 } from './types.js';
 import {
-  coordinatorExecutorName,
-  coordinatorFallbackExecutorName,
+  coordinatorTargets,
   providerForExecutor,
+  SUPPORTED_EXECUTORS,
   workerCapacityTarget,
   workerExecutorName,
+  workerFallbackTargets,
   type CapacityTarget,
 } from './modelConfig.js';
 
@@ -113,7 +114,7 @@ export const WORK_MODEL_ROUTES: readonly WorkModelRoute[] = [
   },
 ];
 
-const KNOWN_EXECUTORS = new Set(['local-sdk', 'codex-sdk', 'openhands', 'pi']);
+const KNOWN_EXECUTORS = new Set(SUPPORTED_EXECUTORS);
 
 function normalizedRequirements(assignment: Assignment): AssignmentExecutionRequirements {
   return assignment.executionRequirements ?? DEFAULT_EXECUTION_REQUIREMENTS;
@@ -152,8 +153,8 @@ export function runnerExecutorCapabilities(): ReadonlySet<string> {
   const configured = [
     workerExecutorName(),
     actionExecutorName(),
-    coordinatorExecutorName(),
-    coordinatorFallbackExecutorName(),
+    ...coordinatorTargets().map((target) => target.executor),
+    ...workerFallbackTargets().map((target) => target.executor),
   ];
   const raw = process.env.WEAVER_RUNNER_EXECUTORS;
   const executors = raw === undefined
@@ -176,8 +177,9 @@ function sameTarget(a: CapacityTarget, b: CapacityTarget): boolean {
   return a.executor === b.executor && a.provider === b.provider && a.model === b.model;
 }
 
-/** Reviewed targets in preference order, followed by the operator-configured
- * fallback. Requirements survive attempts; this ordered target list does not. */
+/** Reviewed targets in preference order, then the operator-configured seat,
+ * then the operator's explicit `WEAVER_WORKER_FALLBACKS` capacity ladder.
+ * Requirements survive attempts; this ordered target list does not. */
 export function workerTargetsForAssignment(
   assignment: Assignment,
   routes: readonly WorkModelRoute[] = WORK_MODEL_ROUTES,
@@ -186,15 +188,18 @@ export function workerTargetsForAssignment(
   const requirements = normalizedRequirements(assignment);
   const fallback = workerCapacityTarget();
   const candidates = [...routes]
-    // Automatic routing changes the model within the configured worker
-    // substrate. Cross-executor preference needs a durable Workstream
-    // execution policy; a process-local opt-in would make model choice a
-    // Postgres tick-lock race during config skew.
+    // AUTOMATIC eval-route selection changes the model only within the
+    // configured worker substrate: a checked-in performance route crossing
+    // executors would need a durable Workstream execution policy, and a
+    // process-local opt-in would make model choice a Postgres tick-lock race
+    // during config skew. The ordered ladder appended below is different in
+    // kind: it is the operator's explicit machine config, the same trust
+    // class as WEAVER_EXECUTOR itself, so its entries may name any executor.
     .filter((candidate) => candidate.target.executor === fallback.executor)
     .filter((candidate) => routeMatches(candidate, requirements))
     .sort((a, b) => b.preference - a.preference || a.id.localeCompare(b.id))
     .map((route) => route.target);
-  candidates.push(fallback);
+  candidates.push(fallback, ...workerFallbackTargets());
   return candidates.filter(
     (target, index) => candidates.findIndex((candidate) => sameTarget(candidate, target)) === index,
   );

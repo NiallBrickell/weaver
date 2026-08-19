@@ -59,13 +59,29 @@ it used is pinned on that attempt while the earlier wait remains honest history.
 Unknown provider cost remains unknown; route preference is an explicit reviewed
 choice, never a claim that missing cost telemetry means free.
 
+## The capacity ladder
+
+`WEAVER_WORKER_FALLBACKS` extends that order with an explicit operator-owned
+capacity ladder: comma-separated `executor:model` seats tried, in order, after
+the configured `WEAVER_EXECUTOR`/`WEAVER_WORKER_MODEL` seat when every earlier
+target holds an active typed backoff. Unlike automatic eval routes, the ladder
+may cross executors — it is machine configuration the operator wrote, the same
+trust class as `WEAVER_EXECUTOR` itself, not an inference the router made. Each
+entry splits on its first colon, so provider-qualified models keep their
+slashes (`pi:openrouter/moonshotai/kimi-k3`); an unknown executor fails hard
+rather than silently dropping a seat. Every executor the ladder names joins the
+runner's default capability declaration, and its credentials must be present on
+each host that may claim the work. The coordinator has the same shape of chain
+via `WEAVER_COORDINATOR_FALLBACKS` — see
+[Configuration](./configuration.md).
+
 ## Runner capability declaration
 
 A runner claims only work it says it can execute. Without
 `WEAVER_RUNNER_EXECUTORS`, that declaration is the union of its configured
-coordinator, fallback-coordinator, worker, and action executors. A performance
-route does not implicitly add a substrate merely because its adapter is present
-in the build.
+worker and action executors plus every executor named in the coordinator
+fallback chain and the worker capacity ladder. A performance route does not
+implicitly add a substrate merely because its adapter is present in the build.
 
 Declare extra capable substrates on a host explicitly:
 
@@ -111,8 +127,7 @@ ordinary implementation work:
 ```dotenv
 WEAVER_COORDINATOR_EXECUTOR=codex-sdk
 WEAVER_COORDINATOR_MODEL=gpt-5.6-sol
-WEAVER_COORDINATOR_FALLBACK_EXECUTOR=codex-sdk
-WEAVER_COORDINATOR_FALLBACK_MODEL=gpt-5.6-sol
+WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol
 WEAVER_EXECUTOR=codex-sdk
 WEAVER_WORKER_MODEL=gpt-5.6-sol
 # Actions remain on the supervised defaults: local-sdk / sonnet.

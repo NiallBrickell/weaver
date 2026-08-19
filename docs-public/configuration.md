@@ -13,8 +13,7 @@ Copy [`.env.example`](../.env.example) to `.env` and uncomment what you need.
 `.env` is gitignored, so it stays local to your machine.
 
 ```dotenv
-WEAVER_COORDINATOR_FALLBACK_MODEL=gpt-5.6-sol
-WEAVER_COORDINATOR_FALLBACK_EXECUTOR=codex-sdk
+WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,codex-sdk:gpt-5.6-sol
 WEAVER_STORE=postgres://user:pass@host:5432/weaver
 ```
 
@@ -41,17 +40,27 @@ from workers — see [Secrets & access](./secrets-and-access.md).
 The coordinator is the evaluative seat — it runs rarely, at the moments that
 matter, so it gets the most capable model; workers do the volume on a cheaper
 one. When the coordinator's primary model pool is capacity-limited, it degrades
-one step to the **fallback** and keeps reconciling while the primary's retry is
-pending (see [Claude capacity & billing](./claude-capacity.md)).
+down its ordered **fallback chain** to the first seat whose pool is not parked
+and keeps reconciling while the earlier seats' retries are pending (see
+[Claude capacity & billing](./claude-capacity.md)).
 
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `WEAVER_COORDINATOR_MODEL` | `claude-fable-5` | The coordinator's primary model |
 | `WEAVER_COORDINATOR_EXECUTOR` | `local-sdk` | Runtime for the primary coordinator: `local-sdk` (Claude) or `codex-sdk` (Codex) |
-| `WEAVER_COORDINATOR_FALLBACK_MODEL` | `claude-opus-5` | The model it degrades to when the primary pool is limited |
-| `WEAVER_COORDINATOR_FALLBACK_EXECUTOR` | primary executor | Runtime for the fallback coordinator; may differ from the primary |
+| `WEAVER_COORDINATOR_FALLBACKS` | *(unset → legacy pair below)* | Ordered fallback seats tried after the primary, as comma-separated `executor:model` entries — e.g. `local-sdk:claude-opus-5,codex-sdk:gpt-5.6-sol`. When set, the legacy pair below is ignored |
+| `WEAVER_COORDINATOR_FALLBACK_MODEL` | `claude-opus-5` | Legacy single fallback model, used only while `WEAVER_COORDINATOR_FALLBACKS` is unset |
+| `WEAVER_COORDINATOR_FALLBACK_EXECUTOR` | primary executor | Runtime for that legacy fallback; may differ from the primary |
 | `WEAVER_WORKER_MODEL` | `sonnet` | Fallback model for general/unmatched work; reviewed typed routes may select another exact target |
+| `WEAVER_WORKER_FALLBACKS` | *(unset → no ladder)* | Ordered worker seats tried after the configured `WEAVER_EXECUTOR`/`WEAVER_WORKER_MODEL` seat when earlier targets are capacity-parked — e.g. `codex-sdk:gpt-5.6-sol,pi:zai-coding-plan/glm-5.3,pi:openrouter/moonshotai/kimi-k3`. See [Where workers run](./executors.md) |
 | `WEAVER_ASK_MODEL` | `sonnet` | The model behind `weaver do`/`weaver ask` intake |
+
+Chain entries split on the first colon only, so provider-qualified models keep
+their slashes (`pi:openrouter/moonshotai/kimi-k3`). An unknown executor in a
+chain fails hard at startup rather than silently skipping the seat. Because the
+chains are ordinary machine config, every executor they name joins this
+runner's default capability declaration (`WEAVER_RUNNER_EXECUTORS`), and each
+one needs its credentials present on this host.
 
 ### Storage
 
@@ -95,8 +104,9 @@ reviewed routes inside the configured `WEAVER_EXECUTOR` substrate, then advances
 past a target only while that exact model pool has an active typed backoff. The
 first available target is reserved for a runner that declares its substrate; an
 incapable host does not turn the configured fallback into a race.
-`WEAVER_WORKER_MODEL` remains the final ordered fallback. See
-[Where workers run](./executors.md).
+`WEAVER_WORKER_MODEL` follows the reviewed routes in that order, and the
+operator's explicit `WEAVER_WORKER_FALLBACKS` ladder extends the order after
+it. See [Where workers run](./executors.md).
 
 The global `weaver` command reads `.env` from the repo it resolves to, so these
 apply no matter which directory you run from.

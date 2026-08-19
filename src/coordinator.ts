@@ -50,9 +50,9 @@ import { ensureActionApprovalAttention } from './actionApproval.js';
 import { isPendingSteering } from './steering.js';
 import {
   coordinatorCapacityTarget,
-  coordinatorFallbackCapacityTarget,
   coordinatorFallbackModel,
   coordinatorModel,
+  coordinatorTargets,
   type CapacityTarget,
 } from './modelConfig.js';
 import { runnerExecutorCapabilities } from './modelRouting.js';
@@ -79,21 +79,17 @@ export { coordinatorFallbackModel, coordinatorModel } from './modelConfig.js';
 
 /** Which model THIS pass runs on. Capacity limits are per-model pools, so a
  * parked primary (Fable weekly limit) must not park the fleet: the evaluative
- * seat degrades one step (Opus) and keeps reconciling while the primary's
- * stored retry remains scheduled. If both pools are limited, the primary is
+ * seat degrades down the ordered chain to the first seat whose pool has no
+ * active wait, and keeps reconciling while the earlier seats' stored retries
+ * remain scheduled. If every pool in the chain is limited, the primary is
  * returned and the normal backoff machinery does its job. */
 export function pickCoordinatorTarget(doc: WorkstreamDoc, nowIso: string): CapacityTarget {
-  const primary = coordinatorCapacityTarget();
-  const fallback = coordinatorFallbackCapacityTarget();
-  if (
-    fallback.executor === primary.executor &&
-    fallback.provider === primary.provider &&
-    fallback.model === primary.model
-  ) return primary;
-  const primaryWait = capacityBackoffFor(doc, primary)?.wait;
-  if (!primaryWait || primaryWait.retryAt <= nowIso) return primary;
-  const fallbackWait = capacityBackoffFor(doc, fallback)?.wait;
-  return !fallbackWait || fallbackWait.retryAt <= nowIso ? fallback : primary;
+  const chain = coordinatorTargets();
+  for (const target of chain) {
+    const wait = capacityBackoffFor(doc, target)?.wait;
+    if (!wait || wait.retryAt <= nowIso) return target;
+  }
+  return chain[0]!;
 }
 
 /** Capacity chooses the preferred/fallback target globally, then launch-time
@@ -1157,28 +1153,29 @@ export async function runCoordinatorPass(
       });
       recordCoordinatorCapacityBackoff(d, infrastructure, wakeId);
       event('pass.backoff', `${passId} parked on ${infrastructure.kind} until ${infrastructure.retryAt}`, [passId, wakeId]);
-      // Degrade, don't park: if the PRIMARY model's pool is what failed and
-      // the fallback's isn't also limited, wake immediately — the next pass
-      // will pick the fallback (pickCoordinatorTarget reads the capacity entry
-      // just recorded). The typed wake above stays: it is the primary pool's
-      // bookkeeping; its scheduled reset (or explicit retry) restores the
-      // primary as soon as a real pass proves that pool recovered.
-      const fb = coordinatorFallbackCapacityTarget();
-      const fbWait = capacityBackoffFor(d, fb)?.wait;
-      const fallbackDiffers = fb.executor !== passTarget.executor ||
-        fb.provider !== passTarget.provider || fb.model !== passTarget.model;
-      const fbAvailable = fallbackDiffers && (!fbWait || fbWait.retryAt <= virtualNow().toISOString());
-      const failedPrimary = infrastructure.executor === primaryTarget.executor &&
-        infrastructure.provider === primaryTarget.provider && infrastructure.model === primaryTarget.model;
-      if (failedPrimary && fbAvailable) {
+      // Degrade, don't park: if ANY other seat in the ordered chain has no
+      // active wait, wake immediately — the next pass will pick the first
+      // available seat (pickCoordinatorTarget reads the capacity entry just
+      // recorded). The typed wake above stays: it is the failed pool's
+      // bookkeeping; its scheduled reset (or explicit retry) restores that
+      // seat as soon as a real pass proves the pool recovered.
+      const passNowIso = virtualNow().toISOString();
+      const next = coordinatorTargets().find((target) => {
+        const failedSeat = target.executor === infrastructure.executor &&
+          target.provider === infrastructure.provider && target.model === infrastructure.model;
+        if (failedSeat) return false;
+        const targetWait = capacityBackoffFor(d, target)?.wait;
+        return !targetWait || targetWait.retryAt <= passNowIso;
+      });
+      if (next) {
         d.wakes.push({
           id: newId('wake'),
-          reason: `continue on fallback ${fb.executor}:${fb.model} while ${infrastructure.executor}:${infrastructure.model} capacity recovers`,
+          reason: `continue on fallback ${next.executor}:${next.model} while ${infrastructure.executor}:${infrastructure.model} capacity recovers`,
           condition: { type: 'immediate' },
           status: 'pending',
           createdAt: new Date().toISOString(),
         });
-        event('pass.degraded', `${infrastructure.executor}:${infrastructure.model} pool is limited — coordinator continues on ${fb.executor}:${fb.model} until its stored retry proves recovery`, [passId]);
+        event('pass.degraded', `${infrastructure.executor}:${infrastructure.model} pool is limited — coordinator continues on ${next.executor}:${next.model} until its stored retry proves recovery`, [passId]);
       }
     } else if (outcome === 'conflicted') {
       // A finish that lost to a concurrent arrival is the revision check

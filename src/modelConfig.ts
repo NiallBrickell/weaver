@@ -55,6 +55,48 @@ export function providerForExecutor(executor: string, model: string): string {
   return providerFromModel(model) ?? 'unknown';
 }
 
+/** The executors a capacity chain may name. One list, shared with the runner
+ * capability declaration, so a typo fails identically everywhere. */
+export const SUPPORTED_EXECUTORS: readonly string[] = ['local-sdk', 'codex-sdk', 'openhands', 'pi'];
+
+/**
+ * Parse an ordered, comma-separated `executor:model` list (a capacity chain).
+ * Each entry splits on the FIRST colon only — models are provider-qualified
+ * and contain slashes (`pi:openrouter/moonshotai/kimi-k3`). Whitespace is
+ * trimmed, empty entries are ignored, and an unknown executor fails hard:
+ * a silently skipped seat would make a misconfigured chain look healthy.
+ */
+export function parseCapacityTargetList(raw: string, envName: string): CapacityTarget[] {
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const colon = entry.indexOf(':');
+      const executor = colon > 0 ? entry.slice(0, colon).trim() : '';
+      const model = colon > 0 ? entry.slice(colon + 1).trim() : '';
+      if (!executor || !model) {
+        throw new Error(`${envName} entry '${entry}' must be '<executor>:<model>'`);
+      }
+      if (!SUPPORTED_EXECUTORS.includes(executor)) {
+        throw new Error(
+          `unknown executor '${executor}' in ${envName} — supported: ${SUPPORTED_EXECUTORS.join(', ')}`,
+        );
+      }
+      return { executor, provider: providerForExecutor(executor, model), model };
+    });
+}
+
+function dedupeTargets(targets: CapacityTarget[]): CapacityTarget[] {
+  return targets.filter((target, index) =>
+    targets.findIndex((candidate) =>
+      candidate.executor === target.executor &&
+      candidate.provider === target.provider &&
+      candidate.model === target.model,
+    ) === index,
+  );
+}
+
 export function coordinatorCapacityTarget(
   model = coordinatorModel(),
   executor = coordinatorExecutorName(),
@@ -62,11 +104,40 @@ export function coordinatorCapacityTarget(
   return { executor, provider: providerForExecutor(executor, model), model };
 }
 
+/**
+ * The coordinator's ordered fallback seats, tried after the primary.
+ * `WEAVER_COORDINATOR_FALLBACKS` (comma-separated `executor:model`) is the
+ * operator's explicit chain; when it is unset, the legacy single-fallback pair
+ * `WEAVER_COORDINATOR_FALLBACK_MODEL`/`_EXECUTOR` (and its defaults) supplies
+ * exactly one fallback as before. When set, the legacy pair is ignored.
+ */
+export function coordinatorFallbackTargets(): CapacityTarget[] {
+  const raw = process.env.WEAVER_COORDINATOR_FALLBACKS;
+  if (raw !== undefined) return parseCapacityTargetList(raw, 'WEAVER_COORDINATOR_FALLBACKS');
+  return [coordinatorCapacityTarget(coordinatorFallbackModel(), coordinatorFallbackExecutorName())];
+}
+
+/** The full coordinator capacity chain: primary first, then the configured
+ * fallbacks in order, deduped by executor+provider+model. */
+export function coordinatorTargets(): CapacityTarget[] {
+  return dedupeTargets([coordinatorCapacityTarget(), ...coordinatorFallbackTargets()]);
+}
+
+/** First fallback in the chain — retained for call sites that still need a
+ * single "the fallback"; prefer walking coordinatorTargets(). */
 export function coordinatorFallbackCapacityTarget(): CapacityTarget {
-  return coordinatorCapacityTarget(
-    coordinatorFallbackModel(),
-    coordinatorFallbackExecutorName(),
-  );
+  return coordinatorFallbackTargets()[0] ?? coordinatorCapacityTarget();
+}
+
+/**
+ * The worker's ordered capacity ladder from `WEAVER_WORKER_FALLBACKS`, tried
+ * after the configured `WEAVER_EXECUTOR`/`WEAVER_WORKER_MODEL` seat when
+ * earlier targets are capacity-parked. Operator-owned machine config, the same
+ * trust class as WEAVER_EXECUTOR itself.
+ */
+export function workerFallbackTargets(): CapacityTarget[] {
+  const raw = process.env.WEAVER_WORKER_FALLBACKS;
+  return raw === undefined ? [] : parseCapacityTargetList(raw, 'WEAVER_WORKER_FALLBACKS');
 }
 
 export function workerCapacityTarget(
