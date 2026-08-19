@@ -102,6 +102,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver steer <slug> <message>              durable human steering (wakes the workstream)
   weaver steer <slug> revoke [steerId]       withdraw steering no pass has read yet (default: your last)
   weaver priority <slug> <high|normal|low>   rank a stream for the runner's slots when the fleet is saturated
+  weaver rename <slug> <new-slug>            move a workstream to a better name — history, artifacts, manager links, and policy attribution all follow; refused mid-tick
   weaver approve <slug> <interactionId>      approve a pending send
   weaver reject-send <slug> <interactionId>  reject a pending send
   weaver approve-action <slug> <asgId>       approve a gated real-world action (runs on next tick, confirmed by readback)
@@ -407,6 +408,21 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
           ? `${slug}: priority ${r.previous} → ${r.priority} — a due high stream reserves most of the runner's slots; fairness decides the order within a band\n`
           : `${slug} is already ${r.priority}\n`,
       );
+      break;
+    }
+
+    case 'rename': {
+      const oldSlug = rest[0] ?? fail('usage: weaver rename <slug> <new-slug>');
+      const newSlug = rest[1] ?? fail('usage: weaver rename <slug> <new-slug>');
+      const { renameWorkstream } = await import('./humanActs.js');
+      const r = await renameWorkstream(oldSlug, newSlug);
+      process.stdout.write(`${r.oldSlug} → ${r.newSlug} — ${r.title}\n`);
+      if (r.pointersUpdated.length) {
+        process.stdout.write(`  manager pointers followed on: ${r.pointersUpdated.join(', ')}\n`);
+      }
+      if (r.policiesUpdated) {
+        process.stdout.write(`  policy attributions followed: ${r.policiesUpdated}\n`);
+      }
       break;
     }
 
