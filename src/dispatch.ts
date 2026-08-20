@@ -17,7 +17,7 @@
 export const KNOWN_COMMANDS = new Set([
   'do', 'ask', 'create', 'list', 'status', 'capacity', 'log', 'tail', 'show', 'steer', 'approve',
   'assign-action', 'constraint', 'approve-action', 'reject-action', 'reject-send', 'reply', 'observe',
-  'adopt', 'budget', 'execution-safety', 'policies', 'backfill', 'secret', 'login', 'link', 'run', 'serve', 'resolve', 'tag', 'pause',
+  'adopt', 'budget', 'execution-safety', 'policies', 'backfill', 'secret', 'login', 'link', 'run', 'serve', 'resolve', 'tag', 'pause', 'rename',
   'resume', 'watch', 'inspect', 'printout', 'stats', 'advance', 'tick', 'help', '--help', 'priority',
 ]);
 
@@ -27,7 +27,7 @@ export const KNOWN_COMMANDS = new Set([
 // a confident signal.
 export const SLUG_FIRST_COMMANDS = new Set([
   'priority',
-  'steer', 'status', 'tick', 'pause', 'resume', 'tail', 'log', 'show', 'approve', 'reply', 'observe',
+  'steer', 'status', 'tick', 'pause', 'resume', 'tail', 'log', 'show', 'approve', 'reply', 'observe', 'rename',
   'adopt', 'budget', 'execution-safety', 'tag', 'resolve', 'reject-send', 'constraint', 'approve-action', 'reject-action',
 ]);
 

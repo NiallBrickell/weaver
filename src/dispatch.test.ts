@@ -9,8 +9,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { looksLikeUnknownSubcommand, misroutedSubcommand } from './dispatch.js';
+import { KNOWN_COMMANDS, looksLikeUnknownSubcommand, misroutedSubcommand } from './dispatch.js';
 
 const EXISTING = new Set(['investigate-t-287-error', 'edp-sync-health']);
 const slugExists = async (slug: string): Promise<boolean> => EXISTING.has(slug);
@@ -46,6 +49,29 @@ test('a no-arg dashboard command is redispatched only when it stands alone', asy
 test('a first word that is not a subcommand always onboards', async () => {
   assert.equal(await misroutedSubcommand(['fix', 'the', 'upload', 'bug'], slugExists), null);
   assert.equal(await misroutedSubcommand([], slugExists), null);
+});
+
+test('a slug-first command with trailing args is redispatched with them intact', async () => {
+  // The rename shipped with its CLI case but not its dispatch-table entry, so
+  // the unknown-subcommand guard swallowed `weaver rename <slug> <new>` as a
+  // refused onboard. Registration and redispatch are both pinned here.
+  assert.deepEqual(
+    await misroutedSubcommand(['rename', 'edp-sync-health', 'edp-nightly-sync'], slugExists),
+    ['rename', ['edp-sync-health', 'edp-nightly-sync']],
+  );
+});
+
+test('every top-level CLI subcommand is registered in KNOWN_COMMANDS', () => {
+  // A case added to the CLI switch without a dispatch-table entry is invisible:
+  // intake claims the verb "is not a weaver command" even though it is. Top-level
+  // cases in cli.ts are 4-space indented; nested switches (secret set/list/rm)
+  // sit deeper and are deliberately excluded.
+  const cli = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.ts'), 'utf8');
+  const labels = [...cli.matchAll(/^    case '([a-z-]+)':/gm)].map((m) => m[1]!);
+  assert.ok(labels.length >= 30, `expected the top-level switch, found ${labels.length} cases`);
+  for (const label of labels) {
+    assert.ok(KNOWN_COMMANDS.has(label), `CLI case '${label}' is missing from KNOWN_COMMANDS`);
+  }
 });
 
 test('a command-shaped word aimed at an existing slug is a typo, never a new workstream', async () => {
