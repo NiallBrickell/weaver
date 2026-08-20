@@ -25,6 +25,22 @@
  * So this reports and never blocks: the collisions are recorded on the
  * workstream, where the author and the reviewer can see who else is in these
  * files. That is what the incident actually needed — knowledge, not a lock.
+ *
+ * There is one repo egress that IS a lost update, and it is the case the
+ * overlap detector deliberately skips. A branch whose PR has already merged is
+ * finished external state: the commits are in the trunk, the PR is closed to
+ * further review, and a push onto that ref lands a commit no PR carries. It is
+ * not merged, not reviewed, and not visible to anyone except as GitHub's "had
+ * recent pushes" banner. A workstream that starts a follow-up refactor before
+ * the merge and finishes after it does exactly this — one did, forty-three
+ * minutes after erdoai/erdo #2176 merged, and the commit had to be re-homed on
+ * a fresh branch by hand. Unlike a file overlap, this has no benign reading and
+ * git settles nothing at merge time: there is no merge left to have.
+ *
+ * So a settled PR on the push target fails CLOSED (checkStrandedPush →
+ * guardRepoEgress), with the instruction the situation actually calls for —
+ * fresh branch, new PR — because re-pushing the merged ref and reopening the
+ * merged PR are both wrong.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -228,5 +244,236 @@ export function isRepoEgressAction(asg: Assignment): boolean {
  */
 export function collisionKey(asgId: string, files: readonly string[]): string {
   return `[repo-collision ${asgId}:${[...new Set(files)].sort().join(',')}]`;
+}
+
+// --- Settled-branch egress: the push that strands a commit -------------------
+
+/** One PR whose head ref is the branch an egress targets, reduced to the two
+ * facts that decide whether pushing strands work: which PR it is and whether it
+ * is still open. `state` is GitHub's, uppercase: OPEN | MERGED | CLOSED. */
+export interface BranchPr {
+  number: number;
+  state: string;
+}
+
+/**
+ * The verdict of the settled-branch check. Three outcomes, not two, because
+ * "we could not look" must never read as "nothing there": `unknown` is an
+ * abstention the caller logs and proceeds through, exactly like the overlap
+ * detector's fail-open on tooling failure.
+ */
+export type StrandedPush =
+  | { verdict: 'clear' }
+  | { verdict: 'stranded'; branch: string; prNumber: number; state: 'MERGED' | 'CLOSED' }
+  | { verdict: 'unknown'; reason: string };
+
+/**
+ * PURE verdict — no IO. Given the branch an egress targets and every PR whose
+ * head ref is that branch, decide whether pushing strands the commit.
+ *
+ *   - no PRs at all      → clear. The first push of a new branch is the normal
+ *                          way a PR comes to exist; there is nothing to strand.
+ *   - any OPEN PR        → clear. The branch still has a vehicle, and pushing
+ *                          to an open PR is ordinary iteration.
+ *   - only settled PRs   → stranded, naming the newest one. The push would land
+ *                          a commit that no PR carries.
+ *
+ * An unrecognised state is not evidence of anything, so it yields `clear`
+ * rather than a block — the check only ever fails closed on a fact it read.
+ */
+export function judgeBranchPrs(branch: string, prs: readonly BranchPr[]): StrandedPush {
+  if (prs.some((p) => p.state === 'OPEN')) return { verdict: 'clear' };
+  const settled = prs
+    .filter((p) => p.state === 'MERGED' || p.state === 'CLOSED')
+    .sort((a, b) => b.number - a.number);
+  const newest = settled[0];
+  if (!newest) return { verdict: 'clear' };
+  return {
+    verdict: 'stranded',
+    branch,
+    prNumber: newest.number,
+    state: newest.state as 'MERGED' | 'CLOSED',
+  };
+}
+
+/**
+ * Which egresses can strand a commit: the ones that WRITE COMMITS to a branch —
+ * a push, a PR opened from a branch, or the readback that proves one of those
+ * happened (the incident's actions were worker-actions whose only durable
+ * signal is `exec.verify`; see matchesRepoEgress).
+ *
+ * This is deliberately NARROWER than matchesRepoEgress. `gh pr merge` writes no
+ * commits and its whole purpose is to leave the PR merged, so running the
+ * settled-branch check on it would hold a merge action against its own
+ * postcondition — the action would be blocked precisely when it had succeeded.
+ * A command that merges is therefore excluded outright, even if it also pushes:
+ * a merged PR is that action's intended end state, not a stranding.
+ */
+function writesCommitsToBranch(cmd: string): boolean {
+  if (!cmd) return false;
+  if (/\bgh\s+pr\s+merge\b/.test(cmd)) return false;
+  if (deletesOrTagsOnly(cmd)) return false;
+  if (/\bgit\b[^&|;\n]*\bpush\b/.test(cmd)) return true;
+  if (/\bgh\s+pr\s+create\b/.test(cmd)) return true;
+  // Readbacks that only exist because a push or a PR-open happened.
+  if (/\bheadRefOid\b/.test(cmd)) return true;
+  if (/\bls-remote\b/.test(cmd)) return true;
+  if (/\bgh\s+pr\s+list\b[^&|;\n]*--head\b/.test(cmd)) return true;
+  if (/origin\//.test(cmd) && /\bmerge-base\b[^&|;\n]*--is-ancestor\b/.test(cmd)) return true;
+  return false;
+}
+
+/**
+ * Pushes that put no commit on a branch: deleting a remote ref
+ * (`push origin --delete x`, `push origin :x`) and pushing tags.
+ *
+ * Deleting the branch is the CLEANUP after a merge — the exact remediation the
+ * stranded-commit incident needed — so holding it would block the fix and leave
+ * the stale ref in place. A tag push writes no branch history either.
+ */
+function deletesOrTagsOnly(cmd: string): boolean {
+  const push = /\bgit\b[^&|;\n]*?\bpush\b([^&|;\n]*)/.exec(cmd);
+  if (!push) return false;
+  const args = push[1] ?? '';
+  if (/(^|\s)(--delete|-d)(\s|$)/.test(args)) return true;
+  if (/(^|\s)--tags(\s|$)/.test(args)) return true;
+  // An empty source half deletes the destination.
+  if (/(^|\s):[^\s]+/.test(args)) return true;
+  return false;
+}
+
+/**
+ * The branch an egress command names explicitly, or null when it names none.
+ *
+ * The world is the primary source — a checkout's current branch is what an
+ * unqualified `git push` lands on, and that is how ownership is derived
+ * everywhere else in the harness (prConflicts.ts). But a command may name a
+ * DIFFERENT ref than HEAD, and then the checkout is the wrong answer in both
+ * directions: we would query a branch the push does not touch, and miss the one
+ * it does. So an explicitly named destination wins, and everything else falls
+ * back to the checkout.
+ *
+ * Recognised: the destination half of a refspec (`push origin src:dst`), a bare
+ * branch argument (`push origin feat/x`, with `--force-with-lease` and friends
+ * skipped), and the `--head <branch>` of a PR readback. `HEAD` and `refs/…`
+ * prefixes are normalised; `push origin HEAD` names no branch and falls back.
+ */
+export function pushTargetBranch(cmd: string): string | null {
+  if (!cmd) return null;
+  // The push's own destination outranks a readback's `--head`: the push is what
+  // writes, so where it writes is the branch that can be stranded. A push that
+  // names no destination (`git push`, `git push origin HEAD`) falls through.
+  const push = /\bgit\b[^&|;\n]*?\bpush\b([^&|;\n]*)/.exec(cmd);
+  if (push) {
+    const args = (push[1] ?? '')
+      .split(/\s+/)
+      .map((a) => a.trim())
+      .filter(Boolean)
+      // Flags and their inline values (`--force-with-lease=ref:sha`) are not refs.
+      .filter((a) => !a.startsWith('-'));
+    // First positional is the remote, the second (if any) is the refspec.
+    const refspec = args[1];
+    if (refspec) {
+      const dst = refspec.includes(':') ? refspec.slice(refspec.indexOf(':') + 1) : refspec;
+      const named = normaliseRef(dst);
+      if (named) return named;
+    }
+  }
+  const head = /--head[= ]\s*([^\s'"]+)/.exec(cmd);
+  return head?.[1] ? normaliseRef(head[1]) : null;
+}
+
+function normaliseRef(ref: string): string | null {
+  const name = ref.replace(/^\+/, '').replace(/^refs\/heads\//, '').trim();
+  if (!name || name === 'HEAD') return null;
+  return name;
+}
+
+/** Injectable IO seam so the check is unit-testable without git/gh, matching
+ * prConflicts.ts's `PrConflictIO`. */
+export interface StrandedPushIO {
+  /** Current branch of the checkout at cwd, or null when unreadable. */
+  branchOf(cwd: string): string | null;
+  /** Every PR whose head ref is `branch` in the repo cwd belongs to, in ANY
+   * state — null when gh could not answer at all. */
+  prsForBranch(cwd: string, branch: string): BranchPr[] | null;
+}
+
+export const liveStrandedPushIO: StrandedPushIO = {
+  branchOf(cwd) {
+    const branch = tryRun('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+    return branch && branch !== 'HEAD' ? branch : null;
+  },
+  prsForBranch(cwd, branch) {
+    const json = tryRun(
+      'gh',
+      ['pr', 'list', '--head', branch, '--state', 'all', '--json', 'state,number'],
+      cwd,
+    );
+    if (json === null) return null;
+    try {
+      const raw = JSON.parse(json) as BranchPr[];
+      return Array.isArray(raw) ? raw : null;
+    } catch {
+      return null;
+    }
+  },
+};
+
+/**
+ * Would this egress land a commit on a branch whose PR has already settled?
+ *
+ * `command` is the action's declared shell — `exec.run` and `exec.verify`
+ * together, since a worker-action carries only the readback. Non-commit-writing
+ * egresses (a merge, a plain `gh pr view`) return `clear` untouched.
+ *
+ * Fails OPEN, loudly: an unreadable checkout or a `gh` that will not answer
+ * returns `unknown` with a reason for the caller to log, never a block. A
+ * network blip must not wedge legitimate pushes — but it must not pass silently
+ * as a clean bill of health either.
+ */
+export async function checkStrandedPush(
+  cwd: string,
+  command: string,
+  io: StrandedPushIO = liveStrandedPushIO,
+): Promise<StrandedPush> {
+  if (!writesCommitsToBranch(command)) return { verdict: 'clear' };
+  const branch = pushTargetBranch(command) ?? io.branchOf(cwd);
+  if (!branch) {
+    return { verdict: 'unknown', reason: `no target branch readable for the egress in ${cwd}` };
+  }
+  const prs = io.prsForBranch(cwd, branch);
+  if (prs === null) {
+    return { verdict: 'unknown', reason: `gh could not list PRs for head ${branch} in ${cwd}` };
+  }
+  return judgeBranchPrs(branch, prs);
+}
+
+/**
+ * The dedup identity of a settled-branch hold: the action, the branch, and the
+ * PR that settled. Same shape and reasoning as collisionKey — a hold repeats
+ * every tick because a merged PR never reopens, and a queue that repeats itself
+ * is one a person stops reading. A different branch or a newer settled PR is
+ * genuinely new information and earns its own record.
+ */
+export function strandedPushKey(asgId: string, branch: string, prNumber: number): string {
+  return `[settled-branch ${asgId}:${branch}#${prNumber}]`;
+}
+
+/**
+ * What the workstream is told. The two wrong moves are the tempting ones —
+ * re-push the merged ref (the commit stays stranded, now with a banner) and
+ * reopen the merged PR (GitHub refuses a merged PR, and a closed one reopened
+ * carries settled review) — so both are named as refusals rather than left to
+ * inference. Wake reasons are presentation and are never parsed.
+ */
+export function strandedPushGuidance(v: Extract<StrandedPush, { verdict: 'stranded' }>): string {
+  const settled = v.state === 'MERGED' ? 'has already MERGED' : 'is CLOSED';
+  return (
+    `branch ${v.branch} ${settled} as PR #${v.prNumber}, so a push there lands a commit no PR carries — ` +
+    `it would sit on a settled branch as a "had recent pushes" banner and reach no review. ` +
+    `Move the work to a FRESH branch cut from the current base and open a NEW PR for it. ` +
+    `Do not re-push ${v.branch}, and do not reopen #${v.prNumber}.`
+  );
 }
 

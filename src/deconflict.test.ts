@@ -1,7 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
-import { collisionKey, detectRepoCollisions, isRepoEgressAction, type OpenPr } from './deconflict.js';
+import {
+  checkStrandedPush,
+  collisionKey,
+  detectRepoCollisions,
+  isRepoEgressAction,
+  judgeBranchPrs,
+  pushTargetBranch,
+  strandedPushKey,
+  type BranchPr,
+  type OpenPr,
+  type StrandedPushIO,
+} from './deconflict.js';
+import { guardRepoEgress } from './engine.js';
+import { arrive, createWorkstream, load } from './store.js';
 import type { Assignment } from './types.js';
 
 // The pure detector is the proof of the repo-egress deconfliction invariant
@@ -163,4 +179,196 @@ test('overlap is reported so the author knows who else is in the file, and never
   assert.deepEqual(detectRepoCollisions('fix/mine', ours, [
     { number: 2041, headRefName: 'other/ref', author: 'someone', files: ['docs/other.md'] },
   ]), []);
+});
+
+// --- Settled-branch egress -------------------------------------------------
+// The stranded-commit incident: a workstream in a worktree on
+// feat/knock-crm-integration finished a follow-up refactor and pushed it 43
+// minutes AFTER that branch's PR (erdoai/erdo #2176) merged. The commit landed
+// on a settled branch carried by no PR, and had to be re-homed by hand. Nothing
+// checked the target branch's PR state before egress; this is that check.
+
+const branchPr = (number: number, state: string): BranchPr => ({ number, state });
+
+test('a MERGED PR on the push target strands the commit', () => {
+  const v = judgeBranchPrs('feat/knock-crm-integration', [branchPr(2176, 'MERGED')]);
+  assert.deepEqual(v, {
+    verdict: 'stranded',
+    branch: 'feat/knock-crm-integration',
+    prNumber: 2176,
+    state: 'MERGED',
+  });
+});
+
+test('an OPEN PR on the push target is ordinary iteration, and outranks settled siblings', () => {
+  assert.deepEqual(judgeBranchPrs('feat/x', [branchPr(10, 'OPEN')]), { verdict: 'clear' });
+  // A branch reopened as a second PR after an earlier one closed: the open PR
+  // is a live vehicle, so pushing reaches review.
+  assert.deepEqual(
+    judgeBranchPrs('feat/x', [branchPr(9, 'CLOSED'), branchPr(11, 'OPEN')]),
+    { verdict: 'clear' },
+  );
+});
+
+test('no PR at all is the first push of a new branch', () => {
+  assert.deepEqual(judgeBranchPrs('feat/brand-new', []), { verdict: 'clear' });
+});
+
+test('the newest settled PR is the one named, and an unknown state is not evidence', () => {
+  const v = judgeBranchPrs('feat/x', [branchPr(9, 'MERGED'), branchPr(21, 'CLOSED')]);
+  assert.deepEqual(v, { verdict: 'stranded', branch: 'feat/x', prNumber: 21, state: 'CLOSED' });
+  // A state this check does not recognise never blocks: it only fails closed on
+  // a fact it actually read.
+  assert.deepEqual(judgeBranchPrs('feat/x', [branchPr(30, 'DRAFT_LIMBO')]), { verdict: 'clear' });
+});
+
+test('pushTargetBranch reads the destination out of the push forms the gate sees', () => {
+  // Named destinations win — the push writes there, not to the checkout's HEAD.
+  assert.equal(pushTargetBranch('git push origin feat/x'), 'feat/x');
+  assert.equal(
+    pushTargetBranch('git -C /work/wt push origin niall/widgets-414-x:niall/widgets-414-x'),
+    'niall/widgets-414-x',
+  );
+  assert.equal(pushTargetBranch('git push --force-with-lease origin HEAD:refs/heads/feat/y'), 'feat/y');
+  assert.equal(
+    pushTargetBranch('git push --force-with-lease=feat/z:abc123 -u origin feat/z'),
+    'feat/z',
+  );
+  // No destination named → the checkout is the answer, so the parser abstains.
+  assert.equal(pushTargetBranch('git push'), null);
+  assert.equal(pushTargetBranch('git push origin HEAD'), null);
+  // The incident's PR readback names its branch outright.
+  assert.equal(
+    pushTargetBranch(
+      "gh pr list --repo acme/widgets --head feat/knock-crm-integration --state open --json url --jq '.[0].url' | grep .",
+    ),
+    'feat/knock-crm-integration',
+  );
+});
+
+const io = (prs: BranchPr[] | null, branch: string | null = 'feat/knock-crm-integration'): StrandedPushIO => ({
+  branchOf: () => branch,
+  prsForBranch: () => prs,
+});
+
+test('checkStrandedPush falls back to the checkout branch and fails open on gh failure', async () => {
+  const merged = [branchPr(2176, 'MERGED')];
+  // `git push origin HEAD` names no ref; the world supplies the branch.
+  assert.deepEqual(await checkStrandedPush('/nope', 'git push origin HEAD', io(merged)), {
+    verdict: 'stranded',
+    branch: 'feat/knock-crm-integration',
+    prNumber: 2176,
+    state: 'MERGED',
+  });
+  // gh would not answer → abstain with a reason, never a block.
+  const dead = await checkStrandedPush('/nope', 'git push origin HEAD', io(null));
+  assert.equal(dead.verdict, 'unknown');
+  // Unreadable checkout and no named ref → nothing to query.
+  const noBranch = await checkStrandedPush('/nope', 'git push', io(merged, null));
+  assert.equal(noBranch.verdict, 'unknown');
+});
+
+test('checkStrandedPush skips egresses that write no commits', async () => {
+  const merged = io([branchPr(2176, 'MERGED')]);
+  // Merging a PR leaves it MERGED by design — holding it would block the action
+  // exactly when it had succeeded.
+  assert.deepEqual(await checkStrandedPush('/nope', 'gh pr merge 2176 --merge', merged), { verdict: 'clear' });
+  assert.deepEqual(
+    await checkStrandedPush('/nope', 'gh pr merge 2176 --merge\ngh pr view 2176 --json state', merged),
+    { verdict: 'clear' },
+  );
+  assert.deepEqual(await checkStrandedPush('/nope', 'gh pr view 2176', merged), { verdict: 'clear' });
+  // Deleting the merged branch is the CLEANUP this gate exists to make
+  // possible; holding it would block the very fix a stranded push needs.
+  for (const del of [
+    'git push origin --delete feat/knock-crm-integration',
+    'git -C /work/wt push origin :feat/knock-crm-integration',
+    'git push origin -d feat/knock-crm-integration',
+  ]) {
+    assert.deepEqual(await checkStrandedPush('/nope', del, merged), { verdict: 'clear' }, del);
+  }
+  // A tag push writes no branch history.
+  assert.deepEqual(await checkStrandedPush('/nope', 'git push --tags origin', merged), { verdict: 'clear' });
+});
+
+// --- the gate itself: a settled branch HOLDS the action --------------------
+
+const EGRESS_CWD = path.join(os.tmpdir(), 'weaver-no-such-worktree');
+
+function egressAction(): Assignment {
+  return action({
+    cwd: EGRESS_CWD,
+    verify:
+      "gh pr list --repo acme/widgets --head feat/knock-crm-integration --state open --json url --jq '.[0].url' | grep .",
+  });
+}
+
+async function withStore<T>(slug: string, fn: () => Promise<T>): Promise<T> {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-stranded-'));
+  process.env.WEAVER_HOME = home;
+  try {
+    await createWorkstream({
+      slug,
+      title: slug,
+      objective: 'settled-branch gate',
+      tags: [],
+      successCriteria: [],
+      constraints: [],
+      autonomy: { sendsRequireApproval: true },
+      budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+    });
+    await arrive(slug, (d) => {
+      d.assignments.push(egressAction());
+    });
+    return await fn();
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test('a MERGED PR on the target branch holds the egress and tells the stream to use a fresh branch', async () => {
+  await withStore('stranded-ws', async () => {
+    const proceed = await guardRepoEgress('stranded-ws', egressAction(), io([branchPr(2176, 'MERGED')]));
+    assert.equal(proceed, false, 'the push must not fire into a merged branch');
+
+    const doc = await load('stranded-ws');
+    const token = strandedPushKey('asg_1', 'feat/knock-crm-integration', 2176);
+    const held = doc.events.find((e) => e.type === 'action.repo_egress_settled_branch');
+    assert.ok(held, 'the hold is on the record');
+    assert.ok(held!.summary.includes(token), 'deduped on action + branch + PR');
+    assert.ok(held!.summary.includes('already MERGED as PR #2176'));
+
+    const wake = doc.wakes.find((w) => w.reason.includes('#2176'));
+    assert.ok(wake, 'the stream is woken with the instruction');
+    assert.equal(wake!.condition.type, 'immediate');
+    assert.match(wake!.reason, /FRESH branch/);
+    assert.match(wake!.reason, /open a NEW PR/);
+    assert.match(wake!.reason, /Do not re-push feat\/knock-crm-integration/);
+    assert.match(wake!.reason, /do not reopen #2176/);
+
+    // A merged PR never reopens, so the hold repeats every tick — it must not
+    // repeat the card.
+    assert.equal(await guardRepoEgress('stranded-ws', egressAction(), io([branchPr(2176, 'MERGED')])), false);
+    const after = await load('stranded-ws');
+    assert.equal(after.events.filter((e) => e.type === 'action.repo_egress_settled_branch').length, 1);
+    assert.equal(after.wakes.filter((w) => w.reason.includes('#2176')).length, 1);
+  });
+});
+
+test('an open PR, a branch with no PR, and a dead gh all let the egress proceed', async () => {
+  await withStore('unheld-ws', async () => {
+    const cases: [string, StrandedPushIO][] = [
+      ['an OPEN PR is the branch this push belongs to', io([branchPr(2176, 'OPEN')])],
+      ['a brand-new branch has no PR yet', io([])],
+      ['gh could not answer — fail open', io(null)],
+      ['the checkout is unreadable — fail open', io(null, null)],
+    ];
+    for (const [why, stranded] of cases) {
+      assert.equal(await guardRepoEgress('unheld-ws', egressAction(), stranded), true, why);
+    }
+    const doc = await load('unheld-ws');
+    assert.deepEqual(doc.events.filter((e) => e.type === 'action.repo_egress_settled_branch'), []);
+    assert.deepEqual(doc.wakes, [], 'nothing to reconcile, nothing to wake for');
+  });
 });

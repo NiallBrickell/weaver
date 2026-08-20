@@ -30,7 +30,16 @@ import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import { pidIsLive } from './processLock.js';
-import { collisionKey, isRepoEgressAction, repoEgressCollisions } from './deconflict.js';
+import {
+  checkStrandedPush,
+  collisionKey,
+  isRepoEgressAction,
+  liveStrandedPushIO,
+  repoEgressCollisions,
+  strandedPushGuidance,
+  strandedPushKey,
+  type StrandedPushIO,
+} from './deconflict.js';
 import {
   assignmentCannotBecomeAccepted,
   assignmentDependenciesSatisfied,
@@ -596,27 +605,65 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
 /**
  * REPO-EGRESS DECONFLICTION GATE — invariant 8 extended across the git-repo
  * seam. Before an action performs an irreversible repo egress (opening a PR,
- * merging a PR, pushing a branch), check whether another OPEN PR is
- * concurrently editing the same files. A colliding open PR is a "conflicting
- * arrival" on shared EXTERNAL state, exactly as a concurrent steer/reply is on
- * internal state: at egress we fail CLOSED to the human to reconcile — never a
- * second competing write into the same files.
+ * merging a PR, pushing a branch), Weaver looks at the shared external state
+ * the egress is about to write into. Two different facts, two postures:
  *
- * Returns true when it is safe to proceed (no live collision, or this is not a
- * repo egress, or the detector is unavailable — the detector fails OPEN on
- * tooling failure, see repoEgressCollisions), false when it HELD the action.
+ *   1. Another OPEN PR editing the same files — REPORTED, never blocked. Two
+ *      branches touching one file is ordinary parallel development; git merges
+ *      them and a real textual conflict surfaces at merge time (deconflict.ts).
+ *   2. The push target's own PR has already MERGED or CLOSED — HELD. This is
+ *      not a conflict git can settle: the commits are in the trunk and the PR
+ *      is done, so a push lands work no PR carries and no reviewer sees. The
+ *      workstream is woken with the instruction the case calls for (fresh
+ *      branch, new PR), and the action stays queued rather than pushing.
+ *
+ * Returns true when it is safe to proceed (no settled branch, this is not a
+ * repo egress, or a check was unavailable — both checks fail OPEN on tooling
+ * failure), false when it HELD the action.
  *
  * "RECONCILE, DON'T RE-WRITE" (invariants 7 & 8): a held action is NOT failed
- * and NOT counted as progress — it stays queued+approved. A later tick
- * re-checks and proceeds automatically once the collision clears (the other PR
- * merges/closes). This mirrors invariant 7's send posture (an unknown/blocked
- * egress triggers reconciliation, never a blind second send) and invariant 8's
- * write posture (a conflicting arrival forces reconciliation from newer state).
- * The attention item is deduped on the action id + the sorted colliding PR
- * numbers so it is raised once per distinct collision, not every tick.
+ * and NOT counted as progress — it stays queued+approved. This mirrors
+ * invariant 7's send posture (an unknown/blocked egress triggers
+ * reconciliation, never a blind second send) and invariant 8's write posture (a
+ * conflicting arrival forces reconciliation from newer state). A merged PR
+ * never reopens, so unlike a file overlap this hold does not clear on its own —
+ * the wake is what moves it, by getting the work re-homed onto a branch that
+ * can still be reviewed.
  */
-async function guardRepoEgress(slug: string, asg: Assignment): Promise<boolean> {
+export async function guardRepoEgress(
+  slug: string,
+  asg: Assignment,
+  strandedIO: StrandedPushIO = liveStrandedPushIO,
+): Promise<boolean> {
   if (!isRepoEgressAction(asg) || !asg.exec) return true;
+
+  // A settled PR on the push target is the one repo-egress fact that loses
+  // work outright, so it is judged first and it blocks.
+  const command = [asg.exec.run ?? '', asg.exec.verify ?? ''].join('\n');
+  const stranded = await checkStrandedPush(asg.exec.cwd, command, strandedIO);
+  if (stranded.verdict === 'unknown') {
+    // Abstention, not a clean bill of health: the egress proceeds (a dead gh
+    // must not wedge the fleet) but the gap is on the record.
+    process.stderr.write(`[tick] ${asg.id} settled-branch check abstained: ${stranded.reason} — egress proceeds\n`);
+  } else if (stranded.verdict === 'stranded') {
+    const token = strandedPushKey(asg.id, stranded.branch, stranded.prNumber);
+    const guidance = strandedPushGuidance(stranded);
+    await arrive(slug, (d, event) => {
+      if (d.events.some((e) => e.type === 'action.repo_egress_settled_branch' && e.summary.includes(token))) {
+        return;
+      }
+      event('action.repo_egress_settled_branch', `${asg.id} held: ${guidance} ${token}`, [asg.id]);
+      d.wakes.push({
+        id: newId('wake'),
+        reason: `Repo egress for ${asg.id} is held: ${guidance} Supersede or re-scope the held action so the work egresses on the new branch; it will not push while it targets a settled one.`,
+        condition: { type: 'immediate' },
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      });
+    });
+    return false;
+  }
+
   const collisions = await repoEgressCollisions(asg.exec.cwd);
   if (collisions.length === 0) return true;
   // Report, never block — see deconflict.ts. Recorded once per distinct set of
@@ -1041,9 +1088,10 @@ async function tickLocked(
     }
 
     // Human-authored commands: engine executes, then readback judges. Repo
-    // egresses (push/merge/PR-open) pass the deconfliction gate first — a live
-    // colliding open PR holds the action for the human rather than executing a
-    // second competing write into the same files (invariant 8 across the seam).
+    // egresses (push/merge/PR-open) pass the deconfliction gate first — an
+    // overlap with another open PR is recorded and ships, while a push target
+    // whose own PR has already merged is held rather than stranding the commit
+    // on a settled branch (invariant 8 across the seam).
     const engineActCandidates = (await load(slug)).assignments.filter(
       (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.attempts.length === 0 && actionHasMatchingApproval(a),
     );
@@ -1094,10 +1142,10 @@ async function tickLocked(
       // siblings while other routed pools can continue.
       if (!runnableAssignments(beforeWorkerDoc, executorCapabilities).includes(id)) continue;
       // Repo-egress deconfliction gate: hold an action worker whose egress
-      // (push/merge/PR-open) would collide with another OPEN PR editing the
-      // same files, rather than launching a second competing write. Held
-      // actions stay queued+approved and re-run automatically once the
-      // collision clears; skip past this id without counting it as progress.
+      // (push/PR-open) targets a branch whose own PR has already merged or
+      // closed, rather than launching a worker to strand a commit no PR
+      // carries. Held actions stay queued+approved and the stream is woken to
+      // re-home the work; skip past this id without counting it as progress.
       const runnableAsg = (await load(slug)).assignments.find((a) => a.id === id);
       if (runnableAsg && !(await guardRepoEgress(slug, runnableAsg))) continue;
       // Approved action whose postcondition already holds: confirm the
