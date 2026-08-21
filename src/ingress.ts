@@ -13,7 +13,7 @@
  * untrusted input: it wakes the workstream and supplies evidence a coordinator
  * pass evaluates, but it cannot grant authority, complete work, or supersede
  * direction (kernel rules 7/9). Steering is the human's authority channel and
- * is NOT exposed to bots — a bot cannot be handed the founder's hand.
+ * is NOT exposed to bots — a bot cannot be handed the human's hand.
  */
 
 import { arrive, createWorkstream, findBySourceKey, listWorkstreams, load, newId, SourceKeyConflictError } from './store.js';

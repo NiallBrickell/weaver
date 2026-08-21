@@ -12,8 +12,8 @@ import { arrive, listWorkstreams, load, mutate, mutatePolicies, newId, rename, R
 import type { WorkstreamCore } from './types.js';
 
 /**
- * Who is performing this human act. Defaults to the OS user (the founder at
- * their keyboard); agent sessions operating on the founder's behalf must set
+ * Who is performing this human act. Defaults to the OS user (the human at
+ * their keyboard); agent sessions operating on the human's behalf must set
  * WEAVER_ACTOR (e.g. "claude-session") so attribution — and the intervention
  * metric the learning loop optimizes — stays honest.
  */

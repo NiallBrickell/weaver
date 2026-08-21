@@ -1,14 +1,14 @@
 /**
  * `weaver do "<message>"` — the zero-ceremony entry point.
  *
- * The founder's message IS the input. Slug, title, objective, success
+ * The human's message IS the input. Slug, title, objective, success
  * criteria, and routine-ness are derived: by one fast model pass when the
  * machine's Claude login is available, deterministically when it is not — a
  * failed derivation must never block starting work, so the fallback is the
  * message verbatim (and the CLI says so: a silent fallback reads as a bug in
  * naming, not a degraded mode). The same pass de-dupes against the fleet: a
  * message that is really an update to work an existing workstream already
- * owns is delivered to that workstream as founder steering instead of
+ * owns is delivered to that workstream as human steering instead of
  * forking a near-duplicate stream. Constraints are the HOUSE PACK, never
  * model-generated: the operating rules of this machine do not vary with how
  * a task is phrased. The pack itself is machine-local config (`house.json`
@@ -44,7 +44,7 @@ export const DEFAULT_HOUSE: HousePack = {
   constraints: [
     'Research first; every worker has the normal Claude Code toolset including the operator\'s configured MCP servers, used read AND write — keeping the systems a brief names in sync (a tracker issue\'s status, comments, labels) is ordinary reversible work, not a gated effect. Repository investigation and implementation happen in a fresh git worktree (branch from origin/main) — never in the user\'s checkouts. Irreversible egress — opening or merging a PR, deploying, spending, or sending a message to a person — remains a gated action',
     'Never paste credentials or connection strings into prompts, state, or artifacts; reference credentials as $NAME (the engine injects values)',
-    'When blocked on credentials, external accounts, or anything only the founder can supply, raise attention with a one-click ask instead of improvising',
+    'When blocked on credentials, external accounts, or anything only the human can supply, raise attention with a one-click ask instead of improvising',
     'Verification runs against tests, previews, and readbacks by default — never poke production. Only when the objective explicitly calls for post-merge verification in the live product may you check there, and then strictly read-only (browser tooling included)',
     'All dates in artifacts and commits use the real current date',
   ],
@@ -188,10 +188,10 @@ async function deriveWithModel(
   done?: string,
 ): Promise<{ parsed: ParsedDerivation | null; error?: string }> {
   const prompt = [
-    `Turn this raw task message from the founder into a workstream definition. Reply with ONLY a JSON object: {"slug", "title", "objective", "successCriteria": [..], "routine": bool}.`,
+    `Turn this raw task message from the human into a workstream definition. Reply with ONLY a JSON object: {"slug", "title", "objective", "successCriteria": [..], "routine": bool}.`,
     ``,
     `- slug: 2-4 word kebab-case name`,
-    `- objective: the founder's ask, expanded into a self-contained brief a fresh agent can act on. PRESERVE every concrete detail verbatim (names, URLs, error text, repos); resolve relative dates against today (${new Date().toISOString().slice(0, 10)}); name likely evidence sources when the message implies them. Never invent requirements the message doesn't contain.`,
+    `- objective: the human's ask, expanded into a self-contained brief a fresh agent can act on. PRESERVE every concrete detail verbatim (names, URLs, error text, repos); resolve relative dates against today (${new Date().toISOString().slice(0, 10)}); name likely evidence sources when the message implies them. Never invent requirements the message doesn't contain.`,
     ...(house.repoMap
       ? [
           `- when the message implies code work, name the repo(s) it most likely lives in from the map below (with the full path), and say scouting across the parent dir is the fallback if that guess is wrong — a wrong guess must redirect, not derail.`,
@@ -201,8 +201,8 @@ async function deriveWithModel(
       : []),
     `- successCriteria: 1-3 checkable statements of done.${
       done
-        ? ' The founder EXPLICITLY stated what done means — it is the first criterion, meaning-preserved: ' + JSON.stringify(done)
-        : ' Default bar for code work: root-caused/implemented, PR merged through the review loop, verification evidence in the PR. Do NOT include verifying in production unless the founder asked for it.'
+        ? ' The human EXPLICITLY stated what done means — it is the first criterion, meaning-preserved: ' + JSON.stringify(done)
+        : ' Default bar for code work: root-caused/implemented, PR merged through the review loop, verification evidence in the PR. Do NOT include verifying in production unless the human asked for it.'
     }`,
     `- routine: true ONLY if the message describes recurring work (weekly, nightly, "keep doing X") — then state the cadence inside the objective and note that each completed cycle schedules the next via a time wake.`,
     ...(candidates.length
@@ -211,7 +211,7 @@ async function deriveWithModel(
           `Existing workstreams in this fleet (slug [status] title):`,
           ...candidates.map((c) => `- ${c.slug} [${c.status}] ${c.title}`),
           ``,
-          `If the founder's message is an update to, a duplicate of, or a direct follow-up on ONE of these — the same work or the same outcome, not merely a related topic — reply instead with ONLY {"attachTo": "<slug>"}. The message is then delivered to that workstream as founder steering, and a done or paused workstream is reopened with its history intact. When unsure, create a new workstream.`,
+          `If the human's message is an update to, a duplicate of, or a direct follow-up on ONE of these — the same work or the same outcome, not merely a related topic — reply instead with ONLY {"attachTo": "<slug>"}. The message is then delivered to that workstream as human steering, and a done or paused workstream is reopened with its history intact. When unsure, create a new workstream.`,
         ]
       : []),
     ``,
@@ -256,7 +256,7 @@ async function deriveWithModel(
   }
 }
 
-/** Deliver the founder's message as steering to the existing stream that
+/** Deliver the human's message as steering to the existing stream that
  * already owns this work, reopening it first when it is paused or concluded
  * (conclusion lineage is kept — this is `weaver resume` + `weaver steer`,
  * not a new identity). */

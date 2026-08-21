@@ -581,8 +581,8 @@ test('a declared action uses the same Code surface with Pilot supervision', asyn
     request = undefined;
     await arrive('worker-action-surface', (d) => d.assignments.push({
       id: 'asg_human_only',
-      objective: 'perform one founder-reserved external action',
-      briefing: 'Do not run without founder approval.',
+      objective: 'perform one human-reserved external action',
+      briefing: 'Do not run without human approval.',
       kind: 'action',
       acceptanceCriteria: ['no execution under Pilot-only authority'],
       dependsOn: [],

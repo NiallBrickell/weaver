@@ -124,7 +124,7 @@ export interface PolicyRecord {
    * run read as evidence FOR it. A merge policy that absorbed a `--squash`
    * flag nobody chose collected fifteen intervention-free outcomes that way,
    * none of which were about the flag. A mechanism is revisable by anyone at
-   * any time (`revisePolicyMechanism`) without founder authority and without
+   * any time (`revisePolicyMechanism`) without human authority and without
    * touching the evidence, because revising HOW something is done is not
    * changing what was agreed.
    */
@@ -587,7 +587,7 @@ export async function proposePolicy(args: {
  * Revise the HOW without touching the WHAT. A mechanism records what currently
  * works — a command, a flag, an endpoint, a threshold — and the world changes
  * it without anyone's permission: a flag is renamed, a repo disables an option,
- * an API version moves. So this needs no founder authority and no supersession
+ * an API version moves. So this needs no human authority and no supersession
  * ceremony, and it deliberately leaves `evidence` alone: outcomes were recorded
  * about the statement, and a policy that has been carried out fifteen times has
  * not been "proven" about the flag it happened to use.

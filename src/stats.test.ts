@@ -311,8 +311,8 @@ test('passHealth: infrastructure backoff is never a logical failure, conflicted 
   assert.equal(passHealth({ ...base, outcome: 'running' }), 'running');
 });
 
-test('actorClass: founder, agent-session, pilot/system, and unattributed split apart', () => {
-  assert.equal(actorClass('niall'), 'founder');
+test('actorClass: human, agent-session, pilot/system, and unattributed split apart', () => {
+  assert.equal(actorClass('niall'), 'human');
   assert.equal(actorClass('claude-session'), 'session');
   assert.equal(actorClass('codex-session'), 'session');
   assert.equal(actorClass('pilot'), 'pilot');
@@ -322,7 +322,7 @@ test('actorClass: founder, agent-session, pilot/system, and unattributed split a
 
 test('outcome scoreboard: conclusions are success, adopted/backoff/conflicted/actors report honestly', async () => {
   // Workstream A: a genuine successful outcome — a qualified typed conclusion,
-  // one clean pass, and interventions from a founder, an agent session, a
+  // one clean pass, and interventions from a human, an agent session, a
   // legacy (unattributed) act, plus a delegated pilot auto-approval.
   await createWorkstream({
     slug: 'ws-a', title: 'concluded', objective: 'o', tags: ['hiring'], successCriteria: [], constraints: [],
@@ -330,14 +330,14 @@ test('outcome scoreboard: conclusions are success, adopted/backoff/conflicted/ac
   });
   await arrive('ws-a', (d) => {
     d.workstream.conclusion = { passId: 'pa1', atVirtual: '2026-08-03T12:00:00.000Z', summary: 'shipped', evidenceIds: ['del_a'] };
-    d.spend.humanInterventions = 3; // founder steer + session steer + legacy steer
+    d.spend.humanInterventions = 3; // human steer + session steer + legacy steer
     d.spend.totalCostUsd = 6;
     d.deliverables.push({ id: 'del_a', title: 'd', kind: 'md', path: 'a.md', contentHash: 'h', createdAtVirtual: '2026-08-03T10:00:00.000Z', adopted: { contentHash: 'h', passId: 'pa1', atVirtual: '2026-08-03T11:00:00.000Z' } });
     d.steering.push(
-      { id: 's_f', body: 'founder steer', by: 'niall', at: '2026-08-01T09:00:00.000Z' },
+      { id: 's_f', body: 'human steer', by: 'niall', at: '2026-08-01T09:00:00.000Z' },
       { id: 's_s', body: 'session steer', by: 'claude-session', at: '2026-08-01T10:00:00.000Z' },
       // A legacy steer predating actor attribution (no `by`): a real, dated human
-      // act, but attributable to neither the founder nor a session bucket.
+      // act, but attributable to neither the human nor a session bucket.
       { id: 's_u', body: 'legacy steer', at: '2026-08-01T11:00:00.000Z' },
     );
     // A completed action approved by pilot (delegated authority, not a human act)
@@ -407,8 +407,8 @@ test('outcome scoreboard: conclusions are success, adopted/backoff/conflicted/ac
   assert.equal(tot.passHealth.conflicted, 1, 'conflicted counted on its own, never as error');
 
   // (3) Actor buckets split into distinct numbers, never collapsed.
-  assert.deepEqual(tot.attribution, { founder: 1, session: 1, unattributed: 1, pilot: 1 });
-  assert.equal(tot.attribution.founder + tot.attribution.session + tot.attribution.unattributed, 3, 'the three dated human acts partition cleanly');
+  assert.deepEqual(tot.attribution, { human: 1, session: 1, unattributed: 1, pilot: 1 });
+  assert.equal(tot.attribution.human + tot.attribution.session + tot.attribution.unattributed, 3, 'the three dated human acts partition cleanly');
   // Pilot auto-approvals are delegated authority, reported separately from
   // learned-policy effects — the two are distinct fields and one never folds
   // into the other, even when both happen to be 1.
@@ -426,7 +426,7 @@ test('outcome scoreboard: conclusions are success, adopted/backoff/conflicted/ac
 });
 
 test('attributionSplit / passHealthTotals / workerReliability are honest on an empty fleet', () => {
-  assert.deepEqual(attributionSplit([]), { founder: 0, session: 0, unattributed: 0, pilot: 0 });
+  assert.deepEqual(attributionSplit([]), { human: 0, session: 0, unattributed: 0, pilot: 0 });
   assert.deepEqual(passHealthTotals([]), { completed: 0, providerBackoff: 0, logicalFailure: 0, conflicted: 0, running: 0 });
   const rel = workerReliability([]);
   assert.equal(rel.firstAttemptRate, null);

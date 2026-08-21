@@ -62,16 +62,16 @@ const SYSTEM_ACTORS = new Set(['pilot', 'coordinator']);
 /**
  * Who a durable act is attributable to, as distinct buckets that must never
  * collapse into one number:
- * - `founder`  — a person acting directly at the keyboard.
- * - `session`  — the founder via an agent session on their behalf (actor name
+ * - `human`  — a person acting directly at the keyboard.
+ * - `session`  — the human via an agent session on their behalf (actor name
  *                carries a session marker); still a human intervention, but a
- *                cheaper one than a founder keypress.
+ *                cheaper one than a human keypress.
  * - `pilot`    — the operator's pilot daemon or the coordinator (system acts).
  *                Delegated/standing authority, NOT a human intervention and
  *                NEVER a learned-policy win.
  * - `unattributed` — dated acts predating actor attribution (legacy residual).
  */
-export type ActorClass = 'founder' | 'session' | 'pilot' | 'unattributed';
+export type ActorClass = 'human' | 'session' | 'pilot' | 'unattributed';
 
 const SESSION_MARKER = 'session';
 
@@ -79,7 +79,7 @@ export function actorClass(actor: string): ActorClass {
   if (actor === UNATTRIBUTED) return 'unattributed';
   if (SYSTEM_ACTORS.has(actor)) return 'pilot';
   if (actor.toLowerCase().includes(SESSION_MARKER)) return 'session';
-  return 'founder';
+  return 'human';
 }
 
 /**
@@ -311,7 +311,7 @@ export interface InterruptionLoad {
 }
 
 /**
- * Who is actually absorbing the interruptions — the founder at the keyboard,
+ * Who is actually absorbing the interruptions — the human at the keyboard,
  * an agent session steering on their behalf, someone else on the team. The
  * pilot never appears here by construction: auto-approval is delegated
  * authority, not an interruption. Only dated acts can be attributed, so the
@@ -346,20 +346,20 @@ export function interruptionLoad(docs: WorkstreamDoc[], days: string[]): Interru
 
 /**
  * Intervention load split into fixed attribution buckets, never one number.
- * `founder + session + unattributed` partition the DATED human interventions
+ * `human + session + unattributed` partition the DATED human interventions
  * (the same acts `datedInterventions` yields); `pilot` counts the operator's
  * delegated pilot auto-approvals — delegated authority, reported here so it is
  * visibly SEPARATE from human interventions and from learned-policy effects.
  */
 export interface Attribution {
-  founder: number;
+  human: number;
   session: number;
   unattributed: number;
   pilot: number;
 }
 
 export function attributionSplit(docs: WorkstreamDoc[]): Attribution {
-  const out: Attribution = { founder: 0, session: 0, unattributed: 0, pilot: 0 };
+  const out: Attribution = { human: 0, session: 0, unattributed: 0, pilot: 0 };
   for (const doc of docs) {
     for (const act of datedInterventions(doc)) {
       const cls = actorClass(act.actor);
@@ -1194,7 +1194,7 @@ export function renderStatsHtml(stats: StatsPayload): string {
     tile(
       'Human interventions',
       String(t.interventions),
-      `<div class="delta">${at.founder} founder · ${at.session} agent-session · ${at.unattributed} legacy${t.undated ? ` · ${t.undated} undated (legacy/config)` : ''}</div>`,
+      `<div class="delta">${at.human} human · ${at.session} agent-session · ${at.unattributed} legacy${t.undated ? ` · ${t.undated} undated (legacy/config)` : ''}</div>`,
     ),
     tile(
       'Actions auto-approved (delegated)',
@@ -1265,7 +1265,7 @@ ${chartSection('policies', 'Policy population', 'Every policy starts shadow (unp
 </div></section>
 <section>
 <h2>Who absorbs the interruptions</h2>
-<p class="hint">Interventions by named actor (WEAVER_ACTOR): the founder at the keyboard, agent sessions steering on their behalf, teammates. Agents-on-agents is the intended shape — a session absorbing routine interruptions is cheap; founder keypresses are the scarce resource the curve should drive down first. The pilot never appears here: auto-approval is delegated authority, not an interruption. Acts predating attribution show as “unattributed”.</p>
+<p class="hint">Interventions by named actor (WEAVER_ACTOR): the human at the keyboard, agent sessions steering on their behalf, teammates. Agents-on-agents is the intended shape — a session absorbing routine interruptions is cheap; human keypresses are the scarce resource the curve should drive down first. The pilot never appears here: auto-approval is delegated authority, not an interruption. Acts predating attribution show as “unattributed”.</p>
 <div id="chart-actors"></div><div id="table-actors"></div>
 <div class="scroll-x"><table>
 <thead><tr><th>Actor</th><th class="num">Steers</th><th class="num">Approvals</th><th class="num">Rejections</th><th class="num">Resolutions</th><th class="num">Adoptions</th><th class="num">Total</th></tr></thead>

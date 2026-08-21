@@ -397,7 +397,7 @@ test('create_assignment persists declared high complexity without choosing a mod
   assert.equal(assignment.attempts.length, 0, 'durable requirements do not preselect a disposable target');
 });
 
-test('create_assignment persists a founder-reserved action as human-only', async () => {
+test('create_assignment persists a human-reserved action as human-only', async () => {
   const executor: CoordinatorExecutor = {
     id: 'local-sdk',
     async execute(req) {
@@ -405,7 +405,7 @@ test('create_assignment persists a founder-reserved action as human-only', async
       const finish = req.tools.find((definition) => definition.name === 'finish_pass');
       assert.ok(create && finish);
       const created = await create.handler({
-        objective: 'delete one exact test row after founder approval',
+        objective: 'delete one exact test row after human approval',
         briefing: 'Fail closed unless the exact row and revision preconditions match.',
         kind: 'action',
         acceptance_criteria: ['exact row absent and every sibling row unchanged'],
@@ -415,7 +415,7 @@ test('create_assignment persists a founder-reserved action as human-only', async
         approval_mode: 'human-only',
       }, {});
       assert.equal(created.isError, undefined);
-      await finish.handler({ summary: 'Recorded the founder-only gate.', acknowledged_steering: true }, {});
+      await finish.handler({ summary: 'Recorded the human-only gate.', acknowledged_steering: true }, {});
       return { costUsd: 0 };
     },
   };

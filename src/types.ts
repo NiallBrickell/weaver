@@ -136,7 +136,7 @@ export interface Assignment {
     /** 'human' = explicit keypress; 'pilot' = auto-approved by the operator's
      * pilot daemon (their standing approval policy engine) — same authority
      * source, since the human owns pilot's rules. */
-    /** `actor` names WHO (WEAVER_ACTOR: the founder's username, an agent
+    /** `actor` names WHO (WEAVER_ACTOR: the human's username, an agent
      * session steering on their behalf, …) — 'by' says which authority path.
      * Durable so per-actor intervention load survives the event tail. */
     approval?: { by: 'human' | 'pilot'; at: Iso; note?: string; actor?: string };
@@ -370,7 +370,7 @@ export interface Wake {
 export interface Steering {
   id: Id;
   body: string;
-  /** Who performed the act: the founder at the keyboard vs an agent session
+  /** Who performed the act: the human at the keyboard vs an agent session
    * operating on their behalf (WEAVER_ACTOR). Both are authoritative human
    * direction; attribution keeps the intervention metric honest. */
   by?: string;
