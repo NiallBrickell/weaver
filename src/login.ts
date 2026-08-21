@@ -423,7 +423,7 @@ const MODEL_PROMPTS: Record<(typeof CONFIG_NAMES)[number], { label: string; sugg
   },
   WEAVER_COORDINATOR_MODEL: {
     label: 'coordinator model',
-    suggest: 'claude-fable-5 / claude-opus-5 / gpt-5.6-sol',
+    suggest: 'claude-fable-5 / claude-opus-4-8 / gpt-5.6-sol',
   },
   WEAVER_COORDINATOR_EXECUTOR: {
     label: 'coordinator executor',
@@ -431,7 +431,7 @@ const MODEL_PROMPTS: Record<(typeof CONFIG_NAMES)[number], { label: string; sugg
   },
   WEAVER_COORDINATOR_FALLBACK_MODEL: {
     label: 'coordinator fallback model',
-    suggest: 'claude-opus-5 / gpt-5.6-sol',
+    suggest: 'claude-opus-4-8 / gpt-5.6-sol',
   },
   WEAVER_COORDINATOR_FALLBACK_EXECUTOR: {
     label: 'coordinator fallback executor',

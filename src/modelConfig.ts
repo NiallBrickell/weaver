@@ -14,7 +14,7 @@ export function coordinatorModel(): string {
 }
 
 export function coordinatorFallbackModel(): string {
-  return process.env.WEAVER_COORDINATOR_FALLBACK_MODEL ?? 'claude-opus-5';
+  return process.env.WEAVER_COORDINATOR_FALLBACK_MODEL ?? 'claude-opus-4-8';
 }
 
 export function coordinatorExecutorName(): string {
