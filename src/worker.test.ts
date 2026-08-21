@@ -451,7 +451,7 @@ test('a typed bounded repair pins the reviewed Codex route on its disposable att
   }
 });
 
-test('a typed bounded repair pins the reviewed Pi/Kimi route on its disposable attempt', async () => {
+test('a typed bounded repair pins the reviewed Pi/glm route on its disposable attempt', async () => {
   const home = workerHome();
   const operatorHome = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-pi-route-operator-'));
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-pi-routed-worker-'));
@@ -495,7 +495,7 @@ test('a typed bounded repair pins the reviewed Pi/Kimi route on its disposable a
     assert.deepEqual({
       executor: attempt.executor, provider: attempt.provider, model: attempt.model,
     }, {
-      executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3',
+      executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3',
     });
   } finally {
     if (previousHome === undefined) delete process.env.HOME;

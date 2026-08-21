@@ -66,6 +66,9 @@ const ACTIVE_CODEX_ROUTE = WORK_MODEL_ROUTES.find(
 const ACTIVE_PI_ROUTE = WORK_MODEL_ROUTES.find(
   (route) => route.id === 'pi-kimi-k3-bounded-code-repair',
 )!;
+const ACTIVE_GLM_ROUTE = WORK_MODEL_ROUTES.find(
+  (route) => route.id === 'pi-glm-5-3-bounded-code-repair',
+)!;
 
 function cleanResult(
   repetition: number,
@@ -166,24 +169,35 @@ describe('reviewed worker routes', () => {
     }
   });
 
-  test('the qualified Kimi route is active only inside a configured Pi substrate', () => {
+  test('glm-5.3 leads the coding routes inside a Pi substrate, and general work stays off the coding plan', () => {
     const previousExecutor = process.env.WEAVER_EXECUTOR;
     const previousModel = process.env.WEAVER_WORKER_MODEL;
+    // The production shape: Pi seat on the licence-unrestricted Kimi model,
+    // glm-5.3 available only as a reviewed coding route.
     process.env.WEAVER_EXECUTOR = 'pi';
-    process.env.WEAVER_WORKER_MODEL = 'zai-coding-plan/glm-5.3';
+    process.env.WEAVER_WORKER_MODEL = 'openrouter/moonshotai/kimi-k3';
     try {
+      // Coding: glm-5.3 (pref 110) leads the Kimi route (pref 100); the Kimi
+      // seat dedups against the Kimi route.
       assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair')), [
+        { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
         { executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3' },
-        { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
       ]);
+      // General (non-coding) NEVER touches the licence-restricted coding plan:
+      // no route matches, so only the Kimi seat serves it.
       assert.deepEqual(workerTargetsForAssignment(assignment('general')), [
-        { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
+        { executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3' },
       ]);
+      // The text-only coding routes do not match an image-bearing repair; it
+      // falls to the Kimi seat, still off the coding plan.
       assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair', ['text', 'image'])), [
-        { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
+        { executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3' },
       ]);
+      assert.equal(ACTIVE_GLM_ROUTE.evidence.suiteRunId, '20260821T122900Z');
+      assert.equal(ACTIVE_GLM_ROUTE.evidence.harnessVersion, 'pi@0.84.2-weaver.4');
+      assert.equal(ACTIVE_GLM_ROUTE.evidence.minRuns, 10);
+      assert.equal(ACTIVE_GLM_ROUTE.preference > ACTIVE_PI_ROUTE.preference, true);
       assert.equal(ACTIVE_PI_ROUTE.evidence.suiteRunId, '20260815T105214Z');
-      assert.equal(ACTIVE_PI_ROUTE.evidence.harnessVersion, 'pi@0.84.2-weaver.4');
       assert.equal(ACTIVE_PI_ROUTE.evidence.minRuns, 10);
     } finally {
       if (previousExecutor === undefined) delete process.env.WEAVER_EXECUTOR;

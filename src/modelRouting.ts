@@ -59,6 +59,37 @@ export const DEFAULT_EXECUTION_REQUIREMENTS: AssignmentExecutionRequirements = {
  * append-only ledger in modelRouting.test.ts. */
 export const WORK_MODEL_ROUTES: readonly WorkModelRoute[] = [
   {
+    // Preferred coding route (Niall, 2026-08-21): glm-5.3 outscored Kimi on
+    // code-repair, so it leads the ladder above the Kimi/Codex routes (pref
+    // 100). Fires only for the bounded-code-repair profile — the z.ai coding
+    // plan is licence-restricted to coding, so a route (never the general
+    // seat) is the only place it may appear.
+    id: 'pi-glm-5-3-bounded-code-repair',
+    preference: 110,
+    match: { profiles: ['bounded-code-repair'], modalities: ['text'] },
+    target: { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
+    evidence: {
+      suiteRunId: '20260821T122900Z',
+      executor: 'pi',
+      model: 'zai-coding-plan/glm-5.3',
+      harnessVersion: 'pi@0.84.2-weaver.4',
+      cases: [{
+        id: 'code-repair',
+        version: 1,
+        requiredHardGates: [
+          'weaver-submission',
+          'artifact-integrity',
+          'adoption-separation',
+          'target-identity',
+          'runtime-completion',
+          'workspace-scope',
+        ],
+        requiredGrades: ['hidden-tests', 'verification-evidence'],
+      }],
+      minRuns: 10,
+    },
+  },
+  {
     id: 'codex-5-6-sol-bounded-code-repair',
     preference: 100,
     match: { profiles: ['bounded-code-repair'], modalities: ['text'] },
