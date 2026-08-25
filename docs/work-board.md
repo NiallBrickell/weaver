@@ -228,3 +228,11 @@ The result is complete only when a person can point to the UI and answer:
    telemetry posing as progress?
 9. What did I most recently tell this Workstream, when, and has Weaver read it?
 10. Which recorded commitment currently controls, and when was it set?
+
+## Next surface
+
+The implemented board remains the fleet overview. A live workspace for
+starting work, contributing evidence, reading answers and correlating adjacent
+systems is planned separately in [Operator workspace and fleet integration
+plan](./operator-workspace.md); it remains a projection over the same typed
+Workstreams rather than a conversation-backed workflow.
