@@ -123,6 +123,39 @@ Cross-executor automatic preference remains closed until Weaver stores that
 execution policy durably with the Workstream. An environment-only switch would
 let configuration skew turn model choice into a Postgres tick-lock race.
 
+### Credential-bearing GCP hosts
+
+The repository's GCP helper applies a narrower deployment profile than the
+general capability declaration above. A hosted runner carrying operator/model
+identities must use OpenHands for its ordinary worker and every worker fallback;
+host-process Pi, Codex, and local Claude workers are refused before systemd can
+start or restart the runner. Its Codex coordinator remains allowed because that
+is the separate tool-restricted coordinator seam, not an ordinary coding
+worker. The resulting declaration is explicit:
+
+```dotenv
+WEAVER_EXECUTOR=openhands
+WEAVER_WORKER_FALLBACKS=
+WEAVER_COORDINATOR_EXECUTOR=codex-sdk
+WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol
+WEAVER_ACTION_EXECUTOR=local-sdk
+WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk
+```
+
+The omitted `local-sdk` capability is intentional. It leaves action work queued
+for a separately secured action-capable runner; it does not substitute the
+OpenHands worker for an action. The GCP helper will not claim supervised actions
+until it can prove Pilot has authenticated ingress that an ordinary worker
+container cannot reach. A liveness probe alone is not an authority boundary.
+Its staged check requires a separate `weaver-pilot` service account, an active
+`weaver-pilot.service`, exactly one loopback listener owned by that unit, and an
+executor-only `WEAVER_PILOT_TOKEN`; an invalid bearer must receive 401 and the
+registered bearer 204. The action capability remains refused after those
+checks until Weaver's clients send the bearer too.
+The helper also provisions a service-user-owned rootless Docker daemon and
+requires it in the same preflight, avoiding the root-equivalent Docker group.
+See [Hosting Weaver](./hosting.md#deploying-the-runner-on-a-gcp-vm).
+
 Prime Agent remains available only in the harness-eval vocabulary. Pi is a
 production worker substrate but not a coordinator or action substrate. It is
 explicitly selected; within that configured substrate, text-only bounded code

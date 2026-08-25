@@ -44,6 +44,7 @@ SUBNET="${WEAVER_GCP_SUBNET:-weaver-subnet}"
 REPO_URL="https://github.com/NiallBrickell/weaver"
 REPO="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
 CODEX_AUTH_HOME="${CODEX_HOME:-$HOME/.codex}"
+PREFLIGHT="$REPO/bin/weaver-gcp-preflight.sh"
 
 GC=()
 GSSH=()
@@ -146,7 +147,7 @@ fi
 
 # Base runtime
 apt-get update -q
-apt-get install -qy git curl ca-certificates gnupg jq
+apt-get install -qy git curl ca-certificates gnupg jq iproute2
 
 # The image ships gcloud; with no service account it can authenticate as
 # nothing, but a credential-less box shouldn't carry the tool at all.
@@ -167,16 +168,45 @@ if ! command -v docker >/dev/null; then
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
     > /etc/apt/sources.list.d/docker.list
   apt-get update -q
-  apt-get install -qy docker-ce docker-ce-cli containerd.io
+  apt-get install -qy docker-ce docker-ce-cli containerd.io docker-ce-rootless-extras
 fi
+# Ordinary workers must not need the root-equivalent Docker group. The
+# service user gets its own rootless daemon; rootful Docker remains separate
+# for the optional localhost-only bundled Postgres provisioned by root.
+apt-get install -qy docker-ce-rootless-extras uidmap dbus-user-session slirp4netns
 
 # Service user + checkout
 id weaver >/dev/null 2>&1 || useradd -m -s /bin/bash weaver
+if ! grep -q '^weaver:' /etc/subuid; then
+  subuid_start="$(awk -F: 'BEGIN { candidate=100000 } { end=$2+$3; if (end > candidate) candidate=end } END { print candidate }' /etc/subuid)"
+  usermod --add-subuids "$subuid_start-$((subuid_start + 65535))" weaver
+fi
+if ! grep -q '^weaver:' /etc/subgid; then
+  subgid_start="$(awk -F: 'BEGIN { candidate=100000 } { end=$2+$3; if (end > candidate) candidate=end } END { print candidate }' /etc/subgid)"
+  usermod --add-subgids "$subgid_start-$((subgid_start + 65535))" weaver
+fi
+weaver_uid="$(id -u weaver)"
+weaver_runtime="/run/user/$weaver_uid"
+loginctl enable-linger weaver
+systemctl start "user@$weaver_uid.service"
+sudo -u weaver env \
+  HOME=/home/weaver USER=weaver \
+  XDG_RUNTIME_DIR="$weaver_runtime" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=$weaver_runtime/bus" \
+  dockerd-rootless-setuptool.sh install --force
+sudo -u weaver env \
+  HOME=/home/weaver USER=weaver \
+  XDG_RUNTIME_DIR="$weaver_runtime" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=$weaver_runtime/bus" \
+  systemctl --user enable --now docker
 if [ ! -d /opt/weaver/.git ]; then
   git clone https://github.com/NiallBrickell/weaver /opt/weaver
   chown -R weaver:weaver /opt/weaver
 fi
 sudo -u weaver bash -c 'cd /opt/weaver && git pull --ff-only && yarn install'
+# Root-owned copy: the service account owns the checkout, so systemd must not
+# trust the checkout itself for its launch gate.
+install -o root -g root -m 755 /opt/weaver/bin/weaver-gcp-preflight.sh /usr/local/sbin/weaver-gcp-preflight
 
 # Base env. `push-env` merges portable credentials/config into this file and
 # preserves host-local settings instead of rebuilding it from two selected
@@ -238,12 +268,14 @@ fi
 cat > /etc/systemd/system/weaver-run.service <<EOF
 [Unit]
 Description=Weaver resident runner
-After=network-online.target docker.service
-Wants=network-online.target
+After=network-online.target user@$weaver_uid.service
+Wants=network-online.target user@$weaver_uid.service
 
 [Service]
 User=weaver
+Environment=DOCKER_HOST=unix:///run/user/$weaver_uid/docker.sock
 WorkingDirectory=/opt/weaver
+ExecStartPre=/usr/local/sbin/weaver-gcp-preflight
 ExecStart=/usr/local/bin/weaver run --interval 5 --concurrency $WEAVER_GCP_CONCURRENCY
 Restart=always
 RestartSec=10
@@ -347,7 +379,7 @@ cmd_push_env() {
     echo "✓ codex auth.json delivered"
   fi
   if [ "$restart" -eq 1 ]; then
-    "${GSSH[@]}" --command 'sudo systemctl restart weaver-run weaver-serve'
+    run_after_execution_preflight restart
     echo "✓ env + executor identities installed, services restarted"
   else
     echo "✓ env + executor identities installed; services were not restarted"
@@ -389,9 +421,19 @@ EOF
 # ── small ones ────────────────────────────────────────────────────────────────
 cmd_ssh()     { "${GSSH[@]}" "$@"; }
 cmd_logs()    { "${GSSH[@]}" --command "sudo journalctl -u ${1:-weaver-run} -n 100 -f"; }
-cmd_start()   { "${GSSH[@]}" --command 'sudo systemctl enable --now weaver-run'; echo "✓ runner enabled + started"; }
+run_after_execution_preflight() {
+  local action="$1" remote_systemctl
+  [ -r "$PREFLIGHT" ] || { echo "❌ missing GCP execution preflight: $PREFLIGHT" >&2; exit 1; }
+  case "$action" in
+    start) remote_systemctl='enable --now weaver-run' ;;
+    restart) remote_systemctl='restart weaver-run weaver-serve' ;;
+    *) echo "❌ internal error: unknown post-preflight action" >&2; exit 1 ;;
+  esac
+  "${GSSH[@]}" --command "preflight=/tmp/weaver-gcp-preflight.\$\$; trap 'rm -f -- \"\$preflight\"' EXIT; umask 077; cat > \"\$preflight\"; sudo install -o root -g root -m 755 \"\$preflight\" /usr/local/sbin/weaver-gcp-preflight; sudo /usr/local/sbin/weaver-gcp-preflight; sudo systemctl $remote_systemctl" < "$PREFLIGHT"
+}
+cmd_start()   { run_after_execution_preflight start; echo "✓ runner enabled + started"; }
 cmd_stop()    { "${GSSH[@]}" --command 'sudo systemctl stop weaver-run weaver-serve'; echo "✓ stopped"; }
-cmd_restart() { "${GSSH[@]}" --command 'sudo systemctl restart weaver-run weaver-serve'; echo "✓ restarted"; }
+cmd_restart() { run_after_execution_preflight restart; echo "✓ restarted"; }
 cmd_update()  {
   local restart=0
   case "${1:-}" in
@@ -402,7 +444,7 @@ cmd_update()  {
   [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp update [--restart]" >&2; exit 1; }
   "${GSSH[@]}" --command 'sudo -u weaver bash -c "cd /opt/weaver && git pull --ff-only && yarn install"'
   if [ "$restart" -eq 1 ]; then
-    "${GSSH[@]}" --command 'sudo systemctl restart weaver-run weaver-serve'
+    run_after_execution_preflight restart
     echo "✓ updated + restarted"
   else
     echo "✓ updated; services were not restarted"
