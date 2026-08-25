@@ -143,6 +143,12 @@ bin/weaver-gcp.sh set-store               # hidden prompt; URL goes only over SS
 # without them preserves the installed host values.
 WEAVER_HOUSE_JSON='{"repoMap":"Primary application: /srv/application","tags":["application"]}' \
 WEAVER_WORKSPACE_ROOT=/home/weaver/workspaces \
+WEAVER_EXECUTOR=openhands \
+WEAVER_WORKER_FALLBACKS= \
+WEAVER_COORDINATOR_EXECUTOR=codex-sdk \
+WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol \
+WEAVER_ACTION_EXECUTOR=local-sdk \
+WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk \
   bin/weaver-gcp.sh push-env               # merge identity + every model/fallback setting
 
 bin/weaver-gcp.sh update                   # pull/install only; still no restart
@@ -160,6 +166,36 @@ and `update` never disturb a running process. `logs` tails the runner journal;
 on the box itself, `weaver status <slug>` works as-is — the safe launcher reads
 the same raw env records as the services without evaluating credential or JSON
 values as shell.
+
+`start`, `restart`, `push-env --restart`, and `update --restart` all run the
+same fail-closed host preflight before systemd can launch the runner. This GCP
+helper is deliberately narrower than Weaver's general executor support:
+ordinary work and every worker fallback must use `openhands`, the coordinator
+must use its tool-restricted `codex-sdk` seam, the capability declaration must
+be explicit, and the service user's rootless Docker daemon must answer. Pi,
+local Claude, and ordinary Codex workers remain valid on operator-controlled
+machines; they are refused as normal-worker routes on this credential-bearing
+host. Rootless Docker is separate from the root-owned daemon used by the
+optional bundled Postgres, so running disposable workers does not make the
+service account root-equivalent through the Docker group.
+
+The intended action target remains supervised `local-sdk`, but this host does
+not currently claim that capability: `WEAVER_RUNNER_EXECUTORS` must omit
+`local-sdk`. Action assignments therefore stay queued for a runner that can
+prove a secured Pilot boundary instead of inheriting authority from the GCP
+box. Merely finding a live Pilot HTTP endpoint is not that proof; the GCP
+preflight requires the separately installed `weaver-pilot.service` to run as
+`weaver-pilot`, own the only TCP listener on port 9721 at exactly
+`127.0.0.1`, and expose its authenticated check only at the fixed loopback
+URL. `WEAVER_PILOT_TOKEN` must exist in the executor-only secret store; the
+preflight proves a deliberately wrong bearer receives 401 and the registered
+bearer receives 204 without putting that bearer in argv or output. This is an
+installation prerequisite rather than a bundled Pilot binary or configuration.
+
+Even those server checks do not enable actions in the current helper: a
+`local-sdk` runner capability is still refused until every Weaver Pilot client
+sends the bearer. This is why the example above includes the Codex coordinator
+and OpenHands worker capabilities, but not the configured action executor.
 
 `create` without `--external-store` remains the one-box option: it provisions a
 localhost-only Docker Postgres, and `tunnel`/`join` expose that database only
