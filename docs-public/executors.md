@@ -139,19 +139,21 @@ WEAVER_WORKER_FALLBACKS=
 WEAVER_COORDINATOR_EXECUTOR=codex-sdk
 WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol
 WEAVER_ACTION_EXECUTOR=local-sdk
-WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk
+WEAVER_PILOT_URL=http://127.0.0.1:9721
+WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk,local-sdk
 ```
 
-The omitted `local-sdk` capability is intentional. It leaves action work queued
-for a separately secured action-capable runner; it does not substitute the
-OpenHands worker for an action. The GCP helper will not claim supervised actions
-until it can prove Pilot has authenticated ingress that an ordinary worker
-container cannot reach. A liveness probe alone is not an authority boundary.
-Its staged check requires a separate `weaver-pilot` service account, an active
-`weaver-pilot.service`, exactly one loopback listener owned by that unit, and an
-executor-only `WEAVER_PILOT_TOKEN`; an invalid bearer must receive 401 and the
-registered bearer 204. The action capability remains refused after those
-checks until Weaver's clients send the bearer too.
+The `local-sdk` capability is solely the supervised action seat; worker and
+worker-fallback validation above prevents it becoming ordinary work. The GCP
+helper claims it only after proving Pilot has authenticated ingress that an
+ordinary worker container cannot reach. A liveness probe alone is not an
+authority boundary. The gate requires a separate `weaver-pilot` service
+account, an active `weaver-pilot.service`, exactly one loopback listener owned
+by that unit, and an executor-only `WEAVER_PILOT_TOKEN`; an invalid bearer must
+receive 401 and the registered bearer 204. Finally, the installed
+`/usr/local/bin/weaver pilot-auth-check` must succeed as the service user. That
+last check exercises the exact shared bearer client used by engine and worker
+actions; a parallel curl implementation cannot substitute for it.
 The helper also provisions a service-user-owned rootless Docker daemon and
 requires it in the same preflight, avoiding the root-equivalent Docker group.
 See [Hosting Weaver](./hosting.md#deploying-the-runner-on-a-gcp-vm).

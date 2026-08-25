@@ -148,7 +148,8 @@ WEAVER_WORKER_FALLBACKS= \
 WEAVER_COORDINATOR_EXECUTOR=codex-sdk \
 WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol \
 WEAVER_ACTION_EXECUTOR=local-sdk \
-WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk \
+WEAVER_PILOT_URL=http://127.0.0.1:9721 \
+WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk,local-sdk \
   bin/weaver-gcp.sh push-env               # merge identity + every model/fallback setting
 
 bin/weaver-gcp.sh update                   # pull/install only; still no restart
@@ -179,23 +180,19 @@ host. Rootless Docker is separate from the root-owned daemon used by the
 optional bundled Postgres, so running disposable workers does not make the
 service account root-equivalent through the Docker group.
 
-The intended action target remains supervised `local-sdk`, but this host does
-not currently claim that capability: `WEAVER_RUNNER_EXECUTORS` must omit
-`local-sdk`. Action assignments therefore stay queued for a runner that can
-prove a secured Pilot boundary instead of inheriting authority from the GCP
-box. Merely finding a live Pilot HTTP endpoint is not that proof; the GCP
-preflight requires the separately installed `weaver-pilot.service` to run as
-`weaver-pilot`, own the only TCP listener on port 9721 at exactly
-`127.0.0.1`, and expose its authenticated check only at the fixed loopback
-URL. `WEAVER_PILOT_TOKEN` must exist in the executor-only secret store; the
-preflight proves a deliberately wrong bearer receives 401 and the registered
-bearer receives 204 without putting that bearer in argv or output. This is an
-installation prerequisite rather than a bundled Pilot binary or configuration.
-
-Even those server checks do not enable actions in the current helper: a
-`local-sdk` runner capability is still refused until every Weaver Pilot client
-sends the bearer. This is why the example above includes the Codex coordinator
-and OpenHands worker capabilities, but not the configured action executor.
+The action target is supervised `local-sdk`, and this host claims that
+capability only after proving the complete Pilot boundary. The separately
+installed `weaver-pilot.service` must run as `weaver-pilot`, own the only TCP
+listener on port 9721 at exactly `127.0.0.1`, and expose its authenticated
+check only at that fixed loopback URL. `WEAVER_PILOT_TOKEN` must exist in the
+executor-only secret store; the preflight proves a deliberately wrong bearer
+receives 401 and the registered bearer receives 204 without putting that
+bearer in argv or output. It then runs `/usr/local/bin/weaver
+pilot-auth-check` as the service user, proving the exact shared client used by
+engine and worker actions can load the bearer and receive the authenticated
+204. Any failed proof refuses the systemd launch before an action-capable
+runner exists. The Pilot account, unit, and token are installation
+prerequisites rather than a bundled Pilot binary or configuration.
 
 `create` without `--external-store` remains the one-box option: it provisions a
 localhost-only Docker Postgres, and `tunnel`/`join` expose that database only
