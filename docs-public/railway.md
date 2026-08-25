@@ -39,11 +39,11 @@ because the process moved to the cloud.
 ## 1. Apply the checked-in Railway infrastructure
 
 The repository owns the Railway project shape in [`.railway/railway.ts`](../.railway/railway.ts):
-one dedicated `Postgres` database and one `ui` service. It pins the Dockerfile,
-UI start command, health check, restart and draining behavior, single replica,
-and the private database reference. Do not reuse an application database: a
-dedicated database gives fleet history its own backup, access, and failure
-boundary.
+one dedicated `Postgres` database, its `Postgres-PITR` recovery bucket, and one
+`ui` service. It pins the Dockerfile, UI start command, health check, restart
+and draining behavior, single replica, and the private database reference. Do
+not reuse an application database: a dedicated database gives fleet history
+its own backup, access, and failure boundary.
 
 Railway's current Infrastructure-as-Code flow requires CLI 5.42.1 or newer;
 the compatible TypeScript SDK is pinned in `package.json`. Link the intended
@@ -57,10 +57,11 @@ railway config apply
 ```
 
 The resource names are deliberate. A project bootstrapped before its first IaC
-apply must contain exactly `Postgres` and `ui`, so the plan binds those existing
-resources instead of creating parallel ones. Do not apply an existing project's
-plan if it proposes creating either resource; fix the link or names and plan
-again. On an empty project, creating both is the expected first plan.
+apply must contain exactly `Postgres`, `Postgres-PITR`, and `ui`, so the plan
+binds those existing resources instead of creating parallel ones. Do not apply
+an existing project's plan if it proposes creating or deleting any of them;
+fix the link or names and plan again. On an empty project, creating all three is
+the expected first plan.
 
 This file is the whole project definition: an omitted service is deletion
 intent. Add any later Railway service to the same file before applying it.
