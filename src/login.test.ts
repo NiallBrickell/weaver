@@ -10,7 +10,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { ensureServeToken, renderRemoteEnvLines, updateEnvContent } from './login.js';
+import {
+  ensureServeToken,
+  renderRemoteEnvLines,
+  renderRemoteExecutorSecretLines,
+  updateEnvContent,
+} from './login.js';
 import { loadExecutorSecrets, setExecutorSecret } from './secrets.js';
 
 beforeEach(() => {
@@ -78,6 +83,25 @@ test('render forwards registered provider keys and mirrors config, and flags cod
   assert.ok(lines.includes('WEAVER_PILOT_URL=http://127.0.0.1:9721'));
   assert.ok(!lines.some((l) => l.startsWith('WEAVER_RUNNER_EXECUTORS=')));
   assert.ok(warnings.some((w) => w.includes('codex-sdk auth is a login file')));
+});
+
+test('executor-secret render carries every registered secret exactly and no config', () => {
+  assert.deepEqual(
+    renderRemoteExecutorSecretLines({
+      CUSTOM_PROVIDER_TOKEN: 'custom=credential',
+      OPENROUTER_API_KEY: 'provider-key',
+      ANTHROPIC_API_KEY: 'api-key',
+    }),
+    [
+      'ANTHROPIC_API_KEY=api-key',
+      'CUSTOM_PROVIDER_TOKEN=custom=credential',
+      'OPENROUTER_API_KEY=provider-key',
+    ],
+  );
+  assert.throws(
+    () => renderRemoteExecutorSecretLines({ BAD: 'line-one\nWEAVER_HOME=/injected' }),
+    /newline/,
+  );
 });
 
 test('WEAVER_STORE and WEAVER_HOME are never emitted — provisioning owns them', () => {
