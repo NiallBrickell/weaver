@@ -438,6 +438,10 @@ export function providerCapacityHeadline(
 export interface CapacityPresentation {
   /** Present only when capacity prevents the next configured model transition. */
   blocking?: { summary: string; retryAt: string; recovery: string; needsHuman: boolean };
+  /** Present when a preferred seat is parked but a later configured seat can
+   * still make the transition. Typed so consumers never infer state by
+   * parsing the human-readable details list. */
+  degraded?: { summary: string };
   details: string[];
   /** Latest stored waits that belong to a configured role with intended work. */
   relevantSourceIds: string[];
@@ -550,9 +554,10 @@ export function capacityPresentation(
         (wake.condition.type === 'wall_time' && wake.condition.dueAt <= new Date().toISOString());
     });
 
-  if (coordinatorIntent && primary && firstAvailableTarget) {
-    details.push(`${waitPosition(primary, 'coordinator primary', now)} · fallback ${firstAvailableTarget.model} available`);
-  }
+  const degraded = coordinatorIntent && primary && firstAvailableTarget
+    ? { summary: `${waitPosition(primary, 'coordinator primary', now)} · fallback ${firstAvailableTarget.model} available` }
+    : undefined;
+  if (degraded) details.push(degraded.summary);
   // Blocked only when every seat in the chain has an active wait; the earliest
   // retryAt among them is the next real transition.
   const coordinatorBlockingWaits: InfrastructureWait[] = firstAvailableTarget
@@ -656,6 +661,7 @@ export function capacityPresentation(
   const blockingWait = blockingCandidates[0]?.wait;
   const blockingRole = blockingCandidates[0]?.role ?? 'worker';
   return {
+    ...(degraded ? { degraded } : {}),
     ...(blockingWait ? {
       blocking: {
         summary: waitPosition(blockingWait, blockingRole, now),

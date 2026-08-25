@@ -42,6 +42,7 @@ test('a slug-first verb without a real slug is a message, so it onboards', async
 test('a no-arg dashboard command is redispatched only when it stands alone', async () => {
   assert.deepEqual(await misroutedSubcommand(['watch'], slugExists), ['watch', []]);
   assert.deepEqual(await misroutedSubcommand(['list'], slugExists), ['list', []]);
+  assert.deepEqual(await misroutedSubcommand(['ui'], slugExists), ['ui', []]);
   // "list the competitors and draft outreach" is a message, not `weaver list`.
   assert.equal(await misroutedSubcommand(['list', 'the', 'competitors'], slugExists), null);
 });

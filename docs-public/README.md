@@ -16,6 +16,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Connecting bots](./bots.md) — a fleet of disposable bots (any language) keep their durable memory in Weaver over `weaver serve`
 - [Hosting Weaver](./hosting.md) — run the resident runner and the ingress adapter against one Postgres so a fleet lives somewhere, not just on a laptop
 - [The dashboard](./dashboard.md) — the terminal controls and visual Workstream/Assignment board
+- [Operator workspace](./operator-workspace.md) — create work, inspect one Workstream, and add follow-up from a browser
 - [Printouts](./printouts.md) — an exact, copyable account since the last delivered printout
 - [Does each outcome need you less often?](./stats.md) — recorded human interventions beside quality and authority signals
 - [Routines](./routines.md) — standing loops that wake with their decision log, constraints, and learned policies intact

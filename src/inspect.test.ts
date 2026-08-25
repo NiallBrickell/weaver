@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { beforeEach, test } from 'node:test';
 
 import { virtualNow } from './clock.js';
+import { recordCapacityBackoff } from './capacity.js';
 import {
   fleetBoard,
   passIntegrityWarnings,
@@ -56,6 +57,32 @@ function assignment(
     adoption: { state: adoption },
     createdAtVirtual: virtualNow().toISOString(),
   };
+}
+
+const CAPACITY_ENV_NAMES = [
+  'WEAVER_COORDINATOR_EXECUTOR',
+  'WEAVER_COORDINATOR_MODEL',
+  'WEAVER_COORDINATOR_FALLBACKS',
+  'WEAVER_RUNNER_EXECUTORS',
+] as const;
+
+type CapacityEnvironment = Record<(typeof CAPACITY_ENV_NAMES)[number], string>;
+
+async function withCapacityEnvironment(
+  values: CapacityEnvironment,
+  run: () => Promise<void>,
+): Promise<void> {
+  const previous = Object.fromEntries(CAPACITY_ENV_NAMES.map((name) => [name, process.env[name]]));
+  for (const name of CAPACITY_ENV_NAMES) process.env[name] = values[name];
+  try {
+    await run();
+  } finally {
+    for (const name of CAPACITY_ENV_NAMES) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 }
 
 function withoutTechnicalDetails(html: string): string {
@@ -270,6 +297,181 @@ test('a due wake is Ready while a future wake is Waiting', async () => {
   const view = fleetBoard([await load('due-wake'), await load('future-wake')], [], new Map());
   assert.deepEqual(view.lanes.ready.map((card) => card.slug), ['due-wake']);
   assert.deepEqual(view.lanes.waiting.map((card) => card.slug), ['future-wake']);
+});
+
+test('fleet capacity renders a limited primary with an available fallback as degraded, not Waiting', async () => {
+  await withCapacityEnvironment({
+    WEAVER_COORDINATOR_EXECUTOR: 'local-sdk',
+    WEAVER_COORDINATOR_MODEL: 'claude-primary',
+    WEAVER_COORDINATOR_FALLBACKS: 'codex-sdk:gpt-fallback',
+    WEAVER_RUNNER_EXECUTORS: 'local-sdk,codex-sdk',
+  }, async () => {
+    const now = new Date('2026-08-25T09:00:00.000Z');
+    await makeWorkstream('degraded-capacity');
+    await arrive('degraded-capacity', (doc) => {
+      const wait = {
+        kind: 'rate_limit' as const,
+        recovery: 'automatic_retry' as const,
+        source: 'coordinator' as const,
+        sourceId: 'pass_primary',
+        executor: 'local-sdk',
+        provider: 'anthropic',
+        model: 'claude-primary',
+        detectedAt: now.toISOString(),
+        retryAt: new Date(now.getTime() + 3_600_000).toISOString(),
+      };
+      recordCapacityBackoff(doc, wait);
+      doc.wakes.push({
+        id: 'wake_primary',
+        reason: 'Retry the primary coordinator',
+        condition: { type: 'time', dueAtVirtual: wait.retryAt },
+        status: 'pending',
+        createdAt: now.toISOString(),
+        infrastructure: wait,
+      });
+    });
+
+    const view = fleetBoard([await load('degraded-capacity')], [], new Map(), [], now, now);
+    assert.equal(view.lanes.waiting.length, 0);
+    assert.equal(view.lanes.ready[0]!.state, 'Degraded');
+    assert.match(view.lanes.ready[0]!.next, /fallback gpt-fallback available/);
+  });
+});
+
+test('fleet capacity does not let overdue or unconfigured raw provider wakes park a card', async () => {
+  await withCapacityEnvironment({
+    WEAVER_COORDINATOR_EXECUTOR: 'local-sdk',
+    WEAVER_COORDINATOR_MODEL: 'claude-primary',
+    WEAVER_COORDINATOR_FALLBACKS: 'codex-sdk:gpt-fallback',
+    WEAVER_RUNNER_EXECUTORS: 'local-sdk,codex-sdk',
+  }, async () => {
+    const now = new Date('2026-08-25T09:00:00.000Z');
+    await Promise.all([
+      makeWorkstream('overdue-capacity'),
+      makeWorkstream('unconfigured-capacity'),
+    ]);
+    await arrive('overdue-capacity', (doc) => {
+      const wait = {
+        kind: 'rate_limit' as const,
+        recovery: 'automatic_retry' as const,
+        source: 'coordinator' as const,
+        sourceId: 'pass_overdue',
+        executor: 'local-sdk',
+        provider: 'anthropic',
+        model: 'claude-primary',
+        detectedAt: new Date(now.getTime() - 7_200_000).toISOString(),
+        retryAt: new Date(now.getTime() - 3_600_000).toISOString(),
+      };
+      recordCapacityBackoff(doc, wait);
+      doc.wakes.push({
+        id: 'wake_overdue',
+        reason: 'Reconcile the overdue provider retry',
+        condition: { type: 'time', dueAtVirtual: wait.retryAt },
+        status: 'pending',
+        createdAt: wait.detectedAt,
+        infrastructure: wait,
+      });
+    });
+    await arrive('unconfigured-capacity', (doc) => {
+      const wait = {
+        kind: 'rate_limit' as const,
+        recovery: 'automatic_retry' as const,
+        source: 'coordinator' as const,
+        sourceId: 'pass_retired',
+        executor: 'pi',
+        provider: 'openrouter',
+        model: 'retired-model',
+        detectedAt: now.toISOString(),
+        retryAt: new Date(now.getTime() + 3_600_000).toISOString(),
+      };
+      recordCapacityBackoff(doc, wait);
+      doc.wakes.push({
+        id: 'wake_retired',
+        reason: 'Retry a model no longer configured',
+        condition: { type: 'time', dueAtVirtual: wait.retryAt },
+        status: 'pending',
+        createdAt: now.toISOString(),
+        infrastructure: wait,
+      });
+    });
+
+    const docs = await Promise.all(['overdue-capacity', 'unconfigured-capacity'].map(load));
+    const view = fleetBoard(docs, [], new Map(), [], now, now);
+    assert.equal(view.lanes.waiting.length, 0);
+    assert.equal(view.lanes.ready.find((card) => card.slug === 'overdue-capacity')!.state, 'Ready to reconcile');
+    assert.equal(view.lanes.ready.find((card) => card.slug === 'unconfigured-capacity')!.state, 'No next step');
+  });
+});
+
+test('fleet capacity waits only when the shared projection reports a block', async () => {
+  await withCapacityEnvironment({
+    WEAVER_COORDINATOR_EXECUTOR: 'local-sdk',
+    WEAVER_COORDINATOR_MODEL: 'claude-primary',
+    WEAVER_COORDINATOR_FALLBACKS: 'codex-sdk:gpt-fallback',
+    WEAVER_RUNNER_EXECUTORS: 'local-sdk,codex-sdk',
+  }, async () => {
+    const now = new Date('2026-08-25T09:00:00.000Z');
+    await makeWorkstream('capacity-blocked');
+    await arrive('capacity-blocked', (doc) => {
+      const primary = {
+        kind: 'rate_limit' as const,
+        recovery: 'automatic_retry' as const,
+        source: 'coordinator' as const,
+        sourceId: 'pass_primary',
+        executor: 'local-sdk',
+        provider: 'anthropic',
+        model: 'claude-primary',
+        detectedAt: now.toISOString(),
+        retryAt: new Date(now.getTime() + 3_600_000).toISOString(),
+      };
+      recordCapacityBackoff(doc, primary);
+      recordCapacityBackoff(doc, {
+        ...primary,
+        sourceId: 'pass_fallback',
+        executor: 'codex-sdk',
+        provider: 'openai',
+        model: 'gpt-fallback',
+        retryAt: new Date(now.getTime() + 1_800_000).toISOString(),
+      });
+      doc.wakes.push({
+        id: 'wake_primary',
+        reason: 'Retry the coordinator chain',
+        condition: { type: 'time', dueAtVirtual: primary.retryAt },
+        status: 'pending',
+        createdAt: now.toISOString(),
+        infrastructure: primary,
+      });
+    });
+
+    const view = fleetBoard([await load('capacity-blocked')], [], new Map(), [], now, now);
+    assert.equal(view.lanes.waiting[0]!.state, 'Temporarily blocked');
+    assert.match(view.lanes.waiting[0]!.next, /^coordinator OpenAI gpt-fallback rate limited/);
+  });
+});
+
+test('fleet capacity waits when the selected target needs a differently capable runner', async () => {
+  await withCapacityEnvironment({
+    WEAVER_COORDINATOR_EXECUTOR: 'codex-sdk',
+    WEAVER_COORDINATOR_MODEL: 'gpt-only',
+    WEAVER_COORDINATOR_FALLBACKS: 'codex-sdk:gpt-only',
+    WEAVER_RUNNER_EXECUTORS: 'local-sdk',
+  }, async () => {
+    const now = new Date('2026-08-25T09:00:00.000Z');
+    await makeWorkstream('executor-blocked');
+    await arrive('executor-blocked', (doc) => {
+      doc.wakes.push({
+        id: 'wake_now',
+        reason: 'Coordinate now',
+        condition: { type: 'immediate' },
+        status: 'pending',
+        createdAt: now.toISOString(),
+      });
+    });
+
+    const view = fleetBoard([await load('executor-blocked')], [], new Map(), [], now, now);
+    assert.equal(view.lanes.waiting[0]!.state, 'Temporarily blocked');
+    assert.match(view.lanes.waiting[0]!.next, /gpt-only waits for a runner declaring codex-sdk/);
+  });
 });
 
 test('gated actions and pending sends are human attention, not execution state', async () => {

@@ -17,7 +17,7 @@
 export const KNOWN_COMMANDS = new Set([
   'do', 'ask', 'create', 'list', 'status', 'capacity', 'log', 'tail', 'show', 'steer', 'approve',
   'assign-action', 'constraint', 'approve-action', 'reject-action', 'reject-send', 'reply', 'observe',
-  'adopt', 'budget', 'execution-safety', 'policies', 'backfill', 'secret', 'login', 'link', 'run', 'serve', 'resolve', 'tag', 'pause', 'rename',
+  'adopt', 'budget', 'execution-safety', 'policies', 'backfill', 'secret', 'login', 'link', 'run', 'serve', 'ui', 'resolve', 'tag', 'pause', 'rename',
   'resume', 'watch', 'inspect', 'printout', 'stats', 'advance', 'tick', 'help', '--help', 'priority',
 ]);
 
@@ -31,10 +31,10 @@ export const SLUG_FIRST_COMMANDS = new Set([
   'adopt', 'budget', 'execution-safety', 'tag', 'resolve', 'reject-send', 'constraint', 'approve-action', 'reject-action',
 ]);
 
-// Read-only, no-argument dashboards: `weaver do watch` almost certainly means
+// No-argument operator surfaces: `weaver do watch` almost certainly means
 // `weaver watch`, never a workstream about the word "watch". Only redispatched
 // when they stand alone, so "list the competitors and …" still onboards.
-export const DASHBOARD_COMMANDS = new Set(['watch', 'list', 'stats', 'inspect', 'printout', 'link']);
+export const DASHBOARD_COMMANDS = new Set(['watch', 'list', 'stats', 'inspect', 'printout', 'link', 'ui']);
 
 /**
  * A management command that reached the intake path because `w` was (or still
