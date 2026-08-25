@@ -23,6 +23,7 @@ import { rejectSend } from './humanActs.js';
 import { providerSend, readLedger } from './world.js';
 import { arrive, createWorkstream, load, newId, writeArtifact } from './store.js';
 import { runWorker } from './worker.js';
+import { setExecutorSecret } from './secrets.js';
 import { virtualNow } from './clock.js';
 import type { Assignment } from './types.js';
 
@@ -978,9 +979,10 @@ import * as http from 'node:http';
 
 async function withPilotStub(
   decide: (cmd: string) => string,
-  fn: (requests: string[]) => Promise<void>,
+  fn: (requests: string[], authorizations: Array<string | undefined>) => Promise<void>,
 ): Promise<void> {
   const requests: string[] = [];
+  const authorizations: Array<string | undefined> = [];
   const server = http.createServer((req, res) => {
     if (req.url === '/status') {
       res.setHeader('Content-Type', 'application/json');
@@ -990,6 +992,7 @@ async function withPilotStub(
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
+      authorizations.push(req.headers.authorization);
       const cmd = JSON.parse(JSON.parse(body).tool_input).command as string;
       requests.push(cmd);
       res.setHeader('Content-Type', 'application/json');
@@ -1000,7 +1003,7 @@ async function withPilotStub(
   const addr = server.address() as { port: number };
   process.env.WEAVER_PILOT_URL = `http://127.0.0.1:${addr.port}`;
   try {
-    await fn(requests);
+    await fn(requests, authorizations);
   } finally {
     delete process.env.WEAVER_PILOT_URL;
     server.close();
@@ -1013,7 +1016,7 @@ const GATED_WITH_CMDS = {
 };
 
 test('pilot alive → a WORKER action auto-approves (live per-command supervision takes over)', async () => {
-  await withPilotStub(() => 'approve', async (requests) => {
+  await withPilotStub(() => 'approve', async (requests, authorizations) => {
     await makeActionWorkstream('pilot-ok-ws', {
       ...GATED_WITH_CMDS,
       exec: { ...GATED_WITH_CMDS.exec, cwd: process.env.WEAVER_HOME! },
@@ -1036,6 +1039,32 @@ test('pilot alive → a WORKER action auto-approves (live per-command supervisio
     // before pilot's ruleset runs, and the publishing was done by CI off a
     // pushed tag.
     assert.equal(requests.length, 1);
+    assert.deepEqual(authorizations, [undefined], 'tokenless loopback Pilot remains compatible');
+  });
+});
+
+test('engine Pilot evaluations carry the registered bearer without persisting it', async () => {
+  const token = 'pilot-engine-bearer-value-4829';
+  setExecutorSecret('WEAVER_PILOT_TOKEN', token);
+  await withPilotStub(() => 'approve', async (_requests, authorizations) => {
+    await makeActionWorkstream('pilot-auth-engine-ws', {
+      exec: {
+        cwd: process.env.WEAVER_HOME!,
+        run: 'true',
+        verify: 'true',
+      },
+    });
+    await tick('pilot-auth-engine-ws', { maxPasses: 0 });
+    assert.deepEqual(authorizations, [
+      `Bearer ${token}`,
+      `Bearer ${token}`,
+    ]);
+
+    const durable = fs.readFileSync(
+      path.join(process.env.WEAVER_HOME!, 'pilot-auth-engine-ws', 'workstream.json'),
+      'utf8',
+    );
+    assert.doesNotMatch(durable, new RegExp(token));
   });
 });
 

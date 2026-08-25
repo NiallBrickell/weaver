@@ -45,6 +45,7 @@ import {
 } from './executionSafety.js';
 import type { InfrastructureWait, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 import { secureMcpHeaderCredentials, type SecuredMcpConfiguration } from './mcpConfig.js';
+import { pilotFetch, readPilotVerdict } from './pilot.js';
 
 export { workerModel } from './modelConfig.js';
 
@@ -92,12 +93,11 @@ export function selectExecutor(name = workerExecutorName()): WorkerExecutor {
  * reports the denial honestly and readback/coordinator handle the fallout.
  */
 export function pilotSupervisor(cwd: string, slug: string) {
-  const base = process.env.WEAVER_PILOT_URL ?? 'http://127.0.0.1:9721';
   return async (toolName: string, input: Record<string, unknown>): Promise<
     { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }
   > => {
     try {
-      const res = await fetch(`${base}/internal/evaluate`, {
+      const res = await pilotFetch('/internal/evaluate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -110,7 +110,7 @@ export function pilotSupervisor(cwd: string, slug: string) {
         signal: AbortSignal.timeout(45_000),
       });
       if (!res.ok) return { behavior: 'deny', message: `pilot HTTP ${res.status} — failing closed` };
-      const body = (await res.json()) as { decision?: string; reason?: string };
+      const body = await readPilotVerdict(res);
       if (body.decision === 'approve') return { behavior: 'allow', updatedInput: input };
       // 'passthrough' is pilot reporting the operator's OWN Claude Code
       // settings allow this call in this cwd (its settings deny/ask outcomes

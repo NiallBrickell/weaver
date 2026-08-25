@@ -91,17 +91,33 @@ test('executor-secret render carries every registered secret exactly and no conf
       CUSTOM_PROVIDER_TOKEN: 'custom=credential',
       OPENROUTER_API_KEY: 'provider-key',
       ANTHROPIC_API_KEY: 'api-key',
+      WEAVER_PILOT_TOKEN: 'pilot-bearer',
     }),
     [
       'ANTHROPIC_API_KEY=api-key',
       'CUSTOM_PROVIDER_TOKEN=custom=credential',
       'OPENROUTER_API_KEY=provider-key',
+      'WEAVER_PILOT_TOKEN=pilot-bearer',
     ],
   );
   assert.throws(
     () => renderRemoteExecutorSecretLines({ BAD: 'line-one\nWEAVER_HOME=/injected' }),
     /newline/,
   );
+});
+
+test('Pilot bearer travels only in the executor-secret render, never general remote env', () => {
+  const secret = 'pilot-bearer-value-5804';
+  assert.deepEqual(
+    renderRemoteExecutorSecretLines({ WEAVER_PILOT_TOKEN: secret }),
+    [`WEAVER_PILOT_TOKEN=${secret}`],
+  );
+  const general = renderRemoteEnvLines(
+    { WEAVER_SERVE_TOKEN: 'serve-token', WEAVER_PILOT_TOKEN: secret },
+    { WEAVER_PILOT_URL: 'https://pilot.example.test' },
+  );
+  assert.ok(!general.lines.some((line) => line.includes(secret)));
+  assert.ok(!general.lines.some((line) => line.startsWith('WEAVER_PILOT_TOKEN=')));
 });
 
 test('WEAVER_STORE and WEAVER_HOME are never emitted — provisioning owns them', () => {
