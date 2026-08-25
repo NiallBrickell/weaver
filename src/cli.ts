@@ -134,6 +134,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver printout [slug] [--text]            open an HTML catch-up page; --text writes the plain report instead
   weaver inspect [slug]                      visual work board → self-contained HTML: Workstreams, Assignments, evidence, and history
   weaver stats                               outcome scoreboard → self-contained HTML: interventions per adopted work product, approval split, policy evidence, per-workstream stats
+  weaver ui [--host H] [--port N]            browser operator workspace (default 127.0.0.1:9724); non-loopback requires WEAVER_UI_TOKEN
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
@@ -868,6 +869,25 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
           `  POST /workstreams · GET /workstreams/:slug · POST /workstreams/:slug/observations\n`,
       );
       // The runner (weaver run) executes; this process only accepts ingress.
+      await new Promise<never>(() => {});
+      break;
+    }
+
+    case 'ui': {
+      const host = opt(rest, 'host') ?? '127.0.0.1';
+      const port = Number(opt(rest, 'port') ?? '9724');
+      const token = process.env.WEAVER_UI_TOKEN;
+      const { startOperatorUi } = await import('./operatorUi.js');
+      const running = await startOperatorUi({ host, port, token });
+      const access = token
+        ? 'Basic auth (WEAVER_UI_TOKEN is the password; the username is recorded as the actor)'
+        : 'loopback access';
+      process.stdout.write(
+        `weaver ui — operator workspace on http://${host}:${running.port} (Ctrl-C to stop)\n` +
+          `  access: ${access}\n` +
+          '  execution: start `weaver run` separately\n',
+      );
+      // This process serves the workspace; the separate runner executes work.
       await new Promise<never>(() => {});
       break;
     }

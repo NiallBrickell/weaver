@@ -1,4 +1,5 @@
 import { compactAge } from '../../activity.js';
+import { capacityPresentation } from '../../capacity.js';
 import { assignmentBoard, type AssignmentBoardView } from '../../assignmentBoard.js';
 import { virtualNow } from '../../clock.js';
 import { isLegacyDollarBudgetAttention } from '../../executionSafety.js';
@@ -253,11 +254,16 @@ function soonestWake(
           ? Date.parse(wake.condition.dueAt) - wallNow.getTime()
           : 0;
     if (!Number.isFinite(remaining)) continue;
+    // Provider wakes are scheduler receipts, not an organizational wait by
+    // themselves. Future capacity blocking comes exclusively from the shared,
+    // role-aware capacity projection; an overdue receipt remains a real
+    // reconciliation move for the Ready lane.
+    if (wake.infrastructure && remaining > 0) continue;
     if (!soonest || remaining < soonest.remaining) {
       soonest = {
         remaining,
         reason: wake.reason,
-        blocking: wake.infrastructure !== undefined || wake.executionSafety !== undefined,
+        blocking: wake.executionSafety !== undefined,
         createdAt: wake.createdAt,
       };
     }
@@ -376,6 +382,7 @@ function cardFor(
   const pilotApproved = doc.assignments.find(
     (assignment) => assignment.state === 'gated' && assignment.exec?.pilotVerdict?.decision === 'approve',
   );
+  const capacity = capacityPresentation(doc, organizationalNow.toISOString());
   const wake = soonestWake(doc, wallNow, organizationalNow);
   const standing = standingCourse(doc, organizationalNow)[0]?.decision;
   const direction = [...doc.steering]
@@ -411,18 +418,28 @@ function cardFor(
         : undefined;
   } else if (
     doc.workstream.status === 'paused' ||
+    capacity.blocking ||
+    capacity.executorUnavailable ||
     (wake && wake.remaining > 0 && (wake.blocking || !queued))
   ) {
     lane = 'waiting';
-    state = doc.workstream.status === 'paused' ? 'Paused' : wake?.blocking ? 'Temporarily blocked' : 'Next check scheduled';
+    state = doc.workstream.status === 'paused'
+      ? 'Paused'
+      : capacity.blocking || capacity.executorUnavailable || wake?.blocking
+        ? 'Temporarily blocked'
+        : 'Next check scheduled';
     next = doc.workstream.status === 'paused'
       ? 'Paused by the human'
-      : `${wake!.reason}${wake!.remaining > 0 ? ` · ${dueLabel(wake!.remaining)}` : ''}`;
+      : capacity.blocking
+        ? `${capacity.blocking.summary}. ${capacity.blocking.recovery}`
+        : capacity.executorUnavailable
+          ? capacity.executorUnavailable.summary
+          : `${wake!.reason}${wake!.remaining > 0 ? ` · ${dueLabel(wake!.remaining)}` : ''}`;
     nowAge = doc.workstream.status === 'paused' || !wake ? undefined : compactAge(wake.createdAt, wallNow);
   } else {
     lane = 'ready';
-    state = queued ? 'Ready to start' : wake ? 'Ready to reconcile' : 'No next step';
-    next = queued?.objective ?? wake?.reason ?? standing?.title ?? 'No next move scheduled';
+    state = capacity.degraded ? 'Degraded' : queued ? 'Ready to start' : wake ? 'Ready to reconcile' : 'No next step';
+    next = capacity.degraded?.summary ?? queued?.objective ?? wake?.reason ?? standing?.title ?? 'No next move scheduled';
     nowAge = queued
       ? compactAge(queued.createdAtVirtual, organizationalNow)
       : wake
