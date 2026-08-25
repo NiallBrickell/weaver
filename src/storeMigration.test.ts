@@ -260,7 +260,7 @@ test('Postgres integration copies exactly once and refuses a non-empty destinati
   const home = freshHome();
   const doc = writeDoc(home, 'shared', 'request:shared');
   doc.workstream.objective = 'Preserve the valid JSON string before\u0000after';
-  addArtifact(home, doc, 'nested/result.md', 'exact shared bytes');
+  addArtifact(home, doc, 'nested/result.md', 'exact shared bytes before\u0000after');
   fs.writeFileSync(path.join(home, 'shared', 'artifacts', 'extra.txt'), 'unreferenced but durable');
   const policies = activeDoctrineStore();
   policies.policies[0]!.mechanism = 'Preserve policy strings before\u0000after too';
@@ -300,7 +300,7 @@ test('Postgres integration copies exactly once and refuses a non-empty destinati
   }
 });
 
-test('Postgres upgrades legacy jsonb columns idempotently and keeps source uniqueness', { skip: !PG_URL }, async () => {
+test('Postgres upgrades legacy JSON and artifact columns idempotently and keeps source uniqueness', { skip: !PG_URL }, async () => {
   const schema = `weaver_json_upgrade_${process.pid}_${Date.now()}`;
   const admin = new pg.Client({ connectionString: PG_URL });
   await admin.connect();
@@ -352,6 +352,10 @@ test('Postgres upgrades legacy jsonb columns idempotently and keeps source uniqu
         `INSERT INTO policies (singleton, revision, store)
          VALUES (true, 0, '{"schemaVersion":1,"revision":0,"policies":[]}'::jsonb)`,
       );
+      await setup.query(
+        'INSERT INTO artifacts (slug, rel_path, content) VALUES ($1, $2, $3)',
+        ['legacy', 'legacy.txt', 'existing text artifact £'],
+      );
     } finally {
       await setup.end();
     }
@@ -359,6 +363,7 @@ test('Postgres upgrades legacy jsonb columns idempotently and keeps source uniqu
     const first = new PgStore(scoped.toString());
     try {
       assert.deepEqual(await first.listWorkstreams(), ['legacy']);
+      assert.equal(await first.readArtifact('legacy', 'legacy.txt'), 'existing text artifact £');
       const zero = '\u0000';
       const created = await first.create({
         slug: 'exact',
@@ -372,6 +377,8 @@ test('Postgres upgrades legacy jsonb columns idempotently and keeps source uniqu
         budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
       });
       assert.equal((await first.load('exact')).workstream.title, created.workstream.title);
+      await first.writeArtifactRaw('exact', 'zero.txt', `before${zero}after`);
+      assert.equal(await first.readArtifact('exact', 'zero.txt'), `before${zero}after`);
       await assert.rejects(
         first.create({
           slug: 'legacy-duplicate',
@@ -391,7 +398,8 @@ test('Postgres upgrades legacy jsonb columns idempotently and keeps source uniqu
     }
 
     // A second process initialization is a no-op migration, not another
-    // rewrite, and both durable columns remain validated JSON rather than jsonb.
+    // rewrite; typed documents remain validated JSON and artifacts remain
+    // bytea, with exact string decoding at the store boundary.
     const second = new PgStore(scoped.toString());
     try {
       assert.deepEqual(await second.listWorkstreams(), ['exact', 'legacy']);
@@ -402,11 +410,14 @@ test('Postgres upgrades legacy jsonb columns idempotently and keeps source uniqu
       `SELECT table_name, column_name, data_type
        FROM information_schema.columns
        WHERE table_schema = $1
-         AND (table_name, column_name) IN (('workstreams', 'doc'), ('policies', 'store'))
+         AND (table_name, column_name) IN (
+           ('artifacts', 'content'), ('workstreams', 'doc'), ('policies', 'store')
+         )
        ORDER BY table_name`,
       [schema],
     );
     assert.deepEqual(types.rows, [
+      { table_name: 'artifacts', column_name: 'content', data_type: 'bytea' },
       { table_name: 'policies', column_name: 'store', data_type: 'json' },
       { table_name: 'workstreams', column_name: 'doc', data_type: 'json' },
     ]);

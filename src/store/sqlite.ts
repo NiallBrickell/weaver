@@ -31,6 +31,10 @@
  * simulated world's outbox all read the machine-local state directory. A
  * SQLite file is inherently single-machine, so unlike pg nothing is lost —
  * which is also why pid-probe liveness (below) is sound here.
+ *
+ * Artifact strings use BLOB rather than TEXT. Node 22's SQLite binding binds
+ * a JavaScript TEXT value containing U+0000 as a C string and truncates it;
+ * UTF-8 Buffers preserve the same exact bytes as the filesystem backend.
  */
 
 import * as fs from 'node:fs';
@@ -61,7 +65,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS artifacts (
     slug     TEXT NOT NULL,
     rel_path TEXT NOT NULL,
-    content  TEXT NOT NULL,
+    content  BLOB NOT NULL,
     PRIMARY KEY (slug, rel_path)
   );
   CREATE TABLE IF NOT EXISTS policies (
@@ -109,8 +113,30 @@ export class SqliteStore implements StateStore {
     // process doesn't contend with a tick's writes. Must run outside a txn.
     this.db.exec('PRAGMA journal_mode = WAL');
     // One transaction so two processes racing first-connect serialize on the
-    // write lock instead of interleaving CREATE TABLE statements.
-    this.txn(() => this.db.exec(SCHEMA));
+    // write lock instead of interleaving CREATE TABLE statements. Old stores
+    // declared artifact content as TEXT; SQLite cannot ALTER a column type, so
+    // rebuild that one table once and cast its already-valid text to UTF-8
+    // bytes. DDL is transactional here: interruption restores the old table.
+    this.txn(() => {
+      this.db.exec(SCHEMA);
+      const artifactColumn = this.db.prepare(
+        `SELECT type FROM pragma_table_info('artifacts') WHERE name = 'content'`,
+      ).get() as { type: string } | undefined;
+      if (artifactColumn?.type.toUpperCase() === 'TEXT') {
+        this.db.exec(`
+          CREATE TABLE artifacts_blob_migration (
+            slug     TEXT NOT NULL,
+            rel_path TEXT NOT NULL,
+            content  BLOB NOT NULL,
+            PRIMARY KEY (slug, rel_path)
+          );
+          INSERT INTO artifacts_blob_migration (slug, rel_path, content)
+            SELECT slug, rel_path, CAST(content AS BLOB) FROM artifacts;
+          DROP TABLE artifacts;
+          ALTER TABLE artifacts_blob_migration RENAME TO artifacts;
+        `);
+      }
+    });
   }
 
   /**
@@ -230,14 +256,14 @@ export class SqliteStore implements StateStore {
     this.db.prepare(
       `INSERT INTO artifacts (slug, rel_path, content) VALUES (?, ?, ?)
        ON CONFLICT (slug, rel_path) DO UPDATE SET content = excluded.content`,
-    ).run(slug, relPath, content);
+    ).run(slug, relPath, Buffer.from(content, 'utf8'));
   }
 
   async readArtifact(slug: string, relPath: string): Promise<string> {
     const row = this.db.prepare('SELECT content FROM artifacts WHERE slug = ? AND rel_path = ?')
-      .get(slug, relPath) as { content: string } | undefined;
+      .get(slug, relPath) as { content: Uint8Array } | undefined;
     if (!row) throw new Error(`no artifact '${relPath}' for workstream '${slug}'`);
-    return row.content;
+    return Buffer.from(row.content).toString('utf8');
   }
 
   async loadPolicies(): Promise<PolicyStore> {

@@ -16,6 +16,9 @@
  * exact round trip. Source-key uniqueness lives in a separate TEXT column
  * containing JSON.stringify(sourceKey): that encoding is injective for JS
  * strings and contains no zero byte, even when the source key does.
+ * Artifact strings use `bytea`: PostgreSQL `text` cannot contain U+0000 at
+ * all, while Buffer's UTF-8 encoding is the same boundary used by the
+ * filesystem backend and round-trips every valid artifact string it stores.
  *
  * The CAS is genuinely atomic, not load-then-hope: `mutate` loads the doc
  * INSIDE a transaction, runs the synchronous mutator between that read and the
@@ -65,7 +68,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS artifacts (
     slug     text NOT NULL,
     rel_path text NOT NULL,
-    content  text NOT NULL,
+    content  bytea NOT NULL,
     PRIMARY KEY (slug, rel_path)
   );
   CREATE TABLE IF NOT EXISTS policies (
@@ -110,6 +113,18 @@ const SCHEMA = `
         AND atttypid = 'jsonb'::regtype
     ) THEN
       ALTER TABLE policies ALTER COLUMN store TYPE json USING store::json;
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM pg_attribute
+      WHERE attrelid = 'artifacts'::regclass
+        AND attname = 'content' AND NOT attisdropped
+        AND atttypid = 'text'::regtype
+    ) THEN
+      -- Existing TEXT artifacts are already valid database-encoded strings.
+      -- Preserve their exact UTF-8 bytes while widening the column so future
+      -- artifacts may also contain U+0000.
+      ALTER TABLE artifacts ALTER COLUMN content TYPE bytea
+        USING convert_to(content, 'UTF8');
     END IF;
   END
   $migration$;
@@ -209,7 +224,7 @@ export class PgStore implements StateStore {
       for (const artifact of snapshot.artifacts) {
         await client.query(
           'INSERT INTO artifacts (slug, rel_path, content) VALUES ($1, $2, $3)',
-          [artifact.slug, artifact.relPath, artifact.content],
+          [artifact.slug, artifact.relPath, Buffer.from(artifact.content, 'utf8')],
         );
       }
       await client.query(
@@ -250,7 +265,7 @@ export class PgStore implements StateStore {
         artifacts: artifacts.rows.map((row) => ({
           slug: row.slug as string,
           relPath: row.rel_path as string,
-          content: row.content as string,
+          content: (row.content as Buffer).toString('utf8'),
         })),
         policies: policyStore,
       };
@@ -380,7 +395,7 @@ export class PgStore implements StateStore {
     await this.pool.query(
       `INSERT INTO artifacts (slug, rel_path, content) VALUES ($1, $2, $3)
        ON CONFLICT (slug, rel_path) DO UPDATE SET content = EXCLUDED.content`,
-      [slug, relPath, content],
+      [slug, relPath, Buffer.from(content, 'utf8')],
     );
   }
 
@@ -391,7 +406,7 @@ export class PgStore implements StateStore {
       [slug, relPath],
     );
     if (r.rowCount === 0) throw new Error(`no artifact '${relPath}' for workstream '${slug}'`);
-    return r.rows[0].content as string;
+    return (r.rows[0].content as Buffer).toString('utf8');
   }
 
   async loadPolicies(): Promise<PolicyStore> {

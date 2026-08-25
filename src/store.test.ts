@@ -33,6 +33,7 @@ import {
   mutate,
   mutatePolicies,
   newId,
+  readArtifact,
   rename,
   tryTickLock,
   verifyArtifact,
@@ -123,7 +124,7 @@ const sqliteBackend: Backend = {
     try {
       db.exec('PRAGMA busy_timeout = 5000');
       db.prepare('UPDATE artifacts SET content = ? WHERE slug = ? AND rel_path = ?')
-        .run(content, slug, relPath);
+        .run(Buffer.from(content, 'utf8'), slug, relPath);
     } finally {
       db.close();
     }
@@ -145,7 +146,7 @@ const pgBackend: Backend = {
   async tamper(slug, relPath, content) {
     await pgAdmin((c) =>
       c.query('UPDATE artifacts SET content = $1 WHERE slug = $2 AND rel_path = $3', [
-        content,
+        Buffer.from(content, 'utf8'),
         slug,
         relPath,
       ]),
@@ -341,6 +342,14 @@ function contractSuite(backend: Backend): void {
     assert.equal(a.hash, b.hash);
     const c = await writeArtifact('test-ws', 'c.md', 'different content');
     assert.notEqual(a.hash, c.hash);
+  });
+
+  test('artifact strings containing U+0000 survive ordinary write and read exactly', async () => {
+    await makeWorkstream();
+    const content = 'before\u0000after';
+    const { relPath, hash } = await writeArtifact('test-ws', 'zero.md', content);
+    assert.equal(await readArtifact('test-ws', relPath), content);
+    assert.ok(await verifyArtifact('test-ws', relPath, hash));
   });
 
   test('an async mutator is refused: late writes must not land after the CAS write', async () => {
@@ -547,6 +556,49 @@ describe('store contract — fs backend', () => {
 
 describe('store contract — sqlite backend', () => {
   contractSuite(sqliteBackend);
+
+  test('legacy TEXT artifacts upgrade idempotently to exact BLOB storage', async () => {
+    await closeStore();
+    const home = freshHome();
+    sqliteDbPath = path.join(home, 'legacy-artifacts.db');
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+    const legacy = new DatabaseSync(sqliteDbPath);
+    try {
+      legacy.exec(`
+        CREATE TABLE artifacts (
+          slug TEXT NOT NULL,
+          rel_path TEXT NOT NULL,
+          content TEXT NOT NULL,
+          PRIMARY KEY (slug, rel_path)
+        );
+      `);
+      legacy.prepare('INSERT INTO artifacts (slug, rel_path, content) VALUES (?, ?, ?)')
+        .run('legacy', 'artifact.txt', 'existing text artifact £');
+    } finally {
+      legacy.close();
+    }
+
+    process.env.WEAVER_STORE = `sqlite:${sqliteDbPath}`;
+    assert.equal(await readArtifact('legacy', 'artifact.txt'), 'existing text artifact £');
+    await closeStore();
+
+    const migrated = new DatabaseSync(sqliteDbPath);
+    try {
+      const column = migrated.prepare(
+        `SELECT type FROM pragma_table_info('artifacts') WHERE name = 'content'`,
+      ).get() as { type: string };
+      const storage = migrated.prepare(
+        'SELECT typeof(content) AS storage FROM artifacts WHERE slug = ?',
+      ).get('legacy') as { storage: string };
+      assert.equal(column.type.toUpperCase(), 'BLOB');
+      assert.equal(storage.storage, 'blob');
+    } finally {
+      migrated.close();
+    }
+
+    // A second store initialization is a no-op migration and retains bytes.
+    assert.equal(await readArtifact('legacy', 'artifact.txt'), 'existing text artifact £');
+  });
 
   test('a cross-process mutate race on one expected revision: exactly one wins the CAS', async () => {
     // Both writers target the same expectedRevision from separate OS
