@@ -259,9 +259,12 @@ const PG_URL = process.env.WEAVER_TEST_PG_URL;
 test('Postgres integration copies exactly once and refuses a non-empty destination', { skip: !PG_URL }, async () => {
   const home = freshHome();
   const doc = writeDoc(home, 'shared', 'request:shared');
+  doc.workstream.objective = 'Preserve the valid JSON string before\u0000after';
   addArtifact(home, doc, 'nested/result.md', 'exact shared bytes');
   fs.writeFileSync(path.join(home, 'shared', 'artifacts', 'extra.txt'), 'unreferenced but durable');
-  writePolicies(home);
+  const policies = activeDoctrineStore();
+  policies.policies[0]!.mechanism = 'Preserve policy strings before\u0000after too';
+  writePolicies(home, policies);
   const sourceBefore = snapshotFilesystemFleet(home, {});
 
   const schema = `weaver_copy_${process.pid}_${Date.now()}`;
@@ -291,6 +294,122 @@ test('Postgres integration copies exactly once and refuses a non-empty destinati
 
     assertSourceStable(sourceBefore, snapshotFilesystemFleet(home, {}));
     await assert.rejects(runFilesystemToPostgresCopy(scoped.toString()), /destination Postgres store is not empty/);
+  } finally {
+    await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+    await admin.end();
+  }
+});
+
+test('Postgres upgrades legacy jsonb columns idempotently and keeps source uniqueness', { skip: !PG_URL }, async () => {
+  const schema = `weaver_json_upgrade_${process.pid}_${Date.now()}`;
+  const admin = new pg.Client({ connectionString: PG_URL });
+  await admin.connect();
+  await admin.query(`CREATE SCHEMA "${schema}"`);
+  const scoped = new URL(PG_URL!);
+  scoped.searchParams.set('options', `-c search_path=${schema}`);
+  const legacy = initialDoc({
+    slug: 'legacy',
+    title: 'Legacy',
+    objective: 'Existing jsonb document',
+    tags: ['migration'],
+    successCriteria: [],
+    constraints: [],
+    sourceKey: 'legacy:source',
+    autonomy: { sendsRequireApproval: true },
+    budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+  });
+
+  try {
+    const setup = new pg.Client({ connectionString: scoped.toString() });
+    await setup.connect();
+    try {
+      await setup.query(`
+        CREATE TABLE workstreams (
+          slug text PRIMARY KEY,
+          revision integer NOT NULL,
+          doc jsonb NOT NULL
+        );
+        CREATE UNIQUE INDEX workstreams_source_key
+          ON workstreams ((doc -> 'workstream' ->> 'sourceKey'))
+          WHERE doc -> 'workstream' ->> 'sourceKey' IS NOT NULL;
+        CREATE TABLE artifacts (
+          slug text NOT NULL,
+          rel_path text NOT NULL,
+          content text NOT NULL,
+          PRIMARY KEY (slug, rel_path)
+        );
+        CREATE TABLE policies (
+          singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+          revision integer NOT NULL,
+          store jsonb NOT NULL
+        );
+      `);
+      await setup.query(
+        'INSERT INTO workstreams (slug, revision, doc) VALUES ($1, $2, $3::jsonb)',
+        [legacy.workstream.slug, legacy.revision, JSON.stringify(legacy)],
+      );
+      await setup.query(
+        `INSERT INTO policies (singleton, revision, store)
+         VALUES (true, 0, '{"schemaVersion":1,"revision":0,"policies":[]}'::jsonb)`,
+      );
+    } finally {
+      await setup.end();
+    }
+
+    const first = new PgStore(scoped.toString());
+    try {
+      assert.deepEqual(await first.listWorkstreams(), ['legacy']);
+      const zero = '\u0000';
+      const created = await first.create({
+        slug: 'exact',
+        title: `Exact${zero}title`,
+        objective: 'Created after upgrade',
+        tags: [],
+        successCriteria: [],
+        constraints: [],
+        sourceKey: `exact${zero}source`,
+        autonomy: { sendsRequireApproval: true },
+        budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+      });
+      assert.equal((await first.load('exact')).workstream.title, created.workstream.title);
+      await assert.rejects(
+        first.create({
+          slug: 'legacy-duplicate',
+          title: 'Duplicate',
+          objective: 'Must be refused',
+          tags: [],
+          successCriteria: [],
+          constraints: [],
+          sourceKey: 'legacy:source',
+          autonomy: { sendsRequireApproval: true },
+          budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+        }),
+        /another workstream already stands for legacy:source/,
+      );
+    } finally {
+      await first.close();
+    }
+
+    // A second process initialization is a no-op migration, not another
+    // rewrite, and both durable columns remain validated JSON rather than jsonb.
+    const second = new PgStore(scoped.toString());
+    try {
+      assert.deepEqual(await second.listWorkstreams(), ['exact', 'legacy']);
+    } finally {
+      await second.close();
+    }
+    const types = await admin.query(
+      `SELECT table_name, column_name, data_type
+       FROM information_schema.columns
+       WHERE table_schema = $1
+         AND (table_name, column_name) IN (('workstreams', 'doc'), ('policies', 'store'))
+       ORDER BY table_name`,
+      [schema],
+    );
+    assert.deepEqual(types.rows, [
+      { table_name: 'policies', column_name: 'store', data_type: 'json' },
+      { table_name: 'workstreams', column_name: 'doc', data_type: 'json' },
+    ]);
   } finally {
     await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
     await admin.end();

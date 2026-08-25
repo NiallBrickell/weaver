@@ -180,6 +180,46 @@ function contractSuite(backend: Backend): void {
     assert.equal(after.events[after.events.length - 1]!.summary, 'hello');
   });
 
+  test('valid JSON strings containing U+0000 survive create and mutation exactly', async () => {
+    const zero = '\u0000';
+    const sourceKey = `source${zero}identity`;
+    await createWorkstream({
+      slug: 'zero-byte-json',
+      title: `Before${zero}after`,
+      objective: `Keep${zero}this exact`,
+      tags: ['test'],
+      successCriteria: [],
+      constraints: [],
+      sourceKey,
+      autonomy: { sendsRequireApproval: true },
+      budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+    });
+    const created = await load('zero-byte-json');
+    assert.equal(created.workstream.title, `Before${zero}after`);
+    assert.equal(created.workstream.objective, `Keep${zero}this exact`);
+    assert.equal(created.workstream.sourceKey, sourceKey);
+
+    await mutate('zero-byte-json', created.revision, (doc) => {
+      doc.workstream.constraints.push(`Mutated${zero}value`);
+    });
+    assert.deepEqual((await load('zero-byte-json')).workstream.constraints, [`Mutated${zero}value`]);
+
+    await assert.rejects(
+      createWorkstream({
+        slug: 'duplicate-zero-source',
+        title: 'Duplicate',
+        objective: 'Must remain one identity',
+        tags: ['test'],
+        successCriteria: [],
+        constraints: [],
+        sourceKey,
+        autonomy: { sendsRequireApproval: true },
+        budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+      }),
+      SourceKeyConflictError,
+    );
+  });
+
   test('an external arrival between read and write conflicts an in-flight coordinator write', async () => {
     await makeWorkstream();
     const coordinatorRead = (await load('test-ws')).revision;
