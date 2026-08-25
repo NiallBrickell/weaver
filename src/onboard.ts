@@ -52,20 +52,32 @@ export const DEFAULT_HOUSE: HousePack = {
   tags: [],
 };
 
-/** Merge `house.json` over the defaults; a missing or malformed file must
- * never block onboarding, so every failure path is the defaults. */
+function mergeHouse(base: HousePack, raw: Partial<HousePack>): HousePack {
+  return {
+    constraints: Array.isArray(raw.constraints) ? raw.constraints.filter((c): c is string => typeof c === 'string') : base.constraints,
+    repoMap: typeof raw.repoMap === 'string' ? raw.repoMap : base.repoMap,
+    tags: Array.isArray(raw.tags) ? raw.tags.filter((t): t is string => typeof t === 'string') : base.tags,
+  };
+}
+
+/** Merge machine-local `house.json`, then an optional deployment-supplied
+ * `WEAVER_HOUSE_JSON`, over the defaults. The environment form is the same
+ * HousePack shape and lets a stateless UI and a separately hosted runner apply
+ * one canonical repository map/tags without moving secrets into shared state.
+ * A malformed source never blocks model-independent intake. */
 export function loadHouse(): HousePack {
   const home = process.env.WEAVER_HOME ?? path.resolve(process.cwd(), 'state');
+  let house = DEFAULT_HOUSE;
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(home, 'house.json'), 'utf8')) as Partial<HousePack>;
-    return {
-      constraints: Array.isArray(raw.constraints) ? raw.constraints.filter((c): c is string => typeof c === 'string') : DEFAULT_HOUSE.constraints,
-      repoMap: typeof raw.repoMap === 'string' ? raw.repoMap : DEFAULT_HOUSE.repoMap,
-      tags: Array.isArray(raw.tags) ? raw.tags.filter((t): t is string => typeof t === 'string') : DEFAULT_HOUSE.tags,
-    };
-  } catch {
-    return DEFAULT_HOUSE;
+    house = mergeHouse(house, raw);
+  } catch { /* absent or malformed local pack: retain the defaults */ }
+  if (process.env.WEAVER_HOUSE_JSON) {
+    try {
+      house = mergeHouse(house, JSON.parse(process.env.WEAVER_HOUSE_JSON) as Partial<HousePack>);
+    } catch { /* malformed deployment pack: retain the safe local/default pack */ }
   }
+  return house;
 }
 
 export interface Derived {

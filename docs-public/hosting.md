@@ -1,10 +1,10 @@
 # Hosting Weaver
 
-*Two long-lived processes over one Postgres: the resident runner that carries outcomes, and the ingress adapter your bots reach*
+*A resident runner plus stateless browser/bot surfaces over one Postgres*
 
 On your laptop Weaver is a CLI over local files — nothing to host. To share one
-fleet across machines and let bots reach it from anywhere, you run the same code
-as two long-lived processes against a shared database:
+fleet across machines and let people or bots reach it from anywhere, run the
+same code as separate processes against a shared database:
 
 ```
    bots (any language, anywhere)          one Postgres = one fleet
@@ -12,6 +12,9 @@ as two long-lived processes against a shared database:
         ▼                                          │
    weaver serve  ── ingress adapter ──────────────►│  workstreams, decisions,
         (accepts what bots send, reads back)       │  adopted results, policies
+                                                   │
+   weaver ui     ── operator workspace ───────────►│
+        (browser intake and inspection)            │
                                                    │
    weaver run    ── resident brain ───────────────►│  coordinator passes: verify,
         (ticks active workstreams, runs models)    ▼  adopt, decide, remember
@@ -33,12 +36,15 @@ that executes work.
 3. **`weaver serve`** — the HTTP ingress your bots call. Refuses to start without
    `WEAVER_SERVE_TOKEN`; exposes only register-workstream, post-observation, and
    read-status. No steer, approve, or adopt — those stay with the human.
+4. **`weaver ui`** *(optional)* — the browser board/workspace for people to
+   create and inspect work. A non-loopback listener requires `WEAVER_UI_TOKEN`.
 
 ## Environment every hosted process needs
 
 ```bash
 export WEAVER_STORE="postgres://user:pass@host:5432/weaver"   # the shared fleet
 export WEAVER_SERVE_TOKEN="<a-strong-secret>"                 # serve only — the bot bearer token
+export WEAVER_UI_TOKEN="<a-different-strong-secret>"           # ui only — the browser password
 ```
 
 On your laptop the SDK borrows your Claude Code login, so no credential is
@@ -153,70 +159,16 @@ work in the composed runner.
 
 ## Deploying on Railway
 
-Railway fits this cleanly — a Postgres plugin and two services in one project.
-The walkthrough below uses the names you'll see in the dashboard.
+The recommended first Railway shape is a dedicated Postgres service plus the
+browser operator UI, with `weaver run` remaining on an already-provisioned
+execution host. That host has the real repositories, model/CLI identities, MCP
+connections, and Pilot supervision; an otherwise empty web container does not.
 
-**1. Project + database.** Create a project and add a Postgres database to it.
-Railway exposes its connection string as `DATABASE_URL` on services that
-reference it.
-
-**2. The runner service.** Point a service at this repo (build: `yarn install`,
-start: `yarn weaver run`). Set variables:
-
-```
-WEAVER_STORE = ${{Postgres.DATABASE_URL}}     # reference the database plugin
-WEAVER_COORDINATOR_MODEL = claude-fable-5      # optional; this is the default
-WEAVER_WORKER_MODEL = sonnet                   # optional; this is the default
-```
-
-Setting `ANTHROPIC_API_KEY` as a Railway service variable alone is **not**
-enough — Weaver strips ambient Claude credentials from SDK children (see
-above), so the runner would boot but every model pass would fail to
-authenticate. Register the identity into the executor store on the service's
-volume instead: open a shell on the runner service once and run
-`weaver secret set ANTHROPIC_API_KEY --executor` (or register a
-`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` the same way). Note the
-store lives under `WEAVER_HOME` (default `<repo>/state`), so the service needs
-a persistent volume there for the registration to survive redeploys.
-
-The runner needs no inbound port — it dials out to Postgres and to the model. It
-should be a single always-on instance (do not scale it past one replica; the pid
-lock will refuse the second, and one runner per host is the design).
-
-**3. The serve service.** A second service from the same repo, start
-`yarn weaver serve --host 0.0.0.0 --port $PORT`. Set variables:
-
-```
-WEAVER_STORE = ${{Postgres.DATABASE_URL}}     # the same fleet
-WEAVER_SERVE_TOKEN = <a-strong-secret>
-```
-
-Bind `0.0.0.0` and read the port from Railway's injected `$PORT`. Generate a
-public domain for this service and hand your bots that URL plus the token — those
-are the two things [a bot needs to connect](./bots.md). `serve` may scale
-horizontally: it is stateless, so more replicas behind the domain just add
-ingress throughput.
-
-**4. Verify.**
-
-```bash
-export URL=https://<your-serve-domain>
-export TOKEN=<the-serve-token>
-
-# create-or-get is idempotent on the source key
-curl -X POST $URL/workstreams -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"source_key":"smoke:1","title":"Smoke","objective":"Confirm hosted ingress works"}'
-# → 201 {"slug":"smoke", …, "created":true}   (a second call → 200 created:false)
-
-# read it back
-curl $URL/workstreams/smoke -H "Authorization: Bearer $TOKEN"
-
-# and confirm auth fails closed
-curl -o /dev/null -w '%{http_code}\n' $URL/workstreams/smoke   # → 401
-```
-
-Then watch the runner's logs adopt the observation on its next tick.
+The [Railway deployment guide](./railway.md) covers the topology, exact
+filesystem-to-Postgres copy, service variables, health check, browser access,
+and the requirements for moving execution into a persistent hosted volume
+later. Deploy `weaver serve` separately only when machine clients need the bot
+API.
 
 ## What hosting does not change
 

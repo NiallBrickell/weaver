@@ -110,12 +110,20 @@ export async function createTeamWorkstream(req: TeamIntakeRequest): Promise<Team
   const slugs = await listWorkstreams();
   const derived = deriveFallback(message, new Set(slugs), done);
   const house = loadHouse();
+  // Browser intake cannot depend on a model pass, but a terse report still
+  // needs the execution host's existing repository map to survive the wait.
+  // Keep the reporter's words intact and append the operator-owned machine
+  // context deterministically; the coordinator may then name only directories
+  // that durable intended work actually contains.
+  const objective = house.repoMap.trim()
+    ? `${derived.objective}\n\nRepository context for this execution host:\n${house.repoMap.trim()}`
+    : derived.objective;
   const sourceKey = sourceKeyFor(message, requestId);
   const result = await createOrGetWorkstream({
     sourceKey,
     slug: derived.slug,
     title: derived.title,
-    objective: derived.objective,
+    objective,
     tags: house.tags,
     successCriteria: derived.successCriteria,
     constraints: house.constraints,
@@ -157,6 +165,10 @@ function fleetGroups(board: FleetBoardView): OperatorFleetView['groups'] {
 
 function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: string[]): OperatorFleetView['health'] {
   const pid = liveRunnerPid();
+  // Runner locks and heartbeats are intentionally machine-local. A stateless
+  // UI reading the shared Postgres fleet cannot inspect a runner on another
+  // execution host, so absence of a local pid is unknown rather than offline.
+  const remoteRunnerUnobservable = pid === null && /^postgres(?:ql)?:\/\//.test(process.env.WEAVER_STORE ?? '');
   const staleRunner = pid !== null && runnerSourceStale();
   const healthyRunner = pid !== null && runnerLoopHealthy() && !staleRunner;
   const stalledRunner = pid !== null && !healthyRunner;
@@ -185,6 +197,13 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
       tone: 'critical',
       headline: unreadable.length ? 'Some durable state is unreadable' : 'Runner is stalled',
       detail: `${details.join(' · ')}. Stored work is retained; execution needs operator attention.`,
+    };
+  }
+  if (remoteRunnerUnobservable) {
+    return {
+      tone: 'warning',
+      headline: 'Remote runner liveness is not observable here',
+      detail: `${details.join(' · ')}. This UI can read the shared durable fleet, but runner heartbeat is local to its execution host.`,
     };
   }
   if (!healthyRunner) {
@@ -266,6 +285,19 @@ function sendText(res: ServerResponse, status: number, value: string): void {
   res.end(body);
 }
 
+/**
+ * Railway and similar supervisors need a probe that cannot become a fleet
+ * read API. Reaching this response means the configured StateStore completed
+ * a real operation; the empty body deliberately reveals no fleet facts.
+ */
+function sendHealth(res: ServerResponse, status: 200 | 503): void {
+  res.writeHead(status, {
+    ...secureHeaders('text/plain; charset=utf-8'),
+    'content-length': '0',
+  });
+  res.end();
+}
+
 function redirect(res: ServerResponse, location: string): void {
   res.writeHead(303, { ...secureHeaders('text/plain; charset=utf-8'), location });
   res.end('See Other');
@@ -320,11 +352,23 @@ function noticeFrom(url: URL): string | undefined {
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, token?: string): Promise<void> {
-  const actor = actorFor(req, token);
-  if (!actor) return unauthorized(res);
   const url = new URL(req.url ?? '/', 'http://localhost');
   const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
   const method = req.method ?? 'GET';
+
+  // Health is the one unauthenticated route. It exposes no status or counts,
+  // and succeeds only after the selected backend answers a real read.
+  if (method === 'GET' && url.pathname === '/healthz') {
+    try {
+      await listWorkstreams();
+      return sendHealth(res, 200);
+    } catch {
+      return sendHealth(res, 503);
+    }
+  }
+
+  const actor = actorFor(req, token);
+  if (!actor) return unauthorized(res);
 
   if (method === 'GET' && url.pathname === '/') return redirect(res, '/board');
 

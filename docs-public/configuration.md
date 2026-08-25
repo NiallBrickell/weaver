@@ -78,12 +78,14 @@ one needs its credentials present on this host.
 | --- | --- | --- |
 | `WEAVER_HOME` | `<repo>/state` | State root for the default filesystem backend |
 | `WEAVER_STORE` | *(unset → fs)* | `postgres://…` or `sqlite:<path>` to share or consolidate the fleet — see [Hosted state](./hosted-state.md). Set it with **`weaver link <url>`**, which proves the store is reachable (read-only) before writing it into `.env`; `weaver link` alone reports the current target, `weaver link --unlink` removes it |
+| `WEAVER_HOUSE_JSON` | *(unset)* | Deployment form of `WEAVER_HOME/house.json`: JSON with optional `constraints`, `repoMap`, and `tags`. Environment fields override matching local fields, so a stateless UI and its execution host can stamp one canonical repository context onto new work. Never put credentials in it |
 
 ### Execution and actions
 
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `WEAVER_EXECUTOR` | `local-sdk` | Where a worker's model loop runs — `local-sdk` (Claude), `codex-sdk` (local Codex), `pi` (pinned provider-neutral host process), or `openhands` (pinned container). See [Where workers run](./executors.md) |
+| `WEAVER_WORKSPACE_ROOT` | `~/.weaver/workspaces` | Absolute root for persistent neutral per-workstream workspaces when intended work does not name a checkout. Hosted runners should place it on their persistent disk |
 | `WEAVER_RUNNER_EXECUTORS` | configured coordinator, worker, and action executors | Comma-separated substrates this process may claim. Add reviewed route executors such as `openhands` explicitly on a capable host |
 | `WEAVER_ACTION_EXECUTOR` | `local-sdk` | Separate Pilot-supervised action runtime; automatic model routes never apply to actions |
 | `WEAVER_ACTION_MODEL` | `sonnet` | Model for declared action workers |

@@ -25,6 +25,7 @@
  * into Postgres.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import pg from 'pg';
 import { virtualNow } from '../clock.js';
 import { changedById, printoutChanges, writeJournalReceipt } from '../printoutJournal.js';
@@ -75,6 +76,18 @@ const SCHEMA = `
     ON CONFLICT DO NOTHING;
 `;
 
+/**
+ * The deliberately narrow seam used by the one-time filesystem → Postgres
+ * fleet copy. Ordinary writes must continue through StateStore's revisioned
+ * methods; importing an already-authoritative durable snapshot is different:
+ * it must preserve every revision and id rather than minting a new history.
+ */
+export interface ExactPgFleetSnapshot {
+  workstreams: { slug: string; revision: number; doc: WorkstreamDoc }[];
+  artifacts: { slug: string; relPath: string; content: string }[];
+  policies: PolicyStore;
+}
+
 export class PgStore implements StateStore {
   private readonly pool: pg.Pool;
   private readonly connectionString: string;
@@ -89,6 +102,103 @@ export class PgStore implements StateStore {
 
   private ensureReady(): Promise<void> {
     return (this.ready ??= this.pool.query(SCHEMA).then(() => {}));
+  }
+
+  /**
+   * Install one exact fleet snapshot into an empty Postgres store.
+   *
+   * ACCESS EXCLUSIVE table locks make the emptiness check and every insert a
+   * single indivisible database operation even if a mistakenly-started remote
+   * process connects during the copy. The seeded revision-zero policy row is
+   * the sole allowed pre-existing row; any durable Weaver truth refuses the
+   * import instead of being merged or overwritten.
+   */
+  async importExactFleet(snapshot: ExactPgFleetSnapshot): Promise<void> {
+    await this.ensureReady();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      await client.query('LOCK TABLE workstreams, artifacts, policies IN ACCESS EXCLUSIVE MODE');
+
+      const counts = await client.query(
+        `SELECT
+           (SELECT count(*)::integer FROM workstreams) AS workstreams,
+           (SELECT count(*)::integer FROM artifacts) AS artifacts,
+           (SELECT count(*)::integer FROM policies) AS policies`,
+      );
+      const row = counts.rows[0] as { workstreams: number; artifacts: number; policies: number };
+      const existingPolicy = await client.query('SELECT revision, store FROM policies WHERE singleton');
+      const policyIsEmpty =
+        row.policies === 1 &&
+        existingPolicy.rowCount === 1 &&
+        (existingPolicy.rows[0]!.revision as number) === 0 &&
+        isDeepStrictEqual(existingPolicy.rows[0]!.store, emptyPolicyStore());
+      if (row.workstreams !== 0 || row.artifacts !== 0 || !policyIsEmpty) {
+        throw new Error(
+          'destination Postgres store is not empty — refusing to merge or overwrite durable fleet state',
+        );
+      }
+
+      for (const entry of snapshot.workstreams) {
+        await client.query(
+          'INSERT INTO workstreams (slug, revision, doc) VALUES ($1, $2, $3::jsonb)',
+          [entry.slug, entry.revision, JSON.stringify(entry.doc)],
+        );
+      }
+      for (const artifact of snapshot.artifacts) {
+        await client.query(
+          'INSERT INTO artifacts (slug, rel_path, content) VALUES ($1, $2, $3)',
+          [artifact.slug, artifact.relPath, artifact.content],
+        );
+      }
+      await client.query(
+        'UPDATE policies SET revision = $1, store = $2::jsonb WHERE singleton',
+        [snapshot.policies.revision, JSON.stringify(snapshot.policies)],
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** One transactionally consistent readback for post-import verification. */
+  async readExactFleet(): Promise<ExactPgFleetSnapshot> {
+    await this.ensureReady();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      // A pg Client is one ordered connection. Keep these reads sequential:
+      // Promise.all on one client is only queued today and is rejected by pg 9.
+      const workstreams = await client.query('SELECT slug, revision, doc FROM workstreams ORDER BY slug');
+      const artifacts = await client.query('SELECT slug, rel_path, content FROM artifacts ORDER BY slug, rel_path');
+      const policies = await client.query('SELECT revision, store FROM policies WHERE singleton');
+      const policyStore = policies.rows[0]?.store as PolicyStore | undefined;
+      if (!policyStore || (policies.rows[0]!.revision as number) !== policyStore.revision) {
+        throw new Error('Postgres policy row revision does not match its stored PolicyStore revision');
+      }
+      await client.query('COMMIT');
+      return {
+        workstreams: workstreams.rows.map((row) => ({
+          slug: row.slug as string,
+          revision: row.revision as number,
+          doc: row.doc as WorkstreamDoc,
+        })),
+        artifacts: artifacts.rows.map((row) => ({
+          slug: row.slug as string,
+          relPath: row.rel_path as string,
+          content: row.content as string,
+        })),
+        policies: policyStore,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async listWorkstreams(): Promise<string[]> {

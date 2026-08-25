@@ -24,6 +24,22 @@ weaver do "triage this morning's Sentry backlog"
 
 For Postgres, any plain instance works — Supabase, Neon, RDS, a self-hosted box, `docker run postgres:16`. No extensions, no provider-specific APIs. On both database backends the schema (workstreams, artifacts, policies) is created automatically on first connect.
 
+Setting `WEAVER_STORE` changes the selected backend; it does not silently move
+an existing filesystem fleet. To preserve exact workstream revisions, adoption
+pins, artifacts, and policy trust state in a new empty Postgres database, stop
+the local runner and run:
+
+```bash
+WEAVER_STORE=fs weaver store copy-to-postgres
+```
+
+The destination URL is read with hidden input. The copy locks filesystem
+writers, refuses a non-empty destination, verifies secret refusal and artifact
+hashes before writing, installs the snapshot atomically, and proves a fresh
+Postgres readback before reporting success. Machine-local activity/printout
+files and execution credentials remain local. Then use `weaver link <url>` and
+restart resident processes. See the complete [Railway deployment guide](./railway.md).
+
 ## What changes, and what doesn't
 
 - **Same contract, different bytes.** The revision-checked write, artifact content pinning, and the learned-policy store behave identically on every backend — one contract-test suite runs over all three. Unset `WEAVER_STORE` (or set anything that isn't a `sqlite:`/`postgres://`/`postgresql://` value) and you're back on the filesystem.

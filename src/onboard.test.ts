@@ -3,7 +3,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { attachToExisting, deriveFallback, parseDerivation, sanitizeSlug } from './onboard.js';
+import { attachToExisting, deriveFallback, loadHouse, parseDerivation, sanitizeSlug } from './onboard.js';
 import { localTextModel } from './modelConfig.js';
 import { createWorkstream, load, mutate } from './store.js';
 
@@ -73,7 +73,26 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.WEAVER_HOME;
+  delete process.env.WEAVER_HOUSE_JSON;
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('a deployment house pack overrides only its supplied machine context fields', () => {
+  fs.writeFileSync(path.join(home, 'house.json'), JSON.stringify({
+    constraints: ['Keep the local constraint.'],
+    repoMap: 'Local repository: /local/repo',
+    tags: ['local'],
+  }));
+  process.env.WEAVER_HOUSE_JSON = JSON.stringify({
+    repoMap: 'Hosted repository: /srv/repos/application',
+    tags: ['shared-team'],
+  });
+
+  assert.deepEqual(loadHouse(), {
+    constraints: ['Keep the local constraint.'],
+    repoMap: 'Hosted repository: /srv/repos/application',
+    tags: ['shared-team'],
+  });
 });
 
 async function seed(slug: string): Promise<void> {
