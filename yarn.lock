@@ -819,6 +819,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@graphql-typed-document-node/core@npm:^3.2.0":
+  version: 3.2.0
+  resolution: "@graphql-typed-document-node/core@npm:3.2.0"
+  peerDependencies:
+    graphql: ^0.8.0 || ^0.9.0 || ^0.10.0 || ^0.11.0 || ^0.12.0 || ^0.13.0 || ^14.0.0 || ^15.0.0 || ^16.0.0 || ^17.0.0
+  checksum: 10c0/94e9d75c1f178bbae8d874f5a9361708a3350c8def7eaeb6920f2c820e82403b7d4f55b3735856d68e145e86c85cbfe2adc444fdc25519cd51f108697e99346c
+  languageName: node
+  linkType: hard
+
 "@hono/node-server@npm:^1.19.9 || ^2.0.5":
   version: 2.0.12
   resolution: "@hono/node-server@npm:2.0.12"
@@ -2565,6 +2574,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"graphql@npm:^16.10.0":
+  version: 16.14.2
+  resolution: "graphql@npm:16.14.2"
+  checksum: 10c0/a95a96961eaff55cc9fe9d31fae6f33499ac988b972d07ea5085024cb1333f515b902f376e7393a5489aa82200a8aff3eb96580e4d1b69d702ed19b6eb1ce97a
+  languageName: node
+  linkType: hard
+
 "grok-mermaid@npm:0.2.2":
   version: 0.2.2
   resolution: "grok-mermaid@npm:0.2.2"
@@ -3633,6 +3649,19 @@ __metadata:
   languageName: node
   linkType: hard
 
+"railway@npm:3.11.0":
+  version: 3.11.0
+  resolution: "railway@npm:3.11.0"
+  dependencies:
+    "@graphql-typed-document-node/core": "npm:^3.2.0"
+    graphql: "npm:^16.10.0"
+    tsx: "npm:^4.20.0"
+  bin:
+    railway-iac-ts: dist/iac/bin.js
+  checksum: 10c0/d22bfe296c44012053f6b39f7c022dd4df5a58b7622064026330aa29828e8bda1e2438381e859b0ce594403214c01a9e60d7eb5d0430bc44bb270e2d1ad10c02
+  languageName: node
+  linkType: hard
+
 "range-parser@npm:^1.2.1":
   version: 1.3.0
   resolution: "range-parser@npm:1.3.0"
@@ -4023,6 +4052,21 @@ __metadata:
   languageName: node
   linkType: hard
 
+"tsx@npm:^4.20.0":
+  version: 4.23.12
+  resolution: "tsx@npm:4.23.12"
+  dependencies:
+    esbuild: "npm:~0.28.0"
+    fsevents: "npm:~2.3.3"
+  dependenciesMeta:
+    fsevents:
+      optional: true
+  bin:
+    tsx: dist/cli.mjs
+  checksum: 10c0/cdd7f03754021fb337c13839f25f5f5edee01ed12e1e176da50cc34bc5c5fc4e7b533aeba89127055be969d4ff292c6accdb6b9d977ed022c524349eca6ff841
+  languageName: node
+  linkType: hard
+
 "tsx@npm:^4.23.5":
   version: 4.23.5
   resolution: "tsx@npm:4.23.5"
@@ -4139,6 +4183,7 @@ __metadata:
     ink-text-input: "npm:^6.0.0"
     opencode-ai: "npm:1.18.15"
     pg: "npm:^8.22.0"
+    railway: "npm:3.11.0"
     react: "npm:^19.2.8"
     react-dom: "npm:^19.2.8"
     tailwindcss: "npm:^4.1.18"
