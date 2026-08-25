@@ -35,7 +35,7 @@ function form(fields: Record<string, string>, headers: Record<string, string> = 
   return {
     method: 'POST',
     redirect: 'manual',
-    headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    headers: { 'content-type': 'application/x-www-form-urlencoded', origin: base, ...headers },
     body: new URLSearchParams(fields),
   };
 }
@@ -132,6 +132,54 @@ test('a teammate follow-up is an Observation, never Steering or authority', asyn
     const denied = await fetch(`${base}/workstreams/${created.slug}/${route}`, form({ message: 'do it' }));
     assert.equal(denied.status, 404, `${route} must not be an operator-ui route`);
   }
+});
+
+test('authenticated browser mutations require a matching Origin before reading or storing input', async () => {
+  await running!.close();
+  running = await startOperatorUi({ token: 'shared-secret' });
+  base = `http://127.0.0.1:${running.port}`;
+  const authorization = `Basic ${Buffer.from('sales-alice:shared-secret').toString('base64')}`;
+  const request = {
+    message: 'Store this only for a same-origin request.',
+    request_id: 'same-origin-boundary',
+  };
+
+  const unauthenticated = await fetch(`${base}/workstreams`, form(request, {
+    origin: 'https://attacker.example',
+  }));
+  assert.equal(unauthenticated.status, 401, 'authentication runs before the origin gate');
+
+  for (const [label, origin] of [
+    ['cross-origin', 'https://attacker.example'],
+    ['missing Origin', undefined],
+    ['malformed Origin', 'not an origin'],
+  ] as const) {
+    const headers: Record<string, string> = { authorization };
+    if (origin !== undefined) headers.origin = origin;
+    const attempted = await fetch(`${base}/workstreams`, {
+      ...form(request, headers),
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        ...headers,
+      },
+    });
+    assert.equal(attempted.status, 403, `${label} must fail closed`);
+    assert.deepEqual(await listWorkstreams(), [], `${label} must not mutate durable state`);
+  }
+
+  const accepted = await fetch(`${base}/workstreams`, form(request, {
+    authorization,
+    origin: base.replace(/^http:/, 'https:'),
+  }));
+  assert.equal(accepted.status, 303);
+  const slug = slugFrom(accepted);
+  assert.equal((await load(slug)).observations[0]!.source, 'operator-ui:sales-alice');
+
+  const crossOriginFollowUp = await fetch(`${base}/workstreams/${slug}/observations`, form({
+    message: 'This cross-site follow-up must not be recorded.',
+  }, { authorization, origin: 'https://attacker.example' }));
+  assert.equal(crossOriginFollowUp.status, 403);
+  assert.equal((await load(slug)).observations.length, 1, 'cross-site follow-up must not mutate durable state');
 });
 
 test('board, new-work, and workspace pages are live typed views with secure headers', async () => {

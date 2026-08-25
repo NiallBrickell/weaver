@@ -44,6 +44,12 @@ WEAVER_UI_TOKEN='use-a-long-random-value' weaver ui --host 0.0.0.0
 
 Non-loopback access uses HTTP Basic authentication. Enter any operator name as the username and `WEAVER_UI_TOKEN` as the password. The username is recorded as the actor on input from that browser session; it is attribution, not a grant of authority.
 
+All browser changes also require a same-origin request: the request's `Origin`
+must match the workspace host before Weaver reads the form body or changes
+durable state. Missing, malformed, and cross-site origins fail closed. This is
+the CSRF boundary that prevents a different site from replaying a browser's
+cached Basic-auth credentials to create work or add follow-up.
+
 When `WEAVER_UI_TOKEN` is set, Basic authentication applies on loopback too.
 
 Basic authentication must be carried over a trusted network or HTTPS reverse proxy because it does not encrypt traffic itself. Do not expose this listener directly to the public internet.
