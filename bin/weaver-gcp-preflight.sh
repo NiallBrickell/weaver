@@ -12,6 +12,7 @@ set -euo pipefail
 env_file="${WEAVER_GCP_PREFLIGHT_ENV_FILE:-/etc/weaver/env}"
 service_user="${WEAVER_GCP_PREFLIGHT_SERVICE_USER:-weaver}"
 executor_secrets_file="${WEAVER_GCP_PREFLIGHT_EXECUTOR_SECRETS_FILE:-/home/weaver/state/executor-secrets.env}"
+weaver_binary="${WEAVER_GCP_PREFLIGHT_WEAVER_BIN:-/usr/local/bin/weaver}"
 
 fail() {
   printf '❌ GCP execution preflight refused: %s\n' "$1" >&2
@@ -101,9 +102,9 @@ else
 fi
 
 # local-sdk remains the intended action target, but this GCP host must not
-# claim it until Pilot has authenticated, container-unreachable ingress. A
-# liveness-only check would bless the current unauthenticated host bridge, so
-# the safe state is an honest capability wait rather than executable actions.
+# claim it until Pilot has authenticated, container-unreachable ingress and
+# the installed shared client proves it can use that boundary. A liveness-only
+# check would bless an unauthenticated endpoint.
 action_executor="$(env_value WEAVER_ACTION_EXECUTOR)"
 [ -n "$action_executor" ] || action_executor=local-sdk
 [ "$action_executor" = local-sdk ] || fail 'WEAVER_ACTION_EXECUTOR must remain local-sdk; this host deliberately does not claim it'
@@ -185,10 +186,13 @@ secure_pilot_boundary() {
 
 if capability_has local-sdk; then
   secure_pilot_boundary
-  # The server boundary is necessary but not sufficient: until every Weaver
-  # Pilot client sends this bearer, enabling the action capability would turn
-  # legitimate actions into denials or tempt an unauthenticated fallback.
-  fail 'local-sdk action capability remains disabled until Weaver Pilot bearer clients are installed'
+  # The raw HTTP checks prove the server boundary. This exact installed client
+  # check separately proves the code that the engine and worker use can load
+  # the executor-only bearer and receive the authenticated 204. Do not replace
+  # it with another curl: that would verify different plumbing than actions use.
+  [ -x "$weaver_binary" ] || fail 'installed Weaver client is missing or not executable'
+  sudo -u "$service_user" "$weaver_binary" pilot-auth-check >/dev/null || \
+    fail 'installed Weaver Pilot authentication probe failed'
 fi
 
 id "$service_user" >/dev/null 2>&1 || fail 'Weaver service user does not exist'
@@ -197,4 +201,4 @@ docker_host="unix:///run/user/$service_uid/docker.sock"
 sudo -u "$service_user" env DOCKER_HOST="$docker_host" docker info >/dev/null 2>&1 || \
   fail 'rootless Docker is not accessible to the Weaver service user'
 
-echo '✓ GCP execution preflight passed (ordinary workers containerized; action lane not claimed)'
+echo '✓ GCP execution preflight passed (workers containerized; action lane authenticated and supervised)'

@@ -24,7 +24,8 @@ const SAFE_GCP_EXECUTION_ENV = [
   'WEAVER_COORDINATOR_EXECUTOR=codex-sdk',
   'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol',
   'WEAVER_ACTION_EXECUTOR=local-sdk',
-  'WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk',
+  'WEAVER_PILOT_URL=http://127.0.0.1:9721',
+  'WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk,local-sdk',
   '',
 ].join('\n');
 
@@ -38,6 +39,9 @@ function fixture(
   preflightEnv = SAFE_GCP_EXECUTION_ENV,
   dockerOk = true,
   pilotListenerOk = true,
+  pilotClientOk = true,
+  pilotTokenPresent = true,
+  pilotAuthEnabled = true,
 ): { root: string; env: NodeJS.ProcessEnv } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-gcp-script-'));
   roots.push(root);
@@ -61,6 +65,7 @@ if printf '%s\n' "$@" | grep -q 'weaver-gcp-preflight'; then
   WEAVER_GCP_PREFLIGHT_ENV_FILE="$WEAVER_GCP_TEST_PREFLIGHT_ENV" \
   WEAVER_GCP_PREFLIGHT_SERVICE_USER="$WEAVER_GCP_TEST_SERVICE_USER" \
   WEAVER_GCP_PREFLIGHT_EXECUTOR_SECRETS_FILE="$WEAVER_GCP_TEST_EXECUTOR_SECRETS" \
+  WEAVER_GCP_PREFLIGHT_WEAVER_BIN="$WEAVER_GCP_TEST_WEAVER_BIN" \
     bash "$WEAVER_GCP_TEST_CALLS/$n.stdin"
   : > "$WEAVER_GCP_TEST_CALLS/$n.systemctl-executed"
 fi
@@ -136,7 +141,9 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-if [ "$header" = 'Authorization: Bearer weaver-preflight-deliberately-invalid' ]; then
+if [ "\${WEAVER_GCP_TEST_PILOT_AUTH_ENABLED:-0}" != 1 ]; then
+  printf '%s' 204
+elif [ "$header" = 'Authorization: Bearer weaver-preflight-deliberately-invalid' ]; then
   printf '%s' 401
 elif [ "\${header#@}" != "$header" ] && grep -q "Authorization: Bearer $WEAVER_GCP_TEST_PILOT_TOKEN" "\${header#@}"; then
   printf '%s' 204
@@ -146,10 +153,25 @@ fi
 `,
     { mode: 0o755 },
   );
+  const weaverProbe = path.join(bin, 'weaver-probe');
+  fs.writeFileSync(
+    weaverProbe,
+    `#!/bin/bash
+set -euo pipefail
+[ "$#" -eq 1 ] && [ "$1" = pilot-auth-check ]
+: > "$WEAVER_GCP_TEST_CALLS/pilot-client-probe"
+[ "\${WEAVER_GCP_TEST_PILOT_CLIENT_OK:-0}" = 1 ]
+`,
+    { mode: 0o755 },
+  );
   const preflightEnvFile = path.join(root, 'remote-host-env');
   fs.writeFileSync(preflightEnvFile, preflightEnv);
   const executorSecretsFile = path.join(root, 'executor-secrets.env');
-  fs.writeFileSync(executorSecretsFile, 'WEAVER_PILOT_TOKEN=test-pilot-token\n', { mode: 0o600 });
+  fs.writeFileSync(
+    executorSecretsFile,
+    pilotTokenPresent ? 'WEAVER_PILOT_TOKEN=test-pilot-token\n' : 'OPENROUTER_API_KEY=test-provider-key\n',
+    { mode: 0o600 },
+  );
   const remoteInstaller = path.join(root, 'remote-installer');
   if (staleRemoteInstaller) {
     fs.writeFileSync(remoteInstaller, '#!/bin/bash\ncase "$1" in merge|store) exit 0;; esac\n');
@@ -178,8 +200,11 @@ printf '%s' "$WEAVER_GCP_TEST_REMOTE_ENV"
       WEAVER_GCP_TEST_SERVICE_USER: os.userInfo().username,
       WEAVER_GCP_TEST_DOCKER_OK: dockerOk ? '1' : '0',
       WEAVER_GCP_TEST_PILOT_LISTENER_OK: pilotListenerOk ? '1' : '0',
+      WEAVER_GCP_TEST_PILOT_CLIENT_OK: pilotClientOk ? '1' : '0',
+      WEAVER_GCP_TEST_PILOT_AUTH_ENABLED: pilotAuthEnabled ? '1' : '0',
       WEAVER_GCP_TEST_PILOT_TOKEN: 'test-pilot-token',
       WEAVER_GCP_TEST_EXECUTOR_SECRETS: executorSecretsFile,
+      WEAVER_GCP_TEST_WEAVER_BIN: weaverProbe,
     },
   };
 }
@@ -192,8 +217,20 @@ function run(
   preflightEnv = SAFE_GCP_EXECUTION_ENV,
   dockerOk = true,
   pilotListenerOk = true,
+  pilotClientOk = true,
+  pilotTokenPresent = true,
+  pilotAuthEnabled = true,
 ): { result: SpawnSyncReturns<string>; root: string } {
-  const f = fixture(remoteEnv, staleRemoteInstaller, preflightEnv, dockerOk, pilotListenerOk);
+  const f = fixture(
+    remoteEnv,
+    staleRemoteInstaller,
+    preflightEnv,
+    dockerOk,
+    pilotListenerOk,
+    pilotClientOk,
+    pilotTokenPresent,
+    pilotAuthEnabled,
+  );
   const result = spawnSync('bash', [script, ...args], {
     env: f.env,
     ...(input === undefined ? {} : { input }),
@@ -388,11 +425,14 @@ test('GCP start runs the containment preflight before systemctl', () => {
   const { result, root } = run(['start'], undefined);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(call(root, 1, 'stdin'), fs.readFileSync(gcpPreflight, 'utf8'));
+  assert.match(call(root, 1, 'stdin'), /WEAVER_GCP_PREFLIGHT_WEAVER_BIN:-\/usr\/local\/bin\/weaver/);
+  assert.match(call(root, 1, 'stdin'), /sudo -u "\$service_user" "\$weaver_binary" pilot-auth-check/);
   assert.match(call(root, 1, 'args'), /weaver-gcp-preflight/);
   assert.match(call(root, 1, 'args'), /install -o root -g root -m 755/);
   assert.match(call(root, 1, 'args'), /systemctl enable --now weaver-run/);
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), true);
-  assert.match(result.stdout, /ordinary workers containerized; action lane not claimed/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', 'pilot-client-probe')), true);
+  assert.match(result.stdout, /workers containerized; action lane authenticated and supervised/);
 });
 
 test('GCP start refuses host-process normal workers before systemctl', () => {
@@ -414,32 +454,72 @@ test('GCP restart refuses a host-process worker fallback before systemctl', () =
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
 });
 
-test('GCP start validates secure Pilot but keeps local actions disabled until bearer clients exist', () => {
-  const unsafe = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk',
-    'WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk,local-sdk',
+test('GCP start refuses a failing installed shared-client probe before systemctl', () => {
+  const { result, root } = run(
+    ['start'],
+    undefined,
+    '',
+    false,
+    SAFE_GCP_EXECUTION_ENV,
+    true,
+    true,
+    false,
   );
-  const { result, root } = run(['start'], undefined, '', false, unsafe);
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /local-sdk action capability remains disabled until Weaver Pilot bearer clients are installed/);
+  assert.match(result.stderr, /installed Weaver Pilot authentication probe failed/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', 'pilot-client-probe')), true);
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
 });
 
-test('GCP start rejects a container-reachable Pilot listener before its bearer-client hold', () => {
-  const unsafe = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk',
-    'WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk,local-sdk',
-  );
-  const { result, root } = run(['start'], undefined, '', false, unsafe, true, false);
+test('GCP start rejects a container-reachable Pilot listener before the client probe', () => {
+  const { result, root } = run(['start'], undefined, '', false, SAFE_GCP_EXECUTION_ENV, true, false);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /exactly one TCP listener at 127\.0\.0\.1:9721/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', 'pilot-client-probe')), false);
+  assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses a missing Pilot bearer before the client probe', () => {
+  const { result, root } = run(
+    ['start'],
+    undefined,
+    '',
+    false,
+    SAFE_GCP_EXECUTION_ENV,
+    true,
+    true,
+    true,
+    false,
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must contain exactly one WEAVER_PILOT_TOKEN/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', 'pilot-client-probe')), false);
+  assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses Pilot with authentication disabled before the client probe', () => {
+  const { result, root } = run(
+    ['start'],
+    undefined,
+    '',
+    false,
+    SAFE_GCP_EXECUTION_ENV,
+    true,
+    true,
+    true,
+    true,
+    false,
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /did not reject an invalid bearer/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', 'pilot-client-probe')), false);
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
 });
 
 test('GCP start requires every configured coordinator capability without treating it as work', () => {
   const unsafe = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk',
-    'WEAVER_RUNNER_EXECUTORS=openhands',
+    'WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk,local-sdk',
+    'WEAVER_RUNNER_EXECUTORS=openhands,local-sdk',
   );
   const { result, root } = run(['start'], undefined, '', false, unsafe);
   assert.notEqual(result.status, 0);
