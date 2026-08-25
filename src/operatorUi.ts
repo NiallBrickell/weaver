@@ -48,7 +48,7 @@ import {
 export interface OperatorUiOptions {
   host?: string;
   port?: number;
-  /** Shared password for HTTP Basic auth. The username is durable provenance. */
+  /** Shared password for HTTP Basic auth. The username is a caller-supplied provenance label. */
   token?: string;
 }
 
@@ -263,6 +263,7 @@ function secureHeaders(contentType: string): Record<string, string> {
     'referrer-policy': 'no-referrer',
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY',
+    'strict-transport-security': 'max-age=31536000',
     'cache-control': 'no-store',
   };
 }
@@ -309,6 +310,42 @@ function unauthorized(res: ServerResponse): void {
     'www-authenticate': 'Basic realm="Weaver", charset="UTF-8"',
   });
   res.end('Authentication required');
+}
+
+function forbidden(res: ServerResponse): void {
+  res.writeHead(403, secureHeaders('text/plain; charset=utf-8'));
+  res.end('Same-origin request required');
+}
+
+function requestAuthority(req: IncomingMessage): string | null {
+  const value = req.headers.host;
+  if (typeof value !== 'string' || !value || /[\s\\/@?#]/.test(value)) return null;
+  try {
+    return new URL(`http://${value}/`).host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Basic-auth credentials are replayed automatically by browsers, including
+ * on cross-site form submissions. Require the browser's serialized Origin to
+ * name this request's Host before any POST body is read. Scheme is deliberately
+ * ignored because a trusted reverse proxy may terminate HTTPS in front of this
+ * HTTP server; host and explicit port remain part of the authority comparison.
+ */
+function isSameOriginPost(req: IncomingMessage): boolean {
+  const value = req.headers.origin;
+  const authority = requestAuthority(req);
+  if (typeof value !== 'string' || !authority) return false;
+  try {
+    const origin = new URL(value);
+    if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return false;
+    if (origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) return false;
+    return origin.host.toLowerCase() === authority;
+  } catch {
+    return false;
+  }
 }
 
 function actorFor(req: IncomingMessage, token?: string): string | null {
@@ -369,6 +406,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, token?: string)
 
   const actor = actorFor(req, token);
   if (!actor) return unauthorized(res);
+  if (method === 'POST' && !isSameOriginPost(req)) return forbidden(res);
 
   if (method === 'GET' && url.pathname === '/') return redirect(res, '/board');
 
