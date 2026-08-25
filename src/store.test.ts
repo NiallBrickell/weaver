@@ -33,6 +33,7 @@ import {
   mutate,
   mutatePolicies,
   newId,
+  readArtifact,
   rename,
   tryTickLock,
   verifyArtifact,
@@ -145,7 +146,7 @@ const pgBackend: Backend = {
   async tamper(slug, relPath, content) {
     await pgAdmin((c) =>
       c.query('UPDATE artifacts SET content = $1 WHERE slug = $2 AND rel_path = $3', [
-        content,
+        Buffer.from(content, 'utf8'),
         slug,
         relPath,
       ]),
@@ -341,6 +342,14 @@ function contractSuite(backend: Backend): void {
     assert.equal(a.hash, b.hash);
     const c = await writeArtifact('test-ws', 'c.md', 'different content');
     assert.notEqual(a.hash, c.hash);
+  });
+
+  test('artifact strings containing U+0000 survive ordinary write and read exactly', async () => {
+    await makeWorkstream();
+    const content = 'before\u0000after';
+    const { relPath, hash } = await writeArtifact('test-ws', 'zero.md', content);
+    assert.equal(await readArtifact('test-ws', relPath), content);
+    assert.ok(await verifyArtifact('test-ws', relPath, hash));
   });
 
   test('an async mutator is refused: late writes must not land after the CAS write', async () => {
