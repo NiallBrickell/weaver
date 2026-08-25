@@ -48,9 +48,9 @@ operator performs the explicit final start.
 The repository owns the Railway project shape in [`.railway/railway.ts`](../.railway/railway.ts):
 one dedicated `Postgres` database, its `Postgres-PITR` recovery bucket, and one
 `ui` service. It pins the Dockerfile, UI start command, health check, restart
-and draining behavior, single replica, and the private database reference. Do
-not reuse an application database: a dedicated database gives fleet history
-its own backup, access, and failure boundary.
+and draining behavior, one EU West replica, the Postgres region, and the private
+database reference. Do not reuse an application database: a dedicated database
+gives fleet history its own backup, access, and failure boundary.
 
 Railway's current Infrastructure-as-Code flow requires CLI 5.42.1 or newer;
 the compatible TypeScript SDK is pinned in `package.json`. Link the intended
@@ -177,7 +177,8 @@ The checked-in service contract pins:
 - health-check path: `/healthz`;
 - restart policy: **Always**;
 - Serverless: **off**;
-- one replica for the initial rollout;
+- one replica in Railway EU West (`europe-west4-drams3a`) for the initial
+  rollout;
 - deployment draining time: at least 30 seconds;
 - public or custom domain: enabled only for this UI service.
 

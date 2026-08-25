@@ -35,6 +35,14 @@ test("Railway IaC pins the shared store and UI deployment contract", async () =>
     name: "Postgres-PITR",
     config: { region: "iad" },
   });
+  const database = desired.resources[0] as {
+    deploy: Record<string, unknown>;
+  };
+  assert.deepEqual(database.deploy, {
+    multiRegionConfig: {
+      "europe-west4-drams3a": { numReplicas: 1 },
+    },
+  });
 
   const ui = desired.resources[2] as {
     build: Record<string, unknown>;
@@ -55,7 +63,9 @@ test("Railway IaC pins the shared store and UI deployment contract", async () =>
     startCommand: '/bin/sh -c "exec node bin/weaver.mjs ui --host 0.0.0.0 --port $PORT"',
     healthcheckPath: "/healthz",
     healthcheckTimeout: 30,
-    numReplicas: 1,
+    multiRegionConfig: {
+      "europe-west4-drams3a": { numReplicas: 1 },
+    },
     restartPolicyType: "ALWAYS",
     sleepApplication: false,
     drainingSeconds: 30,
