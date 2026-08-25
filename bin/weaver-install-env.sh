@@ -2,14 +2,16 @@
 # Atomic installer for a hosted runner's raw KEY=value env file.
 #
 # Values arrive on stdin and are never evaluated as shell. Production uses the
-# fixed defaults below; WEAVER_INSTALL_ENV_FILE/OWNER exist only so the same
-# installer can be exercised against a temporary file without root in tests.
+# fixed defaults below; the WEAVER_INSTALL_* overrides exist only so the same
+# installer can be exercised against temporary files without root in tests.
 
 set -euo pipefail
 
 mode="${1:-merge}"
 env_file="${WEAVER_INSTALL_ENV_FILE:-/etc/weaver/env}"
 owner="${WEAVER_INSTALL_ENV_OWNER:-weaver:weaver}"
+executor_secrets_file="${WEAVER_INSTALL_EXECUTOR_SECRETS_FILE:-/home/weaver/state/executor-secrets.env}"
+executor_secrets_owner="${WEAVER_INSTALL_EXECUTOR_SECRETS_OWNER:-weaver:weaver}"
 env_dir="$(dirname "$env_file")"
 mkdir -p "$env_dir"
 touch "$env_file"
@@ -78,7 +80,39 @@ case "$mode" in
       }
     ' "$incoming" "$env_file" > "$candidate"
     ;;
-  *) echo 'usage: weaver-install-env [merge|store]' >&2; exit 1 ;;
+  executor-secrets)
+    # This is an exact synchronization, not a merge: removing a registered
+    # laptop credential must revoke it on the host too. Adapter credentials
+    # stay in Weaver's canonical executor-only store because adapters load
+    # that file deliberately instead of trusting ambient process identity.
+    executor_secrets_dir="$(dirname "$executor_secrets_file")"
+    mkdir -p "$executor_secrets_dir"
+    executor_candidate="$(mktemp "$executor_secrets_dir/.executor-secrets-candidate.XXXXXX")"
+    trap 'rm -f "$incoming" "$candidate" "${executor_candidate:-}"' EXIT
+    chmod 600 "$executor_candidate"
+    awk '
+      {
+        key = $0; sub(/=.*/, "", key)
+        if (seen[key]++) exit 1
+      }
+    ' "$incoming" || {
+      echo 'remote executor secret render contained a duplicate key' >&2; exit 1;
+    }
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in *=*) ;; *) echo 'remote executor secret render contained a malformed line' >&2; exit 1 ;; esac
+      key="${line%%=*}"
+      [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || {
+        echo 'remote executor secret render contained a malformed key' >&2; exit 1;
+      }
+      printf '%s\n' "$line" >> "$executor_candidate"
+    done < "$incoming"
+    if [ "$executor_secrets_owner" != ':' ]; then chown "$executor_secrets_owner" "$executor_candidate"; fi
+    chmod 600 "$executor_candidate"
+    mv "$executor_candidate" "$executor_secrets_file"
+    executor_candidate=""
+    exit 0
+    ;;
+  *) echo 'usage: weaver-install-env [merge|store|executor-secrets]' >&2; exit 1 ;;
 esac
 
 if [ "$owner" != ':' ]; then chown "$owner" "$candidate"; fi

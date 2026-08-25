@@ -123,8 +123,9 @@ policy rather than trusting process-local environment agreement.
 [`bin/weaver-gcp.sh`](../bin/weaver-gcp.sh) provisions an isolated execution
 host: the VM carries **no service account and no scopes** (a compromised
 workload cannot call any GCP API as anything), sits on **its own VPC** whose
-only ingress rule is IAP SSH, and receives secrets **over SSH stdin** into a
-`0600` env file, never via instance metadata or a command argument.
+only ingress rule is IAP SSH, and receives secrets **over SSH stdin** into
+service-user-owned `0600` files, never via instance metadata or a command
+argument.
 
 The recommended shared-team shape keeps durable truth in hosted Postgres and
 uses GCP only for execution. Provisioning, credentials, code updates, and store
@@ -163,6 +164,15 @@ localhost-only Docker Postgres, and `tunnel`/`join` expose that database only
 through IAP. Do not run `set-store` until the external database contains the
 fleet you intend to execute: changing the URL selects a store; it does not copy
 one. Use the [exact filesystem-to-Postgres copy](./hosted-state.md) first.
+
+`push-env` synchronizes two distinct host inputs before any optional restart:
+portable service configuration remains in `/etc/weaver/env`, while the exact
+set of credentials registered on the operator machine is installed at
+`/home/weaver/state/executor-secrets.env`. Both are mode `0600`; the second is
+the canonical adapter-only store read by Weaver executors. Removing a locally
+registered executor credential and pushing again removes it from the host too.
+Codex's login remains a separate `~/.codex/auth.json` file delivered by the
+same command.
 
 ## Deploying with Docker Compose (any host)
 

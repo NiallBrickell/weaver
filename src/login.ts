@@ -14,6 +14,9 @@
  *   weaver login --render-remote-env  KEY=value lines for provisioning a
  *                                     headless host (refuses a TTY; piped over
  *                                     SSH by bin/weaver-gcp.sh)
+ *   weaver login --render-remote-executor-secrets
+ *                                     the exact registered adapter-only secret
+ *                                     store (same TTY refusal; provisioning use)
  */
 
 import { spawnSync } from 'node:child_process';
@@ -125,6 +128,18 @@ export interface RemoteEnv {
   lines: string[];
   included: string[];
   warnings: string[];
+}
+
+/** Exact, validated executor-secret records for a remote adapter store. */
+export function renderRemoteExecutorSecretLines(
+  executorSecrets: Record<string, string>,
+): string[] {
+  return Object.entries(executorSecrets)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, value]) => {
+      assertRenderable(name, value);
+      return `${name}=${value}`;
+    });
 }
 
 function assertRenderable(name: string, value: string): void {
@@ -518,6 +533,17 @@ function renderRemoteEnvCommand(): void {
   for (const warning of warnings) process.stderr.write(`warning: ${warning}\n`);
 }
 
+function renderRemoteExecutorSecretsCommand(): void {
+  if (process.stdout.isTTY) {
+    fail(
+      '--render-remote-executor-secrets emits secret VALUES — pipe it over SSH; never display it on a terminal',
+    );
+  }
+  const lines = renderRemoteExecutorSecretLines(loadExecutorSecrets());
+  process.stdout.write(lines.map((line) => `${line}\n`).join(''));
+  process.stderr.write(`rendered ${lines.length} registered executor secrets for remote delivery\n`);
+}
+
 async function interactiveLogin(): Promise<void> {
   if (!process.stdin.isTTY) {
     fail('`weaver login` is interactive — use `weaver login --status` or `weaver secret set <NAME> --executor` in scripts');
@@ -551,8 +577,13 @@ async function interactiveLogin(): Promise<void> {
 }
 
 export async function runLogin(rest: string[]): Promise<void> {
+  if (rest.includes('--render-remote-executor-secrets')) {
+    return renderRemoteExecutorSecretsCommand();
+  }
   if (rest.includes('--render-remote-env')) return renderRemoteEnvCommand();
   if (rest.includes('--status')) return statusCommand();
-  if (rest.length) fail('usage: weaver login [--status | --render-remote-env]');
+  if (rest.length) {
+    fail('usage: weaver login [--status | --render-remote-env | --render-remote-executor-secrets]');
+  }
   return interactiveLogin();
 }

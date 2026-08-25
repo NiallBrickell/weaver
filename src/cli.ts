@@ -123,6 +123,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver login                               interactive setup: pick this host's executor, register credentials (0600 store, input hidden), choose models → .env
   weaver login --status                      per-executor auth status + model config with sources (names only, never values)
   weaver login --render-remote-env           emit KEY=value lines to provision a headless host (refuses a TTY — pipe it, e.g. over SSH)
+  weaver login --render-remote-executor-secrets  emit the exact adapter-only secret store for secure host provisioning (refuses a TTY)
   weaver link <store-url>                    join this machine to an existing fleet: prove the store is reachable (read-only), then persist WEAVER_STORE into .env
   weaver link                                show where WEAVER_STORE points now (env / .env / default fs) and re-check reachability
   weaver link --unlink                       remove WEAVER_STORE from .env (an ambient env export still wins if set)

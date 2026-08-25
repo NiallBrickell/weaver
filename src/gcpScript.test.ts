@@ -89,8 +89,9 @@ function allCallArgs(root: string): string {
 
 function installEnv(
   envFile: string,
-  mode: 'merge' | 'store',
+  mode: 'merge' | 'store' | 'executor-secrets',
   input: string,
+  executorSecretsFile?: string,
 ): SpawnSyncReturns<string> {
   return spawnSync('bash', [installer, mode], {
     input,
@@ -99,6 +100,10 @@ function installEnv(
       ...process.env,
       WEAVER_INSTALL_ENV_FILE: envFile,
       WEAVER_INSTALL_ENV_OWNER: ':',
+      ...(executorSecretsFile === undefined ? {} : {
+        WEAVER_INSTALL_EXECUTOR_SECRETS_FILE: executorSecretsFile,
+        WEAVER_INSTALL_EXECUTOR_SECRETS_OWNER: ':',
+      }),
     },
   }) as SpawnSyncReturns<string>;
 }
@@ -167,6 +172,34 @@ test('host env installer atomically replaces only WEAVER_STORE and refuses store
   assert.equal(fs.readFileSync(envFile, 'utf8'), before);
 });
 
+test('executor-secret installer exactly replaces the adapter store at mode 0600', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-gcp-executor-secrets-'));
+  roots.push(root);
+  const envFile = path.join(root, 'env');
+  const secretsFile = path.join(root, 'state', 'executor-secrets.env');
+  fs.writeFileSync(envFile, 'WEAVER_EXECUTOR=pi\n');
+  fs.mkdirSync(path.dirname(secretsFile));
+  fs.writeFileSync(secretsFile, 'REVOKED_API_KEY=old-value\n');
+
+  const rendered = 'CUSTOM_PROVIDER_TOKEN=custom=credential\nOPENROUTER_API_KEY=new-value\n';
+  const result = installEnv(envFile, 'executor-secrets', rendered, secretsFile);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(`${result.stdout}${result.stderr}`, '');
+  assert.equal(fs.readFileSync(secretsFile, 'utf8'), rendered);
+  assert.equal(fs.statSync(secretsFile).mode & 0o777, 0o600);
+  assert.equal(fs.readFileSync(envFile, 'utf8'), 'WEAVER_EXECUTOR=pi\n');
+
+  const refused = installEnv(
+    envFile,
+    'executor-secrets',
+    'OPENROUTER_API_KEY=one\nOPENROUTER_API_KEY=two\n',
+    secretsFile,
+  );
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /duplicate key/);
+  assert.equal(fs.readFileSync(secretsFile, 'utf8'), rendered);
+});
+
 test('set-store carries the Postgres URL only on SSH stdin', () => {
   const url = 'postgresql://weaver:p4ss@db.example:5432/weaver?sslmode=require';
   const { result, root } = run(['set-store'], `${url}\n`);
@@ -199,15 +232,19 @@ test('push-env forwards complete rendered config and does not restart by default
   assert.equal(result.status, 0, result.stderr);
   assert.equal(call(root, 1, 'stdin'), rendered);
   assert.match(call(root, 1, 'args'), /weaver-install-env merge/);
-  assert.ok(!call(root, 1, 'args').includes('systemctl'));
-  assert.equal(fs.readFileSync(path.join(root, 'calls', 'count'), 'utf8').trim(), '1');
+  assert.match(call(root, 1, 'args'), /install.*weaver-install-env\.sh/);
+  assert.equal(call(root, 2, 'stdin'), rendered);
+  assert.match(call(root, 2, 'args'), /weaver-install-env executor-secrets/);
+  assert.ok(!allCallArgs(root).includes('systemctl'));
+  assert.equal(fs.readFileSync(path.join(root, 'calls', 'count'), 'utf8').trim(), '2');
   assert.match(result.stdout, /services were not restarted/);
+  assert.ok(!`${result.stdout}${result.stderr}`.includes('Primary application'));
 });
 
 test('restart remains an explicit push-env and update option', () => {
   const pushed = run(['push-env', '--restart'], undefined, 'WEAVER_EXECUTOR=pi\n');
   assert.equal(pushed.result.status, 0, pushed.result.stderr);
-  assert.match(call(pushed.root, 2, 'args'), /systemctl restart weaver-run weaver-serve/);
+  assert.match(call(pushed.root, 3, 'args'), /systemctl restart weaver-run weaver-serve/);
 
   const updated = run(['update'], undefined);
   assert.equal(updated.result.status, 0, updated.result.stderr);

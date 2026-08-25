@@ -22,7 +22,7 @@
 #   - No inbound ports are opened. SSH rides the project's existing IAP rule;
 #     the bundled-store path reaches Postgres and `weaver serve` through
 #     `weaver-gcp tunnel`. Exposing serve publicly is never a default.
-#   - Secrets travel over SSH stdin into a service-user-owned 0600 env file.
+#   - Secrets travel over SSH stdin into service-user-owned 0600 files.
 #     They never pass through VM metadata, gcloud args, or the Weaver store —
 #     the store refuses documents embedding known secret values, and this
 #     script keeps values out of places `ps`/metadata viewers can read.
@@ -310,8 +310,9 @@ cmd_set_store() {
 }
 
 # ── push-env ──────────────────────────────────────────────────────────────────
-# Renders the secret half of /etc/weaver/env from the laptop's credentials and
-# ships it over SSH stdin. Values never appear in argv or VM metadata.
+# Renders the service env and the exact executor-only credential store from the
+# laptop, then ships both over SSH stdin. Values never appear in argv or VM
+# metadata. Adapters deliberately load the latter instead of ambient identity.
 cmd_push_env() {
   local restart=0
   case "${1:-}" in
@@ -321,13 +322,19 @@ cmd_push_env() {
   esac
   [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp push-env [--restart]" >&2; exit 1; }
   PUSH_ENV_TMP="$(mktemp)"
-  trap 'rm -f -- "${PUSH_ENV_TMP:-}"' EXIT
-  chmod 600 "$PUSH_ENV_TMP"
+  PUSH_EXECUTOR_SECRETS_TMP="$(mktemp)"
+  trap 'rm -f -- "${PUSH_ENV_TMP:-}" "${PUSH_EXECUTOR_SECRETS_TMP:-}"' EXIT
+  chmod 600 "$PUSH_ENV_TMP" "$PUSH_EXECUTOR_SECRETS_TMP"
   "$REPO/bin/weaver.mjs" login --render-remote-env > "$PUSH_ENV_TMP"
   if [ ! -s "$PUSH_ENV_TMP" ]; then
     echo "❌ weaver login produced no remote env — run: weaver login" >&2; exit 1
   fi
-  "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env merge' < "$PUSH_ENV_TMP"
+  "$REPO/bin/weaver.mjs" login --render-remote-executor-secrets > "$PUSH_EXECUTOR_SECRETS_TMP"
+  # Refresh the privileged installer from the updated checkout before using a
+  # newly added mode; this keeps an existing VM upgradeable without re-running
+  # all provisioning and carries no credential in the SSH command itself.
+  "${GSSH[@]}" --command 'sudo install -o root -g root -m 755 /opt/weaver/bin/weaver-install-env.sh /usr/local/sbin/weaver-install-env && sudo /usr/local/sbin/weaver-install-env merge' < "$PUSH_ENV_TMP"
+  "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env executor-secrets' < "$PUSH_EXECUTOR_SECRETS_TMP"
   # Codex auth rides alongside if the local machine has it
   if [ -f "$CODEX_AUTH_HOME/auth.json" ]; then
     "${GSSH[@]}" --command 'sudo -u weaver bash -c "umask 077; mkdir -p ~/.codex; cat > ~/.codex/auth.json"' \
@@ -336,12 +343,13 @@ cmd_push_env() {
   fi
   if [ "$restart" -eq 1 ]; then
     "${GSSH[@]}" --command 'sudo systemctl restart weaver-run weaver-serve'
-    echo "✓ env merged, services restarted"
+    echo "✓ env + executor identities installed, services restarted"
   else
-    echo "✓ env merged; services were not restarted"
+    echo "✓ env + executor identities installed; services were not restarted"
   fi
-  rm -f -- "$PUSH_ENV_TMP"
+  rm -f -- "$PUSH_ENV_TMP" "$PUSH_EXECUTOR_SECRETS_TMP"
   PUSH_ENV_TMP=""
+  PUSH_EXECUTOR_SECRETS_TMP=""
   trap - EXIT
 }
 

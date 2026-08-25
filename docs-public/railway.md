@@ -143,8 +143,10 @@ bin/weaver-gcp.sh start
 bin/weaver-gcp.sh status
 ```
 
-`set-store`, `push-env`, and `update` never restart by default. This keeps the
-database copy and the first runner start as separate, inspectable facts.
+`set-store`, `push-env`, and `update` never restart by default. `push-env`
+installs both portable service configuration and the runner's canonical
+`0600` executor-identity store. This keeps the database copy, identity
+delivery, and the first runner start as separate, inspectable facts.
 
 ## 3. Deploy the operator UI
 
