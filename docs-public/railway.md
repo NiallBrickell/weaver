@@ -36,11 +36,36 @@ its executor identity is deliberately registered, and its Pilot endpoint and
 egress readbacks are reachable. The authority boundary does not change merely
 because the process moved to the cloud.
 
-## 1. Create a dedicated project and Postgres
+## 1. Apply the checked-in Railway infrastructure
 
-Create a new Railway project and add a Postgres service. Do not reuse an
-application database: a dedicated database gives fleet history its own backup,
-access, and failure boundary.
+The repository owns the Railway project shape in [`.railway/railway.ts`](../.railway/railway.ts):
+one dedicated `Postgres` database and one `ui` service. It pins the Dockerfile,
+UI start command, health check, restart and draining behavior, single replica,
+and the private database reference. Do not reuse an application database: a
+dedicated database gives fleet history its own backup, access, and failure
+boundary.
+
+Railway's current Infrastructure-as-Code flow requires CLI 5.42.1 or newer;
+the compatible TypeScript SDK is pinned in `package.json`. Link the intended
+project and inspect the revision-checked plan before applying it:
+
+```bash
+railway upgrade --yes
+railway link --project weaver --environment production
+railway config plan
+railway config apply
+```
+
+The resource names are deliberate. A project bootstrapped before its first IaC
+apply must contain exactly `Postgres` and `ui`, so the plan binds those existing
+resources instead of creating parallel ones. Do not apply an existing project's
+plan if it proposes creating either resource; fix the link or names and plan
+again. On an empty project, creating both is the expected first plan.
+
+This file is the whole project definition: an omitted service is deletion
+intent. Add any later Railway service to the same file before applying it.
+Legacy `railway.json` and `railway.toml` service manifests are deliberately not
+used because new Railway services cannot opt into that deprecated system.
 
 Railway provides both private and public connection URLs. Services inside the
 project use a reference to the private URL:
@@ -94,14 +119,17 @@ store configuration at launch.
 
 ## 3. Deploy the operator UI
 
-Create one Railway service from the Weaver repository. Use the repository
-Dockerfile and this start command:
+The checked-in IaC creates one service from the Weaver repository and uses the
+repository Dockerfile. Its start override is shell-wrapped because Railway
+replaces Docker `ENTRYPOINT`/`CMD`, and Docker-image overrides need a shell for
+`$PORT` expansion:
 
 ```text
-node bin/weaver.mjs ui --host 0.0.0.0 --port $PORT
+/bin/sh -c "exec node bin/weaver.mjs ui --host 0.0.0.0 --port $PORT"
 ```
 
-Set:
+IaC owns the private database reference and preserves the two operator-supplied
+values without writing them to source. Set those values on the `ui` service:
 
 ```text
 WEAVER_STORE=${{Postgres.DATABASE_URL}}
@@ -113,7 +141,7 @@ WEAVER_HOUSE_JSON={"repoMap":"Primary application: /absolute/path/on-the-runner"
 stateless UI attach the canonical repository map and policy tags to new work
 without a model pass. Do not put credentials in it.
 
-Railway service settings:
+The checked-in service contract pins:
 
 - health-check path: `/healthz`;
 - restart policy: **Always**;
@@ -147,7 +175,9 @@ path meaningful only to the person submitting the ticket.
 ## 5. Optional machine ingress
 
 Deploy `weaver serve` only when bots need the JSON create/observe/status API.
-It is a separate service and token:
+Add it to `.railway/railway.ts` before applying—the file owns the complete
+project, so a service created only in the dashboard would be deletion intent on
+the next apply. It is a separate service and token:
 
 ```text
 node bin/weaver.mjs serve --host 0.0.0.0 --port $PORT
@@ -190,6 +220,8 @@ calling the host capable of PR or deployment work, and keep it at one replica
 until the executor substrate itself has been reviewed for horizontal use.
 
 Railway references: [Postgres](https://docs.railway.com/databases/postgresql),
+[Infrastructure as Code](https://docs.railway.com/infrastructure-as-code),
+[IaC reference](https://docs.railway.com/infrastructure-as-code/reference),
 [private networking](https://docs.railway.com/networking/private-networking/how-it-works),
 [reference variables](https://docs.railway.com/variables),
 [health checks](https://docs.railway.com/deployments/healthchecks),

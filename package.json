@@ -22,6 +22,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.3",
     "opencode-ai": "1.18.15",
+    "railway": "3.11.0",
     "tailwindcss": "^4.1.18",
     "tsx": "^4.23.5",
     "typescript": "^5.9.0"
@@ -34,7 +35,7 @@
   "scripts": {
     "build:ui": "tailwindcss -i src/ui/inspect/styles.css -o src/ui/inspect/tailwind.generated.css --minify",
     "eval:harness": "node --import tsx src/evals/cli.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck .railway/railway.ts",
     "weaver": "tsx src/cli.ts",
     "test": "tsx --test 'src/**/*.test.ts'"
   }
