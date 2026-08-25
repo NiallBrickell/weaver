@@ -50,6 +50,7 @@ import {
 import { runnerExecutorCapabilities } from './modelRouting.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
 import { ensureActionApprovalAttention } from './actionApproval.js';
+import { pilotFetch, readPilotVerdict } from './pilot.js';
 
 const PILOT_UNAVAILABLE_GRACE_MS = 2 * 60_000;
 
@@ -323,7 +324,6 @@ export async function deliverManagerNotices(slug: string): Promise<number> {
  * narrow the human's involvement, never widen what may run.
  */
 async function pilotApproveGatedActions(slug: string): Promise<number> {
-  const base = process.env.WEAVER_PILOT_URL ?? 'http://127.0.0.1:9721';
   const doc = await load(slug);
   if (doc.workstream.status !== 'active') return 0;
   let approved = 0;
@@ -344,7 +344,7 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
         // happens here.
         const commands = [asg.exec!.run, asg.exec!.verify].filter(Boolean);
         for (const command of commands) {
-          const res = await fetch(`${base}/internal/evaluate`, {
+          const res = await pilotFetch('/internal/evaluate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -357,7 +357,7 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
             signal: AbortSignal.timeout(30_000),
           });
           if (!res.ok) throw new Error(`pilot HTTP ${res.status}`);
-          const body = (await res.json()) as { decision?: string; reason?: string; source?: string };
+          const body = await readPilotVerdict(res);
           // 'passthrough' is pilot reporting the operator's own Claude Code
           // settings ALLOW this exact command (settings deny/ask arrive as
           // 'deny'). Same authority source as a pilot rule — the operator
@@ -383,7 +383,7 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
         // what a human would have read on the card, and pilot's rules are
         // written about effects — publishing a package, deleting hosted
         // resources — which is exactly the level a single command hides.
-        const res = await fetch(`${base}/internal/evaluate`, {
+        const res = await pilotFetch('/internal/evaluate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -396,7 +396,7 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
           signal: AbortSignal.timeout(30_000),
         });
         if (!res.ok) throw new Error(`pilot HTTP ${res.status}`);
-        const body = (await res.json()) as { decision?: string; reason?: string; source?: string };
+        const body = await readPilotVerdict(res);
         if (body.decision === 'deny' || body.decision === 'ask') {
           verdict = { decision: body.decision, reason: `${body.reason ?? ''} (action: ${asg.objective.slice(0, 70)})` };
         } else {

@@ -42,6 +42,7 @@ import { acquireRunnerLock, liveRunnerPid, promoteOnRunnerVacancy, runLoop, runn
 import { listWorkstreams, load, weaverHome } from './store.js';
 import type { ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 import { actionAwaitingPilot } from './actionApproval.js';
+import { pilotFetch } from './pilot.js';
 
 const STALE_ATTEMPT_MS = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
 
@@ -230,8 +231,7 @@ function wrapDetail(text: string, columns: number): string[] {
  */
 let pilotOkAt = 0;
 function probePilot(): void {
-  const base = process.env.WEAVER_PILOT_URL ?? 'http://127.0.0.1:9721';
-  fetch(`${base}/status`, { signal: AbortSignal.timeout(3_000) })
+  pilotFetch('/status', { signal: AbortSignal.timeout(3_000) })
     .then((r) => { if (r.ok) pilotOkAt = Date.now(); })
     .catch(() => {});
 }

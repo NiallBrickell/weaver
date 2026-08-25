@@ -99,6 +99,22 @@ one needs its credentials present on this host.
 An unknown work or action executor fails hard before any attempt starts — a
 silent local fallback would make a misconfigured remote fleet look healthy.
 
+A hosted Pilot must use HTTPS and a bearer registered in Weaver's executor-only
+secret store, never `.env` or an action-secret scope:
+
+```bash
+weaver secret set WEAVER_PILOT_TOKEN --executor
+weaver pilot-auth-check
+```
+
+The check calls Pilot's `/internal/auth-check` through the same client used by
+action evaluation and live tool supervision, and succeeds only on HTTP 204.
+Weaver refuses cleartext remote Pilot URLs, redirects, and remote requests with
+no registered token. Existing unauthenticated Pilot installations remain
+compatible only on loopback (`localhost`, `127.0.0.1`, or `::1`). Executor-only
+secret provisioning carries `WEAVER_PILOT_TOKEN` with the other adapter
+credentials; general environment rendering deliberately does not.
+
 OpenHands provider credentials are values, not settings. Store OpenRouter's as
 `OPENROUTER_API_KEY` with `weaver secret set ... --executor`; Weaver reloads it
 for every attempt without restarting the runner. The older transient

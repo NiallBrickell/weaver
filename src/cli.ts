@@ -124,6 +124,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver login --status                      per-executor auth status + model config with sources (names only, never values)
   weaver login --render-remote-env           emit KEY=value lines to provision a headless host (refuses a TTY — pipe it, e.g. over SSH)
   weaver login --render-remote-executor-secrets  emit the exact adapter-only secret store for secure host provisioning (refuses a TTY)
+  weaver pilot-auth-check                    production preflight: authenticated Pilot /internal/auth-check must return HTTP 204
   weaver link <store-url>                    join this machine to an existing fleet: prove the store is reachable (read-only), then persist WEAVER_STORE into .env
   weaver link                                show where WEAVER_STORE points now (env / .env / default fs) and re-check reachability
   weaver link --unlink                       remove WEAVER_STORE from .env (an ambient env export still wins if set)
@@ -811,6 +812,14 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
     case 'login': {
       const { runLogin } = await import('./login.js');
       await runLogin(rest);
+      break;
+    }
+
+    case 'pilot-auth-check': {
+      if (rest.length) fail('pilot-auth-check accepts no arguments');
+      const { checkPilotAuthentication } = await import('./pilot.js');
+      await checkPilotAuthentication();
+      process.stdout.write('Pilot authentication verified\n');
       break;
     }
 

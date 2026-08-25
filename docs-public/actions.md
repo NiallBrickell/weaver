@@ -10,6 +10,15 @@ An `action` assignment is reserved for one *irreversible* egress to the outside 
 
 [Pilot](https://github.com/NiallBrickell/pilot) keeps a live agent from bringing every routine tool decision back to you. Weaver decides why an action is needed, whether it advances the outcome, and what must happen after it. Pilot supervises the command while it runs; Weaver stays responsible for the outcome until the outside world confirms the effect.
 
+On a hosted execution machine, Pilot's approval surface must itself be
+authenticated: register `WEAVER_PILOT_TOKEN` with `weaver secret set
+WEAVER_PILOT_TOKEN --executor`. Weaver sends that bearer on objective checks,
+engine-command evaluation, live per-tool supervision, and liveness probes, but
+never exposes it to a worker or Workstream state. Run `weaver pilot-auth-check`
+as the runner's startup preflight; it fails closed unless the same client gets
+HTTP 204 from Pilot's authenticated `/internal/auth-check`. Tokenless access is
+retained only for a loopback Pilot used by existing local installations.
+
 ## The lifecycle
 
 1. **Gated**

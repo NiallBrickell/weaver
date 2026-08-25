@@ -33,6 +33,12 @@ There is no channel/adapter layer, and a worker has exactly two lifecycles. A `w
 The lifecycle enforces "the system cannot grade its own homework":
 
 1. **Gated**: created `state: 'gated'` with a mandatory plain-language `approval_ask`. Routine actions default to `approvalMode: 'pilot-or-human'`; an explicit founder/manual reservation is persisted as `approvalMode: 'human-only'`, which the Pilot auto-approval scan structurally excludes. In either mode the scheduler and worker refuse an action until the matching authority is recorded.
+   Every Pilot request uses one shared client. A registered `WEAVER_PILOT_TOKEN`
+   is reloaded from the executor-only secret store per request and sent as a
+   bearer; it never enters typed state or worker environments. Remote URLs are
+   HTTPS-only, redirects fail closed, and tokenless compatibility is loopback-only.
+   `weaver pilot-auth-check` exercises that exact path against an authenticated
+   204 response before a hosted runner starts.
 2. **Executed**: by the worker — or, when a human authored the exact command (`exec.run`), by the ENGINE verbatim with no model in the loop (models judge, humans decide, code executes).
 3. **Read back**: `exec.verify` is a shell command the engine runs deterministically; exit 0 is the only thing that can call the effect real. Non-zero, missing, or un-runnable verification is UNKNOWN, never proof that the effect is absent. Worker prose settles nothing.
 4. **Adopted**: both the coordinator's `adopt_submission` tool and the human `weaver adopt` override refuse an action whose readback has not run or did not confirm the effect — adoption cannot outrank physics.

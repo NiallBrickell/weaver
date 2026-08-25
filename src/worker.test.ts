@@ -11,6 +11,7 @@ import {
   consumeDueWorkerInfrastructureWakes,
   finalizeWorkerRun,
   neutralWorkspace,
+  pilotSupervisor,
   runWorker,
   selectExecutor,
   workerExceptionReason,
@@ -1002,10 +1003,12 @@ test('pilot passthrough — the operator settings allow — is an allow, never a
   const http = await import('node:http');
   const { pilotSupervisor } = await import('./worker.js');
   const answers: Record<string, string> = { Edit: 'passthrough', Bash: 'deny', Write: 'gibberish' };
+  const authorizations: Array<string | undefined> = [];
   const server = http.createServer((req, res) => {
     let raw = '';
     req.on('data', (c) => { raw += c; });
     req.on('end', () => {
+      authorizations.push(req.headers.authorization);
       const { tool_name } = JSON.parse(raw) as { tool_name: string };
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ decision: answers[tool_name], reason: 'matched Claude Code settings' }));
@@ -1020,9 +1023,39 @@ test('pilot passthrough — the operator settings allow — is an allow, never a
     assert.equal((await supervise('Bash', { command: 'rm -rf /' })).behavior, 'deny');
     // Unknown decisions keep failing closed.
     assert.equal((await supervise('Write', { file_path: '/tmp/x' })).behavior, 'deny');
+    assert.deepEqual(authorizations, [undefined, undefined, undefined]);
   } finally {
     delete process.env.WEAVER_PILOT_URL;
     server.close();
+  }
+});
+
+test('Pilot-supervised worker calls carry the registered bearer and never echo it on failure', async () => {
+  const http = await import('node:http');
+  const home = workerHome();
+  const token = 'pilot-worker-bearer-value-1937';
+  setExecutorSecret('WEAVER_PILOT_TOKEN', token);
+  let authorization: string | undefined;
+  const server = http.createServer((req, res) => {
+    authorization = req.headers.authorization;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ decision: 'deny', reason: `reflected ${token}` }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  process.env.WEAVER_PILOT_URL = `http://127.0.0.1:${port}`;
+  try {
+    const supervise = pilotSupervisor('/tmp', 'authenticated-stream');
+    const result = await supervise('Bash', { command: 'true' });
+    assert.equal(authorization, `Bearer ${token}`);
+    assert.equal(result.behavior, 'deny');
+    assert.doesNotMatch(result.message, new RegExp(token));
+    assert.match(result.message, /reflected «secret:WEAVER_PILOT_TOKEN»/);
+  } finally {
+    delete process.env.WEAVER_PILOT_URL;
+    delete process.env.WEAVER_HOME;
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 
