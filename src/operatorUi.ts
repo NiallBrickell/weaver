@@ -48,7 +48,7 @@ import {
 export interface OperatorUiOptions {
   host?: string;
   port?: number;
-  /** Shared password for HTTP Basic auth. The username is durable provenance. */
+  /** Shared password for HTTP Basic auth. The username is a caller-supplied provenance label. */
   token?: string;
 }
 
@@ -263,6 +263,7 @@ function secureHeaders(contentType: string): Record<string, string> {
     'referrer-policy': 'no-referrer',
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY',
+    'strict-transport-security': 'max-age=31536000',
     'cache-control': 'no-store',
   };
 }

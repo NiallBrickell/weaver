@@ -207,6 +207,7 @@ test('board, new-work, and workspace pages are live typed views with secure head
   const board = await fetch(`${base}/board`);
   assert.equal(board.status, 200);
   assert.match(board.headers.get('content-security-policy') ?? '', /connect-src 'self'/);
+  assert.equal(board.headers.get('strict-transport-security'), 'max-age=31536000');
   const boardHtml = await board.text();
   assert.match(boardHtml, /New work/);
   assert.match(boardHtml, /Find and fix the broken customer carousel/);
