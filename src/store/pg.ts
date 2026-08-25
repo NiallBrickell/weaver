@@ -52,18 +52,18 @@ import { RevisionConflictError, SourceKeyConflictError, type Mutator, type State
  * loaded doc carries its own revision (the shape callers already rely on).
  * The policies singleton row is seeded here so mutatePolicies can always
  * UPDATE (a first-writer INSERT race would need ON CONFLICT gymnastics).
- * A multi-statement simple query runs as one implicit transaction, so the
- * leading advisory xact lock serializes concurrent first connects (two fresh
- * processes racing CREATE TABLE IF NOT EXISTS can otherwise hit spurious
- * duplicate-key errors on the catalog) and releases itself at commit.
+ * initializeSchema() runs this DDL and the source-key backfill in one explicit
+ * transaction behind an advisory xact lock. Source keys are decoded in JS,
+ * never with Postgres JSON operators: those operators parse the whole `json`
+ * document and reject an unrelated valid `\\u0000` elsewhere in it.
  */
 const SCHEMA = `
-  SELECT pg_advisory_xact_lock(hashtext('weaver-schema'));
   CREATE TABLE IF NOT EXISTS workstreams (
     slug            text    PRIMARY KEY,
     revision        integer NOT NULL,
     doc             json    NOT NULL,
-    source_key_json text
+    source_key_json text,
+    source_key_initialized boolean NOT NULL DEFAULT false
   );
   CREATE TABLE IF NOT EXISTS artifacts (
     slug     text NOT NULL,
@@ -130,19 +130,7 @@ const SCHEMA = `
   $migration$;
 
   ALTER TABLE workstreams ADD COLUMN IF NOT EXISTS source_key_json text;
-  -- Cast JSON to TEXT rather than extracting it as SQL text: extraction would
-  -- try to materialize U+0000. A JSON scalar's textual representation is the
-  -- same injective encoding used by JSON.stringify on new writes.
-  UPDATE workstreams
-    SET source_key_json = (doc -> 'workstream' -> 'sourceKey')::text
-    WHERE source_key_json IS NULL
-      AND doc -> 'workstream' -> 'sourceKey' IS NOT NULL;
-  -- Two workstreams may never stand for the same external thing. Exact JSON
-  -- string bytes under the deterministic C collation enforce sourceKey
-  -- uniqueness atomically, including source keys containing U+0000.
-  CREATE UNIQUE INDEX IF NOT EXISTS workstreams_source_key
-    ON workstreams (source_key_json COLLATE "C")
-    WHERE source_key_json IS NOT NULL;
+  ALTER TABLE workstreams ADD COLUMN IF NOT EXISTS source_key_initialized boolean NOT NULL DEFAULT false;
   INSERT INTO policies (singleton, revision, store)
     VALUES (true, 0, '{"schemaVersion":1,"revision":0,"policies":[]}'::json)
     ON CONFLICT DO NOTHING;
@@ -164,6 +152,13 @@ export interface ExactPgFleetSnapshot {
   policies: PolicyStore;
 }
 
+export class PgStoreNotEmptyError extends Error {
+  constructor() {
+    super('destination Postgres store is not empty — refusing to merge or overwrite durable fleet state');
+    this.name = 'PgStoreNotEmptyError';
+  }
+}
+
 export class PgStore implements StateStore {
   private readonly pool: pg.Pool;
   private readonly connectionString: string;
@@ -177,7 +172,62 @@ export class PgStore implements StateStore {
   }
 
   private ensureReady(): Promise<void> {
-    return (this.ready ??= this.pool.query(SCHEMA).then(() => {}));
+    return (this.ready ??= this.initializeSchema());
+  }
+
+  /**
+   * One serialized schema transaction, including the only source-key backfill.
+   * `source_key_initialized` distinguishes "backfilled and genuinely absent"
+   * from "legacy row not inspected yet". Reading a json column returns its raw
+   * representation to node-postgres, whose JSON.parse preserves U+0000; no SQL
+   * JSON operator is allowed here because it would decode the whole document
+   * through PostgreSQL text before reaching the requested field.
+   */
+  private async initializeSchema(): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('weaver-schema'))");
+      await client.query(SCHEMA);
+
+      const pending = await client.query(
+        `SELECT slug, doc FROM workstreams
+         WHERE NOT source_key_initialized
+         ORDER BY slug
+         FOR UPDATE`,
+      );
+      for (const row of pending.rows as { slug: string; doc: WorkstreamDoc }[]) {
+        const sourceKey = row.doc?.workstream?.sourceKey;
+        if (sourceKey !== undefined && typeof sourceKey !== 'string') {
+          throw new Error(`workstream '${row.slug}' has an invalid non-string sourceKey`);
+        }
+        await client.query(
+          `UPDATE workstreams
+           SET source_key_json = $1, source_key_initialized = true
+           WHERE slug = $2`,
+          [sourceKey === undefined ? null : JSON.stringify(sourceKey), row.slug],
+        );
+      }
+
+      // Two workstreams may never stand for the same external thing. Exact
+      // JSON string bytes under C collation enforce uniqueness atomically,
+      // including source keys containing U+0000. Create only after every
+      // legacy row is initialized so duplicates fail the whole transaction.
+      await client.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS workstreams_source_key
+         ON workstreams (source_key_json COLLATE "C")
+         WHERE source_key_json IS NOT NULL`,
+      );
+      await client.query(
+        'ALTER TABLE workstreams ALTER COLUMN source_key_initialized SET DEFAULT true',
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   /**
@@ -210,14 +260,14 @@ export class PgStore implements StateStore {
         (existingPolicy.rows[0]!.revision as number) === 0 &&
         isDeepStrictEqual(existingPolicy.rows[0]!.store, emptyPolicyStore());
       if (row.workstreams !== 0 || row.artifacts !== 0 || !policyIsEmpty) {
-        throw new Error(
-          'destination Postgres store is not empty — refusing to merge or overwrite durable fleet state',
-        );
+        throw new PgStoreNotEmptyError();
       }
 
       for (const entry of snapshot.workstreams) {
         await client.query(
-          'INSERT INTO workstreams (slug, revision, doc, source_key_json) VALUES ($1, $2, $3::json, $4)',
+          `INSERT INTO workstreams
+             (slug, revision, doc, source_key_json, source_key_initialized)
+           VALUES ($1, $2, $3::json, $4, true)`,
           [entry.slug, entry.revision, JSON.stringify(entry.doc), sourceKeyJson(entry.doc)],
         );
       }
@@ -256,17 +306,27 @@ export class PgStore implements StateStore {
         throw new Error('Postgres policy row revision does not match its stored PolicyStore revision');
       }
       await client.query('COMMIT');
+      const workstreamSnapshot = workstreams.rows.map((row) => ({
+        slug: row.slug as string,
+        revision: row.revision as number,
+        doc: row.doc as WorkstreamDoc,
+      }));
+      const artifactSnapshot = artifacts.rows.map((row) => ({
+        slug: row.slug as string,
+        relPath: row.rel_path as string,
+        content: (row.content as Buffer).toString('utf8'),
+      }));
+      // Database collation is deployment-specific. Canonicalize with the same
+      // comparator used by the filesystem snapshot before byte-exact readback
+      // comparison (for example, `go-vb` and `google` order differently under
+      // common Postgres and JavaScript locales).
+      workstreamSnapshot.sort((a, b) => a.slug.localeCompare(b.slug));
+      artifactSnapshot.sort(
+        (a, b) => a.slug.localeCompare(b.slug) || a.relPath.localeCompare(b.relPath),
+      );
       return {
-        workstreams: workstreams.rows.map((row) => ({
-          slug: row.slug as string,
-          revision: row.revision as number,
-          doc: row.doc as WorkstreamDoc,
-        })),
-        artifacts: artifacts.rows.map((row) => ({
-          slug: row.slug as string,
-          relPath: row.rel_path as string,
-          content: (row.content as Buffer).toString('utf8'),
-        })),
+        workstreams: workstreamSnapshot,
+        artifacts: artifactSnapshot,
         policies: policyStore,
       };
     } catch (error) {
@@ -299,7 +359,9 @@ export class PgStore implements StateStore {
     writeJournalReceipt(printoutJournalDir(core.slug), creationReceipt(doc));
     try {
       await this.pool.query(
-        'INSERT INTO workstreams (slug, revision, doc, source_key_json) VALUES ($1, $2, $3::json, $4)',
+        `INSERT INTO workstreams
+           (slug, revision, doc, source_key_json, source_key_initialized)
+         VALUES ($1, $2, $3::json, $4, true)`,
         [core.slug, doc.revision, JSON.stringify(doc), sourceKeyJson(doc)],
       );
     } catch (e) {
@@ -350,7 +412,10 @@ export class PgStore implements StateStore {
       attemptedSourceKey = doc.workstream.sourceKey;
       const upd = await client.query(
         `UPDATE workstreams
-         SET doc = $1::json, source_key_json = $2, revision = revision + 1
+         SET doc = $1::json,
+             source_key_json = $2,
+             source_key_initialized = true,
+             revision = revision + 1
          WHERE slug = $3 AND revision = $4`,
         [JSON.stringify(doc), sourceKeyJson(doc), slug, stored],
       );
@@ -532,7 +597,11 @@ export class PgStore implements StateStore {
       doc.revision = stored + 1;
       await client.query(
         `UPDATE workstreams
-         SET slug = $1, doc = $2::json, source_key_json = $3, revision = revision + 1
+         SET slug = $1,
+             doc = $2::json,
+             source_key_json = $3,
+             source_key_initialized = true,
+             revision = revision + 1
          WHERE slug = $4`,
         [newSlug, JSON.stringify(doc), sourceKeyJson(doc), oldSlug],
       );

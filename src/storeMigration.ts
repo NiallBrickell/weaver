@@ -26,7 +26,7 @@ import { acquireRunnerLock, liveRunnerPid } from './runner.js';
 import { assertNoSecretValues, loadAllSecrets } from './secrets.js';
 import { sha256, weaverHome, workstreamDir } from './store.js';
 import { emptyPolicyStore } from './store/doc.js';
-import { PgStore, type ExactPgFleetSnapshot } from './store/pg.js';
+import { PgStore, PgStoreNotEmptyError, type ExactPgFleetSnapshot } from './store/pg.js';
 import type { WorkstreamDoc } from './types.js';
 
 export interface FleetArtifactSnapshot {
@@ -419,7 +419,15 @@ export async function runFilesystemToPostgresCopy(destinationUrl: string): Promi
 
     let destination = new PgStore(destinationUrl);
     try {
-      await destination.importExactFleet(pgSnapshot(source));
+      try {
+        await destination.importExactFleet(pgSnapshot(source));
+      } catch (error) {
+        // A previous invocation may have committed the exact snapshot and then
+        // failed while opening the fresh verification pool. Never overwrite a
+        // non-empty destination: the readback below is the only way it can be
+        // accepted as a completed copy.
+        if (!(error instanceof PgStoreNotEmptyError)) throw error;
+      }
       await destination.close();
 
       // A new pool proves the committed database state, not an object retained
