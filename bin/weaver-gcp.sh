@@ -38,6 +38,7 @@ ZONE="${WEAVER_GCP_ZONE:-europe-west2-a}"
 REGION="${ZONE%-*}"
 VM="${WEAVER_GCP_VM:-weaver-fleet}"
 MACHINE="${WEAVER_GCP_MACHINE:-e2-standard-2}"
+CONCURRENCY="${WEAVER_GCP_CONCURRENCY:-4}"
 NETWORK="${WEAVER_GCP_NETWORK:-weaver-vpc}"
 SUBNET="${WEAVER_GCP_SUBNET:-weaver-subnet}"
 REPO_URL="https://github.com/NiallBrickell/weaver"
@@ -102,6 +103,9 @@ cmd_create() {
     *) echo "❌ usage: weaver-gcp create [--external-store]" >&2; exit 1 ;;
   esac
   [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp create [--external-store]" >&2; exit 1; }
+  [[ "$CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || {
+    echo "❌ WEAVER_GCP_CONCURRENCY must be a positive integer" >&2; exit 1;
+  }
 
   ensure_network
   if vm_exists; then
@@ -130,7 +134,7 @@ cmd_create() {
   else
     echo "provisioning runtime (node 22, yarn, docker, bundled postgres, systemd units; no start)…"
   fi
-  "${GSSH[@]}" --command "sudo env WEAVER_GCP_STORE_MODE=$store_mode bash -s" <<'PROVISION'
+  "${GSSH[@]}" --command "sudo env WEAVER_GCP_STORE_MODE=$store_mode WEAVER_GCP_CONCURRENCY=$CONCURRENCY bash -s" <<'PROVISION'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -231,7 +235,7 @@ if [ "$WEAVER_GCP_STORE_MODE" = "bundled" ]; then
 fi
 
 # systemd units
-cat > /etc/systemd/system/weaver-run.service <<'EOF'
+cat > /etc/systemd/system/weaver-run.service <<EOF
 [Unit]
 Description=Weaver resident runner
 After=network-online.target docker.service
@@ -240,7 +244,7 @@ Wants=network-online.target
 [Service]
 User=weaver
 WorkingDirectory=/opt/weaver
-ExecStart=/usr/local/bin/weaver run --interval 5
+ExecStart=/usr/local/bin/weaver run --interval 5 --concurrency $WEAVER_GCP_CONCURRENCY
 Restart=always
 RestartSec=10
 
@@ -330,10 +334,11 @@ cmd_push_env() {
     echo "❌ weaver login produced no remote env — run: weaver login" >&2; exit 1
   fi
   "$REPO/bin/weaver.mjs" login --render-remote-executor-secrets > "$PUSH_EXECUTOR_SECRETS_TMP"
-  # Refresh the privileged installer from the updated checkout before using a
-  # newly added mode; this keeps an existing VM upgradeable without re-running
-  # all provisioning and carries no credential in the SSH command itself.
-  "${GSSH[@]}" --command 'sudo install -o root -g root -m 755 /opt/weaver/bin/weaver-install-env.sh /usr/local/sbin/weaver-install-env && sudo /usr/local/sbin/weaver-install-env merge' < "$PUSH_ENV_TMP"
+  # Stream this checkout's installer before invoking it. The VM may still run
+  # an older checkout whose helper lacks the new mode; helper code is public
+  # and travels alone, while every credential remains on its later SSH stdin.
+  "${GSSH[@]}" --command 'helper="/tmp/weaver-install-env.local.$$"; staged="/usr/local/sbin/.weaver-install-env.$$"; trap "rm -f -- $helper; sudo rm -f -- $staged" EXIT; umask 077; cat > "$helper"; sudo install -o root -g root -m 755 "$helper" "$staged"; sudo mv -f "$staged" /usr/local/sbin/weaver-install-env' < "$REPO/bin/weaver-install-env.sh"
+  "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env merge' < "$PUSH_ENV_TMP"
   "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env executor-secrets' < "$PUSH_EXECUTOR_SECRETS_TMP"
   # Codex auth rides alongside if the local machine has it
   if [ -f "$CODEX_AUTH_HOME/auth.json" ]; then

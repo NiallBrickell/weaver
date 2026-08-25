@@ -152,7 +152,9 @@ bin/weaver-gcp.sh status                   # services + runner heartbeat
 
 The project defaults to the active gcloud project; zone, VM name, machine type,
 network, and every override use `WEAVER_GCP_*` variables at the top of the
-script. `push-env --restart` and `update --restart`
+script. The resident unit defaults to four concurrent workstreams on the
+default 8 GB VM (`WEAVER_GCP_CONCURRENCY=4`) and still applies the runner's
+load-aware throttling below that ceiling. `push-env --restart` and `update --restart`
 retain the old one-command restart when explicitly wanted; plain `push-env`
 and `update` never disturb a running process. `logs` tails the runner journal;
 on the box itself, `weaver status <slug>` works as-is — the safe launcher reads

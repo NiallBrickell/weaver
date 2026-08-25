@@ -20,7 +20,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(remoteEnv = ''): { root: string; env: NodeJS.ProcessEnv } {
+function fixture(remoteEnv = '', staleRemoteInstaller = false): { root: string; env: NodeJS.ProcessEnv } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-gcp-script-'));
   roots.push(root);
   const bin = path.join(root, 'bin');
@@ -39,9 +39,24 @@ n=$((n + 1))
 printf '%s\n' "$n" > "$counter"
 printf '%s\n' "$@" > "$WEAVER_GCP_TEST_CALLS/$n.args"
 cat > "$WEAVER_GCP_TEST_CALLS/$n.stdin"
+if [ "\${WEAVER_GCP_TEST_STALE_INSTALLER:-0}" = 1 ]; then
+  if printf '%s\n' "$@" | grep -q '/tmp/weaver-install-env.local'; then
+    cp "$WEAVER_GCP_TEST_CALLS/$n.stdin" "$WEAVER_GCP_TEST_REMOTE_INSTALLER"
+  fi
+  if printf '%s\n' "$@" | grep -q 'weaver-install-env executor-secrets'; then
+    grep -q '^  executor-secrets)' "$WEAVER_GCP_TEST_REMOTE_INSTALLER" || {
+      echo 'remote installer does not support executor-secrets' >&2
+      exit 91
+    }
+  fi
+fi
 `,
     { mode: 0o755 },
   );
+  const remoteInstaller = path.join(root, 'remote-installer');
+  if (staleRemoteInstaller) {
+    fs.writeFileSync(remoteInstaller, '#!/bin/bash\ncase "$1" in merge|store) exit 0;; esac\n');
+  }
   fs.writeFileSync(
     path.join(bin, 'node'),
     `#!/bin/bash
@@ -60,6 +75,8 @@ printf '%s' "$WEAVER_GCP_TEST_REMOTE_ENV"
       WEAVER_GCP_VM: 'test-runner',
       WEAVER_GCP_TEST_CALLS: calls,
       WEAVER_GCP_TEST_REMOTE_ENV: remoteEnv,
+      WEAVER_GCP_TEST_STALE_INSTALLER: staleRemoteInstaller ? '1' : '0',
+      WEAVER_GCP_TEST_REMOTE_INSTALLER: remoteInstaller,
     },
   };
 }
@@ -68,8 +85,9 @@ function run(
   args: string[],
   input: string | undefined,
   remoteEnv = '',
+  staleRemoteInstaller = false,
 ): { result: SpawnSyncReturns<string>; root: string } {
-  const f = fixture(remoteEnv);
+  const f = fixture(remoteEnv, staleRemoteInstaller);
   const result = spawnSync('bash', [script, ...args], {
     env: f.env,
     ...(input === undefined ? {} : { input }),
@@ -218,7 +236,7 @@ test('set-store refuses a non-Postgres value before invoking gcloud', () => {
   assert.equal(fs.existsSync(path.join(root, 'calls', 'count')), false);
 });
 
-test('push-env forwards complete rendered config and does not restart by default', () => {
+test('push-env upgrades a stale remote installer before securely forwarding identities and config', () => {
   const rendered = [
     'WEAVER_EXECUTOR=pi',
     'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5',
@@ -228,15 +246,18 @@ test('push-env forwards complete rendered config and does not restart by default
     'WEAVER_WORKSPACE_ROOT=/home/weaver/workspaces',
     '',
   ].join('\n');
-  const { result, root } = run(['push-env'], undefined, rendered);
+  const { result, root } = run(['push-env'], undefined, rendered, true);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(call(root, 1, 'stdin'), rendered);
-  assert.match(call(root, 1, 'args'), /weaver-install-env merge/);
-  assert.match(call(root, 1, 'args'), /install.*weaver-install-env\.sh/);
+  assert.equal(call(root, 1, 'stdin'), fs.readFileSync(installer, 'utf8'));
+  assert.match(call(root, 1, 'args'), /\/tmp\/weaver-install-env\.local/);
+  assert.ok(!call(root, 1, 'stdin').includes('Primary application'));
   assert.equal(call(root, 2, 'stdin'), rendered);
-  assert.match(call(root, 2, 'args'), /weaver-install-env executor-secrets/);
+  assert.match(call(root, 2, 'args'), /weaver-install-env merge/);
+  assert.equal(call(root, 3, 'stdin'), rendered);
+  assert.match(call(root, 3, 'args'), /weaver-install-env executor-secrets/);
   assert.ok(!allCallArgs(root).includes('systemctl'));
-  assert.equal(fs.readFileSync(path.join(root, 'calls', 'count'), 'utf8').trim(), '2');
+  assert.equal(fs.readFileSync(path.join(root, 'calls', 'count'), 'utf8').trim(), '3');
+  assert.match(fs.readFileSync(path.join(root, 'remote-installer'), 'utf8'), /^  executor-secrets\)/m);
   assert.match(result.stdout, /services were not restarted/);
   assert.ok(!`${result.stdout}${result.stderr}`.includes('Primary application'));
 });
@@ -244,7 +265,7 @@ test('push-env forwards complete rendered config and does not restart by default
 test('restart remains an explicit push-env and update option', () => {
   const pushed = run(['push-env', '--restart'], undefined, 'WEAVER_EXECUTOR=pi\n');
   assert.equal(pushed.result.status, 0, pushed.result.stderr);
-  assert.match(call(pushed.root, 3, 'args'), /systemctl restart weaver-run weaver-serve/);
+  assert.match(call(pushed.root, 4, 'args'), /systemctl restart weaver-run weaver-serve/);
 
   const updated = run(['update'], undefined);
   assert.equal(updated.result.status, 0, updated.result.stderr);
@@ -264,7 +285,9 @@ test('external-store provisioning selects execution-only mode and never starts s
   const provisionArgs = call(root, count, 'args');
   assert.match(allCallArgs(root), /compute\ninstances\nstart\ntest-runner/);
   assert.match(provisionArgs, /WEAVER_GCP_STORE_MODE=external/);
+  assert.match(provisionArgs, /WEAVER_GCP_CONCURRENCY=4/);
   assert.match(call(root, count, 'stdin'), /systemctl disable --now weaver-run weaver-serve/);
+  assert.match(call(root, count, 'stdin'), /run --interval 5 --concurrency \$WEAVER_GCP_CONCURRENCY/);
   assert.ok(!provisionArgs.includes('systemctl start'));
   assert.ok(!provisionArgs.includes('systemctl restart'));
   assert.match(result.stdout, /provisioned without starting/);
