@@ -463,7 +463,7 @@ test('a typed bounded repair pins the reviewed Pi/glm route on its disposable at
   process.env.WEAVER_WORKER_MODEL = 'zai-coding-plan/glm-5.3';
   const executor: WorkerExecutor = {
     async execute(req) {
-      assert.equal(req.model, 'openrouter/moonshotai/kimi-k3');
+      assert.equal(req.model, 'zai-coding-plan/glm-5.3');
       const reply = await req.submit.submitResult({
         summary: 'Applied and verified the bounded repair through the reviewed Pi route.',
         artifact: {

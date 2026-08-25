@@ -461,9 +461,9 @@ test('a typed worker-model wait parks assignments without parsing prose', async 
   // The primary coordinator is limited, but its fallback remains available.
   assert.equal(coordinatorBackoffActive(doc), false);
   assert.deepEqual(runnableAssignments(doc), ['asg_first', 'asg_second']);
-  doc.capacity.byModel['claude-opus-5'] = {
+  doc.capacity.byModel['claude-opus-4-8'] = {
     ...workerEntry,
-    wait: { ...workerEntry.wait, source: 'coordinator', model: 'claude-opus-5' },
+    wait: { ...workerEntry.wait, source: 'coordinator', model: 'claude-opus-4-8' },
   };
   assert.equal(coordinatorBackoffActive(doc), true);
   doc.capacity = { state: 'backoff', byModel: { sonnet: workerEntry } };

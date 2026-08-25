@@ -142,7 +142,7 @@ test('a limited primary model degrades the pass to the fallback, and only then',
   // Primary limited, fallback clear → fallback.
   const capacity = { state: 'backoff' as const, byModel: { 'claude-fable-5': { wait: wait('claude-fable-5', future), consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now } } };
   doc.capacity = capacity;
-  assert.equal(pickCoordinatorModel(doc, now), 'claude-opus-5');
+  assert.equal(pickCoordinatorModel(doc, now), 'claude-opus-4-8');
 
   // Primary limited but its retryAt has passed → primary again (probe/retry).
   capacity.byModel['claude-fable-5']!.wait = wait('claude-fable-5', past);
@@ -150,7 +150,7 @@ test('a limited primary model degrades the pass to the fallback, and only then',
 
   // Both pools limited → primary (normal backoff machinery owns it).
   capacity.byModel['claude-fable-5']!.wait = wait('claude-fable-5', future);
-  (capacity.byModel as Record<string, unknown>)['claude-opus-5'] = { wait: wait('claude-opus-5', future), consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now };
+  (capacity.byModel as Record<string, unknown>)['claude-opus-4-8'] = { wait: wait('claude-opus-4-8', future), consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now };
   assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5');
 });
 

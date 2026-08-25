@@ -68,10 +68,10 @@ test('an unset chain preserves the legacy single-fallback pair exactly', () => {
   withEnv({}, () => {
     assert.deepEqual(coordinatorTargets(), [
       { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' },
-      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5' },
+      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-4-8' },
     ]);
     assert.deepEqual(coordinatorFallbackCapacityTarget(), {
-      executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5',
+      executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-4-8',
     });
   });
   withEnv({
