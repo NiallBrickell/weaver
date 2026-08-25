@@ -1,7 +1,7 @@
 /**
  * `weaver login` rails: the remote-env render carries exactly one Claude
- * principal, never host-local settings, and never a value an EnvironmentFile
- * would misparse; the `.env` updater is surgical. No model calls anywhere.
+ * principal, never the store/home location, and never a multiline value; the
+ * `.env` updater is surgical. No model calls anywhere.
  */
 
 import { test, beforeEach } from 'node:test';
@@ -55,7 +55,13 @@ test('render forwards registered provider keys and mirrors config, and flags cod
     {
       WEAVER_EXECUTOR: 'pi',
       WEAVER_WORKER_MODEL: 'openrouter/moonshotai/kimi-k3',
+      WEAVER_WORKER_MODEL_COMPLEX: 'zai-coding-plan/glm-5.3',
+      WEAVER_WORKER_FALLBACKS: 'codex-sdk:gpt-5.6-sol,pi:zai/glm-5.3',
+      WEAVER_COORDINATOR_FALLBACKS: 'codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5',
       WEAVER_COORDINATOR_FALLBACK_EXECUTOR: 'codex-sdk',
+      WEAVER_HOUSE_JSON: '{"repoMap":"Primary application: /srv/application","tags":["application"]}',
+      WEAVER_WORKSPACE_ROOT: '/var/lib/weaver/workspaces',
+      WEAVER_PILOT_URL: 'http://127.0.0.1:9721',
       WEAVER_RUNNER_EXECUTORS: undefined, // unset locally → not mirrored
     },
   );
@@ -64,6 +70,12 @@ test('render forwards registered provider keys and mirrors config, and flags cod
   assert.ok(lines.includes('WEAVER_SERVE_TOKEN=serve-token'));
   assert.ok(lines.includes('WEAVER_EXECUTOR=pi'));
   assert.ok(lines.includes('WEAVER_WORKER_MODEL=openrouter/moonshotai/kimi-k3'));
+  assert.ok(lines.includes('WEAVER_WORKER_MODEL_COMPLEX=zai-coding-plan/glm-5.3'));
+  assert.ok(lines.includes('WEAVER_WORKER_FALLBACKS=codex-sdk:gpt-5.6-sol,pi:zai/glm-5.3'));
+  assert.ok(lines.includes('WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5'));
+  assert.ok(lines.includes('WEAVER_HOUSE_JSON={"repoMap":"Primary application: /srv/application","tags":["application"]}'));
+  assert.ok(lines.includes('WEAVER_WORKSPACE_ROOT=/var/lib/weaver/workspaces'));
+  assert.ok(lines.includes('WEAVER_PILOT_URL=http://127.0.0.1:9721'));
   assert.ok(!lines.some((l) => l.startsWith('WEAVER_RUNNER_EXECUTORS=')));
   assert.ok(warnings.some((w) => w.includes('codex-sdk auth is a login file')));
 });

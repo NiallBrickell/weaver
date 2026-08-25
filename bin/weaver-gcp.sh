@@ -2,34 +2,38 @@
 #
 # weaver-gcp — run the fleet's resident runner on a headless GCP VM.
 #
-#   weaver-gcp create             create + provision the VM (idempotent-ish)
-#   weaver-gcp push-env           render /etc/weaver/env on the VM from local creds
+#   weaver-gcp create [--external-store]  create + provision (does not start)
+#   weaver-gcp set-store          install an external Postgres URL from hidden stdin
+#   weaver-gcp push-env [--restart]  merge credentials/config (no restart by default)
 #   weaver-gcp tunnel             forward Postgres + serve to localhost
 #   weaver-gcp join               print the exact commands a second machine runs
 #   weaver-gcp ssh [cmd…]         SSH into the VM (IAP tunnel)
 #   weaver-gcp status             VM + services + runner heartbeat
 #   weaver-gcp logs [unit]        tail a unit's journal (default weaver-run)
+#   weaver-gcp start              start the execution runner
+#   weaver-gcp stop               stop runner + ingress
 #   weaver-gcp restart            restart runner + serve (after push-env / git pull)
-#   weaver-gcp update             git pull + yarn install on the VM, then restart
-#   weaver-gcp destroy            delete the VM (asks; Postgres data dies with it)
+#   weaver-gcp update [--restart] git pull + yarn install (no restart by default)
+#   weaver-gcp destroy            delete the VM (asks; bundled Postgres dies too)
 #
 # Design notes (why it is shaped this way):
 #   - The VM carries NO service account and NO scopes: an agent workload on it
 #     has zero GCP API reach. Blast radius is the box, not the project.
 #   - No inbound ports are opened. SSH rides the project's existing IAP rule;
-#     laptops reach Postgres and `weaver serve` through `weaver-gcp tunnel`.
-#     Exposing serve publicly is a later, deliberate step — not a default.
-#   - Secrets travel over SSH stdin into a root-owned 0600 EnvironmentFile.
+#     the bundled-store path reaches Postgres and `weaver serve` through
+#     `weaver-gcp tunnel`. Exposing serve publicly is never a default.
+#   - Secrets travel over SSH stdin into a service-user-owned 0600 env file.
 #     They never pass through VM metadata, gcloud args, or the Weaver store —
 #     the store refuses documents embedding known secret values, and this
 #     script keeps values out of places `ps`/metadata viewers can read.
-#   - Postgres runs in Docker on the VM, bound to 127.0.0.1. The fleet store
-#     is reachable from laptops only through the tunnel; `weaver login --remote`
-#     (see docs-public/hosting.md) is how a laptop joins the fleet.
+#   - The default bundled Postgres remains available for a one-box fleet.
+#     `create --external-store` instead provisions execution only; `set-store`
+#     points that runner at shared Postgres without ever receiving the URL as
+#     a command argument.
 
 set -euo pipefail
 
-PROJECT="${WEAVER_GCP_PROJECT:-erdo-ai}"
+PROJECT="${WEAVER_GCP_PROJECT:-}"
 ZONE="${WEAVER_GCP_ZONE:-europe-west2-a}"
 REGION="${ZONE%-*}"
 VM="${WEAVER_GCP_VM:-weaver-fleet}"
@@ -38,13 +42,36 @@ NETWORK="${WEAVER_GCP_NETWORK:-weaver-vpc}"
 SUBNET="${WEAVER_GCP_SUBNET:-weaver-subnet}"
 REPO_URL="https://github.com/NiallBrickell/weaver"
 REPO="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
+CODEX_AUTH_HOME="${CODEX_HOME:-$HOME/.codex}"
 
-GC=(gcloud --project "$PROJECT")
-GSSH=(gcloud compute ssh "$VM" --project "$PROJECT" --zone "$ZONE" --tunnel-through-iap)
+GC=()
+GSSH=()
 
-usage() { sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+
+resolve_target() {
+  if [ -z "$PROJECT" ]; then
+    PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
+  fi
+  if [ -z "$PROJECT" ] || [ "$PROJECT" = "(unset)" ]; then
+    echo "❌ no GCP project configured — set WEAVER_GCP_PROJECT or run: gcloud config set project <project>" >&2
+    exit 1
+  fi
+  GC=(gcloud --project "$PROJECT")
+  GSSH=(gcloud compute ssh "$VM" --project "$PROJECT" --zone "$ZONE" --tunnel-through-iap)
+}
 
 vm_exists() { "${GC[@]}" compute instances describe "$VM" --zone "$ZONE" >/dev/null 2>&1; }
+
+wait_for_ssh() {
+  echo "waiting for SSH…"
+  for _ in $(seq 1 30); do
+    "${GSSH[@]}" --command 'true' >/dev/null 2>&1 && return 0
+    sleep 5
+  done
+  echo "❌ VM did not become reachable over IAP SSH" >&2
+  exit 1
+}
 
 # ── create ────────────────────────────────────────────────────────────────────
 # Isolation posture (deliberate, all three hold at once):
@@ -68,9 +95,23 @@ ensure_network() {
 }
 
 cmd_create() {
+  local store_mode="bundled"
+  case "${1:-}" in
+    --external-store) store_mode="external"; shift ;;
+    "") ;;
+    *) echo "❌ usage: weaver-gcp create [--external-store]" >&2; exit 1 ;;
+  esac
+  [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp create [--external-store]" >&2; exit 1; }
+
   ensure_network
   if vm_exists; then
-    echo "✓ VM $VM already exists in $ZONE — provisioning only"
+    if [ "$("${GC[@]}" compute instances describe "$VM" --zone "$ZONE" --format='value(status)')" != "RUNNING" ]; then
+      echo "starting existing VM $VM for provisioning (Weaver services remain stopped)…"
+      "${GC[@]}" compute instances start "$VM" --zone "$ZONE"
+      wait_for_ssh
+    else
+      echo "✓ VM $VM already exists in $ZONE — provisioning only"
+    fi
   else
     echo "creating $VM ($MACHINE, $ZONE, isolated VPC, no service account, no open ports)…"
     "${GC[@]}" compute instances create "$VM" \
@@ -80,16 +121,16 @@ cmd_create() {
       --boot-disk-size 30GB --boot-disk-type pd-balanced \
       --network "$NETWORK" --subnet "$SUBNET" \
       --no-service-account --no-scopes \
-      --labels app=weaver,owner=niall
-    echo "waiting for SSH…"
-    for _ in $(seq 1 30); do
-      "${GSSH[@]}" --command 'true' >/dev/null 2>&1 && break
-      sleep 5
-    done
+      --labels app=weaver
+    wait_for_ssh
   fi
 
-  echo "provisioning runtime (node 22, yarn, docker, postgres, systemd units)…"
-  "${GSSH[@]}" --command 'sudo bash -s' <<'PROVISION'
+  if [ "$store_mode" = "external" ]; then
+    echo "provisioning execution runtime (node 22, yarn, docker, systemd units; external store; no start)…"
+  else
+    echo "provisioning runtime (node 22, yarn, docker, bundled postgres, systemd units; no start)…"
+  fi
+  "${GSSH[@]}" --command "sudo env WEAVER_GCP_STORE_MODE=$store_mode bash -s" <<'PROVISION'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -115,7 +156,7 @@ if ! command -v node >/dev/null || [ "$(node -e 'console.log(process.versions.no
 fi
 corepack enable
 
-# Docker (for the fleet Postgres)
+# Docker supports the bundled Postgres path and container-backed executors.
 if ! command -v docker >/dev/null; then
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
@@ -133,42 +174,61 @@ if [ ! -d /opt/weaver/.git ]; then
 fi
 sudo -u weaver bash -c 'cd /opt/weaver && git pull --ff-only && yarn install'
 
-# Fleet Postgres: localhost-only, password generated once and kept on the box
-if [ ! -f /etc/weaver/pg-password ]; then
-  mkdir -p /etc/weaver
-  # openssl, not `tr </dev/urandom | head`: head's early close SIGPIPEs tr,
-  # which `set -o pipefail` escalates into an abort of the whole provision.
-  openssl rand -hex 16 > /etc/weaver/pg-password
-  chmod 600 /etc/weaver/pg-password
-fi
-PGPASS="$(cat /etc/weaver/pg-password)"
-if ! docker inspect weaver-pg >/dev/null 2>&1; then
-  docker run -d --name weaver-pg --restart unless-stopped \
-    -p 127.0.0.1:5432:5432 \
-    -e POSTGRES_USER=weaver -e POSTGRES_PASSWORD="$PGPASS" -e POSTGRES_DB=weaver \
-    -v weaver-pg-data:/var/lib/postgresql/data \
-    postgres:16
-fi
-
-# Base (non-secret) env — push-env appends the secret half. Owned by the
-# weaver user: the runner already holds every value in its process env, so
-# user-readability widens nothing — and it lets ad-hoc CLI use on the box
-# (weaver status, weaver log) see the same fleet the services do.
+# Base env. `push-env` merges portable credentials/config into this file and
+# preserves host-local settings instead of rebuilding it from two selected
+# lines. The runner already holds every value in its process env, so allowing
+# that same service user to read it widens nothing and keeps ad-hoc CLI honest.
+mkdir -p /etc/weaver
 touch /etc/weaver/env && chown weaver:weaver /etc/weaver/env && chmod 600 /etc/weaver/env
-if ! grep -q 'etc/weaver/env' /home/weaver/.bashrc 2>/dev/null; then
-  echo 'set -a; [ -r /etc/weaver/env ] && . /etc/weaver/env; set +a' >> /home/weaver/.bashrc
-fi
+# Older revisions sourced the env as shell syntax. Values such as JSON and
+# tokens are data, not shell, so remove that legacy hook. The wrapper below
+# validates and exports each complete KEY=value line without eval instead.
+sed -i '\|etc/weaver/env|d' /home/weaver/.bashrc 2>/dev/null || true
 cat > /usr/local/bin/weaver <<'EOF'
 #!/bin/bash
 # CLI onto the hosted fleet: same env the systemd services run with.
-set -a; [ -r /etc/weaver/env ] && . /etc/weaver/env; set +a
+set -euo pipefail
+if [ -r /etc/weaver/env ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|\#*) continue ;; esac
+    key="${line%%=*}"
+    [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || {
+      echo "malformed Weaver host env key: $key" >&2; exit 1;
+    }
+    export "$line"
+  done < /etc/weaver/env
+fi
 cd /opt/weaver && exec yarn weaver "$@"
 EOF
 chmod 755 /usr/local/bin/weaver
-grep -q '^WEAVER_STORE=' /etc/weaver/env || cat >> /etc/weaver/env <<EOF
-WEAVER_STORE=postgres://weaver:${PGPASS}@127.0.0.1:5432/weaver
-WEAVER_HOME=/home/weaver/state
-EOF
+grep -q '^WEAVER_HOME=' /etc/weaver/env || echo 'WEAVER_HOME=/home/weaver/state' >> /etc/weaver/env
+grep -q '^WEAVER_WORKSPACE_ROOT=' /etc/weaver/env || echo 'WEAVER_WORKSPACE_ROOT=/home/weaver/workspaces' >> /etc/weaver/env
+mkdir -p /home/weaver/state /home/weaver/workspaces
+chown -R weaver:weaver /home/weaver/state /home/weaver/workspaces
+
+# One audited write path for the service-user env file. Both modes read
+# values on stdin: credentials and database URLs never enter argv, gcloud's
+# command log, or command output. `merge` replaces only the keys it receives
+# and preserves every host-local line not in the render.
+install -o root -g root -m 755 /opt/weaver/bin/weaver-install-env.sh /usr/local/sbin/weaver-install-env
+
+if [ "$WEAVER_GCP_STORE_MODE" = "bundled" ]; then
+  # Fleet Postgres: localhost-only, password generated once and kept on the box.
+  if [ ! -f /etc/weaver/pg-password ]; then
+    openssl rand -hex 16 > /etc/weaver/pg-password
+    chmod 600 /etc/weaver/pg-password
+  fi
+  PGPASS="$(cat /etc/weaver/pg-password)"
+  if ! docker inspect weaver-pg >/dev/null 2>&1; then
+    docker run -d --name weaver-pg --restart unless-stopped \
+      -p 127.0.0.1:5432:5432 \
+      -e POSTGRES_USER=weaver -e POSTGRES_PASSWORD="$PGPASS" -e POSTGRES_DB=weaver \
+      -v weaver-pg-data:/var/lib/postgresql/data \
+      postgres:16
+  fi
+  grep -q '^WEAVER_STORE=' /etc/weaver/env || \
+    echo "WEAVER_STORE=postgres://weaver:${PGPASS}@127.0.0.1:5432/weaver" >> /etc/weaver/env
+fi
 
 # systemd units
 cat > /etc/systemd/system/weaver-run.service <<'EOF'
@@ -180,8 +240,7 @@ Wants=network-online.target
 [Service]
 User=weaver
 WorkingDirectory=/opt/weaver
-EnvironmentFile=/etc/weaver/env
-ExecStart=/usr/bin/yarn weaver run --interval 5
+ExecStart=/usr/local/bin/weaver run --interval 5
 Restart=always
 RestartSec=10
 
@@ -198,8 +257,7 @@ Wants=network-online.target
 [Service]
 User=weaver
 WorkingDirectory=/opt/weaver
-EnvironmentFile=/etc/weaver/env
-ExecStart=/usr/bin/yarn weaver serve --host 127.0.0.1 --port 9723
+ExecStart=/usr/local/bin/weaver serve --host 127.0.0.1 --port 9723
 Restart=always
 RestartSec=10
 
@@ -208,40 +266,83 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable weaver-run weaver-serve
-echo "✓ provisioned (units enabled; they start once push-env has delivered credentials)"
+if [ "$WEAVER_GCP_STORE_MODE" = "external" ]; then
+  # The explicit `start` is the cutover and enables only execution. A reboot
+  # between provisioning and that act must not start against an unset/old DB.
+  systemctl disable --now weaver-run weaver-serve >/dev/null 2>&1 || true
+  echo "✓ provisioned (units installed but disabled; no service started)"
+else
+  systemctl enable weaver-run weaver-serve
+  echo "✓ provisioned (units enabled; no service started)"
+fi
 PROVISION
 
-  echo "✓ create done — next: weaver-gcp push-env"
+  if [ "$store_mode" = "external" ]; then
+    echo "✓ provisioned without starting — next: weaver-gcp set-store, then push-env, then start"
+  else
+    echo "✓ provisioned without starting — next: weaver-gcp push-env, then start"
+  fi
+}
+
+# ── external store ───────────────────────────────────────────────────────────
+# The URL is accepted only on stdin (hidden when interactive) and forwarded as
+# SSH stdin. It is never a shell argument, command-log field, or output line.
+cmd_set_store() {
+  [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp set-store" >&2; exit 1; }
+  local store
+  if [ -t 0 ]; then
+    printf 'paste the external Postgres URL and press Enter (input hidden): ' >&2
+    IFS= read -r -s store
+    printf '\n' >&2
+  else
+    IFS= read -r store
+  fi
+  case "$store" in
+    postgres://*|postgresql://*) ;;
+    *) echo "❌ external store must be a postgres:// or postgresql:// URL" >&2; exit 1 ;;
+  esac
+  case "$store" in
+    *[[:space:]]*) echo "❌ external Postgres URL must not contain whitespace" >&2; exit 1 ;;
+  esac
+  printf '%s\n' "$store" | "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env store'
+  unset store
+  echo "✓ external Postgres installed in /etc/weaver/env; services were not restarted"
 }
 
 # ── push-env ──────────────────────────────────────────────────────────────────
 # Renders the secret half of /etc/weaver/env from the laptop's credentials and
 # ships it over SSH stdin. Values never appear in argv or VM metadata.
 cmd_push_env() {
-  local tmp; tmp="$(mktemp)"; trap 'rm -f "${tmp:-}"' EXIT
-  "$REPO/bin/weaver.mjs" login --render-remote-env > "$tmp"
-  if [ ! -s "$tmp" ]; then
+  local restart=0
+  case "${1:-}" in
+    --restart) restart=1; shift ;;
+    "") ;;
+    *) echo "❌ usage: weaver-gcp push-env [--restart]" >&2; exit 1 ;;
+  esac
+  [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp push-env [--restart]" >&2; exit 1; }
+  PUSH_ENV_TMP="$(mktemp)"
+  trap 'rm -f -- "${PUSH_ENV_TMP:-}"' EXIT
+  chmod 600 "$PUSH_ENV_TMP"
+  "$REPO/bin/weaver.mjs" login --render-remote-env > "$PUSH_ENV_TMP"
+  if [ ! -s "$PUSH_ENV_TMP" ]; then
     echo "❌ weaver login produced no remote env — run: weaver login" >&2; exit 1
   fi
-  "${GSSH[@]}" --command 'sudo bash -c "
-    set -euo pipefail
-    umask 077
-    grep ^WEAVER_STORE= /etc/weaver/env > /etc/weaver/env.base || true
-    grep ^WEAVER_HOME= /etc/weaver/env >> /etc/weaver/env.base || true
-    cat /etc/weaver/env.base - > /etc/weaver/env.new
-    mv /etc/weaver/env.new /etc/weaver/env
-    rm -f /etc/weaver/env.base
-    chmod 600 /etc/weaver/env
-  "' < "$tmp"
+  "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env merge' < "$PUSH_ENV_TMP"
   # Codex auth rides alongside if the local machine has it
-  if [ -f "$HOME/.codex/auth.json" ]; then
+  if [ -f "$CODEX_AUTH_HOME/auth.json" ]; then
     "${GSSH[@]}" --command 'sudo -u weaver bash -c "umask 077; mkdir -p ~/.codex; cat > ~/.codex/auth.json"' \
-      < "$HOME/.codex/auth.json"
+      < "$CODEX_AUTH_HOME/auth.json"
     echo "✓ codex auth.json delivered"
   fi
-  "${GSSH[@]}" --command 'sudo systemctl restart weaver-run weaver-serve'
-  echo "✓ env delivered, services restarted"
+  if [ "$restart" -eq 1 ]; then
+    "${GSSH[@]}" --command 'sudo systemctl restart weaver-run weaver-serve'
+    echo "✓ env merged, services restarted"
+  else
+    echo "✓ env merged; services were not restarted"
+  fi
+  rm -f -- "$PUSH_ENV_TMP"
+  PUSH_ENV_TMP=""
+  trap - EXIT
 }
 
 # ── tunnel ────────────────────────────────────────────────────────────────────
@@ -275,10 +376,24 @@ EOF
 # ── small ones ────────────────────────────────────────────────────────────────
 cmd_ssh()     { "${GSSH[@]}" "$@"; }
 cmd_logs()    { "${GSSH[@]}" --command "sudo journalctl -u ${1:-weaver-run} -n 100 -f"; }
+cmd_start()   { "${GSSH[@]}" --command 'sudo systemctl enable --now weaver-run'; echo "✓ runner enabled + started"; }
+cmd_stop()    { "${GSSH[@]}" --command 'sudo systemctl stop weaver-run weaver-serve'; echo "✓ stopped"; }
 cmd_restart() { "${GSSH[@]}" --command 'sudo systemctl restart weaver-run weaver-serve'; echo "✓ restarted"; }
 cmd_update()  {
-  "${GSSH[@]}" --command 'sudo -u weaver bash -c "cd /opt/weaver && git pull --ff-only && yarn install" && sudo systemctl restart weaver-run weaver-serve'
-  echo "✓ updated + restarted"
+  local restart=0
+  case "${1:-}" in
+    --restart) restart=1; shift ;;
+    "") ;;
+    *) echo "❌ usage: weaver-gcp update [--restart]" >&2; exit 1 ;;
+  esac
+  [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp update [--restart]" >&2; exit 1; }
+  "${GSSH[@]}" --command 'sudo -u weaver bash -c "cd /opt/weaver && git pull --ff-only && yarn install"'
+  if [ "$restart" -eq 1 ]; then
+    "${GSSH[@]}" --command 'sudo systemctl restart weaver-run weaver-serve'
+    echo "✓ updated + restarted"
+  else
+    echo "✓ updated; services were not restarted"
+  fi
 }
 cmd_status()  {
   "${GC[@]}" compute instances describe "$VM" --zone "$ZONE" \
@@ -291,22 +406,27 @@ cmd_status()  {
   '
 }
 cmd_destroy() {
-  read -r -p "Delete VM $VM and its Postgres data? Type the VM name to confirm: " ans
+  read -r -p "Delete VM $VM and any bundled Postgres data? Type the VM name to confirm: " ans
   [ "$ans" = "$VM" ] || { echo "aborted"; exit 1; }
   "${GC[@]}" compute instances delete "$VM" --zone "$ZONE" --quiet
 }
 
+case "${1:-}" in -h|--help|help|"") usage;; esac
+resolve_target
+
 case "${1:-}" in
   create)   shift; cmd_create "$@";;
+  set-store) shift; cmd_set_store "$@";;
   push-env) shift; cmd_push_env "$@";;
   tunnel)   shift; cmd_tunnel "$@";;
   join)     shift; cmd_join "$@";;
   ssh)      shift; cmd_ssh "$@";;
   logs)     shift; cmd_logs "$@";;
+  start)    shift; cmd_start "$@";;
+  stop)     shift; cmd_stop "$@";;
   restart)  shift; cmd_restart "$@";;
   update)   shift; cmd_update "$@";;
   status)   shift; cmd_status "$@";;
   destroy)  shift; cmd_destroy "$@";;
-  -h|--help|help|"") usage;;
   *) echo "❌ unknown command: $1 (see --help)" >&2; exit 1;;
 esac

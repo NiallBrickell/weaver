@@ -36,6 +36,13 @@ its executor identity is deliberately registered, and its Pilot endpoint and
 egress readbacks are reachable. The authority boundary does not change merely
 because the process moved to the cloud.
 
+For the execution-host option, the supported first deployment is Railway for
+the UI/database and an isolated GCP VM for `weaver run`. The VM carries no GCP
+service account and accepts no public ingress; it reaches Railway through the
+database's public TCP proxy. The [GCP runner commands](./hosting.md#deploying-the-runner-on-a-gcp-vm)
+install that URL over hidden SSH stdin and leave the process stopped until the
+operator performs the explicit final start.
+
 ## 1. Apply the checked-in Railway infrastructure
 
 The repository owns the Railway project shape in [`.railway/railway.ts`](../.railway/railway.ts):
@@ -79,6 +86,11 @@ The existing execution host uses the public URL when it cannot join Railway's
 private network. Treat that URL as a secret; `weaver link` redacts it when
 reporting configuration.
 
+Weaver uses session-scoped Postgres advisory locks for cross-runner exclusion.
+Do not place it behind transaction-mode PgBouncer. A standard Railway Postgres
+public URL is direct; if Railway connection pooling is enabled later, give
+Weaver `DATABASE_PUBLIC_UNPOOLED_URL`, or configure the pooler in session mode.
+
 Enable scheduled database backups before cutover. For a production fleet,
 enable point-in-time recovery and periodically prove a logical restore outside
 the project as well.
@@ -117,6 +129,20 @@ weaver run --interval 5
 
 Restart resident processes after linking because each process snapshots its
 store configuration at launch.
+
+For the GCP execution host, do not put the URL on the command line. Run:
+
+```bash
+bin/weaver-gcp.sh stop
+bin/weaver-gcp.sh create --external-store
+bin/weaver-gcp.sh set-store   # hidden prompt
+bin/weaver-gcp.sh push-env    # merges config; does not restart
+bin/weaver-gcp.sh start
+bin/weaver-gcp.sh status
+```
+
+`set-store`, `push-env`, and `update` never restart by default. This keeps the
+database copy and the first runner start as separate, inspectable facts.
 
 ## 3. Deploy the operator UI
 
@@ -223,6 +249,7 @@ until the executor substrate itself has been reviewed for horizontal use.
 Railway references: [Postgres](https://docs.railway.com/databases/postgresql),
 [Infrastructure as Code](https://docs.railway.com/infrastructure-as-code),
 [IaC reference](https://docs.railway.com/infrastructure-as-code/reference),
+[connection pooling](https://docs.railway.com/guides/connection-pooling-pgbouncer),
 [private networking](https://docs.railway.com/networking/private-networking/how-it-works),
 [reference variables](https://docs.railway.com/variables),
 [health checks](https://docs.railway.com/deployments/healthchecks),
