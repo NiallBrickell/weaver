@@ -1,4 +1,5 @@
 import {
+  bucket,
   defineRailway,
   github,
   postgres,
@@ -9,8 +10,11 @@ import {
 
 export default defineRailway(() => {
   // These names deliberately match the production resources. Railway IaC
-  // binds existing resources by name instead of creating parallel services.
+  // binds existing resources by name instead of creating parallel resources.
   const database = postgres("Postgres");
+  // Bucket regions are immutable, so the existing recovery bucket's region is
+  // part of the binding contract rather than an inferred default.
+  const pointInTimeRecovery = bucket("Postgres-PITR", { region: "iad" });
   const ui = service("ui", {
     source: github("NiallBrickell/weaver", { branch: "main" }),
     build: {
@@ -36,6 +40,6 @@ export default defineRailway(() => {
   });
 
   return project("weaver", {
-    resources: [database, ui],
+    resources: [database, pointInTimeRecovery, ui],
   });
 });

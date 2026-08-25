@@ -25,11 +25,18 @@ test("Railway IaC pins the shared store and UI deployment contract", async () =>
     desired.resources.map((resource) => [resource.type, resource.name]),
     [
       ["database", "Postgres"],
+      ["bucket", "Postgres-PITR"],
       ["service", "ui"],
     ],
   );
+  assert.deepEqual(desired.resources[1], {
+    address: "bucket.Postgres-PITR",
+    type: "bucket",
+    name: "Postgres-PITR",
+    config: { region: "iad" },
+  });
 
-  const ui = desired.resources[1] as {
+  const ui = desired.resources[2] as {
     build: Record<string, unknown>;
     deploy: Record<string, unknown>;
     source: Record<string, unknown>;
