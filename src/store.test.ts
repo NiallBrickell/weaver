@@ -124,7 +124,7 @@ const sqliteBackend: Backend = {
     try {
       db.exec('PRAGMA busy_timeout = 5000');
       db.prepare('UPDATE artifacts SET content = ? WHERE slug = ? AND rel_path = ?')
-        .run(content, slug, relPath);
+        .run(Buffer.from(content, 'utf8'), slug, relPath);
     } finally {
       db.close();
     }
@@ -556,6 +556,49 @@ describe('store contract — fs backend', () => {
 
 describe('store contract — sqlite backend', () => {
   contractSuite(sqliteBackend);
+
+  test('legacy TEXT artifacts upgrade idempotently to exact BLOB storage', async () => {
+    await closeStore();
+    const home = freshHome();
+    sqliteDbPath = path.join(home, 'legacy-artifacts.db');
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+    const legacy = new DatabaseSync(sqliteDbPath);
+    try {
+      legacy.exec(`
+        CREATE TABLE artifacts (
+          slug TEXT NOT NULL,
+          rel_path TEXT NOT NULL,
+          content TEXT NOT NULL,
+          PRIMARY KEY (slug, rel_path)
+        );
+      `);
+      legacy.prepare('INSERT INTO artifacts (slug, rel_path, content) VALUES (?, ?, ?)')
+        .run('legacy', 'artifact.txt', 'existing text artifact £');
+    } finally {
+      legacy.close();
+    }
+
+    process.env.WEAVER_STORE = `sqlite:${sqliteDbPath}`;
+    assert.equal(await readArtifact('legacy', 'artifact.txt'), 'existing text artifact £');
+    await closeStore();
+
+    const migrated = new DatabaseSync(sqliteDbPath);
+    try {
+      const column = migrated.prepare(
+        `SELECT type FROM pragma_table_info('artifacts') WHERE name = 'content'`,
+      ).get() as { type: string };
+      const storage = migrated.prepare(
+        'SELECT typeof(content) AS storage FROM artifacts WHERE slug = ?',
+      ).get('legacy') as { storage: string };
+      assert.equal(column.type.toUpperCase(), 'BLOB');
+      assert.equal(storage.storage, 'blob');
+    } finally {
+      migrated.close();
+    }
+
+    // A second store initialization is a no-op migration and retains bytes.
+    assert.equal(await readArtifact('legacy', 'artifact.txt'), 'existing text artifact £');
+  });
 
   test('a cross-process mutate race on one expected revision: exactly one wins the CAS', async () => {
     // Both writers target the same expectedRevision from separate OS
