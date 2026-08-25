@@ -8,10 +8,12 @@ import {
   service,
 } from "railway/iac";
 
+const EU_WEST_REGION = "europe-west4-drams3a";
+
 export default defineRailway(() => {
   // These names deliberately match the production resources. Railway IaC
   // binds existing resources by name instead of creating parallel resources.
-  const database = postgres("Postgres");
+  const database = postgres("Postgres", { region: EU_WEST_REGION });
   // Bucket regions are immutable, so the existing recovery bucket's region is
   // part of the binding contract rather than an inferred default.
   const pointInTimeRecovery = bucket("Postgres-PITR", { region: "iad" });
@@ -26,7 +28,9 @@ export default defineRailway(() => {
     start: '/bin/sh -c "exec node bin/weaver.mjs ui --host 0.0.0.0 --port $PORT"',
     healthcheck: "/healthz",
     healthcheckTimeout: 30,
-    replicas: 1,
+    regions: {
+      [EU_WEST_REGION]: { replicas: 1 },
+    },
     deploy: {
       restartPolicyType: "ALWAYS",
       sleepApplication: false,

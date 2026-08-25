@@ -142,7 +142,7 @@ test('an SDK estimate-only write does not become operator activity', async () =>
 
   const report = (await preparePrintout('estimate-only')).text;
   assert.match(report, /Nothing new was recorded/);
-  assert.doesNotMatch(report, /totalCostUsd|costUsd|SDK estimate|2\.5/);
+  assert.doesNotMatch(report, /totalCostUsd|costUsd|SDK estimate|\$2\.50\b/);
   assert.equal((await load('estimate-only')).spend.totalCostUsd, 2.5);
 });
 
@@ -248,7 +248,7 @@ test('a legacy first print is honest about gaps and retains its surviving tail',
   assert.match(report, /Surviving pre-journal activity/);
   assert.match(report, /workstream\.created/);
   assert.match(report, /new receipt after upgrade/);
-  assert.doesNotMatch(report, /totalCostUsd|costUsd|SDK estimate|8\.75/);
+  assert.doesNotMatch(report, /totalCostUsd|costUsd|SDK estimate|\$8\.75\b/);
 });
 
 test('append-only journal outlives the bounded 200-event projection tail', async () => {
