@@ -9,6 +9,14 @@
  * (FOR UPDATE row lock). Secrets refusal and artifact redaction + hashing stay
  * in src/store.ts and run before anything reaches here.
  *
+ * Documents use Postgres `json`, deliberately not `jsonb`. `jsonb` decodes
+ * JSON Unicode escapes and therefore rejects the otherwise-valid JSON string
+ * `"\u0000"` because Postgres text cannot contain a zero byte. `json` keeps
+ * the validated JSON representation, so every JavaScript string survives an
+ * exact round trip. Source-key uniqueness lives in a separate TEXT column
+ * containing JSON.stringify(sourceKey): that encoding is injective for JS
+ * strings and contains no zero byte, even when the source key does.
+ *
  * The CAS is genuinely atomic, not load-then-hope: `mutate` loads the doc
  * INSIDE a transaction, runs the synchronous mutator between that read and the
  * write, and persists with `UPDATE … SET revision = revision + 1 WHERE slug =
@@ -37,7 +45,7 @@ import { RevisionConflictError, SourceKeyConflictError, type Mutator, type State
 
 /**
  * Idempotent, run on first use of every process. The `revision` COLUMN is the
- * CAS guard; the same number inside the doc/store jsonb is kept in sync so a
+ * CAS guard; the same number inside the doc/store JSON is kept in sync so a
  * loaded doc carries its own revision (the shape callers already rely on).
  * The policies singleton row is seeded here so mutatePolicies can always
  * UPDATE (a first-writer INSERT race would need ON CONFLICT gymnastics).
@@ -49,17 +57,11 @@ import { RevisionConflictError, SourceKeyConflictError, type Mutator, type State
 const SCHEMA = `
   SELECT pg_advisory_xact_lock(hashtext('weaver-schema'));
   CREATE TABLE IF NOT EXISTS workstreams (
-    slug     text    PRIMARY KEY,
-    revision integer NOT NULL,
-    doc      jsonb   NOT NULL
+    slug            text    PRIMARY KEY,
+    revision        integer NOT NULL,
+    doc             json    NOT NULL,
+    source_key_json text
   );
-  -- Two workstreams may never stand for the same external thing. A partial
-  -- UNIQUE index enforces sourceKey uniqueness ATOMICALLY at INSERT — genuinely
-  -- race-proof across machines, the strongest enforcement of the three
-  -- backends — and only where a sourceKey is present.
-  CREATE UNIQUE INDEX IF NOT EXISTS workstreams_source_key
-    ON workstreams ((doc -> 'workstream' ->> 'sourceKey'))
-    WHERE doc -> 'workstream' ->> 'sourceKey' IS NOT NULL;
   CREATE TABLE IF NOT EXISTS artifacts (
     slug     text NOT NULL,
     rel_path text NOT NULL,
@@ -69,12 +71,71 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS policies (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
     revision  integer NOT NULL,
-    store     jsonb   NOT NULL
+    store     json    NOT NULL
   );
+
+  -- Existing fleets used jsonb. Convert once, without decoding and rewriting
+  -- the logical document in application code. The old expression index must
+  -- be removed before its doc column can change type. A pre-column database
+  -- also needs that index replaced even if a prior manual repair changed doc.
+  DO $migration$
+  BEGIN
+    IF EXISTS (
+      SELECT 1 FROM pg_attribute
+      WHERE attrelid = 'workstreams'::regclass
+        AND attname = 'doc' AND NOT attisdropped
+        AND (
+          atttypid = 'jsonb'::regtype
+          OR NOT EXISTS (
+            SELECT 1 FROM pg_attribute
+            WHERE attrelid = 'workstreams'::regclass
+              AND attname = 'source_key_json' AND NOT attisdropped
+          )
+        )
+    ) THEN
+      DROP INDEX IF EXISTS workstreams_source_key;
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM pg_attribute
+      WHERE attrelid = 'workstreams'::regclass
+        AND attname = 'doc' AND NOT attisdropped
+        AND atttypid = 'jsonb'::regtype
+    ) THEN
+      ALTER TABLE workstreams ALTER COLUMN doc TYPE json USING doc::json;
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM pg_attribute
+      WHERE attrelid = 'policies'::regclass
+        AND attname = 'store' AND NOT attisdropped
+        AND atttypid = 'jsonb'::regtype
+    ) THEN
+      ALTER TABLE policies ALTER COLUMN store TYPE json USING store::json;
+    END IF;
+  END
+  $migration$;
+
+  ALTER TABLE workstreams ADD COLUMN IF NOT EXISTS source_key_json text;
+  -- Cast JSON to TEXT rather than extracting it as SQL text: extraction would
+  -- try to materialize U+0000. A JSON scalar's textual representation is the
+  -- same injective encoding used by JSON.stringify on new writes.
+  UPDATE workstreams
+    SET source_key_json = (doc -> 'workstream' -> 'sourceKey')::text
+    WHERE source_key_json IS NULL
+      AND doc -> 'workstream' -> 'sourceKey' IS NOT NULL;
+  -- Two workstreams may never stand for the same external thing. Exact JSON
+  -- string bytes under the deterministic C collation enforce sourceKey
+  -- uniqueness atomically, including source keys containing U+0000.
+  CREATE UNIQUE INDEX IF NOT EXISTS workstreams_source_key
+    ON workstreams (source_key_json COLLATE "C")
+    WHERE source_key_json IS NOT NULL;
   INSERT INTO policies (singleton, revision, store)
-    VALUES (true, 0, '{"schemaVersion":1,"revision":0,"policies":[]}'::jsonb)
+    VALUES (true, 0, '{"schemaVersion":1,"revision":0,"policies":[]}'::json)
     ON CONFLICT DO NOTHING;
 `;
+
+function sourceKeyJson(doc: WorkstreamDoc): string | null {
+  return doc.workstream.sourceKey === undefined ? null : JSON.stringify(doc.workstream.sourceKey);
+}
 
 /**
  * The deliberately narrow seam used by the one-time filesystem → Postgres
@@ -141,8 +202,8 @@ export class PgStore implements StateStore {
 
       for (const entry of snapshot.workstreams) {
         await client.query(
-          'INSERT INTO workstreams (slug, revision, doc) VALUES ($1, $2, $3::jsonb)',
-          [entry.slug, entry.revision, JSON.stringify(entry.doc)],
+          'INSERT INTO workstreams (slug, revision, doc, source_key_json) VALUES ($1, $2, $3::json, $4)',
+          [entry.slug, entry.revision, JSON.stringify(entry.doc), sourceKeyJson(entry.doc)],
         );
       }
       for (const artifact of snapshot.artifacts) {
@@ -152,7 +213,7 @@ export class PgStore implements StateStore {
         );
       }
       await client.query(
-        'UPDATE policies SET revision = $1, store = $2::jsonb WHERE singleton',
+        'UPDATE policies SET revision = $1, store = $2::json WHERE singleton',
         [snapshot.policies.revision, JSON.stringify(snapshot.policies)],
       );
       await client.query('COMMIT');
@@ -223,8 +284,8 @@ export class PgStore implements StateStore {
     writeJournalReceipt(printoutJournalDir(core.slug), creationReceipt(doc));
     try {
       await this.pool.query(
-        'INSERT INTO workstreams (slug, revision, doc) VALUES ($1, $2, $3::jsonb)',
-        [core.slug, doc.revision, JSON.stringify(doc)],
+        'INSERT INTO workstreams (slug, revision, doc, source_key_json) VALUES ($1, $2, $3::json, $4)',
+        [core.slug, doc.revision, JSON.stringify(doc), sourceKeyJson(doc)],
       );
     } catch (e) {
       if ((e as { code?: string }).code === '23505') {
@@ -244,6 +305,7 @@ export class PgStore implements StateStore {
   async mutate(slug: string, expectedRevision: number | undefined, fn: Mutator): Promise<WorkstreamDoc> {
     await this.ensureReady();
     const client = await this.pool.connect();
+    let attemptedSourceKey: string | undefined;
     try {
       await client.query('BEGIN');
       // The read happens in the SAME transaction as the write — never load
@@ -270,9 +332,12 @@ export class PgStore implements StateStore {
       // src/store.ts), so nothing yields between this read and the UPDATE.
       fn(doc, eventHelperFor(doc, emitted));
       doc.revision = stored + 1;
+      attemptedSourceKey = doc.workstream.sourceKey;
       const upd = await client.query(
-        'UPDATE workstreams SET doc = $1::jsonb, revision = revision + 1 WHERE slug = $2 AND revision = $3',
-        [JSON.stringify(doc), slug, stored],
+        `UPDATE workstreams
+         SET doc = $1::json, source_key_json = $2, revision = revision + 1
+         WHERE slug = $3 AND revision = $4`,
+        [JSON.stringify(doc), sourceKeyJson(doc), slug, stored],
       );
       if (upd.rowCount === 0) {
         // A concurrent transaction committed between our snapshot read and the
@@ -295,6 +360,13 @@ export class PgStore implements StateStore {
       return doc;
     } catch (e) {
       await client.query('ROLLBACK').catch(() => {});
+      if (
+        (e as { code?: string; constraint?: string }).code === '23505' &&
+        (e as { constraint?: string }).constraint === 'workstreams_source_key' &&
+        attemptedSourceKey !== undefined
+      ) {
+        throw new SourceKeyConflictError(attemptedSourceKey);
+      }
       throw e;
     } finally {
       client.release();
@@ -351,7 +423,7 @@ export class PgStore implements StateStore {
         // seeded at migration, but a wiped table (tests TRUNCATE between
         // cases) must not strand every future write in the conflict path.
         const upd = await client.query(
-          `INSERT INTO policies AS p (singleton, revision, store) VALUES (true, $2 + 1, $1::jsonb)
+          `INSERT INTO policies AS p (singleton, revision, store) VALUES (true, $2 + 1, $1::json)
            ON CONFLICT (singleton) DO UPDATE SET store = EXCLUDED.store, revision = p.revision + 1
            WHERE p.revision = $2`,
           [JSON.stringify(store), stored],
@@ -444,8 +516,10 @@ export class PgStore implements StateStore {
       doc.workstream.slug = newSlug;
       doc.revision = stored + 1;
       await client.query(
-        'UPDATE workstreams SET slug = $1, doc = $2::jsonb, revision = revision + 1 WHERE slug = $3',
-        [newSlug, JSON.stringify(doc), oldSlug],
+        `UPDATE workstreams
+         SET slug = $1, doc = $2::json, source_key_json = $3, revision = revision + 1
+         WHERE slug = $4`,
+        [newSlug, JSON.stringify(doc), sourceKeyJson(doc), oldSlug],
       );
       await client.query('UPDATE artifacts SET slug = $1 WHERE slug = $2', [newSlug, oldSlug]);
       // Receipt before COMMIT, into the OLD slug's machine-local journal — the
