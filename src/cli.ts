@@ -126,6 +126,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver link <store-url>                    join this machine to an existing fleet: prove the store is reachable (read-only), then persist WEAVER_STORE into .env
   weaver link                                show where WEAVER_STORE points now (env / .env / default fs) and re-check reachability
   weaver link --unlink                       remove WEAVER_STORE from .env (an ambient env export still wins if set)
+  weaver store copy-to-postgres [<url>]      copy the exact filesystem fleet into an empty Postgres store and verify its readback; omit URL for a hidden prompt
   weaver secret set <NAME> [--ws slug | --executor]   store from stdin; --executor is adapter-only and never exposed to workers
   weaver secret list [--ws slug | --executor]         list secret NAMES (values are never printed)
   weaver secret rm <NAME> [--ws slug | --executor]    remove a secret
@@ -818,6 +819,32 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       break;
     }
 
+    case 'store': {
+      const [subcommand, ...storeArgs] = rest;
+      if (subcommand !== 'copy-to-postgres') {
+        fail('usage: weaver store copy-to-postgres [<postgres-url>]');
+      }
+      if (storeArgs.length > 1) fail('copy-to-postgres accepts one destination URL');
+      let destinationUrl = storeArgs[0]?.trim();
+      if (!destinationUrl) {
+        const { readSecretInput } = await import('./secretInput.js');
+        if (process.stdin.isTTY) {
+          process.stderr.write('paste the empty destination Postgres URL and press Enter (input hidden): ');
+        }
+        destinationUrl = (await readSecretInput()).trim();
+        if (process.stdin.isTTY) process.stderr.write('\n');
+      }
+      if (!destinationUrl) fail('a destination Postgres URL is required');
+      const { runFilesystemToPostgresCopy } = await import('./storeMigration.js');
+      process.stderr.write('locking and validating the filesystem fleet before copy…\n');
+      const copied = await runFilesystemToPostgresCopy(destinationUrl);
+      process.stdout.write(
+        `copied and verified ${copied.workstreams} workstreams, ${copied.artifacts} artifacts, ` +
+        `policy revision ${copied.policyRevision}; source filesystem unchanged\n`,
+      );
+      break;
+    }
+
     case 'run': {
       const { acquireRunnerLock, liveRunnerPid, runLoop } = await import('./runner.js');
       const { runnerExecutorCapabilities } = await import('./modelRouting.js');
@@ -888,7 +915,35 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
           '  execution: start `weaver run` separately\n',
       );
       // This process serves the workspace; the separate runner executes work.
-      await new Promise<never>(() => {});
+      // Hosted supervisors stop with SIGTERM. Close the listener before the
+      // store pool so an accepted request is never cut off halfway through a
+      // durable write; a second signal remains the force-exit escape hatch.
+      let stopping = false;
+      let finish!: () => void;
+      let failClose!: (error: unknown) => void;
+      const stopped = new Promise<void>((resolve, reject) => {
+        finish = resolve;
+        failClose = reject;
+      });
+      const requestStop = (sig: string) => {
+        if (stopping) {
+          process.stderr.write(`\n[ui] second ${sig} — forcing exit\n`);
+          process.exit(130);
+        }
+        stopping = true;
+        process.stdout.write(`\n[ui] ${sig} — closing the HTTP listener before exit\n`);
+        void running.close().then(finish, failClose);
+      };
+      const onSigint = () => requestStop('SIGINT');
+      const onSigterm = () => requestStop('SIGTERM');
+      process.on('SIGINT', onSigint);
+      process.on('SIGTERM', onSigterm);
+      try {
+        await stopped;
+      } finally {
+        process.off('SIGINT', onSigint);
+        process.off('SIGTERM', onSigterm);
+      }
       break;
     }
 

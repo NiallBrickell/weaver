@@ -80,6 +80,28 @@ test('New work stores a durable request immediately and an exact retry is idempo
   assert.equal((await load(slug)).observations.length, 1, 'the original request observation also deduplicates');
 });
 
+test('model-independent intake preserves the execution hosts repository map in intended work', async () => {
+  fs.writeFileSync(path.join(home, 'house.json'), JSON.stringify({
+    constraints: ['Use a fresh worktree.'],
+    repoMap: 'Primary application: /srv/workspaces/application',
+    tags: ['application'],
+  }));
+  const message = 'The customer-facing carousel is blank; investigate and fix it.';
+  const created = await createTeamWorkstream({
+    message,
+    done: 'The carousel is verified in the affected path.',
+    requestId: 'repo-context-request',
+    actor: 'sales-alice',
+  });
+
+  const doc = await load(created.slug);
+  assert.match(doc.workstream.objective, new RegExp(`^${message.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.match(doc.workstream.objective, /Primary application: \/srv\/workspaces\/application/);
+  assert.deepEqual(doc.workstream.constraints, ['Use a fresh worktree.']);
+  assert.deepEqual(doc.workstream.tags, ['application']);
+  assert.equal(doc.observations[0]!.summary, message, 'the reporter observation remains exactly what they supplied');
+});
+
 test('a source URL owns one Workstream even when a browser generates a fresh request id', async () => {
   const message = 'Please handle the report at https://support.example.test/tickets/300 and explain the outcome.';
   const first = await createTeamWorkstream({ message, requestId: 'request-a', actor: 'alice' });
@@ -211,6 +233,10 @@ test('non-loopback binding requires Basic auth and attributes requests to its us
   running = await startOperatorUi({ token: 'shared-secret' });
   base = `http://127.0.0.1:${running.port}`;
 
+  const health = await fetch(`${base}/healthz`);
+  assert.equal(health.status, 200, 'the content-free infrastructure probe bypasses UI auth');
+  assert.equal(health.headers.get('content-length'), '0');
+  assert.equal(await health.text(), '', 'health must never disclose fleet facts');
   assert.equal((await fetch(`${base}/board`)).status, 401);
   const authorization = `Basic ${Buffer.from('sales-alice:shared-secret').toString('base64')}`;
   assert.equal((await fetch(`${base}/board`, { headers: { authorization } })).status, 200);
@@ -219,4 +245,23 @@ test('non-loopback binding requires Basic auth and attributes requests to its us
   }, { authorization }));
   const doc = await load(slugFrom(created));
   assert.equal(doc.observations[0]!.source, 'operator-ui:sales-alice');
+});
+
+test('a shared-Postgres UI does not call an unobservable remote runner offline', async () => {
+  // Pin this test server to the already-selected temporary fs store, then
+  // present the deployment shape to the view logic. Runner heartbeat is a
+  // machine-local fact even though Workstream state is shared in Postgres.
+  await listWorkstreams();
+  const previous = process.env.WEAVER_STORE;
+  process.env.WEAVER_STORE = 'postgres://shared.example.test/weaver';
+  try {
+    const response = await fetch(`${base}/board`);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /Remote runner liveness is not observable here/);
+    assert.doesNotMatch(html, /Runner is offline/);
+  } finally {
+    if (previous === undefined) delete process.env.WEAVER_STORE;
+    else process.env.WEAVER_STORE = previous;
+  }
 });

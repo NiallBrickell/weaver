@@ -32,6 +32,7 @@ services:
     env_file: compose.env
     environment:
       WEAVER_STORE: postgres://weaver:${WEAVER_PG_PASSWORD}@postgres:5432/weaver
+      WEAVER_WORKSPACE_ROOT: /var/lib/weaver/workspaces
     volumes:
       - weaver-run-state:/var/lib/weaver
     depends_on:

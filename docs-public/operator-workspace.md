@@ -48,6 +48,10 @@ When `WEAVER_UI_TOKEN` is set, Basic authentication applies on loopback too.
 
 Basic authentication must be carried over a trusted network or HTTPS reverse proxy because it does not encrypt traffic itself. Do not expose this listener directly to the public internet.
 
+For a shared deployment, use the [Railway guide](./railway.md): the UI and
+Postgres are hosted together while the initially separate execution host reads
+and writes the same durable fleet.
+
 ## Authority limits
 
 The operator workspace deliberately exposes intake, inspection, and untrusted follow-up. It does not turn browser access into permission to send messages, spend money, merge or deploy code, approve actions, or claim an external effect occurred. Those consequences remain behind Weaver's existing typed authority, approval, and deterministic readback boundaries.

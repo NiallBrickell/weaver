@@ -10,7 +10,7 @@
 
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { virtualNow } from './clock.js';
 import { LocalSdkExecutor } from './executor/localSdk.js';
 import { OpenHandsExecutor } from './executor/openHands.js';
@@ -207,7 +207,12 @@ ${SHARED_RULES}`;
 /** A stable, repo-context-free cwd for workers with no declared directories.
  * Persistent per stream, so clones made there survive across assignments. */
 export function neutralWorkspace(slug: string): string {
-  const dir = join(homedir(), '.weaver', 'workspaces', slug);
+  const configuredRoot = process.env.WEAVER_WORKSPACE_ROOT?.trim();
+  if (configuredRoot && !isAbsolute(configuredRoot)) {
+    throw new Error('WEAVER_WORKSPACE_ROOT must be an absolute path');
+  }
+  const root = configuredRoot || join(homedir(), '.weaver', 'workspaces');
+  const dir = join(root, slug);
   mkdirSync(dir, { recursive: true });
   return dir;
 }

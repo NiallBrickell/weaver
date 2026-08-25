@@ -15,6 +15,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Watching a tracker](./linear.md) — point a workstream at Linear, Jira, or anything with an MCP server, and labeled issues become real work
 - [Connecting bots](./bots.md) — a fleet of disposable bots (any language) keep their durable memory in Weaver over `weaver serve`
 - [Hosting Weaver](./hosting.md) — run the resident runner and the ingress adapter against one Postgres so a fleet lives somewhere, not just on a laptop
+- [Hosting the team workspace on Railway](./railway.md) — shared Postgres + browser UI, with execution left on an honestly provisioned host
 - [The dashboard](./dashboard.md) — the terminal controls and visual Workstream/Assignment board
 - [Operator workspace](./operator-workspace.md) — create work, inspect one Workstream, and add follow-up from a browser
 - [Printouts](./printouts.md) — an exact, copyable account since the last delivered printout

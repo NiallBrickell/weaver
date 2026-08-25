@@ -10,6 +10,7 @@ import { PiExecutor } from './executor/pi.js';
 import {
   consumeDueWorkerInfrastructureWakes,
   finalizeWorkerRun,
+  neutralWorkspace,
   runWorker,
   selectExecutor,
   workerExceptionReason,
@@ -1111,13 +1112,42 @@ test('a work assignment whose declared workspace does not exist yet is created b
   }
 });
 
-test('a worker with no declared directories gets a neutral per-stream workspace, never the runner cwd', async () => {
-  const os = await import('node:os');
-  const { neutralWorkspace } = await import('./worker.js');
-  const dir = neutralWorkspace('cwd-test-stream');
-  assert.ok(fs.existsSync(dir));
-  assert.match(dir, /\.weaver\/workspaces\/cwd-test-stream$/);
-  assert.notEqual(dir, process.cwd());
-  assert.equal(neutralWorkspace('cwd-test-stream'), dir);
-  fs.rmSync(path.join(os.homedir(), '.weaver', 'workspaces', 'cwd-test-stream'), { recursive: true, force: true });
+test('a worker with no declared directories keeps the default neutral per-stream workspace', () => {
+  const previousRoot = process.env.WEAVER_WORKSPACE_ROOT;
+  delete process.env.WEAVER_WORKSPACE_ROOT;
+  const expected = path.join(os.homedir(), '.weaver', 'workspaces', `cwd-test-stream-${process.pid}`);
+  try {
+    const dir = neutralWorkspace(`cwd-test-stream-${process.pid}`);
+    assert.equal(dir, expected);
+    assert.ok(fs.existsSync(dir));
+    assert.notEqual(dir, process.cwd());
+    assert.equal(neutralWorkspace(`cwd-test-stream-${process.pid}`), dir);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVER_WORKSPACE_ROOT;
+    else process.env.WEAVER_WORKSPACE_ROOT = previousRoot;
+    fs.rmSync(expected, { recursive: true, force: true });
+  }
+});
+
+test('WEAVER_WORKSPACE_ROOT places neutral workspaces on a persistent hosted volume', () => {
+  const previous = process.env.WEAVER_WORKSPACE_ROOT;
+  const volume = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-workspace-volume-'));
+  const root = path.join(volume, 'workspaces');
+  process.env.WEAVER_WORKSPACE_ROOT = root;
+  try {
+    const first = neutralWorkspace('hosted-stream');
+    assert.equal(first, path.join(root, 'hosted-stream'));
+    assert.ok(fs.existsSync(first));
+    fs.writeFileSync(path.join(first, 'checkout-marker'), 'survives another assignment');
+    assert.equal(neutralWorkspace('hosted-stream'), first);
+    assert.equal(fs.readFileSync(path.join(first, 'checkout-marker'), 'utf8'), 'survives another assignment');
+
+    process.env.WEAVER_WORKSPACE_ROOT = 'relative/workspaces';
+    assert.throws(() => neutralWorkspace('unsafe-stream'), /WEAVER_WORKSPACE_ROOT must be an absolute path/);
+    assert.equal(fs.existsSync(path.join(process.cwd(), 'relative', 'workspaces', 'unsafe-stream')), false);
+  } finally {
+    if (previous === undefined) delete process.env.WEAVER_WORKSPACE_ROOT;
+    else process.env.WEAVER_WORKSPACE_ROOT = previous;
+    fs.rmSync(volume, { recursive: true, force: true });
+  }
 });

@@ -1,0 +1,199 @@
+# Hosting the team workspace on Railway
+
+Railway is a good home for Weaver's shared Postgres and browser workspace. The
+first production shape keeps execution on an already-provisioned host rather
+than pretending a bare web container has the repositories, model identity,
+MCP connections, CLI logins, and Pilot supervision needed to finish engineering
+work safely.
+
+```text
+                         Railway project
+team browsers ──TLS──► operator UI ──┐
+                                     ├──► Postgres = durable fleet truth
+existing bots ───────► serve (opt.) ─┘          ▲
+                                                │
+                         always-on execution host
+                         weaver run + repos + Pilot
+```
+
+Postgres is the shared knowledge layer. It contains Workstreams, Decisions,
+Assignments, Observations, results, conclusions, content-addressed artifacts,
+and the global learned-policy store. There is no separate knowledge daemon.
+
+## Why the runner stays on an execution host first
+
+The browser and database are ordinary hosted services. The runner is a coding
+machine: a useful one needs the real source checkouts, repository instructions,
+model identity, MCP/CLI authentication, and Pilot-backed supervision for
+irreversible effects. A Railway runner with only `WEAVER_STORE` can coordinate
+and write reports, but it cannot honestly claim it can fix and ship the target
+product.
+
+Keep the current always-on runner (or use the documented VM deployment) and
+point it at Railway Postgres. Move the runner into Railway only after its
+persistent volume contains the required checkouts and machine configuration,
+its executor identity is deliberately registered, and its Pilot endpoint and
+egress readbacks are reachable. The authority boundary does not change merely
+because the process moved to the cloud.
+
+## 1. Create a dedicated project and Postgres
+
+Create a new Railway project and add a Postgres service. Do not reuse an
+application database: a dedicated database gives fleet history its own backup,
+access, and failure boundary.
+
+Railway provides both private and public connection URLs. Services inside the
+project use a reference to the private URL:
+
+```text
+WEAVER_STORE=${{Postgres.DATABASE_URL}}
+```
+
+The existing execution host uses the public URL when it cannot join Railway's
+private network. Treat that URL as a secret; `weaver link` redacts it when
+reporting configuration.
+
+Enable scheduled database backups before cutover. For a production fleet,
+enable point-in-time recovery and periodically prove a logical restore outside
+the project as well.
+
+## 2. Copy an existing filesystem fleet
+
+Changing `WEAVER_STORE` does not move existing data. `weaver link` is
+deliberately read-only, so pointing it at a new database would otherwise show
+an empty fleet.
+
+Stop every process writing the filesystem fleet, then copy it with the store
+command below. Omitting the URL keeps it out of shell history and prompts for
+it with hidden input:
+
+```bash
+WEAVER_STORE=fs weaver store copy-to-postgres
+# paste the public Railway Postgres URL when prompted
+```
+
+The command refuses a live runner, locks all filesystem writers, and preserves
+exact Workstream documents and revisions, adoption pins, artifact bytes and
+hashes, and the full policy store; it refuses a non-empty destination. The
+source fleet data remains untouched until the Postgres readback is verified.
+
+Machine-local activity tails, printout receipts, pid/heartbeat files, secrets,
+and repository checkouts are not database state and are not copied. Generate a
+final local printout before cutover if that host-local receipt history matters.
+
+After the copy succeeds:
+
+```bash
+weaver link "$RAILWAY_PUBLIC_DATABASE_URL"
+weaver link                    # proves the shared fleet is readable
+weaver run --interval 5
+```
+
+Restart resident processes after linking because each process snapshots its
+store configuration at launch.
+
+## 3. Deploy the operator UI
+
+Create one Railway service from the Weaver repository. Use the repository
+Dockerfile and this start command:
+
+```text
+node bin/weaver.mjs ui --host 0.0.0.0 --port $PORT
+```
+
+Set:
+
+```text
+WEAVER_STORE=${{Postgres.DATABASE_URL}}
+WEAVER_UI_TOKEN=<one long random password>
+WEAVER_HOUSE_JSON={"repoMap":"Primary application: /absolute/path/on-the-runner","tags":["application"]}
+```
+
+`WEAVER_HOUSE_JSON` uses the same shape as `WEAVER_HOME/house.json`. It lets a
+stateless UI attach the canonical repository map and policy tags to new work
+without a model pass. Do not put credentials in it.
+
+Railway service settings:
+
+- health-check path: `/healthz`;
+- restart policy: **Always**;
+- Serverless: **off**;
+- one replica for the initial rollout;
+- deployment draining time: at least 30 seconds;
+- public or custom domain: enabled only for this UI service.
+
+`/healthz` proves the configured store answers a real read and returns no fleet
+facts. Railway health checks gate deployment; they are not continuous runner
+monitoring.
+
+Railway terminates the public domain with TLS. The UI then prompts for HTTP
+Basic credentials: a teammate enters their name as the username and the shared
+`WEAVER_UI_TOKEN` as the password. The name is attribution, not verified
+identity. This is suitable for a small trusted rollout behind an
+identity-aware proxy; it is not team SSO and the service should not be exposed
+as a bare shared password to the public internet.
+
+## 4. Keep intake and execution context aligned
+
+Set the same `WEAVER_HOUSE_JSON` on the UI and execution host, or keep an
+equivalent `house.json` under the runner's `WEAVER_HOME`. A browser request is
+stored immediately and model-independently; the repository map is appended to
+its durable objective so a fresh coordinator can name the correct source
+directory after any wait.
+
+The path in that map must be the path **on the execution host**, not a laptop
+path meaningful only to the person submitting the ticket.
+
+## 5. Optional machine ingress
+
+Deploy `weaver serve` only when bots need the JSON create/observe/status API.
+It is a separate service and token:
+
+```text
+node bin/weaver.mjs serve --host 0.0.0.0 --port $PORT
+
+WEAVER_STORE=${{Postgres.DATABASE_URL}}
+WEAVER_SERVE_TOKEN=<a different long random token>
+```
+
+Do not share the browser password with bots. Neither surface exposes Steering,
+approval, adoption, merge, deploy, spend, or send authority.
+
+## What remains local to each execution host
+
+Postgres intentionally does not contain:
+
+- provider and action secret values;
+- Claude/Codex/MCP/CLI login files;
+- `house.json` and repository checkouts;
+- runner pid locks, local heartbeat, activity tail, and printout receipts;
+- neutral worker workspaces unless the host places them on its own persistent
+  disk with `WEAVER_WORKSPACE_ROOT`.
+
+That division is the safety boundary: organizational truth is shared;
+capability and identity remain explicit properties of the machine executing
+the work.
+
+## Later: a fully hosted runner
+
+When the runner is moved to a persistent host or Railway volume, set:
+
+```text
+WEAVER_HOME=/var/lib/weaver
+WEAVER_WORKSPACE_ROOT=/var/lib/weaver/workspaces
+```
+
+Register model credentials through `weaver login` or `weaver secret set …
+--executor` inside that volume. Ambient provider environment variables are
+deliberately not a substitute. Provision repository access and Pilot before
+calling the host capable of PR or deployment work, and keep it at one replica
+until the executor substrate itself has been reviewed for horizontal use.
+
+Railway references: [Postgres](https://docs.railway.com/databases/postgresql),
+[private networking](https://docs.railway.com/networking/private-networking/how-it-works),
+[reference variables](https://docs.railway.com/variables),
+[health checks](https://docs.railway.com/deployments/healthchecks),
+[restart policies](https://docs.railway.com/deployments/restart-policy),
+[deployment lifecycle](https://docs.railway.com/deployments/reference),
+[volumes](https://docs.railway.com/volumes), and
+[custom domains](https://docs.railway.com/networking/domains/working-with-domains).
