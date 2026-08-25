@@ -256,16 +256,37 @@ test('copy refuses while a live runner owns the filesystem fleet', async () => {
 
 const PG_URL = process.env.WEAVER_TEST_PG_URL;
 
-test('Postgres integration copies exactly once and refuses a non-empty destination', { skip: !PG_URL }, async () => {
+test('Postgres integration resumes an exact committed fleet without overwriting a non-empty destination', { skip: !PG_URL }, async () => {
   const home = freshHome();
-  const doc = writeDoc(home, 'shared', 'request:shared');
-  doc.workstream.objective = 'Preserve the valid JSON string before\u0000after';
-  addArtifact(home, doc, 'nested/result.md', 'exact shared bytes before\u0000after');
-  fs.writeFileSync(path.join(home, 'shared', 'artifacts', 'extra.txt'), 'unreferenced but durable');
+  const first = writeDoc(home, 'sentry-sweep');
+  first.workstream.objective = 'Preserve the valid JSON string before\u0000after without a source key';
+  addArtifact(home, first, 'nested/result.md', 'exact shared bytes before\u0000after');
+  const slugs = [
+    first.workstream.slug,
+    'go-vb-artifact-lookup-cluster',
+    'google-ads-bidding-strategy-targets-dropped',
+    'google-ads-campaign-schema-gaps',
+    ...Array.from({ length: 57 }, (_, index) => `stream-${String(index).padStart(3, '0')}`),
+  ];
+  for (const [index, slug] of slugs.slice(1).entries()) {
+    writeDoc(home, slug, `request:${index + 1}`);
+  }
+  for (let index = 0; index < 1_037; index += 1) {
+    const slug = slugs[index % slugs.length]!;
+    fs.writeFileSync(
+      path.join(home, slug, 'artifacts', `unreferenced-${String(index).padStart(4, '0')}.txt`),
+      `durable artifact ${index}`,
+    );
+  }
   const policies = activeDoctrineStore();
+  policies.revision = 717;
   policies.policies[0]!.mechanism = 'Preserve policy strings before\u0000after too';
   writePolicies(home, policies);
   const sourceBefore = snapshotFilesystemFleet(home, {});
+  assert.equal(
+    sourceBefore.workstreams.find(({ slug }) => slug === 'sentry-sweep')!.doc.workstream.sourceKey,
+    undefined,
+  );
 
   const schema = `weaver_copy_${process.pid}_${Date.now()}`;
   const admin = new pg.Client({ connectionString: PG_URL });
@@ -276,7 +297,7 @@ test('Postgres integration copies exactly once and refuses a non-empty destinati
 
   try {
     const result = await runFilesystemToPostgresCopy(scoped.toString());
-    assert.deepEqual(result, { workstreams: 1, artifacts: 2, policyRevision: 4 });
+    assert.deepEqual(result, { workstreams: 61, artifacts: 1_038, policyRevision: 717 });
 
     const destination = new PgStore(scoped.toString());
     try {
@@ -293,7 +314,36 @@ test('Postgres integration copies exactly once and refuses a non-empty destinati
     }
 
     assertSourceStable(sourceBefore, snapshotFilesystemFleet(home, {}));
-    await assert.rejects(runFilesystemToPostgresCopy(scoped.toString()), /destination Postgres store is not empty/);
+
+    // Reproduce the committed pre-marker schema from the failed live run. A
+    // fresh pool must inspect the no-sourceKey document containing U+0000 in
+    // JavaScript, then recognize the destination as the exact completed copy.
+    await admin.query(`ALTER TABLE "${schema}".workstreams DROP COLUMN source_key_initialized`);
+    assert.deepEqual(await runFilesystemToPostgresCopy(scoped.toString()), result);
+    const initialized = await admin.query(
+      `SELECT source_key_json, source_key_initialized
+       FROM "${schema}".workstreams
+       WHERE slug = 'sentry-sweep'`,
+    );
+    assert.deepEqual(initialized.rows, [{ source_key_json: null, source_key_initialized: true }]);
+
+    // Non-empty is resumable only when every locked source value matches. A
+    // mismatch fails verification and the migration never rewrites it.
+    await admin.query(
+      `UPDATE "${schema}".artifacts
+       SET content = $1
+       WHERE slug = 'sentry-sweep' AND rel_path = 'unreferenced-0000.txt'`,
+      [Buffer.from('tampered destination', 'utf8')],
+    );
+    await assert.rejects(
+      runFilesystemToPostgresCopy(scoped.toString()),
+      /Postgres verification failed: artifact paths or bytes differ/,
+    );
+    const tampered = await admin.query(
+      `SELECT content FROM "${schema}".artifacts
+       WHERE slug = 'sentry-sweep' AND rel_path = 'unreferenced-0000.txt'`,
+    );
+    assert.ok((tampered.rows[0]!.content as Buffer).equals(Buffer.from('tampered destination')));
   } finally {
     await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
     await admin.end();
@@ -407,19 +457,28 @@ test('Postgres upgrades legacy JSON and artifact columns idempotently and keeps 
       await second.close();
     }
     const types = await admin.query(
-      `SELECT table_name, column_name, data_type
+      `SELECT table_name, column_name, data_type, column_default
        FROM information_schema.columns
        WHERE table_schema = $1
          AND (table_name, column_name) IN (
-           ('artifacts', 'content'), ('workstreams', 'doc'), ('policies', 'store')
+           ('artifacts', 'content'),
+           ('workstreams', 'doc'),
+           ('workstreams', 'source_key_initialized'),
+           ('policies', 'store')
          )
-       ORDER BY table_name`,
+       ORDER BY table_name, column_name`,
       [schema],
     );
     assert.deepEqual(types.rows, [
-      { table_name: 'artifacts', column_name: 'content', data_type: 'bytea' },
-      { table_name: 'policies', column_name: 'store', data_type: 'json' },
-      { table_name: 'workstreams', column_name: 'doc', data_type: 'json' },
+      { table_name: 'artifacts', column_name: 'content', data_type: 'bytea', column_default: null },
+      { table_name: 'policies', column_name: 'store', data_type: 'json', column_default: null },
+      { table_name: 'workstreams', column_name: 'doc', data_type: 'json', column_default: null },
+      {
+        table_name: 'workstreams',
+        column_name: 'source_key_initialized',
+        data_type: 'boolean',
+        column_default: 'true',
+      },
     ]);
   } finally {
     await admin.query(`DROP SCHEMA "${schema}" CASCADE`);

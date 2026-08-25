@@ -112,8 +112,10 @@ WEAVER_STORE=fs weaver store copy-to-postgres
 
 The command refuses a live runner, locks all filesystem writers, and preserves
 exact Workstream documents and revisions, adoption pins, artifact bytes and
-hashes, and the full policy store; it refuses a non-empty destination. The
-source fleet data remains untouched until the Postgres readback is verified.
+hashes, and the full policy store. It never overwrites a non-empty destination;
+if a previous invocation committed the full snapshot but stopped before its
+fresh readback, retrying succeeds only after the locked source and destination
+verify as exactly equal. The source fleet data remains untouched throughout.
 
 Machine-local activity tails, printout receipts, pid/heartbeat files, secrets,
 and repository checkouts are not database state and are not copied. Generate a
