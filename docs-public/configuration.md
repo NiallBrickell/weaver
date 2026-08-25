@@ -39,8 +39,12 @@ needs (into the `0600` executor store, never `.env`), and choose the model
 settings below, which it writes into `.env` in place. `weaver login --status`
 shows the per-executor auth standing and where each setting came from (`.env`,
 environment, or default), and `weaver login --render-remote-env` emits the
-registered credentials plus this machine's model config as env lines for
+registered credentials plus the portable runner config as env lines for
 provisioning a headless host (it refuses to print to a terminal — pipe it).
+That render includes configured coordinator/worker fallback lists, complex-work
+and intake models, execution capabilities, repository context, workspace root,
+OpenHands endpoint, Pilot endpoint, and execution timing overrides. Store and
+home remain host-local and are never rendered.
 
 ## Settings
 

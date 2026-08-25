@@ -68,8 +68,10 @@ into SDK children (the subscription token wins if both are registered). See
 [Registered execution identity](./secrets-and-access.md#registered-execution-identity).
 The **serve** process runs no model and needs no identity. To provision a
 fresh host from a laptop where identity is already registered,
-`weaver login --render-remote-env` emits the credentials and model config as
-env lines for piping over SSH (it refuses to print to a terminal).
+`weaver login --render-remote-env` emits the credentials plus the complete
+portable runner configuration — configured coordinator and worker fallbacks,
+complex-work model, repository context, workspace root, and Pilot endpoint —
+as env lines for piping over SSH (it refuses to print to a terminal).
 
 ## Joining the fleet from another machine
 
@@ -116,29 +118,51 @@ Reviewed automatic routes select models only within the configured worker
 substrate. Cross-executor preference waits for durable Workstream execution
 policy rather than trusting process-local environment agreement.
 
-## Deploying on a GCP VM
+## Deploying the runner on a GCP VM
 
-[`bin/weaver-gcp.sh`](../bin/weaver-gcp.sh) turns the whole story into one
-command per step, with an isolation posture worth copying even if you host
-elsewhere: the VM carries **no service account and no scopes** (a compromised
+[`bin/weaver-gcp.sh`](../bin/weaver-gcp.sh) provisions an isolated execution
+host: the VM carries **no service account and no scopes** (a compromised
 workload cannot call any GCP API as anything), sits on **its own VPC** whose
-only ingress rule is IAP SSH (no public ports — laptops reach Postgres and
-`serve` through an authenticated tunnel), and receives secrets **over SSH
-stdin** into a `0600` env file, never via instance metadata.
+only ingress rule is IAP SSH, and receives secrets **over SSH stdin** into a
+`0600` env file, never via instance metadata or a command argument.
+
+The recommended shared-team shape keeps durable truth in hosted Postgres and
+uses GCP only for execution. Provisioning, credentials, code updates, and store
+selection deliberately do not start or restart Weaver: the final `start` is
+the visible cutover. `create` starts a stopped compute instance when necessary
+to provision it, but leaves both Weaver systemd units stopped.
 
 ```bash
-# on the laptop that already has identity registered (weaver login):
-bin/weaver-gcp.sh create      # VM + Postgres + systemd units, idempotent
-bin/weaver-gcp.sh push-env    # pipe credentials + model config to the box
-bin/weaver-gcp.sh status      # services + runner heartbeat
-bin/weaver-gcp.sh join        # print the paste-ready commands for a second machine
-bin/weaver-gcp.sh tunnel      # localhost:6543 → fleet Postgres, :9723 → serve
+# On the configured operator laptop. Re-running create is provisioning-only.
+bin/weaver-gcp.sh stop                    # first, when reusing a live VM
+bin/weaver-gcp.sh create --external-store # VM/runtime/systemd; no bundled DB, no start
+bin/weaver-gcp.sh set-store               # hidden prompt; URL goes only over SSH stdin
+
+# These optional values are configuration, not credentials. A later push-env
+# without them preserves the installed host values.
+WEAVER_HOUSE_JSON='{"repoMap":"Primary application: /srv/application","tags":["application"]}' \
+WEAVER_WORKSPACE_ROOT=/home/weaver/workspaces \
+  bin/weaver-gcp.sh push-env               # merge identity + every model/fallback setting
+
+bin/weaver-gcp.sh update                   # pull/install only; still no restart
+bin/weaver-gcp.sh start                    # starts weaver-run: the explicit cutover
+bin/weaver-gcp.sh status                   # services + runner heartbeat
 ```
 
-Defaults (project, zone, VM name, machine type, network) are `WEAVER_GCP_*`
-variables at the top of the script. `update` pulls the latest code and
-restarts; `logs` tails the runner journal; on the box itself, `weaver status
-<slug>` works as-is — the CLI sees the same env the services run with.
+The project defaults to the active gcloud project; zone, VM name, machine type,
+network, and every override use `WEAVER_GCP_*` variables at the top of the
+script. `push-env --restart` and `update --restart`
+retain the old one-command restart when explicitly wanted; plain `push-env`
+and `update` never disturb a running process. `logs` tails the runner journal;
+on the box itself, `weaver status <slug>` works as-is — the safe launcher reads
+the same raw env records as the services without evaluating credential or JSON
+values as shell.
+
+`create` without `--external-store` remains the one-box option: it provisions a
+localhost-only Docker Postgres, and `tunnel`/`join` expose that database only
+through IAP. Do not run `set-store` until the external database contains the
+fleet you intend to execute: changing the URL selects a store; it does not copy
+one. Use the [exact filesystem-to-Postgres copy](./hosted-state.md) first.
 
 ## Deploying with Docker Compose (any host)
 
