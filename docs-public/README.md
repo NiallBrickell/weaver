@@ -11,6 +11,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 ## Using Weaver
 
 - [Quickstart](./quickstart.md) — name the outcome once and keep the work moving until the done-bar is met
+- [Running Weaver as a team](./team.md) — any org shape from three durable layers; specialists without personas or rosters
 - [Giving it work](./giving-it-work.md) — the shapes of work a workstream can hold, and the arc from objective to verified effect
 - [Watching a tracker](./linear.md) — point a workstream at Linear, Jira, or anything with an MCP server, and labeled issues become real work
 - [Connecting bots](./bots.md) — a fleet of disposable bots (any language) keep their durable memory in Weaver over `weaver serve`
@@ -29,7 +30,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Execution safety](./execution-safety.md) — the rolling model-start guard that catches runaway churn and resumes automatically, without pretending SDK estimates are billing
 - [Team seeds](./team-seeds.md) — share your guardrails with your team, never your trust or your transcripts
 - [Hosted state](./hosted-state.md) — point `WEAVER_STORE` at SQLite or plain Postgres and the durable layer lives in one database
-- [Managed Workstreams](./managed-workstreams.md) — a coordinator can delegate a genuinely separate outcome to its own Workstream, flat, not a tree
+- [Managed Workstreams](./managed-workstreams.md) — delegate a genuinely separate outcome to its own Workstream: links compose, authority never does
 
 ## Under the hood
 
