@@ -20,13 +20,14 @@ const roots: string[] = [];
 const SAFE_GCP_EXECUTION_ENV = [
   'WEAVER_EXECUTOR=openhands',
   'WEAVER_WORKER_MODEL=openrouter/moonshotai/kimi-k3',
-  'WEAVER_WORKER_FALLBACKS=openhands:openrouter/moonshotai/kimi-k3',
-  'WEAVER_COORDINATOR_EXECUTOR=codex-sdk',
-  'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol',
+  'WEAVER_WORKER_FALLBACKS=',
+  'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-latest',
+  'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
+  'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-sonnet-latest',
   'WEAVER_ACTION_EXECUTOR=local-sdk',
   'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
   'WEAVER_PILOT_URL=http://127.0.0.1:9721',
-  'WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk,local-sdk',
+  'WEAVER_RUNNER_EXECUTORS=openhands,local-sdk',
   '',
 ].join('\n');
 
@@ -208,7 +209,8 @@ esac
   fs.writeFileSync(preflightEnvFile, preflightEnv);
   const executorSecretsFile = path.join(root, 'executor-secrets.env');
   const executorSecrets = [
-    ...(pilotTokenPresent ? ['WEAVER_PILOT_TOKEN=test-pilot-token'] : ['OPENROUTER_API_KEY=test-provider-key']),
+    'OPENROUTER_API_KEY=test-provider-key',
+    ...(pilotTokenPresent ? ['WEAVER_PILOT_TOKEN=test-pilot-token'] : []),
     ...(githubCredentialsPresent ? [
       'WEAVER_GITHUB_APP_ID=12345',
       'WEAVER_GITHUB_APP_INSTALLATION_ID=67890',
@@ -234,6 +236,19 @@ esac
     path.join(bin, 'node'),
     `#!/bin/bash
 set -euo pipefail
+if [ -n "\${WEAVER_EXECUTOR:-}" ]; then
+printf '%s\n' \
+  "WEAVER_EXECUTOR=$WEAVER_EXECUTOR" \
+  "WEAVER_WORKER_MODEL=$WEAVER_WORKER_MODEL" \
+  "WEAVER_WORKER_FALLBACKS=$WEAVER_WORKER_FALLBACKS" \
+  "WEAVER_COORDINATOR_EXECUTOR=$WEAVER_COORDINATOR_EXECUTOR" \
+  "WEAVER_COORDINATOR_MODEL=$WEAVER_COORDINATOR_MODEL" \
+  "WEAVER_COORDINATOR_FALLBACKS=$WEAVER_COORDINATOR_FALLBACKS" \
+  "WEAVER_ACTION_EXECUTOR=$WEAVER_ACTION_EXECUTOR" \
+  "WEAVER_DETERMINISTIC_ACTIONS_ONLY=$WEAVER_DETERMINISTIC_ACTIONS_ONLY" \
+  "WEAVER_RUNNER_EXECUTORS=$WEAVER_RUNNER_EXECUTORS" \
+  > "$WEAVER_GCP_TEST_CALLS/render-profile"
+fi
 printf '%s' "$WEAVER_GCP_TEST_REMOTE_ENV"
 `,
     { mode: 0o755 },
@@ -453,6 +468,9 @@ test('set-store refuses a non-Postgres value before invoking gcloud', () => {
 
 test('push-env upgrades a stale remote installer before securely forwarding identities and config', () => {
   const rendered = [
+    'OPENROUTER_API_KEY=registered-provider-secret',
+    'CLAUDE_CODE_OAUTH_TOKEN=personal-device-secret',
+    'ZHIPU_API_KEY=unused-provider-secret',
     'WEAVER_EXECUTOR=pi',
     'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5',
     'WEAVER_WORKER_MODEL_COMPLEX=zai-coding-plan/glm-5.3',
@@ -466,15 +484,48 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
   assert.equal(call(root, 1, 'stdin'), fs.readFileSync(installer, 'utf8'));
   assert.match(call(root, 1, 'args'), /\/tmp\/weaver-install-env\.local/);
   assert.ok(!call(root, 1, 'stdin').includes('Primary application'));
-  assert.equal(call(root, 2, 'stdin'), rendered);
+  assert.ok(!call(root, 2, 'stdin').includes('OPENROUTER_API_KEY'));
+  assert.ok(call(root, 2, 'stdin').includes('WEAVER_EXECUTOR=pi'));
   assert.match(call(root, 2, 'args'), /weaver-install-env merge/);
-  assert.equal(call(root, 3, 'stdin'), rendered);
+  assert.equal(call(root, 3, 'stdin'), 'OPENROUTER_API_KEY=registered-provider-secret\n');
   assert.match(call(root, 3, 'args'), /weaver-install-env executor-secrets/);
+  assert.ok(!call(root, 3, 'stdin').includes('personal-device-secret'));
+  assert.ok(!call(root, 3, 'stdin').includes('unused-provider-secret'));
   assert.ok(!allCallArgs(root).includes('systemctl'));
   assert.equal(fs.readFileSync(path.join(root, 'calls', 'count'), 'utf8').trim(), '3');
   assert.match(fs.readFileSync(path.join(root, 'remote-installer'), 'utf8'), /^  executor-secrets\)/m);
   assert.match(result.stdout, /services were not restarted/);
   assert.ok(!`${result.stdout}${result.stderr}`.includes('Primary application'));
+  assert.equal(fs.readFileSync(path.join(root, 'calls', 'render-profile'), 'utf8'), [
+    'WEAVER_EXECUTOR=openhands',
+    'WEAVER_WORKER_MODEL=openrouter/moonshotai/kimi-k3',
+    'WEAVER_WORKER_FALLBACKS=',
+    'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
+    'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-latest',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-sonnet-latest',
+    'WEAVER_ACTION_EXECUTOR=local-sdk',
+    'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
+    'WEAVER_RUNNER_EXECUTORS=openhands,local-sdk',
+    '',
+  ].join('\n'));
+});
+
+test('push-env never copies personal Codex device authentication to the host', () => {
+  const f = fixture('WEAVER_EXECUTOR=pi\n');
+  const codexHome = String(f.env.CODEX_HOME);
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(path.join(codexHome, 'auth.json'), '{"personal":"device-login"}\n', { mode: 0o600 });
+
+  const result = spawnSync('bash', [script, 'push-env'], {
+    env: f.env,
+    encoding: 'utf8',
+  }) as SpawnSyncReturns<string>;
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(path.join(f.root, 'calls', 'count'), 'utf8').trim(), '3');
+  assert.ok(!allCallArgs(f.root).includes('.codex'));
+  assert.ok(!Array.from({ length: 3 }, (_, index) => call(f.root, index + 1, 'stdin')).join('\n').includes('device-login'));
+  assert.ok(!`${result.stdout}${result.stderr}`.includes('auth.json'));
 });
 
 test('restart remains an explicit push-env and update option', () => {
@@ -519,13 +570,33 @@ test('GCP start refuses host-process normal workers before systemctl', () => {
 
 test('GCP restart refuses a host-process worker fallback before systemctl', () => {
   const unsafe = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_WORKER_FALLBACKS=openhands:openrouter/moonshotai/kimi-k3',
+    'WEAVER_WORKER_FALLBACKS=',
     'WEAVER_WORKER_FALLBACKS=codex-sdk:gpt-5.6-sol',
   );
   const { result, root } = run(['restart'], undefined, '', false, unsafe);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /every WEAVER_WORKER_FALLBACKS target must use openhands/);
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses an unqualified or device-login coordinator', () => {
+  const unqualified = SAFE_GCP_EXECUTION_ENV.replace(
+    'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-latest',
+    'WEAVER_COORDINATOR_MODEL=claude-opus-4-8',
+  );
+  const first = run(['start'], undefined, '', false, unqualified);
+  assert.notEqual(first.result.status, 0);
+  assert.match(first.result.stderr, /must be an openrouter\/ provider-qualified model/);
+  assert.equal(fs.existsSync(path.join(first.root, 'calls', '1.systemctl-executed')), false);
+
+  const deviceLogin = SAFE_GCP_EXECUTION_ENV.replace(
+    'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
+    'WEAVER_COORDINATOR_EXECUTOR=codex-sdk',
+  );
+  const second = run(['start'], undefined, '', false, deviceLogin);
+  assert.notEqual(second.result.status, 0);
+  assert.match(second.result.stderr, /must be local-sdk on this host/);
+  assert.equal(fs.existsSync(path.join(second.root, 'calls', '1.systemctl-executed')), false);
 });
 
 test('GCP start refuses a failing installed shared-client probe before systemctl', () => {
@@ -571,6 +642,20 @@ test('GCP start refuses a missing Pilot bearer before the client probe', () => {
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
 });
 
+test('GCP start refuses a missing hosted coordinator API identity', () => {
+  const f = fixture();
+  const secretsFile = path.join(f.root, 'executor-secrets.env');
+  fs.writeFileSync(
+    secretsFile,
+    fs.readFileSync(secretsFile, 'utf8').replace(/^OPENROUTER_API_KEY=.*\n/m, ''),
+    { mode: 0o600 },
+  );
+  const result = startExistingFixture(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must contain exactly one OPENROUTER_API_KEY/);
+  assert.equal(fs.existsSync(path.join(f.root, 'calls', '1.systemctl-executed')), false);
+});
+
 test('GCP start refuses Pilot with authentication disabled before the client probe', () => {
   const { result, root } = run(
     ['start'],
@@ -610,6 +695,17 @@ test('GCP start refuses personal GitHub CLI authentication before systemctl', ()
   assert.match(result.stderr, /personal GitHub CLI authentication is forbidden/);
   assert.equal(fs.existsSync(path.join(root, 'calls', 'github-client-probe')), false);
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses a persisted Codex device login before systemctl', () => {
+  const f = fixture();
+  const codex = path.join(f.root, 'service-home', '.codex');
+  fs.mkdirSync(codex);
+  fs.writeFileSync(path.join(codex, 'auth.json'), '{"tokens":"personal"}\n');
+  const result = startExistingFixture(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /personal Codex device authentication is forbidden/);
+  assert.equal(fs.existsSync(path.join(f.root, 'calls', '1.systemctl-executed')), false);
 });
 
 test('GCP start refuses static GitHub tokens before systemctl', () => {
@@ -676,8 +772,8 @@ test('GCP start refuses a hosted GitHub MCP configuration', () => {
 
 test('GCP start requires every configured coordinator capability without treating it as work', () => {
   const unsafe = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk,local-sdk',
     'WEAVER_RUNNER_EXECUTORS=openhands,local-sdk',
+    'WEAVER_RUNNER_EXECUTORS=openhands',
   );
   const { result, root } = run(['start'], undefined, '', false, unsafe);
   assert.notEqual(result.status, 0);
