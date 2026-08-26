@@ -7,6 +7,7 @@ import { LocalSdkExecutor } from './executor/localSdk.js';
 import { OpenHandsExecutor } from './executor/openHands.js';
 import { CodexExecutor } from './executor/codex.js';
 import { PiExecutor } from './executor/pi.js';
+import { runCoordinatorPass } from './coordinator.js';
 import {
   consumeDueWorkerInfrastructureWakes,
   finalizeWorkerRun,
@@ -21,6 +22,7 @@ import { arrive, createWorkstream, load, readArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { InfrastructureWait } from './types.js';
 import type { WorkerExecutionRequest, WorkerExecutor } from './executor/types.js';
+import type { CoordinatorExecutor } from './executor/coordinator.js';
 
 test('worker failure provenance keeps the fatal line after warnings and redacts secrets', () => {
   const reason = workerExceptionReason(
@@ -170,6 +172,128 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(readDir, { recursive: true, force: true });
+  }
+});
+
+test('a legitimate short artifact remains proposed for literal coordinator judgment', async () => {
+  const home = workerHome();
+  const exact = 'FLEET_SMOKE_1787750239229';
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      const reply = await req.submit.submitResult({
+        summary: 'Produced the exact byte-level acceptance fixture.',
+        artifact: {
+          title: 'Exact token',
+          kind: 'text',
+          file_name: 'exact-token.txt',
+          content: exact,
+        },
+      });
+      assert.equal(reply.isError, undefined);
+      return { costUsd: 0.01, sessionId: 'short-artifact-session' };
+    },
+  };
+
+  try {
+    await createWorkstream({
+      slug: 'worker-short-artifact', title: 'worker-short-artifact',
+      objective: 'preserve a byte-exact short result', tags: [],
+      successCriteria: [exact], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-short-artifact', (d) => d.assignments.push({
+      id: 'asg_short', objective: `produce exactly ${exact}`, briefing: 'No padding.', kind: 'work',
+      acceptanceCriteria: [`artifact content is exactly ${exact}`], dependsOn: [], state: 'queued',
+      attempts: [], adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await runWorker('worker-short-artifact', 'asg_short', executor);
+
+    const doc = await load('worker-short-artifact');
+    const assignment = doc.assignments[0]!;
+    assert.equal(assignment.state, 'awaiting_review');
+    assert.equal(assignment.adoption.state, 'proposed');
+    assert.equal(assignment.submission?.completeness, undefined);
+    assert.equal(doc.deliverables.length, 1);
+    const deliverable = doc.deliverables[0]!;
+    assert.equal(await readArtifact('worker-short-artifact', deliverable.path), exact);
+
+    const coordinator: CoordinatorExecutor = {
+      id: process.env.WEAVER_COORDINATOR_EXECUTOR?.trim() || 'local-sdk',
+      async execute(req) {
+        const read = req.tools.find((definition) => definition.name === 'read_artifact');
+        const adopt = req.tools.find((definition) => definition.name === 'adopt_submission');
+        const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+        assert.ok(read && adopt && finish);
+        const artifact = await read.handler({ deliverable_id: deliverable.id }, {});
+        assert.match(JSON.stringify(artifact), new RegExp(exact));
+        const accepted = await adopt.handler({
+          assignment_id: 'asg_short',
+          reason: 'The complete artifact matches the byte-exact acceptance criterion.',
+        }, {});
+        assert.equal(accepted.isError, undefined);
+        await finish.handler({
+          summary: 'Read, verified, and adopted the exact short artifact.',
+          acknowledged_steering: true,
+        }, {});
+        return { costUsd: 0, sessionId: 'short-artifact-review' };
+      },
+    };
+    const outcome = await runCoordinatorPass(
+      'worker-short-artifact',
+      ['short artifact ready for review'],
+      coordinator,
+    );
+    assert.equal(outcome.outcome, 'completed');
+    const adopted = await load('worker-short-artifact');
+    assert.equal(adopted.assignments[0]!.state, 'completed');
+    assert.equal(adopted.assignments[0]!.adoption.state, 'accepted');
+    assert.equal(adopted.deliverables[0]!.adopted?.contentHash, deliverable.contentHash);
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a blank artifact is refused without manufacturing a candidate', async () => {
+  const home = workerHome();
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      const reply = await req.submit.submitResult({
+        summary: 'Nothing was produced.',
+        artifact: {
+          title: 'Empty result',
+          kind: 'text',
+          file_name: 'empty.txt',
+          content: '  \n',
+        },
+      });
+      assert.equal(reply.isError, true);
+      assert.match(reply.text, /artifact content is blank/);
+      return { costUsd: 0.01, sessionId: 'empty-artifact-session' };
+    },
+  };
+
+  try {
+    await createWorkstream({
+      slug: 'worker-empty-artifact', title: 'worker-empty-artifact',
+      objective: 'refuse an empty result', tags: [], successCriteria: [], constraints: [],
+      autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-empty-artifact', (d) => d.assignments.push({
+      id: 'asg_empty', objective: 'produce evidence', briefing: 'Return real evidence.', kind: 'work',
+      acceptanceCriteria: ['non-empty evidence'], dependsOn: [], state: 'queued', attempts: [],
+      adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await runWorker('worker-empty-artifact', 'asg_empty', executor);
+
+    const doc = await load('worker-empty-artifact');
+    assert.equal(doc.assignments[0]!.state, 'failed');
+    assert.equal(doc.assignments[0]!.attempts[0]!.terminalReason, 'no_submission');
+    assert.deepEqual(doc.deliverables, []);
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 

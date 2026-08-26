@@ -49,9 +49,9 @@ export interface SubmitResultArgs {
 
 /**
  * The worker's Weaver submission API, implemented by the harness. Section
- * accumulation, the stub refusal, secret redaction, artifact persistence, the
- * submission record, and the completion wake all live behind these two calls;
- * the executor only relays arguments in and replies out.
+ * accumulation, the blank-submission refusal, secret redaction, artifact
+ * persistence, the submission record, and the completion wake all live behind
+ * these two calls; the executor only relays arguments in and replies out.
  */
 export interface SubmitSurface {
   /** One ordered section of a long artifact; replies with running totals. */
