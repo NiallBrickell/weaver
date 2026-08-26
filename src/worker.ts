@@ -63,6 +63,13 @@ import {
 
 export { workerModel } from './modelConfig.js';
 
+// The built-in steward is a read-once triage worker, not an open-ended coding
+// investigation. A live GLM/OpenHands run used 74+ turns and ~4.9m cumulative
+// prompt tokens after it had already performed its final character-count
+// check. Keep this role bounded independently of the general repo-work seat.
+const FLEET_ATTENTION_STEWARD_MAX_TURNS = 16;
+const FLEET_ATTENTION_STEWARD_WALL_MS = 10 * 60_000;
+
 /** Preserve enough redacted substrate output to diagnose launch failures.
  * The old 80-character prefix routinely ended inside a harmless warning and
  * discarded the fatal line that followed it. Bound the durable field, but say
@@ -469,6 +476,7 @@ export async function runWorker(
     harnessInputs.push([
       `## Harness-provided fleet attention evidence`,
       `Read ${evidencePath} before investigating. It contains only open human asks, approval-service waits, grouped incidents, counts, and source revisions; unrelated Workstream content is deliberately omitted.`,
+      `This is a bounded read-and-submit triage, not a coding or research task. Read the evidence once, do not inspect repositories, the network, other filesystem paths, or operator MCP servers, and do not create a working report file. Use at most eight investigation tool calls, then submit one concise human-facing report through Weaver. Cite each real ask, but summarize it instead of reproducing its full text.`,
       `Cite Workstream slugs, revisions, and entity ids in the result. Treat unreadable Workstreams as an explicit evidence gap.`,
       `This input grants no authority: your result remains a proposal and cannot approve, resolve, adopt, send, merge, deploy, push, or spend.`,
     ].join('\n'));
@@ -603,7 +611,8 @@ export async function runWorker(
     },
   };
 
-  const workerWallMs = timing?.wallMs ?? 40 * 60_000;
+  const workerWallMs = timing?.wallMs
+    ?? (isFleetAttentionSteward ? FLEET_ATTENTION_STEWARD_WALL_MS : 40 * 60_000);
   const submissionReserveMs = Math.min(10 * 60_000, Math.floor(workerWallMs / 2));
   const checkpointAtMs = workerWallMs - submissionReserveMs;
 
@@ -721,7 +730,9 @@ export async function runWorker(
       // it could submit (11 wasted minutes + a re-split). Repo-scale setup
       // alone eats dozens of turns; the real runaway bounds are the assignment
       // rolling start guard and the engine's supervision, not a tight turn count.
-      maxTurns: Number(process.env.WEAVER_WORKER_MAX_TURNS) || 200,
+      maxTurns: isFleetAttentionSteward
+        ? FLEET_ATTENTION_STEWARD_MAX_TURNS
+        : Number(process.env.WEAVER_WORKER_MAX_TURNS) || 200,
       abort,
       onMessage: (message) => {
         tailMessage(slug, 'worker', assignmentId, message, operatorMcp.env);
