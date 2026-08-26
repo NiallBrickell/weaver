@@ -229,11 +229,14 @@ in `/etc/weaver/env`, while the hosted allowlist of registered credentials
 the canonical adapter-only store read by Weaver executors. Removing a locally
 registered allowed credential and pushing again removes it from the host too.
 Provider keys are filtered out of the ambient systemd environment and exist
-only in that executor store. The hosted OpenHands worker defaults to
-`openrouter/z-ai/glm-5.2`: its checked-in cohort completed the submission
-boundary 10/10, while the earlier Kimi K3 cohort and production smoke both
-exited at least once without the required `submit_result`. This is an explicit
-host profile choice, not an automatic model route. `WEAVER_GCP_WORKER_MODEL`,
+only in that executor store. The hosted OpenHands worker defaults to the
+organization-backed `openrouter/~anthropic/claude-sonnet-latest` alias. The
+production acceptance smoke reproduced Kimi K3's known no-submission failure;
+GLM-5.2 submitted one invalid repeated artifact, then ended its byte-exact
+correction without `submit_result`. Hosted operations therefore use the
+quality-first Sonnet seat instead of promoting an older cheap-model cohort
+across a changed adapter boundary. This is an explicit host profile choice,
+not an automatic model route. `WEAVER_GCP_WORKER_MODEL`,
 `WEAVER_GCP_WORKER_MODEL_COMPLEX`, `WEAVER_GCP_WORKER_FALLBACKS`,
 `WEAVER_GCP_COORDINATOR_MODEL`, and `WEAVER_GCP_COORDINATOR_FALLBACKS` may
 override the profile's model seats without weakening its substrate checks.

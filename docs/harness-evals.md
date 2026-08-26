@@ -278,9 +278,12 @@ negative routing evidence even though their hidden repairs passed.
 The hosted GCP profile initially reused Kimi K3 and reproduced that exact negative signal after
 the rootless bridge fix: the provider conversation completed, but no `submit_result` arrived, so
 Weaver correctly rejected the attempt and a fresh coordinator re-dispatched the intended work.
-The profile now explicitly defaults to the existing 10/10 OpenHands/GLM-5.2 target; this is
-operator-owned host configuration, not a reviewed automatic route, and the `.4` adapter still
-requires fresh cohort evidence before any route qualification changes.
+GLM-5.2 then crossed the submission boundary but proposed nine repetitions of a byte-exact token;
+the fresh coordinator rejected it, tightened the same acceptance bar, and the correction run ended
+without a submission after 11 turns. The older `.2` cohort therefore does not justify silently
+promoting GLM across the `.4` boundary. The hosted profile uses the organization-backed OpenRouter
+Sonnet alias as an explicit quality-first host configuration while `.4` route evidence remains
+unqualified; this does not add an automatic route or relabel any earlier cohort.
 
 The first GLM-5.3 canary used OpenCode's ordinary plaintext auth store and incorrectly inherited
 the operator environment; it remains under raw harness `1.18.15`. The interrupted `.2` cohort moved

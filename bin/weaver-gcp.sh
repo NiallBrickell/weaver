@@ -370,7 +370,7 @@ cmd_push_env() {
     *) echo "❌ usage: weaver-gcp push-env [--restart]" >&2; exit 1 ;;
   esac
   [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp push-env [--restart]" >&2; exit 1; }
-  hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-openrouter/z-ai/glm-5.2}"
+  hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-openrouter/~anthropic/claude-sonnet-latest}"
   hosted_worker_complex_model="${WEAVER_GCP_WORKER_MODEL_COMPLEX:-$hosted_worker_model}"
   hosted_worker_fallbacks="${WEAVER_GCP_WORKER_FALLBACKS:-}"
   hosted_coordinator_model="${WEAVER_GCP_COORDINATOR_MODEL:-openrouter/~anthropic/claude-opus-latest}"
