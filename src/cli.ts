@@ -20,6 +20,7 @@ import {
   readArtifact,
   SourceKeyConflictError,
 } from './store.js';
+import { createWorkstreamUnderParent, ManagedWorkstreamError } from './managedWorkstreams.js';
 
 function args(): string[] {
   return process.argv.slice(2);
@@ -91,7 +92,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver do ["<message>"] ["<done means>"]   start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied. Optional 2nd arg overrides the done-bar (e.g. "verified live on the web post-merge, read-only")
                                              NO ARGS = interactive: type/paste a multiline message, finish with Ctrl-D or a "." line — the safe path for long messages ($, quotes, newlines survive verbatim)
   weaver ask "<question>"                    interrogate the fleet's history: "did anything pick up X?", "what happened with Y?", "why wasn't Z done?" — answers cite decisions/events/deliverables from recorded state (read-only)
-  weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--source-key <k>] [--execution-window <duration>] [--max-model-starts N]
+  weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--source-key <k>] [--execution-window <duration>] [--max-model-starts N] [--under <parent-slug>]
   weaver list
   weaver status <slug>
   weaver capacity retry <slug> [--model <model>]   make a parked provider wait due after you change Claude-side usage/auth settings; does not change billing or identity
@@ -282,6 +283,35 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       if (rest.includes('--execution-window') && !executionWindow) fail('--execution-window requires a duration');
       if (rest.includes('--max-model-starts') && !maxModelStarts) fail('--max-model-starts requires a positive integer');
       const sourceKey = opt(rest, 'source-key');
+      const under = opt(rest, 'under');
+      if (under === slug) fail(`--under cannot name the new workstream itself`);
+      // Human composition path (#128 step 2): `--under` routes through the
+      // SAME shared creation semantics the coordinator's create_workstream
+      // tool uses (single managedBy pointer, no inheritance, source-key
+      // idempotency), with parent-exists-and-active as a human precondition.
+      if (under) {
+        let child;
+        try {
+          child = await createWorkstreamUnderParent(under, {
+            slug,
+            title,
+            objective,
+            successCriteria: optAll(rest, 'success'),
+            constraints: optAll(rest, 'constraint'),
+            tags: optAll(rest, 'tag'),
+            ...(sourceKey ? { sourceKey } : {}),
+            executionWindowSeconds: executionWindow
+              ? Math.ceil(parseDuration(executionWindow) / 1000)
+              : undefined,
+            maxModelStarts: maxModelStarts ? Number(maxModelStarts) : undefined,
+          });
+        } catch (e) {
+          if (e instanceof SourceKeyConflictError || e instanceof ManagedWorkstreamError) fail(e.message);
+          throw e;
+        }
+        process.stdout.write(`created workstream '${slug}' (${child.workstream.id}) under '${under}'\nits manager sees it via its own passes; run: weaver tick ${slug}\n`);
+        break;
+      }
       const doc = await createWorkstream({
         slug,
         title,

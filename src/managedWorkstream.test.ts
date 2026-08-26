@@ -8,7 +8,7 @@
  * as conclusion.ts's `conclusionEvidenceLabels` (see printout.test.ts).
  */
 
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -17,6 +17,7 @@ import * as path from 'node:path';
 import {
   ManagedWorkstreamError,
   createManagedWorkstream,
+  createWorkstreamUnderParent,
   directManagedWorkstream,
   inspectManagedWorkstream,
 } from './managedWorkstreams.js';
@@ -36,6 +37,7 @@ import {
   writeArtifact,
 } from './store.js';
 import { virtualNow } from './clock.js';
+import type { WorkstreamDoc } from './types.js';
 
 function freshHome(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-managed-test-'));
@@ -523,4 +525,72 @@ test('plain watch keeps optional capacity headroom inside a narrow header', () =
   const headline = '⚠ Claude 5h 18% left · resets in 2h';
   assert.equal(capacityHeadlineThatFits(headline, headline.length + 3), headline);
   assert.equal(capacityHeadlineThatFits(headline, headline.length + 2), undefined);
+});
+
+describe('human create-under-parent (CLI --under)', () => {
+  test('creates through the shared managed path: single pointer, no inheritance, first wake', async () => {
+    await makeWorkstream('parent');
+    const child = await createWorkstreamUnderParent('parent', {
+      slug: 'child', title: 'Child', objective: 'child outcome',
+      successCriteria: ['criterion'], constraints: ['constraint'], tags: ['tag-a'],
+    });
+    assert.equal(child.workstream.managedBy?.slug, 'parent');
+    // Only what was passed: no parent tags/constraints/criteria leak in.
+    assert.deepEqual(child.workstream.tags, ['tag-a']);
+    assert.deepEqual(child.workstream.constraints, ['constraint']);
+    assert.deepEqual(child.workstream.successCriteria, ['criterion']);
+    assert.deepEqual(await listManagedBy('parent'), [{ slug: 'child', status: 'active' }]);
+    // Same first wake as every creation path.
+    assert.ok(child.wakes.some((w) => w.status === 'pending'));
+  });
+
+  test('refuses a missing parent with a clean error', async () => {
+    await assert.rejects(
+      createWorkstreamUnderParent('ghost', {
+        slug: 'x', title: 'X', objective: 'o', successCriteria: [], constraints: [], tags: [],
+      }),
+      /no workstream 'ghost'/,
+    );
+  });
+
+  test('refuses a non-active parent: a paused or done parent runs no passes to manage the work', async () => {
+    await makeWorkstream('paused-parent');
+    const p1 = await load('paused-parent');
+    await mutate('paused-parent', p1.revision, (d: WorkstreamDoc) => { d.workstream.status = 'paused'; });
+    await assert.rejects(
+      createWorkstreamUnderParent('paused-parent', {
+        slug: 'x', title: 'X', objective: 'o', successCriteria: [], constraints: [], tags: [],
+      }),
+      /paused, not active/,
+    );
+    await makeWorkstream('done-parent');
+    const p2 = await load('done-parent');
+    await mutate('done-parent', p2.revision, (d: WorkstreamDoc) => { d.workstream.status = 'done'; });
+    await assert.rejects(
+      createWorkstreamUnderParent('done-parent', {
+        slug: 'y', title: 'Y', objective: 'o', successCriteria: [], constraints: [], tags: [],
+      }),
+      /done, not active/,
+    );
+  });
+
+  test('refuses self-parenting and never reparents an existing workstream', async () => {
+    await makeWorkstream('already-here');
+    await assert.rejects(
+      createWorkstreamUnderParent('already-here', {
+        slug: 'already-here', title: 'X', objective: 'o', successCriteria: [], constraints: [], tags: [],
+      }),
+      /cannot manage itself/,
+    );
+    // A slug collision fails at the store write: there is no path that could
+    // rewrite an existing stream's managedBy pointer.
+    await assert.rejects(
+      createWorkstreamUnderParent('already-here', {
+        slug: 'already-here', title: 'X', objective: 'o', successCriteria: [], constraints: [], tags: [],
+      }),
+      (e: Error) => /cannot manage itself|already exists/.test(e.message),
+    );
+    const untouched = await load('already-here');
+    assert.equal(untouched.workstream.managedBy, undefined);
+  });
 });
