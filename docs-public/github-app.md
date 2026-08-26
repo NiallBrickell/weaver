@@ -1,8 +1,8 @@
 # GitHub access on a hosted runner
 
 A hosted Weaver runner should never carry a person's `gh auth login` session or
-personal access token. Use a dedicated private GitHub App, install it only on
-the repositories Weaver manages, and keep its App private key in Weaver's
+personal access token. Use a dedicated private GitHub App across the fleet's
+intended repository estate, and keep its App private key in Weaver's
 executor-only store on the trusted controller host.
 
 GitHub App credentials are a minting identity, not the credential used for an
@@ -12,9 +12,23 @@ further narrow that token to the one repository named by the assignment.
 
 ## Create and install the App
 
-Create a private GitHub App owned by the organization that owns the managed
-repositories. It does not need a webhook or OAuth callback. Grant only these
-repository permissions:
+Run setup on the trusted local controller, where `gh auth status` identifies an
+organization owner:
+
+```bash
+weaver github-app-setup your-organization
+```
+
+Open the printed loopback URL and confirm the GitHub screens. Choose **All
+repositories** for an organization-wide fleet. GitHub returns the one-time App
+private key, App ID, and installation ID directly to the loopback callback;
+Weaver verifies them and writes them to its executor-only store. Do not copy,
+download, or paste any credential. The local person's `gh` token is used only
+to exchange the one-time manifest code on this controller and is never written
+to Weaver state or sent to the hosted runner.
+
+The command creates a private organization-owned App with no active webhook or
+event subscriptions and exactly these repository permissions:
 
 - Contents: write
 - Pull requests: write
@@ -25,34 +39,21 @@ repository permissions:
 - Workflows: write
 - Metadata: read (GitHub adds this permission)
 
-For an organization-wide Weaver fleet, install the App with **All
-repositories** so existing and future repositories can enter Workstreams
-without an App settings change. If a fleet has a deliberately narrower
-charter, use **Only select repositories** and select that subset instead.
-Installation defines the fleet's maximum repository estate; it never grants an
-individual run access across that estate. Every operation still mints a token
-for the one exact owner/repository resolved from the assignment checkout, and
-Weaver rejects the token unless GitHub confirms that exact repository.
+Existing and future repositories can then enter Workstreams without an App
+settings change. Installation defines the fleet's maximum repository estate;
+it never grants an individual run access across that estate. Every operation
+still mints a token for the one exact owner/repository resolved from the
+assignment checkout, and Weaver rejects the token unless GitHub confirms that
+exact repository.
 
 Contents write is what permits a reviewed branch push; Workflows write is
 needed only because a legitimate code change may touch `.github/workflows`.
 
-Download one private key and record the App ID and installation ID. Register
-them in executor-only scope; never put them in `.env`, workstream state, a
-prompt, or an action secret:
-
-```bash
-printf '%s' '<app-id>' | weaver secret set WEAVER_GITHUB_APP_ID --executor
-printf '%s' '<installation-id>' | weaver secret set WEAVER_GITHUB_APP_INSTALLATION_ID --executor
-base64 < weaver-app.private-key.pem | tr -d '\n' \
-  | weaver secret set WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64 --executor
-
-weaver github-auth-check
-```
-
-`github-auth-check` proves the App can mint an installation token and read its
-installation repository list. It prints no token, key, repository name, or API
-body.
+The setup callback independently checks the returned organization,
+all-repositories selection, permission map, App JWT, installation token, and
+repository-list access before storing anything. `github-auth-check` can repeat
+the installed identity probe later; neither command prints a token, key,
+repository name, or API body.
 
 Bootstrap each selected repository with the App identity rather than a personal
 login:

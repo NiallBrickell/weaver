@@ -125,6 +125,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver login --render-remote-env           emit KEY=value lines to provision a headless host (refuses a TTY — pipe it, e.g. over SSH)
   weaver login --render-remote-executor-secrets  emit the exact adapter-only secret store for secure host provisioning (refuses a TTY)
   weaver pilot-auth-check                    production preflight: authenticated Pilot /internal/auth-check must return HTTP 204
+  weaver github-app-setup <organization>     browser-confirmed local setup: create, install, verify, and store an all-repositories GitHub App
   weaver github-auth-check                   production preflight: dedicated GitHub App must mint and use a read-only installation token
   weaver github-clone <owner/repo> <absolute-path>   securely bootstrap one installed repository without persisting a token
   weaver link <store-url>                    join this machine to an existing fleet: prove the store is reachable (read-only), then persist WEAVER_STORE into .env
@@ -822,6 +823,22 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       const { checkPilotAuthentication } = await import('./pilot.js');
       await checkPilotAuthentication();
       process.stdout.write('Pilot authentication verified\n');
+      break;
+    }
+
+    case 'github-app-setup': {
+      if (rest.length !== 1) fail('usage: weaver github-app-setup <organization>');
+      const { startGitHubAppSetup } = await import('./githubAppSetup.js');
+      const setup = await startGitHubAppSetup(rest[0]!, {
+        onDiagnostic: (message) => process.stderr.write(`GitHub App setup: ${message}\n`),
+      });
+      process.stdout.write(
+        `Open this local URL to confirm the organization App on GitHub:\n\n${setup.url}\n\n` +
+        'Choose All repositories. IDs and the private key return directly to this process; do not copy them.\n' +
+        'Waiting for GitHub installation confirmation…\n',
+      );
+      await setup.completion;
+      process.stdout.write('GitHub App organization-wide installation verified and stored locally\n');
       break;
     }
 
