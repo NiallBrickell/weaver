@@ -1187,6 +1187,12 @@ test('pilot passthrough — the operator settings allow — is an allow, never a
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as { port: number }).port;
   process.env.WEAVER_PILOT_URL = `http://127.0.0.1:${port}`;
+  // Isolate from the machine's executor-only secret store: pilotFetch attaches
+  // a stored WEAVER_PILOT_TOKEN as a bearer, so without a fresh empty home this
+  // test asserts machine state, not Weaver behavior — it passed on CI only
+  // because CI has no provisioned secrets (same isolation its sibling below
+  // already does via workerHome()).
+  const home = workerHome();
   try {
     const supervise = pilotSupervisor('/tmp', 'test-stream');
     assert.equal((await supervise('Edit', { file_path: '/tmp/x' })).behavior, 'allow');
@@ -1196,7 +1202,9 @@ test('pilot passthrough — the operator settings allow — is an allow, never a
     assert.deepEqual(authorizations, [undefined, undefined, undefined]);
   } finally {
     delete process.env.WEAVER_PILOT_URL;
+    delete process.env.WEAVER_HOME;
     server.close();
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 
