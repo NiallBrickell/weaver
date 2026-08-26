@@ -31,8 +31,9 @@ It is deliberately **not**:
   "implementer agent" in the operator's mental model is a security-shaped or
   implementation-shaped *assignment*, and the profile is part of how that
   shape is declared. Whether a reusable named specialist definition is ever
-  earned is held behind its own acceptance trigger
-  ([cross-harness-agent-organization-plan.md](./cross-harness-agent-organization-plan.md));
+  earned is held behind its own acceptance trigger (the consolidated
+  organization plan,
+  [#128](https://github.com/NiallBrickell/weaver/pull/128));
   capability requirements survive worker replacement (kernel rule 1), while a
   named persona would invite identity where there should only be intended
   work.
