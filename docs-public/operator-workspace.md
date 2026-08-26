@@ -16,21 +16,41 @@ The workspace listens on `127.0.0.1:9724` by default. Open the URL printed by th
 weaver ui --host 0.0.0.0 --port 9724
 ```
 
-## Board and workspace
+## Jobs overview and workspace
 
-The board is the fleet-level view: scan what needs attention, what is moving, what is waiting, and what is ready. Open a card to enter that Workstream's workspace, where the current position, plan, activity, and work products can be read together and follow-up can be added.
+The **Jobs** page is the fleet-level view: scan how many jobs need attention,
+are working, are waiting, or are done. On desktop the left sidebar uses the
+same groups and stays available when you open a job; on mobile **All jobs**
+returns to that list without repeating it above the selected job.
+
+Each job has one focused workspace:
+
+- **Decision needed** appears once, with short choices when the request contains
+  them. Long diagnostic context stays folded until you ask for it.
+- **Current work** shows only live assignments.
+- **Results** contains the evidenced conclusion and downloadable accepted or
+  proposed outputs.
+- **Recent updates** shows a bounded human-readable catch-up. Routine scheduler
+  checkpoints and the current decision are not repeated there.
+- **Technical details and full history** retains revisions, the standing course,
+  acceptance criteria, attempt counts, and the typed chronology under one
+  disclosure.
 
 These are two views over typed Workstream state. The workspace may look conversational, but a conversation is never the durable container and its prose cannot silently change authoritative state.
 
 ## Start new work
 
-Use **New work** to describe an outcome. Weaver creates a durable Workstream for it, then the separate runner picks it up. Creating a Workstream does not keep a browser request or model session alive; fresh coordinator and worker runs continue from stored state.
+Use **New job** to describe an outcome. Weaver creates a durable Workstream for it, then the separate runner picks it up. Creating a Workstream does not keep a browser request or model session alive; fresh coordinator and worker runs continue from stored state. The optional parent selector is under **Advanced** because most requests are standalone jobs.
 
 The UI server does not execute model runs. Keep `weaver run` running against the same `WEAVER_STORE` on this or another machine. Without that runner, the board remains usable and new work is safely stored, but no agent advances it.
 
 ## Add follow-up
 
-Text entered in a Workstream workspace is recorded as an untrusted **Observation** and wakes the Workstream. It can add evidence or context for the next fresh coordinator, but it cannot grant authority, complete work, adopt a submission, approve an action, or supersede standing direction by itself.
+Text entered under **Add context or answer a question** is recorded as an
+untrusted **Observation** and wakes the Workstream. It can add evidence or
+context for the next fresh coordinator, but it cannot grant authority,
+complete work, adopt a submission, approve an action, or supersede standing
+direction by itself.
 
 Use the existing CLI for explicit human acts such as steering, adoption, attention resolution, or action approval. Keeping those acts separate prevents a convenient browser input from becoming an accidental authority channel.
 
@@ -57,6 +77,17 @@ Basic authentication must be carried over a trusted network or HTTPS reverse pro
 For a shared deployment, use the [Railway guide](./railway.md): the UI and
 Postgres are hosted together while the initially separate execution host reads
 and writes the same durable fleet.
+
+The sidebar states which store the page is reading:
+
+- **Shared fleet · execution on another host** means the page and remote runner
+  share Postgres. Workstreams, decisions, knowledge, and results are shared;
+  process heartbeat, checkouts, and credentials stay on the execution host.
+- **Local fleet · this machine** means the page reads the local filesystem
+  store.
+
+A shared UI cannot measure a runner heartbeat stored only on another host.
+That is normal deployment context, not evidence that the runner is offline.
 
 ## Authority limits
 

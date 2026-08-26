@@ -168,6 +168,19 @@ function fleetGroups(board: FleetBoardView): OperatorFleetView['groups'] {
   return definitions.map(([label, cards]) => ({ label, cards }));
 }
 
+function fleetScope(): OperatorFleetView['scope'] {
+  if (/^postgres(?:ql)?:\/\//.test(process.env.WEAVER_STORE ?? '')) {
+    return {
+      label: 'Shared fleet · execution on another host',
+      detail: 'Jobs, decisions, results, and shared knowledge come from the shared database. Runner processes and workspaces stay on the execution host.',
+    };
+  }
+  return {
+    label: 'Local fleet · this machine',
+    detail: 'Jobs and results come from this machine\'s local Weaver store.',
+  };
+}
+
 function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: string[]): OperatorFleetView['health'] {
   const pid = liveRunnerPid();
   // Runner locks and heartbeats are intentionally machine-local. A stateless
@@ -206,9 +219,9 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
   }
   if (remoteRunnerUnobservable) {
     return {
-      tone: 'warning',
-      headline: 'Remote runner liveness is not observable here',
-      detail: `${details.join(' · ')}. This UI can read the shared durable fleet, but runner heartbeat is local to its execution host.`,
+      tone: 'healthy',
+      headline: 'Shared fleet is connected',
+      detail: `${details.join(' · ')}. Runner activity happens on another host and is not measured by this page.`,
     };
   }
   if (!healthyRunner) {
@@ -255,6 +268,7 @@ async function loadFleet(): Promise<LoadedFleet> {
     view: {
       board,
       groups: fleetGroups(board),
+      scope: fleetScope(),
       health: fleetHealth(docs, board, unreadable),
       intakeParents: docs
         .filter((doc) => doc.workstream.status === 'active')

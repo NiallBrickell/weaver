@@ -26,6 +26,10 @@ const CSS = fs.readFileSync(new URL('../inspect/tailwind.generated.css', import.
 export interface OperatorFleetView {
   board: FleetBoardView;
   groups: Array<{ label: string; cards: WorkstreamCardView[] }>;
+  scope: {
+    label: string;
+    detail: string;
+  };
   health: {
     tone: 'healthy' | 'warning' | 'critical';
     headline: string;
@@ -98,66 +102,6 @@ const OPERATOR_SCRIPT = `
     window.setTimeout(poll, 4000);
   };
   window.setTimeout(poll, 4000);
-
-  const panel = document.querySelector('[data-inspector-panel]');
-  const handle = document.querySelector('[data-inspector-resize]');
-  const dragShield = document.querySelector('[data-inspector-drag-shield]');
-  const widthKey = 'weaver-operator-inspector-width';
-  const clamp = (value) => Math.max(280, Math.min(640, value));
-  let startX = 0;
-  let startWidth = 360;
-  let dragging = false;
-  if (panel) {
-    try {
-      const stored = Number(window.localStorage.getItem(widthKey));
-      if (Number.isFinite(stored) && stored > 0) {
-        panel.style.setProperty('--operator-inspector-width', clamp(stored) + 'px');
-      }
-    } catch (_) {
-      // Persistence is best effort; resizing still works for this page.
-    }
-  }
-  handle?.addEventListener('pointerdown', (event) => {
-    event.preventDefault();
-    startX = event.clientX;
-    startWidth = panel.getBoundingClientRect().width;
-    dragging = true;
-    dragShield?.classList.remove('hidden');
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  });
-  window.addEventListener('pointermove', (event) => {
-    if (!dragging || !panel) return;
-    panel.style.setProperty('--operator-inspector-width', clamp(startWidth + startX - event.clientX) + 'px');
-  });
-  const stopDragging = () => {
-    if (!dragging || !panel) return;
-    dragging = false;
-    const width = clamp(panel.getBoundingClientRect().width);
-    try {
-      window.localStorage.setItem(widthKey, String(width));
-    } catch (_) {
-      // Persistence is best effort; keep the in-memory width.
-    }
-    dragShield?.classList.add('hidden');
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-  };
-  window.addEventListener('pointerup', stopDragging);
-  window.addEventListener('pointercancel', stopDragging);
-
-  const mobileToggle = document.querySelector('[data-inspector-toggle]');
-  const mobileClose = document.querySelector('[data-inspector-close]');
-  const backdrop = document.querySelector('[data-inspector-backdrop]');
-  const setMobileInspector = (open) => {
-    if (!panel || !mobileToggle || !backdrop) return;
-    panel.classList.toggle('hidden', !open);
-    backdrop.classList.toggle('hidden', !open);
-    mobileToggle.setAttribute('aria-expanded', String(open));
-  };
-  mobileToggle?.addEventListener('click', () => setMobileInspector(mobileToggle.getAttribute('aria-expanded') !== 'true'));
-  mobileClose?.addEventListener('click', () => setMobileInspector(false));
-  backdrop?.addEventListener('click', () => setMobileInspector(false));
 })();`;
 
 function documentHtml(node: ReactNode): string {
@@ -187,14 +131,25 @@ function WorkstreamSidebar({
   actor: string;
   currentSlug?: string;
 }) {
+  const selectedDone = currentSlug
+    ? fleet.board.done.find((item) => item.slug === currentSlug)
+    : undefined;
+  const newestDone = fleet.board.done.slice(0, 8);
+  const visibleDone = selectedDone && !newestDone.some((item) => item.slug === selectedDone.slug)
+    ? [selectedDone, ...newestDone.slice(0, 7)]
+    : newestDone;
+  const olderDone = fleet.board.done.filter((item) => !visibleDone.some((visible) => visible.slug === item.slug));
   return (
     <aside
       data-testid="workstream-sidebar"
       className="z-20 flex max-h-[44vh] min-h-0 flex-col border-b border-zinc-800 bg-zinc-950 lg:sticky lg:top-0 lg:h-screen lg:max-h-none lg:border-b-0 lg:border-r"
     >
-      <div className="flex items-center justify-between border-b border-zinc-900 px-4 py-4">
-        <a href="/" className="text-sm font-semibold tracking-tight text-white">Weaver</a>
-        <span className="max-w-32 truncate text-xs text-zinc-500" title={actor}>{actor}</span>
+      <div className="border-b border-zinc-900 px-4 py-4">
+        <div className="flex items-center justify-between">
+          <a href="/" className="text-sm font-semibold tracking-tight text-white">Weaver</a>
+          <span className="max-w-32 truncate text-xs text-zinc-500" title={actor}>{actor}</span>
+        </div>
+        <p data-testid="fleet-scope" className="mt-2 text-[11px] font-medium text-emerald-300" title={fleet.scope.detail}>{fleet.scope.label}</p>
       </div>
       <nav aria-label="Operator" className="grid grid-cols-2 gap-2 border-b border-zinc-900 p-3">
         <a
@@ -202,18 +157,18 @@ function WorkstreamSidebar({
           href="/"
           className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-center text-xs font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-white"
         >
-          Overview
+          All jobs
         </a>
         <a
           data-testid="new-work-link"
           href="/new"
           className="rounded-lg bg-violet-500 px-3 py-2 text-center text-xs font-semibold text-white transition hover:bg-violet-400"
         >
-          New work
+          New job
         </a>
       </nav>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
-        {fleet.groups.map((group, groupIndex) => (
+      <div className="hidden min-h-0 flex-1 overflow-y-auto px-2 py-3 lg:block">
+        {fleet.groups.filter((group) => group.cards.length).map((group, groupIndex) => (
           <section
             key={`${group.label}-${groupIndex}`}
             data-testid="workstream-sidebar-group"
@@ -222,7 +177,7 @@ function WorkstreamSidebar({
           >
             <header className="mb-1 flex items-center justify-between px-2 py-1">
               <h2 className="text-[11px] font-medium uppercase tracking-[0.12em] text-zinc-500">{group.label}</h2>
-              <span className="text-[11px] tabular-nums text-zinc-600">{group.cards.length}</span>
+              <span className="text-[11px] tabular-nums text-zinc-600">{group.cards.length} job{group.cards.length === 1 ? '' : 's'}</span>
             </header>
             <div className="space-y-1">
               {group.cards.length ? group.cards.map((card) => {
@@ -243,9 +198,9 @@ function WorkstreamSidebar({
                     <div className="flex min-w-0 items-center gap-2">
                       <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', laneDot(card))} />
                       <span className="min-w-0 flex-1 truncate text-xs font-medium text-zinc-200">{card.title}</span>
-                      {card.needCount ? <span className="shrink-0 text-[10px] text-rose-300">{card.needCount}</span> : null}
+                      {card.needCount > 1 ? <span className="shrink-0 text-[10px] text-rose-300">{card.needCount} asks</span> : null}
                     </div>
-                    <p className="mt-1 truncate pl-3.5 text-[11px] text-zinc-500">{card.next}</p>
+                    <p className="mt-1 truncate pl-3.5 text-[11px] text-zinc-500">{card.state}{card.nowAge ? ` · ${card.nowAge}` : ''}</p>
                   </a>
                 );
               }) : (
@@ -257,12 +212,12 @@ function WorkstreamSidebar({
         <section data-testid="workstream-sidebar-done" className="mb-4 last:mb-0">
           <header className="mb-1 flex items-center justify-between px-2 py-1">
             <h2 className="text-[11px] font-medium uppercase tracking-[0.12em] text-zinc-500">Done</h2>
-            <span className="text-[11px] tabular-nums text-zinc-600">{fleet.board.done.length}</span>
+            <span className="text-[11px] tabular-nums text-zinc-600">{fleet.board.done.length} job{fleet.board.done.length === 1 ? '' : 's'}</span>
           </header>
           {fleet.board.done.length ? (
             <>
               <div className="space-y-1">
-                {fleet.board.done.slice(0, 8).map((item) => (
+                {visibleDone.map((item) => (
                   <a
                     key={item.slug}
                     data-testid={`workstream-sidebar-item-${item.slug}`}
@@ -283,11 +238,11 @@ function WorkstreamSidebar({
                   </a>
                 ))}
               </div>
-              {fleet.board.done.length > 8 ? (
+              {olderDone.length ? (
                 <details className="mt-1 rounded-lg border border-zinc-900 px-2 py-1.5">
-                  <summary className="cursor-pointer text-[11px] text-zinc-600">{fleet.board.done.length - 8} older</summary>
+                  <summary className="cursor-pointer text-[11px] text-zinc-600">{olderDone.length} older</summary>
                   <div className="mt-1 space-y-1">
-                    {fleet.board.done.slice(8).map((item) => (
+                    {olderDone.map((item) => (
                       <a
                         key={item.slug}
                         data-testid={`workstream-sidebar-item-${item.slug}`}
@@ -317,14 +272,12 @@ function OperatorShell({
   initialRevision,
   currentSlug,
   children,
-  inspector,
 }: OperatorBaseRenderProps & {
   title: string;
   revisionEndpoint: string;
   initialRevision: string;
   currentSlug?: string;
   children: ReactNode;
-  inspector?: ReactNode;
 }) {
   return (
     <html lang="en" className="bg-zinc-950 text-zinc-100">
@@ -343,50 +296,14 @@ function OperatorShell({
           className="min-h-screen lg:grid lg:h-screen lg:grid-cols-[18rem_minmax(0,1fr)]"
         >
           <WorkstreamSidebar fleet={fleet} actor={actor} currentSlug={currentSlug} />
-          <div className="relative flex min-h-0 min-w-0">
-            <main className="min-w-0 flex-1 overflow-y-auto">
-              {notice ? (
-                <div data-testid="operator-notice" role="status" className="m-4 mb-0 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-3 text-sm text-violet-200 sm:m-6 sm:mb-0">
-                  {notice}
-                </div>
-              ) : null}
-              {children}
-            </main>
-            {inspector ? (
-              <>
-                <button
-                  data-inspector-backdrop=""
-                  aria-label="Close details"
-                  className="fixed inset-0 z-30 hidden bg-black/70 lg:hidden"
-                />
-                <aside
-                  id="workspace-inspector"
-                  data-inspector-panel=""
-                  data-testid="workspace-inspector"
-                  className="fixed inset-x-3 bottom-3 top-3 z-40 hidden min-h-0 overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl lg:relative lg:inset-auto lg:z-auto lg:block lg:h-screen lg:w-[var(--operator-inspector-width)] lg:shrink-0 lg:rounded-none lg:border-y-0 lg:border-r-0 lg:shadow-none"
-                  style={{ '--operator-inspector-width': '360px' } as React.CSSProperties}
-                >
-                  <div
-                    data-inspector-resize=""
-                    data-testid="inspector-resize-handle"
-                    role="separator"
-                    aria-orientation="vertical"
-                    aria-label="Resize details"
-                    className="absolute inset-y-0 -left-1 hidden w-2.5 cursor-col-resize after:absolute after:inset-y-0 after:left-1 after:w-px after:bg-transparent hover:after:bg-violet-400/60 lg:block"
-                  />
-                  <button
-                    type="button"
-                    data-inspector-close=""
-                    className="absolute right-3 top-3 rounded-md border border-zinc-800 px-2 py-1 text-xs text-zinc-400 lg:hidden"
-                  >
-                    Close
-                  </button>
-                  {inspector}
-                </aside>
-                <div data-inspector-drag-shield="" className="fixed inset-0 z-50 hidden cursor-col-resize" aria-hidden="true" />
-              </>
+          <main className="min-h-0 min-w-0 overflow-y-auto">
+            {notice ? (
+              <div data-testid="operator-notice" role="status" className="m-4 mb-0 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-3 text-sm text-violet-200 sm:m-6 sm:mb-0">
+                {notice}
+              </div>
             ) : null}
-          </div>
+            {children}
+          </main>
         </div>
         <script dangerouslySetInnerHTML={{ __html: OPERATOR_SCRIPT }} />
       </body>
@@ -451,11 +368,13 @@ function BoardWorkstreamCard({ card }: { card: WorkstreamCardView }) {
       </div>
       <h3 className="mt-3 text-sm font-semibold text-zinc-100">{card.title}</h3>
       <p className="mt-1 line-clamp-2 text-sm leading-5 text-zinc-400">{card.next}</p>
-      <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-zinc-600">
-        <span>{card.openAssignmentCount} open</span>
-        <span>{card.acceptedAssignmentCount} accepted</span>
-        <span>{card.adoptedDeliverableCount} adopted deliverable{card.adoptedDeliverableCount === 1 ? '' : 's'}</span>
-      </div>
+      {card.nowAge || card.needCount > 1 ? (
+        <p className="mt-3 text-[11px] text-zinc-600">
+          {card.nowAge ? `Updated ${card.nowAge} ago` : ''}
+          {card.nowAge && card.needCount > 1 ? ' · ' : ''}
+          {card.needCount > 1 ? `${card.needCount} separate asks` : ''}
+        </p>
+      ) : null}
     </a>
   );
 }
@@ -464,17 +383,18 @@ function BoardPage({ fleet }: { fleet: OperatorFleetView }) {
   const live = fleet.groups.reduce((sum, group) => sum + group.cards.length, 0);
   const stats = [
     ['Needs you', fleet.board.lanes['needs-you'].length, 'text-rose-300'],
-    ['In motion', fleet.board.lanes.moving.length, 'text-violet-300'],
+    ['Working', fleet.board.lanes.moving.length, 'text-violet-300'],
     ['Waiting', fleet.board.lanes.waiting.length, 'text-amber-300'],
+    ['Ready', fleet.board.lanes.ready.length, 'text-sky-300'],
     ['Done', fleet.board.done.length, 'text-emerald-300'],
   ] as const;
   return (
     <div data-testid="operator-board-page">
       <PageHeader
-        eyebrow="Fleet overview"
-        title="Work"
-        description={`${live} live Workstream${live === 1 ? '' : 's'} · current position and the next consequential move`}
-        action={<a href="/new" className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400">Start work</a>}
+        eyebrow={fleet.scope.label}
+        title="Jobs"
+        description={`${live} active job${live === 1 ? '' : 's'} · ${fleet.board.done.length} done`}
+        action={<a href="/new" className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400">New job</a>}
       />
       <div className="space-y-6 p-5 sm:p-8">
         <HealthCard fleet={fleet} />
@@ -483,7 +403,7 @@ function BoardPage({ fleet }: { fleet: OperatorFleetView }) {
             Some Workstream state could not be read: {fleet.board.unreadable.join(', ')}
           </div>
         ) : null}
-        <section aria-label="Fleet position" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <section aria-label="Fleet position" className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           {stats.map(([label, count, color]) => (
             <div key={label} className="rounded-xl border border-zinc-900 bg-zinc-900/30 px-4 py-3">
               <p className="text-xs text-zinc-500">{label}</p>
@@ -492,16 +412,14 @@ function BoardPage({ fleet }: { fleet: OperatorFleetView }) {
           ))}
         </section>
         <div className="grid items-start gap-4 xl:grid-cols-2">
-          {fleet.groups.map((group, index) => (
+          {fleet.groups.filter((group) => group.cards.length).map((group, index) => (
             <section key={`${group.label}-${index}`} data-testid="board-workstream-group" data-group-label={group.label}>
               <header className="mb-2 flex items-center justify-between px-1">
                 <h2 className="text-sm font-medium text-zinc-300">{group.label}</h2>
-                <span className="text-xs text-zinc-600">{group.cards.length}</span>
+                <span className="text-xs text-zinc-600">{group.cards.length} job{group.cards.length === 1 ? '' : 's'}</span>
               </header>
               <div className="space-y-2">
-                {group.cards.length ? group.cards.map((card) => <BoardWorkstreamCard key={card.slug} card={card} />) : (
-                  <p className="rounded-xl border border-dashed border-zinc-800 px-4 py-8 text-center text-xs text-zinc-600">Nothing here</p>
-                )}
+                {group.cards.map((card) => <BoardWorkstreamCard key={card.slug} card={card} />)}
               </div>
             </section>
           ))}
@@ -536,15 +454,15 @@ function NewWorkPage({ requestId, fleet }: { requestId: string; fleet: OperatorF
   return (
     <div data-testid="operator-new-page">
       <PageHeader
-        eyebrow="New Workstream"
+        eyebrow="New job"
         title="What needs doing?"
-        description="Describe the outcome in ordinary language. Weaver will turn it into durable work and keep the position visible here."
+        description="Describe the outcome in ordinary language. It is stored immediately and stays visible here while the team is away."
       />
       <div className="mx-auto max-w-3xl p-5 sm:p-8">
         <Card className="bg-zinc-900/30">
           <form data-testid="new-work-form" method="post" action="/workstreams">
             <CardHeader>
-              <CardTitle className="text-base">Start a Workstream</CardTitle>
+              <CardTitle className="text-base">Start a job</CardTitle>
               <p className="text-sm leading-6 text-zinc-400">Include links, symptoms, customer context, constraints, and anything already tried.</p>
             </CardHeader>
             <CardContent className="space-y-5">
@@ -572,26 +490,27 @@ function NewWorkPage({ requestId, fleet }: { requestId: string; fleet: OperatorF
                   className="mt-2 w-full resize-y rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-700 focus:border-violet-500/60"
                 />
               </label>
-              <label className="block">
-                <span className="text-sm font-medium text-zinc-300">Manage under <span className="text-zinc-500">(optional)</span></span>
-                <select
-                  data-testid="new-work-under"
-                  name="under"
-                  className="mt-2 w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-100 outline-none focus:border-violet-500/60"
-                >
-                  <option value="">No parent — a standalone outcome</option>
-                  {fleet.intakeParents.map((parent) => (
-                    <option key={parent.slug} value={parent.slug}>{parent.slug} — {parent.title}</option>
-                  ))}
-                </select>
-                <span className="mt-1.5 block text-xs leading-5 text-zinc-500">
-                  Placing work under a parent gives it organizational context: the parent is told when this finishes or needs a human. It never widens authority, and nothing is inherited automatically.
-                </span>
-              </label>
+              <details className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+                <summary className="cursor-pointer text-sm font-medium text-zinc-400">Advanced</summary>
+                <label className="mt-4 block">
+                  <span className="text-sm font-medium text-zinc-300">Manage under another job <span className="text-zinc-500">(optional)</span></span>
+                  <select
+                    data-testid="new-work-under"
+                    name="under"
+                    className="mt-2 w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-100 outline-none focus:border-violet-500/60"
+                  >
+                    <option value="">Standalone job</option>
+                    {fleet.intakeParents.map((parent) => (
+                      <option key={parent.slug} value={parent.slug}>{parent.slug} — {parent.title}</option>
+                    ))}
+                  </select>
+                  <span className="mt-2 block text-xs leading-5 text-zinc-500">Use this only when the job is one part of a larger outcome.</span>
+                </label>
+              </details>
               <div className="flex items-center justify-between gap-4 border-t border-zinc-800 pt-4">
                 <p className="text-xs leading-5 text-zinc-500">Creating work records intent; it does not grant new authority for irreversible actions.</p>
                 <button data-testid="new-work-submit" type="submit" className="shrink-0 rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400">
-                  Start work
+                  Start job
                 </button>
               </div>
             </CardContent>
@@ -762,13 +681,13 @@ function typedFacts(view: WorkstreamPageView): TypedFact[] {
     .sort((a, b) => b.at.localeCompare(a.at) || a.key.localeCompare(b.key));
 }
 
-function FactRows({ facts, limit }: { facts: TypedFact[]; limit?: number }) {
+function FactRows({ facts, limit, compact = false }: { facts: TypedFact[]; limit?: number; compact?: boolean }) {
   const shown = limit ? facts.slice(0, limit) : facts;
-  if (!shown.length) return <p className="text-sm text-zinc-600">No typed facts recorded yet.</p>;
+  if (!shown.length) return <p className="text-sm text-zinc-600">No updates yet.</p>;
   return (
     <div className="divide-y divide-zinc-900">
       {shown.map((fact) => (
-        <article key={fact.key} data-testid="typed-fact" className="grid gap-2 py-3 first:pt-0 sm:grid-cols-[8.5rem_minmax(0,1fr)]">
+        <article key={fact.key} data-testid="typed-fact" className={cn('grid gap-2 py-3 first:pt-0', !compact && 'sm:grid-cols-[8.5rem_minmax(0,1fr)]')}>
           <div>
             <p className={cn(
               'text-xs font-medium',
@@ -780,8 +699,8 @@ function FactRows({ facts, limit }: { facts: TypedFact[]; limit?: number }) {
             <time dateTime={fact.at} className="mt-1 block text-[11px] text-zinc-700">{formatTimestamp(fact.at)}</time>
           </div>
           <div className="min-w-0">
-            <p className="text-sm leading-5 text-zinc-300">{displayText(fact.summary)}</p>
-            {fact.detail ? <p className="mt-1 text-xs leading-5 text-zinc-500">{displayText(fact.detail)}</p> : null}
+            <p className="text-sm leading-5 text-zinc-300">{compact ? firstLine(fact.summary, 180) : displayText(fact.summary)}</p>
+            {!compact && fact.detail ? <p className="mt-1 text-xs leading-5 text-zinc-500">{displayText(fact.detail)}</p> : null}
           </div>
         </article>
       ))}
@@ -789,58 +708,96 @@ function FactRows({ facts, limit }: { facts: TypedFact[]; limit?: number }) {
   );
 }
 
-function QuestionCard({ testId, number, title, children }: { testId: string; number: string; title: string; children: ReactNode }) {
+interface NeedPresentation {
+  headline: string;
+  choices: Array<{ label: string; text: string }>;
+  full: string;
+}
+
+function firstSentence(value: string, max = 180): string {
+  const clean = displayText(value).replace(/^\s*(?:decision|action|approval)\s+needed\s*:\s*/i, '');
+  const sentence = clean.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? clean;
+  return firstLine(sentence, max);
+}
+
+function presentNeed(summary: string): NeedPresentation {
+  const full = displayText(summary);
+  const marker = /\(([A-Z])\)\s+/g;
+  const matches = [...full.matchAll(marker)];
+  const choices = matches.map((match, index) => {
+    const start = (match.index ?? 0) + match[0].length;
+    const end = matches[index + 1]?.index ?? full.length;
+    return {
+      label: match[1]!,
+      text: firstSentence(full.slice(start, end), 220),
+    };
+  });
+  const preamble = matches[0]?.index === undefined ? full : full.slice(0, matches[0].index);
+  return { headline: firstSentence(preamble), choices, full };
+}
+
+function DecisionCard({ view }: { view: WorkstreamPageView }) {
+  const primary = view.needs[0]!;
+  const need = presentNeed(primary.summary);
   return (
-    <Card data-testid={testId} className="bg-zinc-900/25">
-      <CardHeader className="pb-2">
-        <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-zinc-600">{number}</p>
-        <CardTitle className="text-sm">{title}</CardTitle>
+    <Card data-testid="decision-needed" className="border-rose-500/35 bg-rose-500/5">
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="attention">Decision needed</Badge>
+          {view.needs.length > 1 ? <span className="text-xs text-rose-300">{view.needs.length} separate asks</span> : null}
+        </div>
+        <CardTitle className="text-lg leading-7">{need.headline}</CardTitle>
       </CardHeader>
-      <CardContent className="text-sm leading-6 text-zinc-400">{children}</CardContent>
+      <CardContent>
+        {need.choices.length ? (
+          <div data-testid="decision-choices" className="space-y-2">
+            {need.choices.map((choice) => (
+              <div key={choice.label} className="flex gap-3 rounded-lg border border-rose-500/20 bg-zinc-950/50 px-3 py-2.5">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-rose-500/15 text-xs font-semibold text-rose-200">{choice.label}</span>
+                <p className="text-sm leading-6 text-zinc-200">{choice.text}</p>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <details data-testid="decision-context" className="mt-3">
+          <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-300">Full context</summary>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-400">{need.full}</p>
+        </details>
+        {view.needs.length > 1 ? (
+          <details className="mt-3 border-t border-rose-500/15 pt-3">
+            <summary className="cursor-pointer text-xs font-medium text-rose-300">{view.needs.length - 1} other ask{view.needs.length === 2 ? '' : 's'}</summary>
+            <ul className="mt-2 space-y-2 text-sm leading-6 text-zinc-400">
+              {view.needs.slice(1).map((item, index) => <li key={`${item.kind}-${index}`}>{firstSentence(item.summary)}</li>)}
+            </ul>
+          </details>
+        ) : null}
+      </CardContent>
     </Card>
   );
 }
 
-function FiveQuestions({ view, facts }: { view: WorkstreamPageView; facts: TypedFact[] }) {
+function CurrentState({ view }: { view: WorkstreamPageView }) {
   const standing = view.course[0]?.decision;
   return (
-    <section data-testid="five-question-position" aria-label="Workstream position" className="grid gap-3 md:grid-cols-2">
-      <QuestionCard testId="question-now" number="1" title="Now">
-        <p className="font-medium text-zinc-200">{view.position.state}</p>
-        <p className="mt-1">{view.position.next}</p>
-      </QuestionCard>
-      <QuestionCard testId="question-since" number="2" title="Since you left">
-        <FactRows facts={facts} limit={3} />
-      </QuestionCard>
-      <QuestionCard testId="question-needs" number="3" title="Needs you">
-        {view.needs.length ? (
-          <div className="space-y-2">
-            {view.needs.map((need, index) => (
-              <div key={`${need.kind}-${index}`} className="rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-rose-100">
-                <p className="text-[11px] font-medium uppercase text-rose-300">{need.kind}</p>
-                <p className="mt-1">{displayText(need.summary)}</p>
-              </div>
-            ))}
-          </div>
-        ) : <p>Nothing needs your attention.</p>}
-      </QuestionCard>
-      <QuestionCard testId="question-next" number="4" title="Next">
-        <p className="font-medium text-zinc-200">{view.position.next}</p>
-        {view.position.nowAge ? <p className="mt-1 text-xs text-zinc-600">Position updated {view.position.nowAge} ago</p> : null}
-      </QuestionCard>
-      <div className="md:col-span-2">
-        <QuestionCard testId="question-why" number="5" title="Why">
-          {standing ? (
-            <>
-              <p className="font-medium text-zinc-200">{displayText(standing.title)}</p>
-              <p className="mt-1">{displayText(standing.rationale)}</p>
-            </>
-          ) : (
-            <p>No standing course has been recorded. The durable objective remains: {view.doc.workstream.objective}</p>
-          )}
-        </QuestionCard>
-      </div>
-    </section>
+    <Card data-testid="current-state" className="border-violet-500/20 bg-zinc-900/30">
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={stateVariant(view.position)}>{view.position.state}</Badge>
+          {view.position.nowAge ? <span className="text-xs text-zinc-600">Updated {view.position.nowAge} ago</span> : null}
+        </div>
+        <CardTitle className="text-lg">What happens next</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm leading-6 text-zinc-200">{view.position.next}</p>
+        {standing ? (
+          <details className="mt-3">
+            <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-300">Why this course</summary>
+            <p className="mt-2 text-sm font-medium text-zinc-300">{displayText(standing.title)}</p>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">{displayText(standing.rationale)}</p>
+          </details>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -849,8 +806,8 @@ function ObservationComposer({ slug, actor }: { slug: string; actor: string }) {
     <Card className="bg-zinc-900/30">
       <form data-testid="observation-form" method="post" action={`/workstreams/${encodeURIComponent(slug)}/observations`}>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm">Add information</CardTitle>
-          <p className="text-xs leading-5 text-zinc-500">Share evidence or context as {actor}. Weaver records it as an Observation and wakes a fresh coordinator; it does not grant authority or complete work.</p>
+          <CardTitle className="text-sm">Add context or answer a question</CardTitle>
+          <p className="text-xs leading-5 text-zinc-500">Share a link, exact error, answer, or other useful context as {actor}.</p>
         </CardHeader>
         <CardContent>
           <textarea
@@ -858,12 +815,12 @@ function ObservationComposer({ slug, actor }: { slug: string; actor: string }) {
             name="message"
             required
             rows={3}
-            placeholder="What did you observe? Include a link or exact error if there is one."
+            placeholder="Add a link, exact error, answer, or anything else the job needs."
             className="w-full resize-y rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-700 focus:border-violet-500/60"
           />
           <div className="mt-3 flex justify-end">
             <button data-testid="observation-submit" type="submit" className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400">
-              Add information
+              Add context
             </button>
           </div>
         </CardContent>
@@ -886,12 +843,11 @@ const laneLabel: Record<AssignmentBoardLane, string> = {
   accepted: 'Accepted',
 };
 
-function InspectorAssignments({ view }: { view: WorkstreamPageView }) {
+function AssignmentList({ view, includeAccepted = false }: { view: WorkstreamPageView; includeAccepted?: boolean }) {
+  const lanes = (Object.keys(laneLabel) as AssignmentBoardLane[]).filter((lane) => includeAccepted || lane !== 'accepted');
   return (
-    <section data-testid="inspector-assignments" className="border-t border-zinc-900 px-4 py-5">
-      <h2 className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Assignments</h2>
-      <div className="mt-3 space-y-4">
-        {(Object.keys(laneLabel) as AssignmentBoardLane[]).map((lane) => {
+    <div className="space-y-4">
+        {lanes.map((lane) => {
           const cards = view.assignments.lanes[lane];
           if (!cards.length) return null;
           return (
@@ -901,13 +857,13 @@ function InspectorAssignments({ view }: { view: WorkstreamPageView }) {
               </header>
               <div className="space-y-2">
                 {cards.map((card) => (
-                  <article key={card.id} data-testid="inspector-assignment" className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3">
+                  <article key={card.id} data-testid="job-assignment" className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3">
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-xs font-medium leading-5 text-zinc-200">{firstLine(card.objective, 140)}</p>
                       <Badge variant={assignmentVariant(card)}>{card.assignmentState.replaceAll('_', ' ')}</Badge>
                     </div>
                     {card.submission ? <p className="mt-2 text-xs leading-5 text-zinc-500">{displayText(card.submission.summary)}</p> : null}
-                    {card.acceptanceCriteria.length ? (
+                    {includeAccepted && card.acceptanceCriteria.length ? (
                       <details className="mt-2">
                         <summary className="cursor-pointer text-[11px] font-medium text-zinc-500 hover:text-zinc-400">Acceptance criteria ({card.acceptanceCriteria.length})</summary>
                         <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-[11px] leading-5 text-zinc-500">
@@ -915,7 +871,7 @@ function InspectorAssignments({ view }: { view: WorkstreamPageView }) {
                         </ul>
                       </details>
                     ) : null}
-                    {card.attemptCount ? <p className="mt-1.5 text-[11px] text-zinc-600">{card.attemptCount} disposable attempt{card.attemptCount === 1 ? '' : 's'} — full execution history in the static record</p> : null}
+                    {includeAccepted && card.attemptCount ? <p className="mt-1.5 text-[11px] text-zinc-600">{card.attemptCount} disposable attempt{card.attemptCount === 1 ? '' : 's'}</p> : null}
                     {card.action?.awaitingApproval ? <p className="mt-2 text-xs text-rose-300">Approval needed before this external action can run.</p> : null}
                   </article>
                 ))}
@@ -923,28 +879,27 @@ function InspectorAssignments({ view }: { view: WorkstreamPageView }) {
             </section>
           );
         })}
-        {!Object.values(view.assignments.lanes).some((cards) => cards.length) ? <p className="text-xs text-zinc-600">No current assignments.</p> : null}
-      </div>
-    </section>
+        {!lanes.some((lane) => view.assignments.lanes[lane].length) ? <p className="text-sm text-zinc-600">No work is currently running.</p> : null}
+    </div>
   );
 }
 
 function DeliverableList({ slug, title, deliverables, adopted }: { slug: string; title: string; deliverables: Deliverable[]; adopted: boolean }) {
   return (
-    <section data-testid={adopted ? 'inspector-adopted-deliverables' : 'inspector-proposed-deliverables'}>
+    <section data-testid={adopted ? 'adopted-results' : 'proposed-results'}>
       <header className="mb-2 flex items-center justify-between text-xs text-zinc-600">
         <h3>{title}</h3><span>{deliverables.length}</span>
       </header>
       {deliverables.length ? (
         <div className="space-y-2">
           {deliverables.slice().reverse().map((deliverable) => (
-            <article key={deliverable.id} data-testid="inspector-deliverable" className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3">
+            <article key={deliverable.id} data-testid="job-result" className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="truncate text-xs font-medium text-zinc-200">{deliverable.title}</p>
-                  <p className="mt-1 text-[11px] text-zinc-600">{deliverable.kind} · {deliverable.contentHash.slice(0, 8)}</p>
+                  <p className="mt-1 text-[11px] text-zinc-600">{adopted ? 'Accepted result' : 'Awaiting review'}</p>
                 </div>
-                <Badge variant={adopted ? 'success' : 'outline'}>{adopted ? 'Adopted' : 'Proposed'}</Badge>
+                <Badge variant={adopted ? 'success' : 'outline'}>{adopted ? 'Accepted' : 'Proposed'}</Badge>
               </div>
               <a
                 data-testid={`deliverable-download-${deliverable.id}`}
@@ -962,38 +917,92 @@ function DeliverableList({ slug, title, deliverables, adopted }: { slug: string;
   );
 }
 
-function WorkspaceInspector({ view }: { view: WorkstreamPageView }) {
+function Results({ view }: { view: WorkstreamPageView }) {
   const slug = view.doc.workstream.slug;
   const adopted = view.doc.deliverables.filter((deliverable) => deliverable.adopted);
   const proposed = view.doc.deliverables.filter((deliverable) => !deliverable.adopted);
+  const acceptedWork = view.assignments.lanes.accepted.filter((assignment) => assignment.submission);
+  if (!view.doc.workstream.conclusion && !adopted.length && !proposed.length && !acceptedWork.length) return null;
   return (
-    <div className="min-h-full bg-zinc-950">
-      <header className="sticky top-0 z-10 border-b border-zinc-900 bg-zinc-950/95 px-4 py-4 backdrop-blur">
-        <p className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-600">Details</p>
-        <h2 className="mt-1 text-sm font-semibold text-zinc-100">Work and deliverables</h2>
-      </header>
-      <section data-testid="inspector-standing-course" className="px-4 py-5">
-        <h2 className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Standing course</h2>
-        <div className="mt-3 space-y-2">
-          {view.course.length ? view.course.map(({ decision, time }) => (
-            <article key={decision.id} className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <Badge variant={decision.madeBy === 'human' ? 'warning' : 'accent'}>{decision.madeBy === 'human' ? 'Human' : 'Coordinator'}</Badge>
-                <time dateTime={decision.decidedAtVirtual} className="text-[10px] text-zinc-700">{time}</time>
+    <section data-testid="job-results">
+      <div className="mb-3">
+        <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-600">Outputs</p>
+        <h2 className="mt-1 text-lg font-semibold text-zinc-100">Results</h2>
+      </div>
+      <Card className="border-emerald-500/20 bg-emerald-500/5">
+        <CardContent className="space-y-5 p-4">
+          {view.doc.workstream.conclusion ? (
+            <div data-testid="job-conclusion">
+              <Badge variant="success">Outcome confirmed</Badge>
+              <p className="mt-3 text-sm leading-6 text-zinc-200">{view.doc.workstream.conclusion.summary}</p>
+            </div>
+          ) : null}
+          {acceptedWork.length ? (
+            <section data-testid="accepted-work-results">
+              <header className="mb-2 flex items-center justify-between text-xs text-zinc-600">
+                <h3>Accepted work</h3><span>{acceptedWork.length}</span>
+              </header>
+              <div className="space-y-2">
+                {acceptedWork.map((assignment) => (
+                  <article key={assignment.id} className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium leading-5 text-zinc-200">{firstLine(assignment.objective, 160)}</p>
+                        <p className="mt-1 text-sm leading-6 text-zinc-400">{displayText(assignment.submission!.summary)}</p>
+                      </div>
+                      <Badge variant="success">Accepted</Badge>
+                    </div>
+                  </article>
+                ))}
               </div>
-              <p className="mt-2 text-xs font-medium leading-5 text-zinc-200">{displayText(decision.title)}</p>
-              <p className="mt-1 text-xs leading-5 text-zinc-500">{displayText(decision.rationale)}</p>
-            </article>
-          )) : <p className="text-xs text-zinc-600">No standing course.</p>}
-        </div>
-      </section>
-      <InspectorAssignments view={view} />
-      <section data-testid="inspector-deliverables" className="space-y-5 border-t border-zinc-900 px-4 py-5">
-        <h2 className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Deliverables</h2>
-        <DeliverableList slug={slug} title="Adopted" deliverables={adopted} adopted />
-        <DeliverableList slug={slug} title="Proposed" deliverables={proposed} adopted={false} />
-      </section>
-    </div>
+            </section>
+          ) : null}
+          {adopted.length ? <DeliverableList slug={slug} title="Accepted files" deliverables={adopted} adopted /> : null}
+          {proposed.length ? <DeliverableList slug={slug} title="Awaiting review" deliverables={proposed} adopted={false} /> : null}
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
+function duplicatesCurrentNeed(view: WorkstreamPageView, fact: TypedFact): boolean {
+  const openNeedSummaries = new Set(view.needs.map((need) => displayText(need.summary)));
+  return openNeedSummaries.has(displayText(fact.summary));
+}
+
+function recentFacts(view: WorkstreamPageView, facts: TypedFact[]): TypedFact[] {
+  const seen = new Set<string>();
+  return facts.filter((fact) => {
+    if (fact.label === 'Checkpoint recorded') return false;
+    if (duplicatesCurrentNeed(view, fact)) return false;
+    const key = `${fact.label}:${displayText(fact.summary)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function JobDetails({ view, facts }: { view: WorkstreamPageView; facts: TypedFact[] }) {
+  const standing = view.course[0];
+  return (
+    <details data-testid="job-details" className="rounded-xl border border-zinc-900 bg-zinc-900/20">
+      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-zinc-500 hover:text-zinc-300">Technical details and full history</summary>
+      <div className="space-y-6 border-t border-zinc-900 p-4">
+        <dl className="grid gap-3 text-sm sm:grid-cols-[9rem_minmax(0,1fr)]">
+          <dt className="text-zinc-600">Workstream</dt><dd className="text-zinc-400">{view.doc.workstream.slug} · revision {view.doc.revision}</dd>
+          <dt className="text-zinc-600">Objective</dt><dd className="text-zinc-400">{view.doc.workstream.objective}</dd>
+          {standing ? <><dt className="text-zinc-600">Standing course</dt><dd className="text-zinc-400">{displayText(standing.decision.title)} — {displayText(standing.decision.rationale)}</dd></> : null}
+        </dl>
+        <section>
+          <h3 className="mb-3 text-xs font-medium uppercase tracking-[0.12em] text-zinc-600">All assignments</h3>
+          <AssignmentList view={view} includeAccepted />
+        </section>
+        <section>
+          <h3 className="mb-3 text-xs font-medium uppercase tracking-[0.12em] text-zinc-600">Full typed history</h3>
+          <FactRows facts={facts.filter((fact) => !duplicatesCurrentNeed(view, fact))} />
+        </section>
+      </div>
+    </details>
   );
 }
 
@@ -1001,26 +1010,17 @@ function WorkspacePage({ view, actor }: { view: WorkstreamPageView; actor: strin
   const { doc } = view;
   const ws = doc.workstream;
   const facts = typedFacts(view);
+  const updates = recentFacts(view, facts);
+  const hasCurrentWork = (['planned', 'working', 'review'] as AssignmentBoardLane[])
+    .some((lane) => view.assignments.lanes[lane].length > 0);
   return (
     <div data-testid="operator-workspace-page">
       <PageHeader
-        eyebrow={`Workstream · revision ${doc.revision}`}
+        eyebrow={view.position.state}
         title={ws.title}
-        description={ws.objective}
-        action={(
-          <button
-            type="button"
-            data-inspector-toggle=""
-            data-testid="inspector-toggle"
-            aria-controls="workspace-inspector"
-            aria-expanded="false"
-            className="rounded-lg border border-zinc-800 px-3 py-2 text-sm text-zinc-300 lg:hidden"
-          >
-            Work and deliverables
-          </button>
-        )}
+        description={firstLine(ws.objective, 240)}
       />
-      <div className="space-y-6 p-5 sm:p-8">
+      <div className="mx-auto max-w-5xl space-y-6 p-5 sm:p-8">
         {(view.doc.workstream.managedBy || view.managed.length) ? (
           <nav data-testid="workspace-relationships" aria-label="Workstream relationships" className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
             {view.doc.workstream.managedBy ? (
@@ -1029,7 +1029,7 @@ function WorkspacePage({ view, actor }: { view: WorkstreamPageView; actor: strin
                 href={`/workstreams/${encodeURIComponent(view.doc.workstream.managedBy.slug)}`}
                 className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-1.5 text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-100"
               >
-                ↑ managed by <span className="font-medium">{view.doc.workstream.managedBy.slug}</span>
+                ↑ part of <span className="font-medium">{view.doc.workstream.managedBy.slug}</span>
               </a>
             ) : null}
             {view.managed.map((child) => (
@@ -1039,39 +1039,31 @@ function WorkspacePage({ view, actor }: { view: WorkstreamPageView; actor: strin
                 href={`/workstreams/${encodeURIComponent(child.slug)}`}
                 className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-1.5 text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-100"
               >
-                ↳ manages <span className="font-medium">{child.slug}</span> <span className="text-zinc-600">({child.status})</span>
+                ↳ includes <span className="font-medium">{child.slug}</span> <span className="text-zinc-600">({child.status})</span>
               </a>
             ))}
           </nav>
         ) : null}
-        <Card data-testid="current-position" className={cn('bg-zinc-900/30', view.needs.length ? 'border-rose-500/30' : 'border-violet-500/20')}>
-          <CardHeader>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Badge variant={stateVariant(view.position)}>{view.position.state}</Badge>
-              <Badge variant="outline">{ws.status}</Badge>
-              {ws.priority && ws.priority !== 'normal' ? <Badge variant="warning">{ws.priority}</Badge> : null}
-            </div>
-            <CardTitle className="text-lg">{ws.conclusion ? 'Outcome concluded' : 'Current position'}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm leading-6 text-zinc-200">{ws.conclusion ? ws.conclusion.summary : view.position.next}</p>
-            {ws.conclusion ? (
-              <p className="mt-2 text-xs text-emerald-300">Supported by {ws.conclusion.evidenceIds.length} cited typed evidence record{ws.conclusion.evidenceIds.length === 1 ? '' : 's'}.</p>
-            ) : null}
-          </CardContent>
-        </Card>
-        <FiveQuestions view={view} facts={facts} />
-        <section data-testid="typed-fact-feed">
+        {view.needs.length ? <DecisionCard view={view} /> : !ws.conclusion ? <CurrentState view={view} /> : null}
+        {hasCurrentWork ? <section data-testid="current-work">
           <div className="mb-3">
-            <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-600">Typed record</p>
-            <h2 className="mt-1 text-lg font-semibold text-zinc-100">What happened</h2>
-            <p className="mt-1 text-xs text-zinc-500">Newest first. This chronology excludes transcripts and coordinator pass summaries.</p>
+            <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-600">In progress</p>
+            <h2 className="mt-1 text-lg font-semibold text-zinc-100">Current work</h2>
           </div>
           <Card className="bg-zinc-900/20">
-            <CardContent className="p-4"><FactRows facts={facts} /></CardContent>
+            <CardContent className="p-4"><AssignmentList view={view} /></CardContent>
           </Card>
+        </section> : null}
+        <Results view={view} />
+        <section data-testid="recent-updates">
+          <div className="mb-3">
+            <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-600">Latest activity</p>
+            <h2 className="mt-1 text-lg font-semibold text-zinc-100">Recent updates</h2>
+          </div>
+          <Card className="bg-zinc-900/20"><CardContent className="p-4"><FactRows facts={updates} limit={5} compact /></CardContent></Card>
         </section>
         <ObservationComposer slug={ws.slug} actor={actor} />
+        <JobDetails view={view} facts={facts} />
       </div>
     </div>
   );
@@ -1094,7 +1086,7 @@ export function renderOperatorNewHtml(props: OperatorNewRenderProps): string {
   return documentHtml(
     <OperatorShell
       {...props}
-      title="Weaver · New work"
+      title="Weaver · New job"
       revisionEndpoint="/api/fleet-revision"
       initialRevision={props.fleet.revision}
     >
@@ -1112,7 +1104,6 @@ export function renderOperatorWorkspaceHtml(props: OperatorWorkspaceRenderProps)
       revisionEndpoint={`/api/workstreams/${encodeURIComponent(slug)}/revision`}
       initialRevision={String(props.view.doc.revision)}
       currentSlug={slug}
-      inspector={<WorkspaceInspector view={props.view} />}
     >
       <WorkspacePage view={props.view} actor={props.actor} />
     </OperatorShell>,

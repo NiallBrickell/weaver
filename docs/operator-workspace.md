@@ -62,39 +62,46 @@ The list groups rather than tabs:
 5. Done, folded after a bounded recent set.
 
 An urgent item in another group must never be hidden behind a selected tab.
-Each row needs a one-line title, state, compact age and one honest next fact.
-Runs, sessions, pass counts and model tokens remain detail, not work identity.
+Each row needs a one-line title, state and compact age. The group count is
+labelled as jobs; a per-row count is labelled as asks so those two quantities
+cannot look contradictory. Runs, sessions, pass counts and model tokens remain
+detail, not work identity. Empty groups do not consume space.
 
 ### Workstream workspace
 
-Selecting a Workstream opens a three-part workspace:
+Selecting a Workstream opens a two-level workspace with one visual centre:
 
-- **Left — Workstreams.** The grouped list, search, a global health strip and
-  “New work”.
-- **Centre — Position.** The five-question contract in reading order: now,
-  since I left, needs me, next and why. Beneath it, a chronological interaction
-  view assembled from typed facts. A composer adds information or direction
-  according to the caller's authority.
-- **Right — Inspector.** A resizable rail for current course, Assignments,
-  proposed versus accepted results, verified external actions, Deliverables
-  and history. PR-like outputs appear only when a typed source Workstream or a
-  readback-confirmed action supports the claim; the UI never mines a worker's
-  prose to invent one.
+- **Left — Jobs.** The grouped fleet list, an explicit shared/local scope
+  label, overview, and “New job”.
+- **Main — One job.** A single decision card when human input is needed,
+  followed by current work, results, recent updates, a context composer, and
+  one collapsed technical/history disclosure.
 
-On narrow screens the Workstream list becomes a selection sheet and the
-inspector overlays the centre. The desktop inspector remembers a clamped pixel
-width and respects a manual close. Approval-needed outranks “working” in every
-activity label because the person, not the agent, is then the blocker.
+The former persistent right inspector was removed after live use showed that
+standing course, Assignments, and Deliverables formed a competing second
+centre. It also repeated the same current attention through Current position,
+Now, Needs you, Next, the timeline, and the sidebar. The durable state had one
+Attention item; the repetition was entirely a view-composition defect.
 
-The centre is not a model chat session. A coordinator pass summary may be
-rendered as an update, but Decisions remain the commitment layer, an Assignment
-submission remains proposed, adoption remains explicit, and a conclusion
-remains the evidenced answer.
+The five-question contract remains a comprehension test, not five mandatory
+cards: the header/objective answers why; the decision/current-state card
+answers now, needs me and next; Recent updates provides a bounded catch-up
+without pretending that opening the page was a read receipt. The exact open
+attention appears once. If it contains labelled A/B/C choices, the view
+separates them without interpreting or mutating the source fact; its full text
+remains folded. Routine Wakes and the current attention do not repeat in the
+primary catch-up.
+
+Approval-needed outranks “working” in every activity label because the person,
+not the agent, is then the blocker. The main surface is not a model chat
+session. Decisions remain the commitment layer, an Assignment submission
+remains proposed, adoption remains explicit, and a conclusion remains the
+evidenced answer.
 
 ### Starting and continuing work
 
-The minimum intake is one text area: **What needs doing?** An optional second
-field says **Done means**. A source URL or external identifier, when present,
+The minimum intake is one text area: **What needs doing?** A second field says
+**Done means**; composition under a parent is an Advanced control. A source URL or external identifier, when present,
 becomes the stable source key so repeated intake returns the same Workstream.
 
 Intake must remain available when every model provider is unavailable. The
@@ -156,6 +163,13 @@ The browser board currently derives waits directly from Wakes while the
 terminal/status surfaces use `capacityPresentation()`. Extract a shared
 organizational-position projector before making the browser live so all three
 surfaces make the same capacity claim.
+
+Store scope and runner liveness are separate claims. A Postgres-backed UI is
+reading the shared fleet; absence of a machine-local runner PID on that UI host
+is normal and must render as **Shared fleet · execution on another host**, not
+as a degraded-health warning. Filesystem storage renders **Local fleet · this
+machine**. A remote runner can be called offline only from provider evidence or
+a heartbeat source that the UI can actually observe.
 
 The retrospective also exposed a lifecycle defect to settle before the UI is
 trusted: an explicitly non-blocking review unrelated to an already-evidenced
@@ -323,15 +337,15 @@ time and immediately before every merge.
 
 - add `weaver ui` with private binding and authentication delegated to the
   hosting layer;
-- reuse the existing fleet and Workstream render models in the sidebar / centre
-  / inspector shell;
+- reuse the existing fleet and Workstream render models in the sidebar and
+  single-centre shell;
 - add revision refresh, runner/capacity health and verified artifact download;
 - prove that an unreadable Workstream is loud and an old browser revision is
   labelled stale.
 
 ### 2. Team intake and answers
 
-- add model-independent “New work” intake with stable source-key de-duplication
+- add model-independent “New job” intake with stable source-key de-duplication
   and house constraints;
 - add teammate Observations inside a Workstream;
 - render the concluded answer and adopted evidence prominently;
@@ -361,7 +375,7 @@ time and immediately before every merge.
 
 ### Urgent report during total provider exhaustion
 
-1. A teammate pastes the report and source URL into New work.
+1. A teammate pastes the report and source URL into New job.
 2. The request is stored immediately and de-duplicates on retry without any
    model call.
 3. The workspace says all configured execution seats are unavailable, the
