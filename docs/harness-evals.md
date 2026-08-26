@@ -275,6 +275,13 @@ OpenCode is a trusted host process and OpenHands is a local container. Kimi K2.7
 submission boundary twice; Kimi K3 failed it once and incurred a very long tail. Both remain
 negative routing evidence even though their hidden repairs passed.
 
+The hosted GCP profile initially reused Kimi K3 and reproduced that exact negative signal after
+the rootless bridge fix: the provider conversation completed, but no `submit_result` arrived, so
+Weaver correctly rejected the attempt and a fresh coordinator re-dispatched the intended work.
+The profile now explicitly defaults to the existing 10/10 OpenHands/GLM-5.2 target; this is
+operator-owned host configuration, not a reviewed automatic route, and the `.4` adapter still
+requires fresh cohort evidence before any route qualification changes.
+
 The first GLM-5.3 canary used OpenCode's ordinary plaintext auth store and incorrectly inherited
 the operator environment; it remains under raw harness `1.18.15`. The interrupted `.2` cohort moved
 the provider key behind the proxy but still exposed `WEAVER_HOME`, making the executor-secret file
