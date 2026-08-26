@@ -146,11 +146,20 @@ export interface ObservationResult {
  */
 export async function recordObservation(slug: string, req: ObservationRequest): Promise<ObservationResult> {
   if (req.ingressKey) {
-    const existing = (await load(slug)).observations.find((o) => o.ingressKey === req.ingressKey);
+    const existing = (await load(slug)).observations.find((observation) => observation.ingressKey === req.ingressKey);
     if (existing) return { id: existing.id, duplicate: true };
   }
   let id = '';
+  let duplicate = false;
   await arrive(slug, (d, event) => {
+    const existing = req.ingressKey
+      ? d.observations.find((observation) => observation.ingressKey === req.ingressKey)
+      : undefined;
+    if (existing) {
+      id = existing.id;
+      duplicate = true;
+      return;
+    }
     id = newId('obs');
     d.observations.push({
       id,
@@ -168,5 +177,5 @@ export async function recordObservation(slug: string, req: ObservationRequest): 
     });
     event('observation.arrived', `${id} [${req.source}] ${req.summary}`, [id]);
   });
-  return { id, duplicate: false };
+  return { id, duplicate };
 }

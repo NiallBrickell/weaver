@@ -16,9 +16,20 @@ export type FleetNeedKind = 'blocker' | 'approval' | 'review' | 'budget' | 'capa
 
 export interface FleetNeed {
   slug: string;
+  /** Stable typed fact that currently emits this need. */
+  source: {
+    type: 'attention' | 'assignment' | 'interaction';
+    id: string;
+  };
   kind: FleetNeedKind;
   at?: string;
   summary: string;
+}
+
+export interface NeedPresentation {
+  headline: string;
+  choices: Array<{ label: string; text: string }>;
+  full: string;
 }
 
 export type WorkstreamLane = 'needs-you' | 'moving' | 'waiting' | 'ready';
@@ -152,6 +163,29 @@ export function firstLine(value: string, max = 160): string {
   return `${candidate.slice(0, boundary > max * 0.65 ? boundary : candidate.length).trimEnd()}…`;
 }
 
+export function firstSentence(value: string, max = 180): string {
+  const clean = displayText(value).replace(/^\s*(?:decision|action|approval)\s+needed\s*:\s*/i, '');
+  const sentence = clean.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? clean;
+  return firstLine(sentence, max);
+}
+
+/** Keep the source fact intact while exposing labelled choices as controls. */
+export function presentNeed(summary: string): NeedPresentation {
+  const full = displayText(summary);
+  const marker = /\(([A-Z])\)\s+/g;
+  const matches = [...full.matchAll(marker)];
+  const choices = matches.map((match, index) => {
+    const start = (match.index ?? 0) + match[0].length;
+    const end = matches[index + 1]?.index ?? full.length;
+    return {
+      label: match[1]!,
+      text: firstSentence(full.slice(start, end), 220),
+    };
+  });
+  const preamble = matches[0]?.index === undefined ? full : full.slice(0, matches[0].index);
+  return { headline: firstSentence(preamble), choices, full };
+}
+
 export function formatTimestamp(value: string): string {
   const parsed = new Date(value);
   if (!Number.isFinite(parsed.getTime())) return 'Time unknown';
@@ -197,6 +231,7 @@ export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
           : undefined;
         needs.push({
           slug,
+          source: { type: 'attention', id: attention.id },
           kind: action ? 'action' : send ? 'send' : attention.kind,
           at: attention.createdAt,
           summary: action
@@ -213,6 +248,7 @@ export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
       if (representedRefs.has(assignment.id)) continue;
       needs.push({
         slug,
+        source: { type: 'assignment', id: assignment.id },
         kind: 'action',
         at: assignment.createdAtVirtual,
         summary: assignment.exec?.ask ?? assignment.objective,
@@ -224,6 +260,7 @@ export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
         if (representedRefs.has(interaction.id)) continue;
         needs.push({
           slug,
+          source: { type: 'interaction', id: interaction.id },
           kind: 'send',
           summary: `Send to ${interaction.to}: ${interaction.subject}`,
         });

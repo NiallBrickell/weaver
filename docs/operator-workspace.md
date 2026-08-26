@@ -73,9 +73,10 @@ Selecting a Workstream opens a two-level workspace with one visual centre:
 
 - **Left — Jobs.** The grouped fleet list, an explicit shared/local scope
   label, overview, and “New job”.
-- **Main — One job.** A single decision card when human input is needed,
-  followed by current work, results, recent updates, a context composer, and
-  one collapsed technical/history disclosure.
+- **Main — One job.** A URL-addressable Overview / Work & results / Activity /
+  Details navigation renders one bounded job mode at a time. Scrolling is for
+  reading the selected mode, never for finding another unrelated part of the
+  workspace.
 
 The former persistent right inspector was removed after live use showed that
 standing course, Assignments, and Deliverables formed a competing second
@@ -84,13 +85,20 @@ Now, Needs you, Next, the timeline, and the sidebar. The durable state had one
 Attention item; the repetition was entirely a view-composition defect.
 
 The five-question contract remains a comprehension test, not five mandatory
-cards: the header/objective answers why; the decision/current-state card
-answers now, needs me and next; Recent updates provides a bounded catch-up
-without pretending that opening the page was a read receipt. The exact open
-attention appears once. If it contains labelled A/B/C choices, the view
-separates them without interpreting or mutating the source fact; its full text
-remains folded. Routine Wakes and the current attention do not repeat in the
-primary catch-up.
+cards: the header/objective answers why; Overview answers now, needs me and
+next; Activity provides a bounded catch-up without pretending that opening the
+page was a read receipt. The exact open attention appears once. If it contains
+labelled A/B/C choices, Overview separates them into real form controls without
+mutating the source fact; each can carry a condition, and a custom answer is
+always available. Its full text remains folded. Routine Wakes and the current
+attention do not repeat in the primary catch-up.
+
+Work & results leads with a bounded human reading: the objective and the first
+sentence of an accepted result. Exact worker prose remains available under a
+per-result disclosure, and older accepted results are grouped under one more.
+Details keeps record metadata visible while all Assignments and the full typed
+chronology remain separate disclosures. This preserves agent-useful evidence
+without making it the default human interface.
 
 Approval-needed outranks “working” in every activity label because the person,
 not the agent, is then the blocker. The main surface is not a model chat
@@ -122,6 +130,15 @@ teammate would be wrong because its de-duplication path attaches a message as
 human Steering. Team intake should use `createOrGetWorkstream()` and
 `recordObservation()`; operator intake may use the full derivation and Steering
 path.
+
+A browser decision response remains in the Observation lane. The server binds
+the form to the exact typed source id, need kind, and raw-summary digest, then
+rebuilds the current need and validates a labelled option from the server-side
+parser before writing. Each rendered form has its own retry id: an exact retry
+deduplicates inside the serialized arrival mutation, while a newly rendered
+form may intentionally add a further condition. Closed, changed, ambiguous, or
+tampered needs fail closed. The shared Basic-auth username is caller-supplied
+provenance, so it must never be promoted into Steering or action authority.
 
 Priority remains human resource policy. A reporter may state that an incident
 is urgent, but that statement is an Observation unless the authenticated actor
