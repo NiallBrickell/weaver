@@ -34,6 +34,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 ## Under the hood
 
 - [The harness](./harness.md) — where each continuity invariant lives: durable typed state, disposable model runs
+- [Model routing](./model-routing.md) — typed profiles, modalities, and complexity decide where work runs — never briefing prose
 - [Where model loops run](./executors.md) — switch fresh coordinators and workers among local Claude, local Codex, pinned Pi/API, and OpenHands container substrates without changing the durable contract
 - [Harness evaluations](./harness-evals.md) — comparing disposable agent runtimes through the same real assignment and adoption boundary
 - [Actions](./actions.md) — how intentional external effects are gated, executed with normal tools, and confirmed by deterministic readback

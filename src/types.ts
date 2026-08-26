@@ -62,7 +62,10 @@ export type AssignmentKind = 'work' | 'action';
 
 /** Closed, durable requirements the coordinator may declare without choosing
  * a provider. Routing reads these typed facts; it never guesses capability
- * needs from briefing prose. */
+ * needs from briefing prose. A value with no reviewed route today (see
+ * docs/execution-profiles.md) is forward-declared route scope: routes bind to
+ * exactly this declaration when an eval cohort earns one, so history carries
+ * the scope. `general` is the unrouted fallback and never carries a route. */
 export type AssignmentExecutionProfile =
   | 'general'
   | 'bounded-code-repair'

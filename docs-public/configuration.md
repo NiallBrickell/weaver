@@ -76,6 +76,10 @@ chains are ordinary machine config, every executor they name joins this
 runner's default capability declaration (`WEAVER_RUNNER_EXECUTORS`), and each
 one needs its credentials present on this host.
 
+How an assignment picks its seat — typed profiles and complexity, reviewed
+routes, then these configured seats — is covered in
+[Model routing](./model-routing.md).
+
 ### Storage
 
 | Variable | Default | What it sets |

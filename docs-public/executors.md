@@ -38,6 +38,8 @@ The coordinator declares a closed execution profile and input modalities on
 new work — requirements such as `bounded-code-repair` plus `text`, never a model
 name inferred from briefing prose. Weaver selects the target once before the
 attempt claim and stores executor, provider, and model on that attempt.
+The full story — the three typed facts, the resolution order, and why profiles
+without routes today are still declared — is in [Model routing](./model-routing.md).
 
 The same typed requirements carry a complexity tier. Work the coordinator
 declares `complexity: high` — acceptance depending on deep multi-file
