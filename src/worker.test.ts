@@ -234,8 +234,12 @@ test('the fleet steward receives only fresh narrow attention evidence in its neu
     assert.equal(request.cwd, path.join(workspaceRoot, 'fleet-attention-steward'));
     assert.notEqual(request.cwd, sourceDir);
     assert.equal(fs.existsSync(path.join(sourceDir, FLEET_EVIDENCE_FILE)), false);
+    assert.equal(request.maxTurns, 16);
     assert.match(request.prompt, /Harness-provided fleet attention evidence/);
     assert.match(request.prompt, /open human asks, approval-service waits, grouped incidents, counts, and source revisions/);
+    assert.match(request.prompt, /bounded read-and-submit triage, not a coding or research task/);
+    assert.match(request.prompt, /Use at most eight investigation tool calls/);
+    assert.match(request.prompt, /hard-aborted after 10 awake minutes/);
     assert.match(request.prompt, /cannot approve, resolve, adopt, send, merge, deploy, push, or spend/);
     const encoded = JSON.stringify(evidence);
     assert.match(encoded, /release-decision/);

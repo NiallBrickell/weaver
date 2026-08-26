@@ -126,7 +126,9 @@ grouped incidents, counts, and source revisions. It does not expose unrelated
 objectives, decisions, artifacts, event history, or database credentials. The
 steward does not inherit operator authority: it cannot approve or resolve sends,
 merges, deploys, spending, or any other external effect, and its worker output
-is still only a proposal until adopted.
+is still only a proposal until adopted. This read-and-submit role is also capped
+at 16 model turns and a ten-minute wall: it cannot turn a small approval queue
+into an open-ended coding-agent investigation.
 
 ## Authority limits
 

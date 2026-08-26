@@ -395,7 +395,9 @@ time and immediately before every merge.
   unrelated objectives, decisions, artifacts, event history, and database
   credentials stay outside the worker boundary. It repairs reversible causes
   and may create bounded repair Workstreams, but it cannot resolve or approve
-  another Workstream's external effect;
+  another Workstream's external effect. Its read-and-submit worker is capped at
+  16 model turns and ten awake minutes; the general 200-turn repo-work allowance
+  is explicitly wrong for this role;
 - preserve the operator-side delegate skill as a mechanism and doctrine source,
   never as transferable authority. Worker output remains a proposal.
 
