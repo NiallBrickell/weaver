@@ -34,8 +34,11 @@ import {
 import type { WorkstreamDoc } from './types.js';
 import {
   fleetBoard,
+  fleetNeeds,
+  presentNeed,
   workstreamPage,
   type FleetBoardView,
+  type FleetNeed,
   type ManagedWorkstreamLink,
   type WorkstreamCardView,
 } from './ui/inspect/model.js';
@@ -44,6 +47,7 @@ import {
   renderOperatorNewHtml,
   renderOperatorWorkspaceHtml,
   type OperatorFleetView,
+  type WorkspaceTab,
 } from './ui/operator/render.js';
 
 export interface OperatorUiOptions {
@@ -84,9 +88,23 @@ const MAX_BODY_BYTES = 1_000_000;
 const MAX_MESSAGE_LENGTH = 50_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
+class OperatorUiHttpError extends Error {
+  constructor(readonly status: 400 | 409, message: string) {
+    super(message);
+  }
+}
+
 function safeActor(value: string): string {
   const actor = value.replace(/[\r\n\0]/g, '').trim().slice(0, 80);
   return actor || 'teammate';
+}
+
+function workspaceTab(value: string | null): WorkspaceTab {
+  return value === 'work' || value === 'activity' || value === 'details' ? value : 'overview';
+}
+
+function needVersion(need: FleetNeed): string {
+  return sha256(JSON.stringify([need.source.type, need.source.id, need.kind, need.summary])).slice(0, 32);
 }
 
 function sourceKeyFor(message: string, requestId: string): string {
@@ -352,15 +370,25 @@ function requestAuthority(req: IncomingMessage): string | null {
 
 /**
  * Basic-auth credentials are replayed automatically by browsers, including
- * on cross-site form submissions. Require the browser's serialized Origin to
- * name this request's Host before any POST body is read. Scheme is deliberately
- * ignored because a trusted reverse proxy may terminate HTTPS in front of this
- * HTTP server; host and explicit port remain part of the authority comparison.
+ * on cross-site form submissions. Prefer an exact Origin-to-Host comparison.
+ * The page's no-referrer policy makes Chromium serialize Origin as `null` on
+ * an ordinary same-origin HTML form navigation. That path is accepted only
+ * with browser-controlled Fetch Metadata proving a same-origin document
+ * navigation. A non-browser request with neither signal still fails closed.
+ * Scheme is deliberately ignored because a trusted reverse
+ * proxy may terminate HTTPS in front of this HTTP server; host and explicit
+ * port remain part of the authority comparison.
  */
 function isSameOriginPost(req: IncomingMessage): boolean {
   const value = req.headers.origin;
   const authority = requestAuthority(req);
-  if (typeof value !== 'string' || !authority) return false;
+  if (!authority) return false;
+  if (value === undefined || value === 'null') {
+    return req.headers['sec-fetch-site'] === 'same-origin'
+      && req.headers['sec-fetch-mode'] === 'navigate'
+      && req.headers['sec-fetch-dest'] === 'document';
+  }
+  if (typeof value !== 'string') return false;
   try {
     const origin = new URL(value);
     if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return false;
@@ -408,6 +436,7 @@ function noticeFrom(url: URL): string | undefined {
   if (url.searchParams.get('created') === '1') return 'Request stored. Weaver can pick it up as soon as execution is available.';
   if (url.searchParams.get('existing') === '1') return 'This source already has a Workstream. Your request was added there.';
   if (url.searchParams.get('added') === '1') return 'Information added. Weaver will reconcile it on the next pass.';
+  if (url.searchParams.get('responded') === '1') return 'Response added. Weaver has been woken.';
   return undefined;
 }
 
@@ -482,7 +511,60 @@ async function handle(req: IncomingMessage, res: ServerResponse, token?: string)
     if (!message) throw new Error('Information is required');
     if (message.length > MAX_MESSAGE_LENGTH) throw new Error(`Information must be at most ${MAX_MESSAGE_LENGTH} characters`);
     await recordObservation(slug, { source: `operator-ui:${actor}`, summary: message });
-    return redirect(res, `/workstreams/${encodeURIComponent(slug)}?added=1`);
+    return redirect(res, `/workstreams/${encodeURIComponent(slug)}?tab=activity&added=1`);
+  }
+
+  if (method === 'POST' && parts.length === 3 && parts[0] === 'workstreams' && parts[2] === 'responses') {
+    const slug = parts[1]!;
+    const doc = await load(slug);
+    const form = await readForm(req);
+    const sourceType = (form.get('need_source_type') ?? '').trim();
+    const sourceId = (form.get('need_id') ?? '').trim();
+    const submittedVersion = (form.get('need_version') ?? '').trim();
+    const responseId = (form.get('response_id') ?? '').trim();
+    if (!['attention', 'assignment', 'interaction'].includes(sourceType) || !sourceId || !submittedVersion) {
+      throw new OperatorUiHttpError(400, 'The decision response is malformed');
+    }
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(responseId)) {
+      throw new OperatorUiHttpError(400, 'The response id is malformed');
+    }
+    const need = fleetNeeds([doc]).find((candidate) =>
+      candidate.source.type === sourceType && candidate.source.id === sourceId,
+    );
+    if (!need || needVersion(need) !== submittedVersion) {
+      throw new OperatorUiHttpError(409, 'This decision changed or is no longer open. Reload the job before responding.');
+    }
+
+    const presentation = presentNeed(need.summary);
+    const labels = presentation.choices.map((choice) => choice.label);
+    if (new Set(labels).size !== labels.length) {
+      throw new OperatorUiHttpError(409, 'This decision has ambiguous options and cannot be answered from the browser.');
+    }
+    const choice = (form.get('choice') ?? '').trim();
+    const custom = (form.get('custom') ?? '').trim();
+    const note = (form.get('note') ?? '').trim();
+    if (custom.length > MAX_MESSAGE_LENGTH || note.length > MAX_MESSAGE_LENGTH) {
+      throw new OperatorUiHttpError(400, `A response field must be at most ${MAX_MESSAGE_LENGTH} characters`);
+    }
+    let answer: string;
+    if (choice === 'custom') {
+      if (!custom) throw new OperatorUiHttpError(400, 'A custom response is required');
+      answer = `Other — ${custom}`;
+    } else {
+      const selected = presentation.choices.find((candidate) => candidate.label === choice);
+      if (!selected) throw new OperatorUiHttpError(400, 'Choose one of the current options or write a custom response');
+      answer = `${selected.label} — ${selected.text}`;
+    }
+    const summary = `Response to ${need.kind} request: ${answer}${note ? `\nCondition or note: ${note}` : ''}`;
+    if (summary.length > MAX_MESSAGE_LENGTH) {
+      throw new OperatorUiHttpError(400, `The complete response must be at most ${MAX_MESSAGE_LENGTH} characters`);
+    }
+    await recordObservation(slug, {
+      source: `operator-ui-response:${actor}`,
+      summary,
+      ingressKey: `ui-response:${submittedVersion}:${responseId}:${sha256(summary).slice(0, 24)}`,
+    });
+    return redirect(res, `/workstreams/${encodeURIComponent(slug)}?tab=overview&responded=1`);
   }
 
   if (method === 'GET' && parts.length === 4 && parts[0] === 'workstreams' && parts[2] === 'artifacts') {
@@ -513,11 +595,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, token?: string)
     const doc = fleet.docs.find((candidate) => candidate.workstream.slug === slug);
     if (!doc) return sendHtml(res, 404, '<h1>Workstream not found</h1>');
     const policies = (await loadPolicies()).policies;
+    const view = workstreamPage(doc, policies, fleet.managed.get(slug) ?? []);
+    const primaryNeed = view.needs[0];
     return sendHtml(res, 200, renderOperatorWorkspaceHtml({
       fleet: fleet.view,
       actor,
       notice: noticeFrom(url),
-      view: workstreamPage(doc, policies, fleet.managed.get(slug) ?? []),
+      view,
+      tab: workspaceTab(url.searchParams.get('tab')),
+      responseId: randomUUID(),
+      ...(primaryNeed ? { needVersion: needVersion(primaryNeed) } : {}),
     }));
   }
 
@@ -536,6 +623,10 @@ export async function startOperatorUi(opts: OperatorUiOptions = {}): Promise<Run
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof OperatorUiHttpError) {
+        sendText(res, error.status, `Request could not be stored\n\n${message}\n`);
+        return;
+      }
       const userError = error instanceof ManagedWorkstreamError || /required|too large|at most|content type/i.test(message);
       const status = userError ? 400 : 500;
       sendText(res, status, `${status === 400 ? 'Request could not be stored' : 'Weaver UI failed'}\n\n${message}\n`);

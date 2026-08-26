@@ -15,7 +15,9 @@ import { Badge, Card, CardContent, CardHeader, CardTitle, cn } from '../componen
 import {
   displayText,
   firstLine,
+  firstSentence,
   formatTimestamp,
+  presentNeed,
   type FleetBoardView,
   type WorkstreamCardView,
   type WorkstreamPageView,
@@ -53,8 +55,13 @@ export interface OperatorNewRenderProps extends OperatorBaseRenderProps {
   requestId: string;
 }
 
+export type WorkspaceTab = 'overview' | 'work' | 'activity' | 'details';
+
 export interface OperatorWorkspaceRenderProps extends OperatorBaseRenderProps {
   view: WorkstreamPageView;
+  tab: WorkspaceTab;
+  responseId: string;
+  needVersion?: string;
 }
 
 interface TypedFact {
@@ -69,6 +76,12 @@ interface TypedFact {
 const OPERATOR_SCRIPT = `
 (() => {
   const root = document.querySelector('[data-operator-root]');
+  for (const input of document.querySelectorAll('[data-testid="decision-custom"]')) {
+    input.addEventListener('focus', () => {
+      const custom = input.closest('form')?.querySelector('input[name="choice"][value="custom"]');
+      if (custom instanceof HTMLInputElement) custom.checked = true;
+    });
+  }
   let pollInFlight = false;
   const poll = async () => {
     if (!root || pollInFlight || document.hidden) {
@@ -708,35 +721,7 @@ function FactRows({ facts, limit, compact = false }: { facts: TypedFact[]; limit
   );
 }
 
-interface NeedPresentation {
-  headline: string;
-  choices: Array<{ label: string; text: string }>;
-  full: string;
-}
-
-function firstSentence(value: string, max = 180): string {
-  const clean = displayText(value).replace(/^\s*(?:decision|action|approval)\s+needed\s*:\s*/i, '');
-  const sentence = clean.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? clean;
-  return firstLine(sentence, max);
-}
-
-function presentNeed(summary: string): NeedPresentation {
-  const full = displayText(summary);
-  const marker = /\(([A-Z])\)\s+/g;
-  const matches = [...full.matchAll(marker)];
-  const choices = matches.map((match, index) => {
-    const start = (match.index ?? 0) + match[0].length;
-    const end = matches[index + 1]?.index ?? full.length;
-    return {
-      label: match[1]!,
-      text: firstSentence(full.slice(start, end), 220),
-    };
-  });
-  const preamble = matches[0]?.index === undefined ? full : full.slice(0, matches[0].index);
-  return { headline: firstSentence(preamble), choices, full };
-}
-
-function DecisionCard({ view }: { view: WorkstreamPageView }) {
+function DecisionCard({ view, responseId, needVersion }: { view: WorkstreamPageView; responseId: string; needVersion?: string }) {
   const primary = view.needs[0]!;
   const need = presentNeed(primary.summary);
   return (
@@ -749,16 +734,65 @@ function DecisionCard({ view }: { view: WorkstreamPageView }) {
         <CardTitle className="text-lg leading-7">{need.headline}</CardTitle>
       </CardHeader>
       <CardContent>
-        {need.choices.length ? (
-          <div data-testid="decision-choices" className="space-y-2">
-            {need.choices.map((choice) => (
-              <div key={choice.label} className="flex gap-3 rounded-lg border border-rose-500/20 bg-zinc-950/50 px-3 py-2.5">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-rose-500/15 text-xs font-semibold text-rose-200">{choice.label}</span>
-                <p className="text-sm leading-6 text-zinc-200">{choice.text}</p>
-              </div>
-            ))}
+        <form data-testid="decision-response-form" method="post" action={`/workstreams/${encodeURIComponent(view.doc.workstream.slug)}/responses`}>
+          <input type="hidden" name="need_source_type" value={primary.source.type} />
+          <input type="hidden" name="need_id" value={primary.source.id} />
+          <input type="hidden" name="need_version" value={needVersion ?? ''} />
+          <input type="hidden" name="response_id" value={responseId} />
+          {need.choices.length ? (
+            <fieldset data-testid="decision-choices" className="space-y-2">
+              <legend className="sr-only">Choose a response</legend>
+              {need.choices.map((choice) => (
+                <label key={choice.label} className="group flex cursor-pointer gap-3 rounded-lg border border-rose-500/20 bg-zinc-950/50 px-3 py-3 transition hover:border-rose-400/50 has-[:checked]:border-rose-400/70 has-[:checked]:bg-rose-500/10">
+                  <input className="mt-1 h-4 w-4 shrink-0 accent-rose-400" type="radio" name="choice" value={choice.label} required />
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-rose-500/15 text-xs font-semibold text-rose-200">{choice.label}</span>
+                  <span className="text-sm leading-6 text-zinc-200">{choice.text}</span>
+                </label>
+              ))}
+              <label className="group block cursor-pointer rounded-lg border border-zinc-800 bg-zinc-950/50 px-3 py-3 transition hover:border-zinc-700 has-[:checked]:border-violet-400/60">
+                <span className="flex items-center gap-3 text-sm font-medium text-zinc-300">
+                  <input className="h-4 w-4 accent-violet-400" type="radio" name="choice" value="custom" required />
+                  Something else
+                </span>
+                <input
+                  data-testid="decision-custom"
+                  name="custom"
+                  placeholder="Write a different response"
+                  className="mt-3 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-700 focus:border-violet-500/60"
+                />
+              </label>
+            </fieldset>
+          ) : (
+            <label className="block text-sm font-medium text-zinc-300">
+              Your answer
+              <input type="hidden" name="choice" value="custom" />
+              <textarea
+                data-testid="decision-custom"
+                name="custom"
+                required
+                rows={3}
+                placeholder="Tell Weaver how to proceed"
+                className="mt-2 w-full resize-y rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-700 focus:border-violet-500/60"
+              />
+            </label>
+          )}
+          <label className="mt-3 block text-xs font-medium text-zinc-400">
+            Add a condition or note <span className="font-normal text-zinc-600">(optional)</span>
+            <textarea
+              data-testid="decision-note"
+              name="note"
+              rows={2}
+              placeholder="Yes, but only after…"
+              className="mt-2 w-full resize-y rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-700 focus:border-violet-500/60"
+            />
+          </label>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <p className="max-w-xl text-xs leading-5 text-zinc-500">This answers Weaver and wakes the job. External actions still use their normal approval gates.</p>
+            <button data-testid="decision-response-submit" type="submit" className="rounded-lg bg-rose-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-300">
+              Send response
+            </button>
           </div>
-        ) : null}
+        </form>
         <details data-testid="decision-context" className="mt-3">
           <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-300">Full context</summary>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-400">{need.full}</p>
@@ -931,30 +965,38 @@ function Results({ view }: { view: WorkstreamPageView }) {
       </div>
       <Card className="border-emerald-500/20 bg-emerald-500/5">
         <CardContent className="space-y-5 p-4">
-          {view.doc.workstream.conclusion ? (
-            <div data-testid="job-conclusion">
-              <Badge variant="success">Outcome confirmed</Badge>
-              <p className="mt-3 text-sm leading-6 text-zinc-200">{view.doc.workstream.conclusion.summary}</p>
-            </div>
-          ) : null}
+          {view.doc.workstream.conclusion ? (() => {
+            const full = view.doc.workstream.conclusion.summary;
+            const human = firstSentence(full, 220);
+            return (
+              <div data-testid="job-conclusion">
+                <Badge variant="success">Outcome confirmed</Badge>
+                <p className="mt-3 text-sm leading-6 text-zinc-200">{human}</p>
+                {human !== full ? (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-300">Full technical result</summary>
+                    <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-400">{full}</p>
+                  </details>
+                ) : null}
+              </div>
+            );
+          })() : null}
           {acceptedWork.length ? (
             <section data-testid="accepted-work-results">
               <header className="mb-2 flex items-center justify-between text-xs text-zinc-600">
                 <h3>Accepted work</h3><span>{acceptedWork.length}</span>
               </header>
               <div className="space-y-2">
-                {acceptedWork.map((assignment) => (
-                  <article key={assignment.id} className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-medium leading-5 text-zinc-200">{firstLine(assignment.objective, 160)}</p>
-                        <p className="mt-1 text-sm leading-6 text-zinc-400">{displayText(assignment.submission!.summary)}</p>
-                      </div>
-                      <Badge variant="success">Accepted</Badge>
-                    </div>
-                  </article>
-                ))}
+                {acceptedWork.slice(0, 4).map((assignment) => <AcceptedWorkResult key={assignment.id} assignment={assignment} />)}
               </div>
+              {acceptedWork.length > 4 ? (
+                <details className="mt-2 rounded-lg border border-zinc-800 bg-zinc-950/30 px-3 py-2">
+                  <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-300">{acceptedWork.length - 4} older accepted result{acceptedWork.length === 5 ? '' : 's'}</summary>
+                  <div className="mt-2 space-y-2">
+                    {acceptedWork.slice(4).map((assignment) => <AcceptedWorkResult key={assignment.id} assignment={assignment} />)}
+                  </div>
+                </details>
+              ) : null}
             </section>
           ) : null}
           {adopted.length ? <DeliverableList slug={slug} title="Accepted files" deliverables={adopted} adopted /> : null}
@@ -962,6 +1004,28 @@ function Results({ view }: { view: WorkstreamPageView }) {
         </CardContent>
       </Card>
     </section>
+  );
+}
+
+function AcceptedWorkResult({ assignment }: { assignment: AssignmentBoardCard }) {
+  const full = assignment.submission!.summary;
+  const human = firstSentence(full, 220);
+  return (
+    <article className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium leading-5 text-zinc-200">{firstLine(assignment.objective, 160)}</p>
+          <p data-testid="human-result-summary" className="mt-1 text-sm leading-6 text-zinc-400">{human}</p>
+          {human !== full ? (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-300">Full technical result</summary>
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-400">{full}</p>
+            </details>
+          ) : null}
+        </div>
+        <Badge variant="success">Accepted</Badge>
+      </div>
+    </article>
   );
 }
 
@@ -985,28 +1049,99 @@ function recentFacts(view: WorkstreamPageView, facts: TypedFact[]): TypedFact[] 
 function JobDetails({ view, facts }: { view: WorkstreamPageView; facts: TypedFact[] }) {
   const standing = view.course[0];
   return (
-    <details data-testid="job-details" className="rounded-xl border border-zinc-900 bg-zinc-900/20">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-zinc-500 hover:text-zinc-300">Technical details and full history</summary>
-      <div className="space-y-6 border-t border-zinc-900 p-4">
+    <section data-testid="job-details" className="rounded-xl border border-zinc-900 bg-zinc-900/20">
+      <div className="p-4">
+        <h2 className="text-lg font-semibold text-zinc-100">Technical details</h2>
         <dl className="grid gap-3 text-sm sm:grid-cols-[9rem_minmax(0,1fr)]">
           <dt className="text-zinc-600">Workstream</dt><dd className="text-zinc-400">{view.doc.workstream.slug} · revision {view.doc.revision}</dd>
           <dt className="text-zinc-600">Objective</dt><dd className="text-zinc-400">{view.doc.workstream.objective}</dd>
           {standing ? <><dt className="text-zinc-600">Standing course</dt><dd className="text-zinc-400">{displayText(standing.decision.title)} — {displayText(standing.decision.rationale)}</dd></> : null}
         </dl>
-        <section>
-          <h3 className="mb-3 text-xs font-medium uppercase tracking-[0.12em] text-zinc-600">All assignments</h3>
-          <AssignmentList view={view} includeAccepted />
-        </section>
-        <section>
-          <h3 className="mb-3 text-xs font-medium uppercase tracking-[0.12em] text-zinc-600">Full typed history</h3>
-          <FactRows facts={facts.filter((fact) => !duplicatesCurrentNeed(view, fact))} />
-        </section>
+        <details className="mt-5 border-t border-zinc-800 pt-4">
+          <summary className="cursor-pointer text-sm font-medium text-zinc-400 hover:text-zinc-200">All assignments</summary>
+          <div className="mt-4"><AssignmentList view={view} includeAccepted /></div>
+        </details>
+        <details className="mt-4 border-t border-zinc-800 pt-4">
+          <summary className="cursor-pointer text-sm font-medium text-zinc-400 hover:text-zinc-200">Full typed history</summary>
+          <div className="mt-4"><FactRows facts={facts.filter((fact) => !duplicatesCurrentNeed(view, fact))} /></div>
+        </details>
       </div>
-    </details>
+    </section>
   );
 }
 
-function WorkspacePage({ view, actor }: { view: WorkstreamPageView; actor: string }) {
+const workspaceTabs: Array<{ id: WorkspaceTab; label: string }> = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'work', label: 'Work & results' },
+  { id: 'activity', label: 'Activity' },
+  { id: 'details', label: 'Details' },
+];
+
+function WorkspaceTabs({ slug, active }: { slug: string; active: WorkspaceTab }) {
+  return (
+    <nav data-testid="workspace-tabs" aria-label="Job sections" className="-mx-5 overflow-x-auto border-b border-zinc-800 px-5 sm:-mx-8 sm:px-8">
+      <div className="flex min-w-max gap-1">
+        {workspaceTabs.map((tab) => (
+          <a
+            key={tab.id}
+            data-testid={`workspace-tab-${tab.id}`}
+            href={`/workstreams/${encodeURIComponent(slug)}?tab=${tab.id}`}
+            aria-current={active === tab.id ? 'page' : undefined}
+            className={cn(
+              'shrink-0 border-b-2 px-3 py-3 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-inset focus:ring-violet-400',
+              active === tab.id
+                ? 'border-violet-400 text-white'
+                : 'border-transparent text-zinc-500 hover:border-zinc-700 hover:text-zinc-200',
+            )}
+          >
+            {tab.label}
+          </a>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+function WorkspaceRelationships({ view }: { view: WorkstreamPageView }) {
+  if (!view.doc.workstream.managedBy && !view.managed.length) return null;
+  return (
+    <nav data-testid="workspace-relationships" aria-label="Workstream relationships" className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+      {view.doc.workstream.managedBy ? (
+        <a
+          data-testid="workspace-managed-by"
+          href={`/workstreams/${encodeURIComponent(view.doc.workstream.managedBy.slug)}`}
+          className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-1.5 text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-100"
+        >
+          ↑ part of <span className="font-medium">{view.doc.workstream.managedBy.slug}</span>
+        </a>
+      ) : null}
+      {view.managed.map((child) => (
+        <a
+          key={child.slug}
+          data-testid={`workspace-manages-${child.slug}`}
+          href={`/workstreams/${encodeURIComponent(child.slug)}`}
+          className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-1.5 text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-100"
+        >
+          ↳ includes <span className="font-medium">{child.slug}</span> <span className="text-zinc-600">({child.status})</span>
+        </a>
+      ))}
+    </nav>
+  );
+}
+
+function WorkspacePage({
+  view,
+  actor,
+  tab,
+  responseId,
+  needVersion,
+}: {
+  view: WorkstreamPageView;
+  actor: string;
+  tab: WorkspaceTab;
+  responseId: string;
+  needVersion?: string;
+}) {
   const { doc } = view;
   const ws = doc.workstream;
   const facts = typedFacts(view);
@@ -1020,50 +1155,57 @@ function WorkspacePage({ view, actor }: { view: WorkstreamPageView; actor: strin
         title={ws.title}
         description={firstLine(ws.objective, 240)}
       />
-      <div className="mx-auto max-w-5xl space-y-6 p-5 sm:p-8">
-        {(view.doc.workstream.managedBy || view.managed.length) ? (
-          <nav data-testid="workspace-relationships" aria-label="Workstream relationships" className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-            {view.doc.workstream.managedBy ? (
-              <a
-                data-testid="workspace-managed-by"
-                href={`/workstreams/${encodeURIComponent(view.doc.workstream.managedBy.slug)}`}
-                className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-1.5 text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-100"
-              >
-                ↑ part of <span className="font-medium">{view.doc.workstream.managedBy.slug}</span>
-              </a>
-            ) : null}
-            {view.managed.map((child) => (
-              <a
-                key={child.slug}
-                data-testid={`workspace-manages-${child.slug}`}
-                href={`/workstreams/${encodeURIComponent(child.slug)}`}
-                className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-1.5 text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-100"
-              >
-                ↳ includes <span className="font-medium">{child.slug}</span> <span className="text-zinc-600">({child.status})</span>
-              </a>
-            ))}
-          </nav>
-        ) : null}
-        {view.needs.length ? <DecisionCard view={view} /> : !ws.conclusion ? <CurrentState view={view} /> : null}
-        {hasCurrentWork ? <section data-testid="current-work">
-          <div className="mb-3">
-            <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-600">In progress</p>
-            <h2 className="mt-1 text-lg font-semibold text-zinc-100">Current work</h2>
-          </div>
-          <Card className="bg-zinc-900/20">
-            <CardContent className="p-4"><AssignmentList view={view} /></CardContent>
-          </Card>
-        </section> : null}
-        <Results view={view} />
-        <section data-testid="recent-updates">
-          <div className="mb-3">
-            <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-600">Latest activity</p>
-            <h2 className="mt-1 text-lg font-semibold text-zinc-100">Recent updates</h2>
-          </div>
-          <Card className="bg-zinc-900/20"><CardContent className="p-4"><FactRows facts={updates} limit={5} compact /></CardContent></Card>
-        </section>
-        <ObservationComposer slug={ws.slug} actor={actor} />
-        <JobDetails view={view} facts={facts} />
+      <div className="mx-auto max-w-5xl p-5 sm:p-8">
+        <WorkspaceTabs slug={ws.slug} active={tab} />
+        <div className="mt-5 space-y-5">
+          <WorkspaceRelationships view={view} />
+          {tab === 'overview' ? (
+            <section data-testid="workspace-overview">
+              {view.needs.length
+                ? <DecisionCard view={view} responseId={responseId} needVersion={needVersion} />
+                : !ws.conclusion
+                  ? <CurrentState view={view} />
+                  : (
+                    <Card className="border-emerald-500/20 bg-emerald-500/5">
+                      <CardContent className="p-4">
+                        <Badge variant="success">Done</Badge>
+                        <p className="mt-3 text-sm leading-6 text-zinc-200">{firstSentence(ws.conclusion.summary, 240)}</p>
+                      </CardContent>
+                    </Card>
+                  )}
+            </section>
+          ) : null}
+          {tab === 'work' ? (
+            <div data-testid="workspace-work" className="space-y-6">
+              {hasCurrentWork ? <section data-testid="current-work">
+                <div className="mb-3">
+                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-600">In progress</p>
+                  <h2 className="mt-1 text-lg font-semibold text-zinc-100">Current work</h2>
+                </div>
+                <Card className="bg-zinc-900/20">
+                  <CardContent className="p-4"><AssignmentList view={view} /></CardContent>
+                </Card>
+              </section> : null}
+              <Results view={view} />
+              {!hasCurrentWork && !ws.conclusion && !view.doc.deliverables.length && !view.assignments.lanes.accepted.length ? (
+                <Card><CardContent className="p-4 text-sm text-zinc-500">No work or results have been recorded yet.</CardContent></Card>
+              ) : null}
+            </div>
+          ) : null}
+          {tab === 'activity' ? (
+            <div data-testid="workspace-activity" className="space-y-6">
+              <ObservationComposer slug={ws.slug} actor={actor} />
+              <section data-testid="recent-updates">
+                <div className="mb-3">
+                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-600">Latest activity</p>
+                  <h2 className="mt-1 text-lg font-semibold text-zinc-100">Recent updates</h2>
+                </div>
+                <Card className="bg-zinc-900/20"><CardContent className="p-4"><FactRows facts={updates} limit={5} compact /></CardContent></Card>
+              </section>
+            </div>
+          ) : null}
+          {tab === 'details' ? <JobDetails view={view} facts={facts} /> : null}
+        </div>
       </div>
     </div>
   );
@@ -1105,7 +1247,13 @@ export function renderOperatorWorkspaceHtml(props: OperatorWorkspaceRenderProps)
       initialRevision={String(props.view.doc.revision)}
       currentSlug={slug}
     >
-      <WorkspacePage view={props.view} actor={props.actor} />
+      <WorkspacePage
+        view={props.view}
+        actor={props.actor}
+        tab={props.tab}
+        responseId={props.responseId}
+        needVersion={props.needVersion}
+      />
     </OperatorShell>,
   );
 }

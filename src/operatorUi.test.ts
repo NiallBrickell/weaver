@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -46,6 +47,35 @@ function slugFrom(response: Response): string {
   const match = location.match(/^\/workstreams\/([^?]+)/);
   assert.ok(match);
   return decodeURIComponent(match[1]!);
+}
+
+function hiddenValue(html: string, name: string): string {
+  const match = html.match(new RegExp(`name="${name}" value="([^"]*)"`));
+  assert.ok(match, `expected hidden field ${name}`);
+  return match[1]!;
+}
+
+function rawFormPost(url: string, fields: Record<string, string>, headers: Record<string, string>): Promise<number> {
+  const target = new URL(url);
+  const body = new URLSearchParams(fields).toString();
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({
+      hostname: target.hostname,
+      port: target.port,
+      path: target.pathname,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        'content-length': String(Buffer.byteLength(body)),
+        ...headers,
+      },
+    }, (response) => {
+      response.resume();
+      response.once('end', () => resolve(response.statusCode ?? 0));
+    });
+    req.once('error', reject);
+    req.end(body);
+  });
 }
 
 test('New work stores a durable request immediately and an exact retry is idempotent', async () => {
@@ -175,6 +205,30 @@ test('authenticated browser mutations require a matching Origin before reading o
   const slug = slugFrom(accepted);
   assert.equal((await load(slug)).observations[0]!.source, 'operator-ui:sales-alice');
 
+  const browserFormStatus = await rawFormPost(`${base}/workstreams`, {
+    message: 'A native same-origin form navigation may omit Origin.',
+    request_id: 'fetch-metadata-boundary',
+  }, {
+    authorization,
+    origin: 'null',
+    'sec-fetch-site': 'same-origin',
+    'sec-fetch-mode': 'navigate',
+    'sec-fetch-dest': 'document',
+  });
+  assert.equal(browserFormStatus, 303, 'browser-controlled same-origin navigation metadata is accepted');
+
+  const crossSiteMetadataStatus = await rawFormPost(`${base}/workstreams`, {
+    message: 'Cross-site fetch metadata must not pass.',
+    request_id: 'cross-site-fetch-metadata',
+  }, {
+    authorization,
+    origin: 'null',
+    'sec-fetch-site': 'cross-site',
+    'sec-fetch-mode': 'navigate',
+    'sec-fetch-dest': 'document',
+  });
+  assert.equal(crossSiteMetadataStatus, 403);
+
   const crossOriginFollowUp = await fetch(`${base}/workstreams/${slug}/observations`, form({
     message: 'This cross-site follow-up must not be recorded.',
   }, { authorization, origin: 'https://attacker.example' }));
@@ -223,12 +277,27 @@ test('board, new-work, and workspace pages are live typed views with secure head
   assert.equal(workspace.status, 200);
   const html = await workspace.text();
   assert.match(html, /Repair the carousel producer/);
-  assert.match(html, /Add context or answer a question/);
-  assert.match(html, /Recent updates/);
-  assert.match(html, /Technical details and full history/);
+  assert.match(html, /data-testid="workspace-tabs"/);
+  assert.match(html, /data-testid="workspace-tab-overview"[^>]*aria-current="page"/);
+  assert.match(html, /data-testid="workspace-overview"/);
+  assert.doesNotMatch(html, /data-testid="workspace-work"|data-testid="workspace-activity"|data-testid="job-details"/);
   assert.doesNotMatch(html, /Work and deliverables|workspace-inspector|five-question-position/);
   assert.doesNotMatch(html, /WEAVER_SERVE_TOKEN|WEAVER_UI_TOKEN/);
   assert.doesNotMatch(html, /DISPOSABLE_PASS_SUMMARY|DISPOSABLE_SESSION/);
+
+  const activityHtml = await (await fetch(`${base}/workstreams/${created.slug}?tab=activity`)).text();
+  assert.match(activityHtml, /data-testid="workspace-tab-activity"[^>]*aria-current="page"/);
+  assert.match(activityHtml, /Add context or answer a question/);
+  assert.match(activityHtml, /Recent updates/);
+  assert.doesNotMatch(activityHtml, /data-testid="workspace-overview"|data-testid="workspace-work"|data-testid="job-details"/);
+
+  const detailsHtml = await (await fetch(`${base}/workstreams/${created.slug}?tab=details`)).text();
+  assert.match(detailsHtml, /data-testid="workspace-tab-details"[^>]*aria-current="page"/);
+  assert.match(detailsHtml, /Technical details/);
+  assert.doesNotMatch(detailsHtml, /data-testid="workspace-overview"|data-testid="workspace-work"|data-testid="workspace-activity"/);
+
+  const unknownHtml = await (await fetch(`${base}/workstreams/${created.slug}?tab=unknown`)).text();
+  assert.match(unknownHtml, /data-testid="workspace-tab-overview"[^>]*aria-current="page"/);
 
   const revision = await fetch(`${base}/api/workstreams/${created.slug}/revision`);
   assert.deepEqual(await revision.json(), { revision: String((await load(created.slug)).revision) });
@@ -261,7 +330,7 @@ test('the evidenced answer and integrity-checked artifacts are prominent and dow
     event('workstream.concluded', 'verified answer concluded', [deliverableId]);
   });
 
-  const workspace = await fetch(`${base}/workstreams/${created.slug}`);
+  const workspace = await fetch(`${base}/workstreams/${created.slug}?tab=work`);
   const html = await workspace.text();
   assert.match(html, /The mixed-media carousel was repaired and verified/);
   assert.match(html, /Verified customer answer/);
@@ -302,7 +371,7 @@ test('one long attention item becomes one concise decision card instead of repea
       id: newId('asg'), objective: 'Fix the release blocker at its producer', briefing: 'Use deterministic evidence.',
       kind: 'work', acceptanceCriteria: ['The blocker is fixed'], dependsOn: [], state: 'completed',
       attempts: [{ runId: newId('run'), startedAt: now, endedAt: now }],
-      submission: { summary: 'The producer now selects the correct route.' },
+      submission: { summary: 'The producer now selects the correct route. Rebased head, ancestry proof, full suite output, and remote-ref details stay available for agents.' },
       adoption: { state: 'accepted', passId: 'pass_test', at: now }, createdAtVirtual: now,
     });
     event('attention.opened', 'release decision requested');
@@ -313,17 +382,119 @@ test('one long attention item becomes one concise decision card instead of repea
   assert.equal((html.match(/data-testid="decision-needed"/g) ?? []).length, 1);
   assert.match(html, /Choose how this release should proceed/);
   assert.match(html, /data-testid="decision-choices"/);
+  assert.match(html, /type="radio"[^>]*name="choice"[^>]*value="A"/);
+  assert.match(html, /type="radio"[^>]*name="choice"[^>]*value="custom"/);
+  assert.match(html, /data-testid="decision-note"/);
   assert.match(html, />A<.*Continue on the existing test evidence/s);
   assert.match(html, />B<.*Ask a named reviewer/s);
   assert.match(html, />C<.*Add the missing automated review/s);
-  assert.match(html, /Results.*Accepted work.*The producer now selects the correct route/s);
+  assert.doesNotMatch(html, /data-testid="workspace-work"|data-testid="workspace-activity"|data-testid="job-details"/);
   assert.equal((html.match(/This exact sentence belongs only in the collapsed full context/g) ?? []).length, 1);
   assert.doesNotMatch(html, /data-testid="current-state"|five-question-position|workspace-inspector/);
+
+  const workHtml = await (await fetch(`${base}/workstreams/${created.slug}?tab=work`)).text();
+  assert.match(workHtml, /Results.*Accepted work.*The producer now selects the correct route/s);
+  assert.match(workHtml, /data-testid="human-result-summary"[^>]*>The producer now selects the correct route\.<\/p>/);
+  assert.match(workHtml, /Full technical result/);
+  assert.equal((workHtml.match(/Rebased head, ancestry proof/g) ?? []).length, 1, 'technical prose renders only inside its disclosure');
 
   const board = await fetch(`${base}/board`);
   const boardHtml = await board.text();
   assert.match(boardHtml, /Needs you/);
   assert.match(boardHtml, /1 job/);
+});
+
+test('decision responses accept an option with a condition or a custom answer without granting authority', async () => {
+  const created = await createTeamWorkstream({
+    message: 'Resolve the release choice.', requestId: 'response-request', actor: 'alice',
+  });
+  const summary = 'DECISION NEEDED: Choose the release course. (A) Continue on green tests. (B) Ask for another review.';
+  await arrive(created.slug, (doc, event) => {
+    doc.attention.push({ id: 'att_response', kind: 'blocker', summary, status: 'open', createdAt: new Date().toISOString() });
+    event('attention.opened', 'release choice requested');
+  });
+
+  const html = await (await fetch(`${base}/workstreams/${created.slug}`)).text();
+  const fields = {
+    need_source_type: hiddenValue(html, 'need_source_type'),
+    need_id: hiddenValue(html, 'need_id'),
+    need_version: hiddenValue(html, 'need_version'),
+    response_id: hiddenValue(html, 'response_id'),
+    choice: 'A',
+    note: 'Yes, but only after the smoke test passes.',
+  };
+  const [first, retry] = await Promise.all([
+    fetch(`${base}/workstreams/${created.slug}/responses`, form(fields)),
+    fetch(`${base}/workstreams/${created.slug}/responses`, form(fields)),
+  ]);
+  assert.equal(first.status, 303);
+  assert.equal(retry.status, 303);
+  assert.match(first.headers.get('location') ?? '', /tab=overview&responded=1$/);
+
+  let doc = await load(created.slug);
+  const responses = doc.observations.filter((observation) => observation.source.startsWith('operator-ui-response:'));
+  assert.equal(responses.length, 1, 'an exact simultaneous form retry is one durable response');
+  assert.equal(responses[0]!.summary, [
+    'Response to blocker request: A — Continue on green tests.',
+    'Condition or note: Yes, but only after the smoke test passes.',
+  ].join('\n'));
+  assert.equal(doc.wakes.filter((wake) => wake.reason.includes('operator-ui-response')).length, 1);
+  assert.equal(doc.steering.length, 0);
+  assert.equal(doc.spend.humanInterventions, 0);
+  assert.equal(doc.attention[0]!.status, 'open', 'a response wakes reconciliation; it does not resolve attention itself');
+
+  const refreshed = await (await fetch(`${base}/workstreams/${created.slug}`)).text();
+  const custom = await fetch(`${base}/workstreams/${created.slug}/responses`, form({
+    need_source_type: hiddenValue(refreshed, 'need_source_type'),
+    need_id: hiddenValue(refreshed, 'need_id'),
+    need_version: hiddenValue(refreshed, 'need_version'),
+    response_id: hiddenValue(refreshed, 'response_id'),
+    choice: 'custom',
+    custom: 'Continue after the database owner confirms the backup.',
+  }));
+  assert.equal(custom.status, 303);
+  doc = await load(created.slug);
+  assert.match(doc.observations.at(-1)!.summary, /Other — Continue after the database owner confirms the backup/);
+  assert.equal(doc.steering.length, 0);
+});
+
+test('decision response validation rejects tampered choices and stale needs without mutation', async () => {
+  const created = await createTeamWorkstream({
+    message: 'Choose a safe release route.', requestId: 'stale-response-request', actor: 'alice',
+  });
+  await arrive(created.slug, (doc, event) => {
+    doc.attention.push({
+      id: 'att_stale', kind: 'blocker', status: 'open', createdAt: new Date().toISOString(),
+      summary: 'DECISION NEEDED: Choose now. (A) Wait for CI. (B) Stop the release.',
+    });
+    event('attention.opened', 'choice requested');
+  });
+  const html = await (await fetch(`${base}/workstreams/${created.slug}`)).text();
+  const baseFields = {
+    need_source_type: hiddenValue(html, 'need_source_type'),
+    need_id: hiddenValue(html, 'need_id'),
+    need_version: hiddenValue(html, 'need_version'),
+    response_id: hiddenValue(html, 'response_id'),
+  };
+  const before = (await load(created.slug)).observations.length;
+  const tampered = await fetch(`${base}/workstreams/${created.slug}/responses`, form({ ...baseFields, choice: 'Z' }));
+  assert.equal(tampered.status, 400);
+  assert.equal((await load(created.slug)).observations.length, before);
+
+  await arrive(created.slug, (doc, event) => {
+    doc.attention[0]!.summary = 'DECISION NEEDED: The available course changed. (A) Wait for the new evidence.';
+    event('attention.updated', 'choice changed');
+  });
+  const stale = await fetch(`${base}/workstreams/${created.slug}/responses`, form({ ...baseFields, choice: 'A' }));
+  assert.equal(stale.status, 409);
+  assert.equal((await load(created.slug)).observations.length, before);
+
+  const crossOrigin = await fetch(`${base}/workstreams/${created.slug}/responses`, form(
+    { ...baseFields, choice: 'A' },
+    { origin: 'https://attacker.example.test' },
+  ));
+  assert.equal(crossOrigin.status, 403);
+  assert.equal((await load(created.slug)).observations.length, before);
 });
 
 test('non-loopback binding requires Basic auth and attributes requests to its username', async () => {
@@ -445,7 +616,7 @@ test('the live view renders composition relationships, parent selection, and ass
     event('assignment.created', 'queued refunds migration work');
   });
 
-  const workspace = await fetch(`${base}/workstreams/${child.slug}`);
+  const workspace = await fetch(`${base}/workstreams/${child.slug}?tab=details`);
   const childHtml = await workspace.text();
   assert.match(childHtml, /workspace-managed-by/);
   assert.match(childHtml, new RegExp(`part of.*${parent.slug}`));
