@@ -148,10 +148,11 @@ Do not add membership, seats, rosters, reporting graphs, or transitive manager
 control. Existing roots remain valid; no Workstream has to belong to a team.
 
 “Flat” must consistently mean one-hop inspection and advisory direction, not
-“links cannot compose”. The TUI already renders bounded indentation to depth
-three; older public copy says Weaver never renders a tree. Documentation should
-describe the real contract: visual composition is a read-only projection of
-direct edges and never adds inspection, control, or authority at another edge.
+“links cannot compose”. The TUI already renders read-only indentation, while
+older public copy says Weaver never renders a tree. Documentation should
+describe the contract rather than its current display bound: visual composition
+is a read-only projection of direct edges and never adds inspection, control,
+or authority at another edge.
 
 ## Dashboard verdict
 
@@ -213,6 +214,10 @@ Assignment mutation path must expand or validate the template, copy every
 template-owned field plus the per-instance contract into the Assignment, and
 write the explicit `templateRef`. The result remains an authoring/provenance
 feature, not a worker identity.
+
+This later template decision gates nothing else in this plan. Human composition,
+dashboard completion, cross-harness worker portability, and the named-specialist
+question proceed independently.
 
 Until then, the self-contained Assignment brief is the only cross-harness work
 contract guaranteed today. Workstream constraints, standing decisions,
@@ -278,7 +283,7 @@ the architecture discussion closes.
    adding schema, specify the define-once/select-across-Workstreams/harnesses
    scenario above and the attribution it requires. Add a minimal Agent
    definition only if that requirement is accepted and cannot be represented
-   without competing truth.
+   without competing truth. This decision is not blocked on templates.
 7. **Revisit other relations only from evidence.** A failing real scenario may
    instead require sibling dispatch, a cross-Workstream adopted-artifact
    hand-off, or direct manager review of child work. None should be smuggled in
