@@ -51,6 +51,7 @@ import { runnerExecutorCapabilities } from './modelRouting.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
 import { ensureActionApprovalAttention } from './actionApproval.js';
 import { pilotFetch, readPilotVerdict } from './pilot.js';
+import { githubAppEnvironment, type GitHubAppAccess } from './githubApp.js';
 
 const PILOT_UNAVAILABLE_GRACE_MS = 2 * 60_000;
 
@@ -74,6 +75,23 @@ function actionHasMatchingApproval(asg: Assignment): boolean {
   const approval = asg.exec?.approval;
   return !!approval
     && (asg.exec?.approvalMode !== 'human-only' || approval.by === 'human');
+}
+
+/** Ephemeral repository credentials join an approved action only for the
+ * lifecycle that needs them. The App key itself never leaves the controller. */
+async function actionExecutionSecrets(
+  slug: string,
+  asg: Assignment,
+  access: GitHubAppAccess,
+): Promise<{ secrets: Record<string, string>; redactionSecrets: Record<string, string> }> {
+  const githubEnvironment = isRepoEgressAction(asg) && asg.exec
+    ? await githubAppEnvironment(asg.exec.cwd, access)
+    : {};
+  const secrets = { ...loadSecrets(slug), ...githubEnvironment };
+  return {
+    secrets,
+    redactionSecrets: { ...loadRedactionSecrets(slug), ...secrets },
+  };
 }
 
 /** A non-confirming action readback proves neither that the effect landed nor
@@ -538,8 +556,7 @@ export async function preflightApprovedAction(slug: string, assignmentId: string
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg?.exec || asg.kind !== 'action') return false;
   if (asg.state !== 'queued' || asg.attempts.length > 0 || !actionHasMatchingApproval(asg)) return false;
-  const secrets = loadSecrets(slug);
-  const redactionSecrets = loadRedactionSecrets(slug);
+  const { secrets, redactionSecrets } = await actionExecutionSecrets(slug, asg, 'read');
   const { ok, output } = await execActionVerifier(asg.exec.verify, asg.exec.cwd, secrets, redactionSecrets);
   // Not satisfied is the normal case — proceed to execution with no ceremony.
   // A transient verifier failure lands here too, which is safe: the action
@@ -585,8 +602,7 @@ export async function verifyAction(slug: string, assignmentId: string): Promise<
   if (asg.attempts.length === 0) {
     throw new Error(`${assignmentId} verify refused: no execution attempt to read back`);
   }
-  const secrets = loadSecrets(slug);
-  const redactionSecrets = loadRedactionSecrets(slug);
+  const { secrets, redactionSecrets } = await actionExecutionSecrets(slug, asg, 'read');
 
 
   const { ok, output } = await execActionVerifier(asg.exec.verify, asg.exec.cwd, secrets, redactionSecrets);
@@ -640,7 +656,8 @@ export async function guardRepoEgress(
   // A settled PR on the push target is the one repo-egress fact that loses
   // work outright, so it is judged first and it blocks.
   const command = [asg.exec.run ?? '', asg.exec.verify ?? ''].join('\n');
-  const stranded = await checkStrandedPush(asg.exec.cwd, command, strandedIO);
+  const githubEnvironment = await githubAppEnvironment(asg.exec.cwd, 'read');
+  const stranded = await checkStrandedPush(asg.exec.cwd, command, strandedIO, githubEnvironment);
   if (stranded.verdict === 'unknown') {
     // Abstention, not a clean bill of health: the egress proceeds (a dead gh
     // must not wedge the fleet) but the gap is on the record.
@@ -664,7 +681,7 @@ export async function guardRepoEgress(
     return false;
   }
 
-  const collisions = await repoEgressCollisions(asg.exec.cwd);
+  const collisions = await repoEgressCollisions(asg.exec.cwd, githubEnvironment);
   if (collisions.length === 0) return true;
   // Report, never block — see deconflict.ts. Recorded once per distinct set of
   // contended files so a long-lived action does not re-log the same overlap on
@@ -722,6 +739,10 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
       executed++;
       continue;
     }
+    // Mint before recording the one-shot attempt. Authentication is still
+    // after approval and immediately before the CAS, but a failed mint cannot
+    // manufacture a false may-have-egressed attempt that readback must hold.
+    const { secrets, redactionSecrets } = await actionExecutionSecrets(slug, asg, 'write');
     const runId = newId('run');
     try {
       await mutate(slug, current.revision, (d, event) => {
@@ -738,8 +759,6 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
       throw error;
     }
     mkdirSync(asg.exec!.cwd, { recursive: true });
-    const secrets = loadSecrets(slug);
-    const redactionSecrets = loadRedactionSecrets(slug);
     let ok = false;
     let output = '';
     try {

@@ -93,6 +93,7 @@ one needs its credentials present on this host.
 | `WEAVER_RUNNER_EXECUTORS` | configured coordinator, worker, and action executors | Comma-separated substrates this process may claim. Add reviewed route executors such as `openhands` explicitly on a capable host |
 | `WEAVER_ACTION_EXECUTOR` | `local-sdk` | Separate Pilot-supervised action runtime; automatic model routes never apply to actions |
 | `WEAVER_ACTION_MODEL` | `sonnet` | Model for declared action workers |
+| `WEAVER_DETERMINISTIC_ACTIONS_ONLY` | `0` | Set to `1` on credential-bearing hosted controllers: action assignments must supply an exact `exec_run`, and no same-UID action model starts |
 | `WEAVER_OPENHANDS_BASE_URL` | OpenRouter's official endpoint for `openrouter/*` | OpenAI-compatible upstream used by the host credential proxy; required for other OpenHands providers |
 | `WEAVER_PILOT_URL` | `http://localhost:9721` | The operator's pilot daemon that gates external actions |
 
@@ -114,6 +115,14 @@ no registered token. Existing unauthenticated Pilot installations remain
 compatible only on loopback (`localhost`, `127.0.0.1`, or `::1`). Executor-only
 secret provisioning carries `WEAVER_PILOT_TOKEN` with the other adapter
 credentials; general environment rendering deliberately does not.
+
+Hosted GitHub access uses three executor-only values rather than a personal
+CLI login or PAT: `WEAVER_GITHUB_APP_ID`,
+`WEAVER_GITHUB_APP_INSTALLATION_ID`, and
+`WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64`. They are reloaded for each mint and
+produce short-lived installation tokens; they never enter `.env` or ordinary
+worker containers. `weaver github-auth-check` proves the configured App path.
+See [GitHub access on a hosted runner](./github-app.md).
 
 OpenHands provider credentials are values, not settings. Store OpenRouter's as
 `OPENROUTER_API_KEY` with `weaver secret set ... --executor`; Weaver reloads it

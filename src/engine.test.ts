@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { generateKeyPairSync } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 import {
   coordinatorBackoffActive,
@@ -26,6 +28,13 @@ import { runWorker } from './worker.js';
 import { setExecutorSecret } from './secrets.js';
 import { virtualNow } from './clock.js';
 import type { Assignment } from './types.js';
+import {
+  __resetGitHubAppForTests,
+  __setGitHubAppTestDependencies,
+} from './githubApp.js';
+
+const githubTestPrivateKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
+  .export({ type: 'pkcs8', format: 'pem' }).toString();
 
 function freshHome(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-test-'));
@@ -86,10 +95,12 @@ beforeEach(() => {
   // an unreachable port means the gate fails closed (stays gated), which is
   // the baseline the non-pilot tests assume. Pilot tests stub their own URL.
   process.env.WEAVER_PILOT_URL = 'http://127.0.0.1:1';
+  __resetGitHubAppForTests();
 });
 
 afterEach(() => {
   delete process.env.WEAVER_SEND_UNKNOWN;
+  __resetGitHubAppForTests();
 });
 
 test('a rejection that lands BEFORE the egress claim produces zero external effects', async () => {
@@ -830,6 +841,59 @@ test('a human-authored exec.run action is executed by the ENGINE (no worker) and
   assert.equal(asg.attempts[0]!.terminalReason, 'executed');
   assert.equal(asg.exec!.verified!.ok, true);
   assert.ok(doc.deliverables.some((d) => d.kind === 'execution_record'));
+});
+
+test('a repo engine action gets write scope only for execution and read scope for checks', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-engine-'));
+  const fixedNow = Date.parse('2026-08-26T12:00:00.000Z');
+  const requests: Array<{ access: 'read' | 'write'; repository: string[] }> = [];
+  execFileSync('git', ['init', '--quiet'], { cwd });
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/octo/repo.git'], { cwd });
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret(
+    'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64',
+    Buffer.from(githubTestPrivateKey).toString('base64'),
+  );
+  __setGitHubAppTestDependencies({
+    now: () => fixedNow,
+    fetch: (async (_input, init = {}) => {
+      const body = JSON.parse(String(init.body)) as {
+        permissions: { contents: string };
+        repositories: string[];
+      };
+      const access = body.permissions.contents === 'write' ? 'write' : 'read';
+      requests.push({ access, repository: body.repositories });
+      return Response.json({
+        token: `${access}-installation-token`,
+        expires_at: new Date(fixedNow + 60 * 60_000).toISOString(),
+        repositories: [{ full_name: 'octo/repo' }],
+      }, { status: 201 });
+    }) as typeof globalThis.fetch,
+  });
+
+  await makeActionWorkstream('github-engine-scope-ws', {
+    state: 'queued',
+    exec: {
+      cwd,
+      run: 'if false; then gh pr merge 1; fi; test "$GH_TOKEN" = write-installation-token && touch effect.txt',
+      verify: 'test "$GH_TOKEN" = read-installation-token && test -f effect.txt',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+  try {
+    const report = await tick('github-engine-scope-ws', { maxPasses: 0 });
+    assert.deepEqual(report.workersRun, []);
+    const action = (await load('github-engine-scope-ws')).assignments[0]!;
+    assert.equal(action.state, 'awaiting_review');
+    assert.equal(action.exec!.verified!.ok, true);
+    assert.deepEqual(requests, [
+      { access: 'read', repository: ['repo'] },
+      { access: 'write', repository: ['repo'] },
+    ]);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test('an exec.run action without approval is not executed', async () => {

@@ -55,7 +55,7 @@ import {
   coordinatorTargets,
   type CapacityTarget,
 } from './modelConfig.js';
-import { runnerExecutorCapabilities } from './modelRouting.js';
+import { deterministicActionsOnly, runnerExecutorCapabilities } from './modelRouting.js';
 import {
   selectCoordinatorExecutor,
   type CoordinatorExecutor,
@@ -390,7 +390,7 @@ export async function runCoordinatorPass(
           exec_verify: z.string().optional().describe('REQUIRED for kind "action": shell command run by the harness (never the worker) whose exit 0 confirms the real-world effect happened, e.g. `gh pr list --head <branch> --json url --jq ".[0].url" | grep .`'),
           approval_ask: z.string().optional().describe('REQUIRED for kind "action": 1-3 plain sentences explaining what approval allows, why the workstream wants it, and the blast radius (what can and cannot change as a result). Product language, no file paths or jargon unless essential. Pilot evaluates this request first; it becomes the human card only after Pilot escalates or when approval_mode is explicitly human-only. The briefing is not shown on that card.'),
           approval_mode: z.enum(['pilot-or-human', 'human-only']).optional().describe('For kind "action". Defaults to pilot-or-human. Use human-only ONLY when an operator directive, objective, constraint, or standing decision explicitly requires human/manual approval for this specific act. Generic gated-action wording and uncertainty are pilot-or-human: Pilot owns the external standing approval rules. Pilot still supervises calls after human approval but cannot clear a human-only gate.'),
-          exec_run: z.string().optional().describe('OPTIONAL for kind "action": the EXACT shell command the engine executes verbatim — no worker, no model in the execution loop. Reserve for precise, deterministically-verifiable one-liners whose authority the workstream\'s constraints explicitly grant (e.g. merging a PR under the standing merge bar: a compound one-liner that resolves the head SHA, asserts a completed DevBot Review at that SHA whose summary affirms zero findings — conclusion success alone is not clean — asserts zero unresolved review threads on the PR (address and resolve each before merging), asserts no failing/running checks, then `gh pr merge N --merge --repo <org>/<repo>`; the bare merge with no in-command precheck is denied). The operator\'s pilot evaluates this literal command before it may run; if pilot escalates, the human decides. Never use it to smuggle multi-step work past worker supervision.'),
+          exec_run: z.string().optional().describe('OPTIONAL normally, but REQUIRED when this host has deterministic-only actions enabled: the EXACT shell command the engine executes verbatim — no worker, no model in the execution loop. Reserve for precise, deterministically-verifiable commands whose authority the workstream\'s constraints explicitly grant (e.g. merging a PR under the standing merge bar: a compound command that resolves the head SHA, asserts a completed DevBot Review at that SHA whose summary affirms zero findings — conclusion success alone is not clean — asserts zero unresolved review threads on the PR (address and resolve each before merging), asserts zero failing/running checks, then `gh pr merge N --merge --repo <org>/<repo>`; the bare merge with no in-command precheck is denied). The operator\'s pilot evaluates this literal command before it may run; if pilot escalates, the human decides. Never use it to smuggle multi-step work past worker supervision.'),
         },
         async (a) =>
           change((d, event) => {
@@ -409,6 +409,9 @@ export async function runCoordinatorPass(
             }
             if (a.kind === 'action' && !a.approval_ask?.trim()) {
               throw new Error('kind "action" requires approval_ask — the plain-language card the human decides from');
+            }
+            if (a.kind === 'action' && deterministicActionsOnly() && !a.exec_run?.trim()) {
+              throw new Error('this host requires deterministic-only actions: provide exec_run so no model process enters the credential-bearing action lane');
             }
             if (a.exec_cwd && !isAbsolute(a.exec_cwd)) {
               throw new Error(`exec_cwd must be an absolute path, got '${a.exec_cwd}' — cwd is the action's scoping boundary and cannot depend on where the engine happens to run`);

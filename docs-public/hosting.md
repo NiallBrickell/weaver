@@ -148,6 +148,7 @@ WEAVER_WORKER_FALLBACKS= \
 WEAVER_COORDINATOR_EXECUTOR=codex-sdk \
 WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol \
 WEAVER_ACTION_EXECUTOR=local-sdk \
+WEAVER_DETERMINISTIC_ACTIONS_ONLY=1 \
 WEAVER_PILOT_URL=http://127.0.0.1:9721 \
 WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk,local-sdk \
   bin/weaver-gcp.sh push-env               # merge identity + every model/fallback setting
@@ -180,8 +181,11 @@ host. Rootless Docker is separate from the root-owned daemon used by the
 optional bundled Postgres, so running disposable workers does not make the
 service account root-equivalent through the Docker group.
 
-The action target is supervised `local-sdk`, and this host claims that
-capability only after proving the complete Pilot boundary. The separately
+The hosted action lane is deterministic-only: exact `exec_run` commands are
+evaluated by Pilot and executed by the engine, while same-UID model-driven
+actions are refused because they could read controller credentials. This host
+claims the action capability only after proving both the Pilot boundary and a
+dedicated GitHub App machine identity. The separately
 installed `weaver-pilot.service` must run as `weaver-pilot`, own the only TCP
 listener on port 9721 at exactly `127.0.0.1`, and expose its authenticated
 check only at that fixed loopback URL. `WEAVER_PILOT_TOKEN` must exist in the
@@ -193,6 +197,19 @@ engine and worker actions can load the bearer and receive the authenticated
 204. Any failed proof refuses the systemd launch before an action-capable
 runner exists. The Pilot account, unit, and token are installation
 prerequisites rather than a bundled Pilot binary or configuration.
+
+The same preflight refuses a personal `gh` login, Git credential helper/store,
+SSH private key, credential-bearing workspace remote, GitHub MCP
+configuration, or a static `GH_TOKEN`/`GITHUB_TOKEN` anywhere in Weaver's
+hosted secret files. It
+requires `WEAVER_GITHUB_APP_ID`, `WEAVER_GITHUB_APP_INSTALLATION_ID`, and
+`WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64` in executor-only scope and runs
+`/usr/local/bin/weaver github-auth-check` as the service user. The private key
+stays on the controller host; ordinary OpenHands containers receive no GitHub
+credential. Approved exact repo commands get one-hour installation tokens
+narrowed to their exact repository and explicit permission profile, while
+preflight and readback use independently minted read-only tokens. See [GitHub
+access on a hosted runner](./github-app.md).
 
 `create` without `--external-store` remains the one-box option: it provisions a
 localhost-only Docker Postgres, and `tunnel`/`join` expose that database only

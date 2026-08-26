@@ -82,8 +82,8 @@ wait_for_ssh() {
 #   - its own VPC: no network path to other VPCs in the project (VPCs don't
 #     route to each other unless peered — we never peer this one); the only
 #     ingress rule is IAP SSH;
-#   - no GitHub or gcloud credentials on the box: only the model/provider
-#     secrets push-env explicitly delivers.
+#   - no personal GitHub or gcloud credentials on the box: repository access
+#     uses only the dedicated App identity that push-env explicitly delivers.
 ensure_network() {
   "${GC[@]}" compute networks describe "$NETWORK" >/dev/null 2>&1 || \
     "${GC[@]}" compute networks create "$NETWORK" --subnet-mode custom

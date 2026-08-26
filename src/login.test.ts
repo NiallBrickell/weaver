@@ -120,6 +120,27 @@ test('Pilot bearer travels only in the executor-secret render, never general rem
   assert.ok(!general.lines.some((line) => line.startsWith('WEAVER_PILOT_TOKEN=')));
 });
 
+test('GitHub App identity travels only in the executor-secret render', () => {
+  const appSecrets = {
+    WEAVER_GITHUB_APP_ID: '12345',
+    WEAVER_GITHUB_APP_INSTALLATION_ID: '67890',
+    WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64: 'private-key-material',
+  };
+  assert.deepEqual(renderRemoteExecutorSecretLines(appSecrets), [
+    'WEAVER_GITHUB_APP_ID=12345',
+    'WEAVER_GITHUB_APP_INSTALLATION_ID=67890',
+    'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64=private-key-material',
+  ]);
+  const general = renderRemoteEnvLines(
+    { ...appSecrets, WEAVER_SERVE_TOKEN: 'serve-token' },
+    {},
+  );
+  for (const value of Object.values(appSecrets)) {
+    assert.ok(!general.lines.some((line) => line.includes(value)));
+  }
+  assert.ok(!general.lines.some((line) => line.startsWith('WEAVER_GITHUB_APP_')));
+});
+
 test('WEAVER_STORE and WEAVER_HOME are never emitted — provisioning owns them', () => {
   const { lines } = renderRemoteEnvLines(
     { WEAVER_SERVE_TOKEN: 't' },

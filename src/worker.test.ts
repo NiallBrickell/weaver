@@ -611,6 +611,52 @@ test('a declared action uses the same Code surface with Pilot supervision', asyn
   }
 });
 
+test('deterministic-only hosts refuse an action model before claiming an attempt', async () => {
+  const home = workerHome();
+  const actionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-deterministic-action-'));
+  let executed = false;
+  const executor: WorkerExecutor = {
+    async execute() {
+      executed = true;
+      return { costUsd: 0 };
+    },
+  };
+  process.env.WEAVER_DETERMINISTIC_ACTIONS_ONLY = '1';
+  try {
+    await createWorkstream({
+      slug: 'worker-deterministic-action', title: 'worker-deterministic-action',
+      objective: 'keep the App key outside model processes', tags: [],
+      successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-deterministic-action', (d) => d.assignments.push({
+      id: 'asg_model_action', objective: 'perform external mutation',
+      briefing: 'This model action must not start.', kind: 'action',
+      acceptanceCriteria: ['no model process'], dependsOn: [], state: 'queued', attempts: [],
+      adoption: { state: 'none' },
+      exec: {
+        cwd: actionDir,
+        verify: 'true',
+        approval: { by: 'human', at: new Date().toISOString() },
+      },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    await assert.rejects(
+      runWorker('worker-deterministic-action', 'asg_model_action', executor),
+      /permits exact engine actions only/,
+    );
+    assert.equal(executed, false);
+    const assignment = (await load('worker-deterministic-action')).assignments[0]!;
+    assert.equal(assignment.state, 'queued');
+    assert.equal(assignment.attempts.length, 0);
+  } finally {
+    delete process.env.WEAVER_DETERMINISTIC_ACTIONS_ONLY;
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(actionDir, { recursive: true, force: true });
+  }
+});
+
 function workerHome(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-worker-capacity-'));
   process.env.WEAVER_HOME = dir;

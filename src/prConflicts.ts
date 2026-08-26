@@ -25,6 +25,7 @@ import { execFileSync } from 'node:child_process';
 
 import { arrive, listWorkstreams, load, newId } from './store.js';
 import { isRepoEgressAction } from './deconflict.js';
+import { githubAppEnvironment } from './githubApp.js';
 
 /** Between provider probes per workstream. PR mergeability changes at merge
  * cadence (minutes to hours), and each probe is one gh call per egressed
@@ -46,15 +47,21 @@ export interface ProbedPr {
 /** Injectable IO seam so the sweep is unit-testable without git/gh. */
 export interface PrConflictIO {
   /** Current branch of the checkout at cwd, or null when unreadable. */
-  branchOf(cwd: string): string | null;
+  branchOf(cwd: string, environment?: Record<string, string>): string | null;
   /** The open PR whose head is `branch`, from the repo cwd belongs to. */
-  openPrForBranch(cwd: string, branch: string): ProbedPr | null;
+  openPrForBranch(cwd: string, branch: string, environment?: Record<string, string>): ProbedPr | null;
 }
 
-function tryRun(bin: string, args: string[], cwd: string): string | null {
+function tryRun(
+  bin: string,
+  args: string[],
+  cwd: string,
+  environment: Record<string, string> = {},
+): string | null {
   try {
     return execFileSync(bin, args, {
       cwd,
+      env: { ...process.env, ...environment },
       encoding: 'utf8',
       timeout: 30_000,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -65,15 +72,16 @@ function tryRun(bin: string, args: string[], cwd: string): string | null {
 }
 
 const liveIO: PrConflictIO = {
-  branchOf(cwd) {
-    const branch = tryRun('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+  branchOf(cwd, environment = {}) {
+    const branch = tryRun('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd, environment);
     return branch && branch !== 'HEAD' ? branch : null;
   },
-  openPrForBranch(cwd, branch) {
+  openPrForBranch(cwd, branch, environment = {}) {
     const json = tryRun(
       'gh',
       ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,headRefOid,mergeable'],
       cwd,
+      environment,
     );
     if (json === null) return null;
     try {
@@ -106,11 +114,12 @@ export async function probeWorkstreamPrConflicts(slug: string, io: PrConflictIO 
   let woken = 0;
   const probedBranches = new Set<string>();
   for (const cwd of cwds) {
-    const branch = io.branchOf(cwd);
+    const githubEnvironment = await githubAppEnvironment(cwd, 'read');
+    const branch = io.branchOf(cwd, githubEnvironment);
     // The trunk is never a PR head this watch should chase.
     if (!branch || branch === 'main' || branch === 'master' || probedBranches.has(branch)) continue;
     probedBranches.add(branch);
-    const pr = io.openPrForBranch(cwd, branch);
+    const pr = io.openPrForBranch(cwd, branch, githubEnvironment);
     if (!pr || pr.mergeable !== 'CONFLICTING') continue;
     const token = prConflictToken(pr.number, pr.headRefOid);
     let added = false;

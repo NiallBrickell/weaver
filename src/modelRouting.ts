@@ -180,6 +180,15 @@ export function actionExecutorName(): string {
   return process.env.WEAVER_ACTION_EXECUTOR ?? 'local-sdk';
 }
 
+/** Hosted credential-bearing controllers use only exact engine actions. A
+ * model process sharing the controller UID could otherwise read the App key. */
+export function deterministicActionsOnly(): boolean {
+  const raw = process.env.WEAVER_DETERMINISTIC_ACTIONS_ONLY;
+  if (raw === undefined || raw === '0') return false;
+  if (raw === '1') return true;
+  throw new Error('WEAVER_DETERMINISTIC_ACTIONS_ONLY must be 0 or 1');
+}
+
 /** Actions never enter the evidence router: they require the executor whose
  * tool calls the operator's Pilot can supervise live. */
 export function actionCapacityTarget(): CapacityTarget {

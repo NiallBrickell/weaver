@@ -24,6 +24,7 @@ const SAFE_GCP_EXECUTION_ENV = [
   'WEAVER_COORDINATOR_EXECUTOR=codex-sdk',
   'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol',
   'WEAVER_ACTION_EXECUTOR=local-sdk',
+  'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
   'WEAVER_PILOT_URL=http://127.0.0.1:9721',
   'WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk,local-sdk',
   '',
@@ -42,14 +43,20 @@ function fixture(
   pilotClientOk = true,
   pilotTokenPresent = true,
   pilotAuthEnabled = true,
+  githubClientOk = true,
+  githubCredentialsPresent = true,
+  personalGithubAuth = false,
+  staticGithubToken = false,
 ): { root: string; env: NodeJS.ProcessEnv } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-gcp-script-'));
   roots.push(root);
   const bin = path.join(root, 'bin');
   const calls = path.join(root, 'calls');
   const codex = path.join(root, 'codex-none');
+  const serviceHome = path.join(root, 'service-home');
   fs.mkdirSync(bin);
   fs.mkdirSync(calls);
+  fs.mkdirSync(serviceHome);
   fs.writeFileSync(
     path.join(bin, 'gcloud'),
     `#!/bin/bash
@@ -64,6 +71,7 @@ cat > "$WEAVER_GCP_TEST_CALLS/$n.stdin"
 if printf '%s\n' "$@" | grep -q 'weaver-gcp-preflight'; then
   WEAVER_GCP_PREFLIGHT_ENV_FILE="$WEAVER_GCP_TEST_PREFLIGHT_ENV" \
   WEAVER_GCP_PREFLIGHT_SERVICE_USER="$WEAVER_GCP_TEST_SERVICE_USER" \
+  WEAVER_GCP_PREFLIGHT_SERVICE_HOME="$WEAVER_GCP_TEST_SERVICE_HOME" \
   WEAVER_GCP_PREFLIGHT_EXECUTOR_SECRETS_FILE="$WEAVER_GCP_TEST_EXECUTOR_SECRETS" \
   WEAVER_GCP_PREFLIGHT_WEAVER_BIN="$WEAVER_GCP_TEST_WEAVER_BIN" \
     bash "$WEAVER_GCP_TEST_CALLS/$n.stdin"
@@ -89,6 +97,29 @@ fi
 set -euo pipefail
 if [ "\${1:-}" = -u ]; then shift 2; fi
 exec "$@"
+`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(bin, 'gh'),
+    `#!/bin/bash
+set -euo pipefail
+[ "\${1:-}" = auth ] && [ "\${2:-}" = status ]
+[ "\${WEAVER_GCP_TEST_PERSONAL_GITHUB_AUTH:-0}" = 1 ]
+`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(bin, 'git'),
+    `#!/bin/bash
+set -euo pipefail
+case "$*" in
+  *'config --get-all credential.helper'*)
+    [ "\${WEAVER_GCP_TEST_GIT_HELPER:-0}" = 1 ] || exit 1
+    printf '%s\n' store
+    ;;
+  *) exit 1 ;;
+esac
 `,
     { mode: 0o755 },
   );
@@ -158,20 +189,43 @@ fi
     weaverProbe,
     `#!/bin/bash
 set -euo pipefail
-[ "$#" -eq 1 ] && [ "$1" = pilot-auth-check ]
-: > "$WEAVER_GCP_TEST_CALLS/pilot-client-probe"
-[ "\${WEAVER_GCP_TEST_PILOT_CLIENT_OK:-0}" = 1 ]
+[ "$#" -eq 1 ]
+case "$1" in
+  pilot-auth-check)
+    : > "$WEAVER_GCP_TEST_CALLS/pilot-client-probe"
+    [ "\${WEAVER_GCP_TEST_PILOT_CLIENT_OK:-0}" = 1 ]
+    ;;
+  github-auth-check)
+    : > "$WEAVER_GCP_TEST_CALLS/github-client-probe"
+    [ "\${WEAVER_GCP_TEST_GITHUB_CLIENT_OK:-0}" = 1 ]
+    ;;
+  *) exit 2 ;;
+esac
 `,
     { mode: 0o755 },
   );
   const preflightEnvFile = path.join(root, 'remote-host-env');
   fs.writeFileSync(preflightEnvFile, preflightEnv);
   const executorSecretsFile = path.join(root, 'executor-secrets.env');
+  const executorSecrets = [
+    ...(pilotTokenPresent ? ['WEAVER_PILOT_TOKEN=test-pilot-token'] : ['OPENROUTER_API_KEY=test-provider-key']),
+    ...(githubCredentialsPresent ? [
+      'WEAVER_GITHUB_APP_ID=12345',
+      'WEAVER_GITHUB_APP_INSTALLATION_ID=67890',
+      'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64=test-base64-key',
+    ] : []),
+    ...(staticGithubToken ? ['GH_TOKEN=forbidden-static-token'] : []),
+    '',
+  ].join('\n');
   fs.writeFileSync(
     executorSecretsFile,
-    pilotTokenPresent ? 'WEAVER_PILOT_TOKEN=test-pilot-token\n' : 'OPENROUTER_API_KEY=test-provider-key\n',
+    executorSecrets,
     { mode: 0o600 },
   );
+  if (personalGithubAuth) {
+    fs.mkdirSync(path.join(serviceHome, '.config', 'gh'), { recursive: true });
+    fs.writeFileSync(path.join(serviceHome, '.config', 'gh', 'hosts.yml'), 'github.com:\n  user: personal\n');
+  }
   const remoteInstaller = path.join(root, 'remote-installer');
   if (staleRemoteInstaller) {
     fs.writeFileSync(remoteInstaller, '#!/bin/bash\ncase "$1" in merge|store) exit 0;; esac\n');
@@ -198,11 +252,14 @@ printf '%s' "$WEAVER_GCP_TEST_REMOTE_ENV"
       WEAVER_GCP_TEST_REMOTE_INSTALLER: remoteInstaller,
       WEAVER_GCP_TEST_PREFLIGHT_ENV: preflightEnvFile,
       WEAVER_GCP_TEST_SERVICE_USER: os.userInfo().username,
+      WEAVER_GCP_TEST_SERVICE_HOME: serviceHome,
       WEAVER_GCP_TEST_DOCKER_OK: dockerOk ? '1' : '0',
       WEAVER_GCP_TEST_PILOT_LISTENER_OK: pilotListenerOk ? '1' : '0',
       WEAVER_GCP_TEST_PILOT_CLIENT_OK: pilotClientOk ? '1' : '0',
       WEAVER_GCP_TEST_PILOT_AUTH_ENABLED: pilotAuthEnabled ? '1' : '0',
       WEAVER_GCP_TEST_PILOT_TOKEN: 'test-pilot-token',
+      WEAVER_GCP_TEST_GITHUB_CLIENT_OK: githubClientOk ? '1' : '0',
+      WEAVER_GCP_TEST_PERSONAL_GITHUB_AUTH: personalGithubAuth ? '1' : '0',
       WEAVER_GCP_TEST_EXECUTOR_SECRETS: executorSecretsFile,
       WEAVER_GCP_TEST_WEAVER_BIN: weaverProbe,
     },
@@ -220,6 +277,10 @@ function run(
   pilotClientOk = true,
   pilotTokenPresent = true,
   pilotAuthEnabled = true,
+  githubClientOk = true,
+  githubCredentialsPresent = true,
+  personalGithubAuth = false,
+  staticGithubToken = false,
 ): { result: SpawnSyncReturns<string>; root: string } {
   const f = fixture(
     remoteEnv,
@@ -230,6 +291,10 @@ function run(
     pilotClientOk,
     pilotTokenPresent,
     pilotAuthEnabled,
+    githubClientOk,
+    githubCredentialsPresent,
+    personalGithubAuth,
+    staticGithubToken,
   );
   const result = spawnSync('bash', [script, ...args], {
     env: f.env,
@@ -237,6 +302,13 @@ function run(
     encoding: 'utf8',
   }) as SpawnSyncReturns<string>;
   return { result, root: f.root };
+}
+
+function startExistingFixture(f: { root: string; env: NodeJS.ProcessEnv }): SpawnSyncReturns<string> {
+  return spawnSync('bash', [script, 'start'], {
+    env: f.env,
+    encoding: 'utf8',
+  }) as SpawnSyncReturns<string>;
 }
 
 function call(root: string, n: number, kind: 'args' | 'stdin'): string {
@@ -427,12 +499,14 @@ test('GCP start runs the containment preflight before systemctl', () => {
   assert.equal(call(root, 1, 'stdin'), fs.readFileSync(gcpPreflight, 'utf8'));
   assert.match(call(root, 1, 'stdin'), /WEAVER_GCP_PREFLIGHT_WEAVER_BIN:-\/usr\/local\/bin\/weaver/);
   assert.match(call(root, 1, 'stdin'), /sudo -u "\$service_user" "\$weaver_binary" pilot-auth-check/);
+  assert.match(call(root, 1, 'stdin'), /"\$weaver_binary" github-auth-check/);
   assert.match(call(root, 1, 'args'), /weaver-gcp-preflight/);
   assert.match(call(root, 1, 'args'), /install -o root -g root -m 755/);
   assert.match(call(root, 1, 'args'), /systemctl enable --now weaver-run/);
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), true);
   assert.equal(fs.existsSync(path.join(root, 'calls', 'pilot-client-probe')), true);
-  assert.match(result.stdout, /workers containerized; action lane authenticated and supervised/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', 'github-client-probe')), true);
+  assert.match(result.stdout, /GitHub machine identity authenticated/);
 });
 
 test('GCP start refuses host-process normal workers before systemctl', () => {
@@ -514,6 +588,90 @@ test('GCP start refuses Pilot with authentication disabled before the client pro
   assert.match(result.stderr, /did not reject an invalid bearer/);
   assert.equal(fs.existsSync(path.join(root, 'calls', 'pilot-client-probe')), false);
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses missing GitHub App credentials before systemctl', () => {
+  const { result, root } = run(
+    ['start'], undefined, '', false, SAFE_GCP_EXECUTION_ENV,
+    true, true, true, true, true, true, false,
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /exactly one WEAVER_GITHUB_APP_ID/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', 'github-client-probe')), false);
+  assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses personal GitHub CLI authentication before systemctl', () => {
+  const { result, root } = run(
+    ['start'], undefined, '', false, SAFE_GCP_EXECUTION_ENV,
+    true, true, true, true, true, true, true, true,
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /personal GitHub CLI authentication is forbidden/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', 'github-client-probe')), false);
+  assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses static GitHub tokens before systemctl', () => {
+  const { result, root } = run(
+    ['start'], undefined, '', false, SAFE_GCP_EXECUTION_ENV,
+    true, true, true, true, true, true, true, false, true,
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /static GitHub tokens are forbidden/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', 'github-client-probe')), false);
+  assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses a failing GitHub App shared-client probe before systemctl', () => {
+  const { result, root } = run(
+    ['start'], undefined, '', false, SAFE_GCP_EXECUTION_ENV,
+    true, true, true, true, true, false,
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /installed Weaver GitHub App authentication probe failed/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', 'github-client-probe')), true);
+  assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses an SSH private key before GitHub authentication', () => {
+  const f = fixture();
+  const ssh = path.join(f.root, 'service-home', '.ssh');
+  fs.mkdirSync(ssh);
+  fs.writeFileSync(path.join(ssh, 'id_ed25519'), '-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n');
+  const result = startExistingFixture(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /personal SSH private keys are forbidden/);
+  assert.equal(fs.existsSync(path.join(f.root, 'calls', 'github-client-probe')), false);
+});
+
+test('GCP start refuses a persistent Git credential helper before GitHub authentication', () => {
+  const f = fixture();
+  f.env.WEAVER_GCP_TEST_GIT_HELPER = '1';
+  const result = startExistingFixture(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /persistent Git credential helpers are forbidden/);
+  assert.equal(fs.existsSync(path.join(f.root, 'calls', 'github-client-probe')), false);
+});
+
+test('GCP start refuses a credential-bearing workspace remote', () => {
+  const f = fixture();
+  const gitDir = path.join(f.root, 'service-home', 'workspaces', 'repo', '.git');
+  fs.mkdirSync(gitDir, { recursive: true });
+  fs.writeFileSync(path.join(gitDir, 'config'), '[remote "origin"]\n\turl = https://x-access-token:secret@github.com/octo/repo.git\n');
+  const result = startExistingFixture(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /workspace remotes must not persist GitHub or SSH credentials/);
+  assert.equal(fs.existsSync(path.join(f.root, 'calls', 'github-client-probe')), false);
+});
+
+test('GCP start refuses a hosted GitHub MCP configuration', () => {
+  const f = fixture();
+  fs.writeFileSync(path.join(f.root, 'service-home', '.mcp.json'), '{"servers":{"github":{"env":{"GITHUB_TOKEN":"static"}}}}\n');
+  const result = startExistingFixture(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /hosted GitHub MCP credentials are forbidden/);
+  assert.equal(fs.existsSync(path.join(f.root, 'calls', 'github-client-probe')), false);
 });
 
 test('GCP start requires every configured coordinator capability without treating it as work', () => {

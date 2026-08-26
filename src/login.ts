@@ -67,6 +67,13 @@ const PROVIDER_KEY_NAMES = [
   'WEAVER_MODEL_API_KEY',
 ] as const;
 
+/** Hosted repository machine identity: executor-only, never general env. */
+const GITHUB_APP_SECRET_NAMES = [
+  'WEAVER_GITHUB_APP_ID',
+  'WEAVER_GITHUB_APP_INSTALLATION_ID',
+  'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64',
+] as const;
+
 /** The model/executor config `login` prompts for and mirrors to remote hosts. */
 const CONFIG_NAMES = [
   'WEAVER_EXECUTOR',
@@ -85,6 +92,7 @@ const OPTIONAL_CONFIG_NAMES = [
   'WEAVER_ASK_MODEL',
   'WEAVER_ACTION_MODEL',
   'WEAVER_ACTION_EXECUTOR',
+  'WEAVER_DETERMINISTIC_ACTIONS_ONLY',
   'WEAVER_RUNNER_EXECUTORS',
   'WEAVER_HOUSE_JSON',
   'WEAVER_WORKSPACE_ROOT',
@@ -234,6 +242,7 @@ function currentConfig(): Record<string, string | undefined> {
     WEAVER_ASK_MODEL: process.env.WEAVER_ASK_MODEL,
     WEAVER_ACTION_MODEL: process.env.WEAVER_ACTION_MODEL,
     WEAVER_ACTION_EXECUTOR: process.env.WEAVER_ACTION_EXECUTOR,
+    WEAVER_DETERMINISTIC_ACTIONS_ONLY: process.env.WEAVER_DETERMINISTIC_ACTIONS_ONLY,
     WEAVER_RUNNER_EXECUTORS: process.env.WEAVER_RUNNER_EXECUTORS,
     WEAVER_HOUSE_JSON: process.env.WEAVER_HOUSE_JSON,
     WEAVER_WORKSPACE_ROOT: process.env.WEAVER_WORKSPACE_ROOT,
@@ -512,7 +521,7 @@ function statusCommand(): void {
     if (value === undefined) continue;
     process.stdout.write(`  ${name.padEnd(37)} ${value}  (${configSource(name)})\n`);
   }
-  const registered = [...CLAUDE_IDENTITY_NAMES, ...PROVIDER_KEY_NAMES, 'WEAVER_SERVE_TOKEN'].filter(
+  const registered = [...CLAUDE_IDENTITY_NAMES, ...PROVIDER_KEY_NAMES, ...GITHUB_APP_SECRET_NAMES, 'WEAVER_SERVE_TOKEN', 'WEAVER_PILOT_TOKEN'].filter(
     (n) => secrets[n],
   );
   process.stdout.write(

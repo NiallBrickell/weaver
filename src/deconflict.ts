@@ -100,10 +100,16 @@ export function detectRepoCollisions(
  * failure (tool missing, not a repo, network down, non-zero exit). The gate
  * fails OPEN on tooling failure (see repoEgressCollisions), so callers treat a
  * null the same as "no data". */
-function tryRun(bin: string, args: string[], cwd: string): string | null {
+function tryRun(
+  bin: string,
+  args: string[],
+  cwd: string,
+  environment: Record<string, string> = {},
+): string | null {
   try {
     return execFileSync(bin, args, {
       cwd,
+      env: { ...process.env, ...environment },
       encoding: 'utf8',
       timeout: 30_000,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -135,8 +141,11 @@ function tryRun(bin: string, args: string[], cwd: string): string | null {
  * KNOWN conflict blocks; the unknown case degrades to today's behaviour rather
  * than to a competing write.
  */
-export async function repoEgressCollisions(cwd: string): Promise<Collision[]> {
-  const branch = tryRun('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+export async function repoEgressCollisions(
+  cwd: string,
+  environment: Record<string, string> = {},
+): Promise<Collision[]> {
+  const branch = tryRun('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd, environment);
   // Detached HEAD (or unreadable) → nothing to deconflict.
   if (!branch || branch === 'HEAD') return [];
 
@@ -144,12 +153,12 @@ export async function repoEgressCollisions(cwd: string): Promise<Collision[]> {
   // falling back to origin/main. Either may be absent in a given checkout.
   let base: string | null = null;
   for (const ref of ['origin/HEAD', 'origin/main']) {
-    base = tryRun('git', ['merge-base', ref, 'HEAD'], cwd);
+    base = tryRun('git', ['merge-base', ref, 'HEAD'], cwd, environment);
     if (base) break;
   }
   if (!base) return [];
 
-  const diff = tryRun('git', ['diff', '--name-only', `${base}...HEAD`], cwd);
+  const diff = tryRun('git', ['diff', '--name-only', `${base}...HEAD`], cwd, environment);
   // No commits ahead of base (empty diff) → nothing of ours to collide.
   if (diff === null) return [];
   const ourFiles = diff.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -159,6 +168,7 @@ export async function repoEgressCollisions(cwd: string): Promise<Collision[]> {
     'gh',
     ['pr', 'list', '--state', 'open', '--json', 'number,headRefName,author,files'],
     cwd,
+    environment,
   );
   if (prsJson === null) return [];
   let openPRs: OpenPr[];
@@ -393,22 +403,23 @@ function normaliseRef(ref: string): string | null {
  * prConflicts.ts's `PrConflictIO`. */
 export interface StrandedPushIO {
   /** Current branch of the checkout at cwd, or null when unreadable. */
-  branchOf(cwd: string): string | null;
+  branchOf(cwd: string, environment?: Record<string, string>): string | null;
   /** Every PR whose head ref is `branch` in the repo cwd belongs to, in ANY
    * state — null when gh could not answer at all. */
-  prsForBranch(cwd: string, branch: string): BranchPr[] | null;
+  prsForBranch(cwd: string, branch: string, environment?: Record<string, string>): BranchPr[] | null;
 }
 
 export const liveStrandedPushIO: StrandedPushIO = {
-  branchOf(cwd) {
-    const branch = tryRun('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+  branchOf(cwd, environment = {}) {
+    const branch = tryRun('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd, environment);
     return branch && branch !== 'HEAD' ? branch : null;
   },
-  prsForBranch(cwd, branch) {
+  prsForBranch(cwd, branch, environment = {}) {
     const json = tryRun(
       'gh',
       ['pr', 'list', '--head', branch, '--state', 'all', '--json', 'state,number'],
       cwd,
+      environment,
     );
     if (json === null) return null;
     try {
@@ -436,13 +447,14 @@ export async function checkStrandedPush(
   cwd: string,
   command: string,
   io: StrandedPushIO = liveStrandedPushIO,
+  environment: Record<string, string> = {},
 ): Promise<StrandedPush> {
   if (!writesCommitsToBranch(command)) return { verdict: 'clear' };
-  const branch = pushTargetBranch(command) ?? io.branchOf(cwd);
+  const branch = pushTargetBranch(command) ?? io.branchOf(cwd, environment);
   if (!branch) {
     return { verdict: 'unknown', reason: `no target branch readable for the egress in ${cwd}` };
   }
-  const prs = io.prsForBranch(cwd, branch);
+  const prs = io.prsForBranch(cwd, branch, environment);
   if (prs === null) {
     return { verdict: 'unknown', reason: `gh could not list PRs for head ${branch} in ${cwd}` };
   }
@@ -476,4 +488,3 @@ export function strandedPushGuidance(v: Extract<StrandedPush, { verdict: 'strand
     `Do not re-push ${v.branch}, and do not reopen #${v.prNumber}.`
   );
 }
-
