@@ -17,6 +17,7 @@ import {
   pickCoordinatorTargetForExecutors,
   runCoordinatorPass,
 } from './coordinator.js';
+import type { CoordinatorExecutor } from './executor/coordinator.js';
 import {
   ExecutionSafetyLimitedError,
   isLegacyDollarBudgetAttention,
@@ -1046,10 +1047,20 @@ export interface TickReport {
 
 export async function tick(
   slug: string,
-  opts: { maxPasses?: number; executorCapabilities?: ReadonlySet<string> } = {},
+  opts: {
+    maxPasses?: number;
+    executorCapabilities?: ReadonlySet<string>;
+    /** Test seam: a stub coordinator executor (real tools, no model). The
+     * production path picks the executor from the pinned target; passing one
+     * here is the same injection runCoordinatorPass already supports, so a
+     * deterministic test can drive a FULL tick — including coordinator
+     * mutations — without a model call. */
+    coordinatorExecutor?: CoordinatorExecutor;
+  } = {},
 ): Promise<TickReport> {
   const maxPasses = opts.maxPasses ?? 3;
   const executorCapabilities = opts.executorCapabilities ?? runnerExecutorCapabilities();
+  const coordinatorExecutor = opts.coordinatorExecutor;
   const report: TickReport = {
     cycles: 0,
     sendsExecuted: 0,
@@ -1066,7 +1077,7 @@ export async function tick(
   try {
     const status = (await load(slug)).workstream.status;
     if (status !== 'active') return { ...report, skipped: `workstream is ${status}` };
-    return await tickLocked(slug, maxPasses, report, executorCapabilities);
+    return await tickLocked(slug, maxPasses, report, executorCapabilities, coordinatorExecutor);
   } finally {
     await releaseTick();
   }
@@ -1077,12 +1088,23 @@ async function tickLocked(
   maxPasses: number,
   report: TickReport,
   executorCapabilities?: ReadonlySet<string>,
+  coordinatorExecutor?: CoordinatorExecutor,
 ): Promise<TickReport> {
 
   cycles: for (let cycle = 0; cycle < 12; cycle++) {
     const cycleStatus = await workstreamStatus(slug);
     if (cycleStatus !== 'active') {
       if (cycleStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+      else {
+        // A conclude inside this tick's own pass flips status to 'done' AFTER
+        // this cycle's delivery step already ran — and a done stream is never
+        // ticked again, so without this the 'finished' notice would strand
+        // forever. Deliver once more before exiting: candidates are re-derived
+        // from durable facts, so this is idempotent and free when nothing is
+        // new. (Proved by the deterministic same-tick notice test in
+        // managedWorkstream.test.ts, which drives a real tick.)
+        await deliverManagerNotices(slug);
+      }
       break;
     }
     report.cycles = cycle + 1;
@@ -1103,6 +1125,7 @@ async function tickLocked(
     const afterEgressStatus = await workstreamStatus(slug);
     if (afterEgressStatus !== 'active') {
       if (afterEgressStatus === 'paused') report.skipped = 'workstream became paused during this tick';
+      else await deliverManagerNotices(slug);
       break;
     }
 
@@ -1336,7 +1359,7 @@ async function tickLocked(
       });
       process.stderr.write(`[tick] coordinator pass (${brief.join('; ').slice(0, 200)})…\n`);
       try {
-        const outcome = await runCoordinatorPass(slug, reasons, undefined, executorCapabilities);
+        const outcome = await runCoordinatorPass(slug, reasons, coordinatorExecutor, executorCapabilities);
         report.passes.push(outcome);
       } catch (e) {
         // The pass never started (lease race or concurrent guard claim): restore the

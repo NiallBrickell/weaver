@@ -594,3 +594,70 @@ describe('human create-under-parent (CLI --under)', () => {
     assert.equal(untouched.workstream.managedBy, undefined);
   });
 });
+
+describe('child conclusion inside a real tick (no manual delivery call)', () => {
+  // The missing end-to-end proof from the consolidated organization plan:
+  // existing tests called deliverManagerNotices directly, while the engine
+  // calls it as one step of a tick. This drives a FULL tick on the child with
+  // a stubbed coordinator executor (no model, real Weaver mutation tools), so
+  // the conclusion is written by the same conclude_workstream path a real
+  // coordinator uses, and the parent notice + wake must arrive without any
+  // test-side delivery call.
+  test('tick(child) concludes via a coordinator pass, persists the parent notice, and wakes the parent', async () => {
+    const { addSteering } = await import('./humanActs.js');
+    await makeWorkstream('tick-mgr');
+    await makeManaged('tick-mgr', 'tick-child');
+
+    // Human-directed closure: legitimate conclusion evidence (a coordinator
+    // decision cannot self-certify).
+    await addSteering('tick-child', 'human-directed close: the objective is met, conclude.');
+    const steeringId = (await load('tick-child')).steering.at(-1)!.id;
+
+    const stub = {
+      // Must match the selected target executor (local-sdk default) or the
+      // pass refuses to start — the stub is the model, not a new substrate.
+      id: 'local-sdk',
+      async execute(req: { tools: { name: string; handler: (args: unknown, extra: unknown) => Promise<unknown> }[] }) {
+        const tool = (name: string) => {
+          const found = req.tools.find((t) => t.name === name);
+          if (!found) throw new Error(`tool ${name} not offered to the coordinator`);
+          return found;
+        };
+        await tool('conclude_workstream').handler(
+          { summary: 'objective met; human directed close', evidence_ids: [steeringId] },
+          {},
+        );
+        await tool('finish_pass').handler({ summary: 'concluded on human direction' }, {});
+        return { costUsd: 0 };
+      },
+    };
+
+    const report = await tick('tick-child', {
+      coordinatorExecutor: stub,
+      executorCapabilities: new Set(['local-sdk']),
+    });
+
+    // The pass ran and completed inside this tick.
+    assert.ok(report.passes.length >= 1);
+    assert.equal(report.passes.at(-1)!.outcome, 'completed');
+    const child = await load('tick-child');
+    assert.equal(child.workstream.status, 'done');
+    assert.ok(child.workstream.conclusion);
+    assert.ok(child.workstream.conclusion!.evidenceIds.includes(steeringId));
+
+    // The parent received the finished notice AND a pending wake — produced
+    // by the tick's own delivery step, never by this test.
+    const mgr = await load('tick-mgr');
+    const notices = mgr.managerNotices ?? [];
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0]!.kind, 'finished');
+    assert.equal(notices[0]!.fromWorkstreamSlug, 'tick-child');
+    assert.equal(notices[0]!.dedupKey, `finished:${child.workstream.conclusion!.passId}`);
+    assert.ok(
+      mgr.wakes.some((w) => w.status === 'pending' && /notice\(s\) received from managed workstream tick-child/.test(w.reason)),
+      'parent has a pending wake for the notice',
+    );
+    // The manager is untouched by the child's model work: no interventions.
+    assert.equal(mgr.spend.humanInterventions, 0);
+  });
+});
