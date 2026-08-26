@@ -8,7 +8,7 @@
  * wake. Its ordinary coding tools are supplied by the execution substrate.
  */
 
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { virtualNow } from './clock.js';
@@ -36,7 +36,16 @@ import {
 } from './modelConfig.js';
 import { deterministicActionsOnly, runnerExecutorCapabilities, workerSeatModelForAssignment } from './modelRouting.js';
 import { loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
-import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, writeArtifact } from './store.js';
+import {
+  arrive,
+  listWorkstreams,
+  load,
+  mutate,
+  newId,
+  readArtifact,
+  RevisionConflictError,
+  writeArtifact,
+} from './store.js';
 import { tailMessage } from './tail.js';
 import {
   assertExecutionStartAllowed,
@@ -46,6 +55,11 @@ import {
 import type { InfrastructureWait, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 import { secureMcpHeaderCredentials, type SecuredMcpConfiguration } from './mcpConfig.js';
 import { pilotFetch, readPilotVerdict } from './pilot.js';
+import {
+  FLEET_ATTENTION_STEWARD_SOURCE_KEY,
+  FLEET_EVIDENCE_FILE,
+  fleetAttentionEvidence,
+} from './fleetHealth.js';
 
 export { workerModel } from './modelConfig.js';
 
@@ -424,7 +438,41 @@ export async function runWorker(
   ) return false;
   const readDirs = asg.readDirs ?? [];
   const isAction = asg.kind === 'action';
-  const workCwd = isAction ? asg.exec!.cwd : (readDirs[0] ?? neutralWorkspace(slug));
+  const isFleetAttentionSteward = !isAction
+    && current.workstream.sourceKey === FLEET_ATTENTION_STEWARD_SOURCE_KEY;
+  // The steward's narrow, generated attention input belongs in Weaver's
+  // neutral workspace, never in a coordinator-named repository. Declared
+  // directories remain additional context rather than becoming write targets.
+  const workCwd = isAction
+    ? asg.exec!.cwd
+    : isFleetAttentionSteward
+      ? neutralWorkspace(slug)
+      : (readDirs[0] ?? neutralWorkspace(slug));
+  const harnessInputs: string[] = [];
+  if (isFleetAttentionSteward) {
+    const fleetDocs: WorkstreamDoc[] = [];
+    const unreadable: string[] = [];
+    for (const fleetSlug of await listWorkstreams()) {
+      try {
+        fleetDocs.push(await load(fleetSlug));
+      } catch {
+        unreadable.push(fleetSlug);
+      }
+    }
+    mkdirSync(workCwd, { recursive: true });
+    const evidencePath = join(workCwd, FLEET_EVIDENCE_FILE);
+    writeFileSync(evidencePath, `${JSON.stringify(fleetAttentionEvidence(fleetDocs, unreadable), null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    chmodSync(evidencePath, 0o600);
+    harnessInputs.push([
+      `## Harness-provided fleet attention evidence`,
+      `Read ${evidencePath} before investigating. It contains only open human asks, approval-service waits, grouped incidents, counts, and source revisions; unrelated Workstream content is deliberately omitted.`,
+      `Cite Workstream slugs, revisions, and entity ids in the result. Treat unreadable Workstreams as an explicit evidence gap.`,
+      `This input grants no authority: your result remains a proposal and cannot approve, resolve, adopt, send, merge, deploy, push, or spend.`,
+    ].join('\n'));
+  }
   // Local Claude and Codex inherit their complete configured MCP surface from
   // their own runtimes. OpenHands and Pi cannot read Claude's host settings, so Weaver
   // explicitly discovers the serializable ~/.claude.json user/local subset
@@ -589,6 +637,7 @@ export async function runWorker(
             .map((n) => `- ${n}`),
         ]
       : []),
+    ...(harnessInputs.length ? [``, ...harnessInputs] : []),
     ...(inputs.length ? [``, `## Declared inputs`, ...inputs] : []),
     ``,
     `## Execution clock (harness-enforced)`,

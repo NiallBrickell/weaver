@@ -390,9 +390,12 @@ time and immediately before every merge.
 - show three bounded claims: shared data, execution observability, and human
   attention, followed by grouped shared-dependency incidents;
 - provision the optional attention steward as an ordinary source-keyed routine
-  Workstream. It audits typed fleet state, repairs reversible causes, and may
-  create bounded repair Workstreams, but it cannot resolve or approve another
-  Workstream's external effect;
+  Workstream. Each worker gets a fresh model-free input scoped to open human
+  asks, approval-service waits, grouped incidents, counts, and source revisions;
+  unrelated objectives, decisions, artifacts, event history, and database
+  credentials stay outside the worker boundary. It repairs reversible causes
+  and may create bounded repair Workstreams, but it cannot resolve or approve
+  another Workstream's external effect;
 - preserve the operator-side delegate skill as a mechanism and doctrine source,
   never as transferable authority. Worker output remains a proposal.
 

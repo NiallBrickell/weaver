@@ -23,6 +23,10 @@ import { virtualNow } from './clock.js';
 import type { InfrastructureWait } from './types.js';
 import type { WorkerExecutionRequest, WorkerExecutor } from './executor/types.js';
 import type { CoordinatorExecutor } from './executor/coordinator.js';
+import {
+  FLEET_ATTENTION_STEWARD_SOURCE_KEY,
+  FLEET_EVIDENCE_FILE,
+} from './fleetHealth.js';
 
 test('worker failure provenance keeps the fatal line after warnings and redacts secrets', () => {
   const reason = workerExceptionReason(
@@ -172,6 +176,78 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(readDir, { recursive: true, force: true });
+  }
+});
+
+test('the fleet steward receives only fresh narrow attention evidence in its neutral workspace', async () => {
+  const home = workerHome();
+  const sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-steward-source-'));
+  const workspaceRoot = path.join(home, 'neutral-workspaces');
+  const previousWorkspaceRoot = process.env.WEAVER_WORKSPACE_ROOT;
+  process.env.WEAVER_WORKSPACE_ROOT = workspaceRoot;
+  let request: WorkerExecutionRequest | undefined;
+  let evidence: Record<string, unknown> | undefined;
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      request = req;
+      assert.ok(req.cwd);
+      const evidencePath = path.join(req.cwd, FLEET_EVIDENCE_FILE);
+      assert.equal(fs.statSync(evidencePath).mode & 0o777, 0o600);
+      evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8')) as Record<string, unknown>;
+      const reply = await req.submit.submitResult({
+        summary: 'Triaged the supplied fleet asks by source revision.',
+        artifact: {
+          title: 'Fleet attention triage', kind: 'report', file_name: 'fleet-attention.md',
+          content: '# Fleet attention triage\n\nThe supplied typed asks were checked by Workstream revision.',
+        },
+      });
+      assert.equal(reply.isError, undefined);
+      return { costUsd: 0 };
+    },
+  };
+
+  try {
+    await createWorkstream({
+      slug: 'fleet-attention-steward', title: 'Fleet attention steward',
+      objective: 'Triage routine fleet asks', sourceKey: FLEET_ATTENTION_STEWARD_SOURCE_KEY,
+      tags: [], successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('fleet-attention-steward', (doc) => doc.assignments.push({
+      id: 'asg_triage', objective: 'Triage open asks', briefing: 'Use only the declared evidence.',
+      kind: 'work', readDirs: [sourceDir], acceptanceCriteria: ['cite source revisions'],
+      dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+    await createWorkstream({
+      slug: 'release-decision', title: 'Sensitive release work',
+      objective: 'DO_NOT_EXPORT_THE_UNRELATED_OBJECTIVE', tags: [], successCriteria: [], constraints: [],
+      autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('release-decision', (doc) => doc.attention.push({
+      id: 'att_release', kind: 'blocker', summary: 'Choose A or B for the release.',
+      status: 'open', createdAt: new Date().toISOString(),
+    }));
+
+    await runWorker('fleet-attention-steward', 'asg_triage', executor);
+
+    assert.ok(request);
+    assert.equal(request.cwd, path.join(workspaceRoot, 'fleet-attention-steward'));
+    assert.notEqual(request.cwd, sourceDir);
+    assert.equal(fs.existsSync(path.join(sourceDir, FLEET_EVIDENCE_FILE)), false);
+    assert.match(request.prompt, /Harness-provided fleet attention evidence/);
+    assert.match(request.prompt, /open human asks, approval-service waits, grouped incidents, counts, and source revisions/);
+    assert.match(request.prompt, /cannot approve, resolve, adopt, send, merge, deploy, push, or spend/);
+    const encoded = JSON.stringify(evidence);
+    assert.match(encoded, /release-decision/);
+    assert.match(encoded, /att_release/);
+    assert.match(encoded, /Choose A or B for the release/);
+    assert.doesNotMatch(encoded, /DO_NOT_EXPORT_THE_UNRELATED_OBJECTIVE|Sensitive release work/);
+  } finally {
+    if (previousWorkspaceRoot === undefined) delete process.env.WEAVER_WORKSPACE_ROOT;
+    else process.env.WEAVER_WORKSPACE_ROOT = previousWorkspaceRoot;
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(sourceDir, { recursive: true, force: true });
   }
 });
 
