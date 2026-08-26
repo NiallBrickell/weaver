@@ -213,6 +213,18 @@ install -o root -g root -m 755 /opt/weaver/bin/weaver-gcp-preflight.sh /usr/loca
 # that same service user to read it widens nothing and keeps ad-hoc CLI honest.
 mkdir -p /etc/weaver
 touch /etc/weaver/env && chown weaver:weaver /etc/weaver/env && chmod 600 /etc/weaver/env
+# Rootless Docker's `host-gateway` resolves to the daemon's inner bridge, not
+# the VM host. The authenticated submission/MCP/provider bridges bind the host
+# interfaces, so install the VM's actual private IPv4 as host-local config.
+# Refresh it on every provision instead of shipping topology from the laptop.
+openhands_host_gateway="$(ip -4 route get 192.0.2.1 | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }')"
+awk -v value="$openhands_host_gateway" 'BEGIN {
+  count = split(value, octets, ".")
+  if (count != 4) exit 1
+  for (i = 1; i <= 4; i++) if (octets[i] !~ /^[0-9]+$/ || octets[i] > 255) exit 1
+}' || { echo 'could not determine the VM private IPv4 for OpenHands bridges' >&2; exit 1; }
+sed -i '\|^WEAVER_OPENHANDS_HOST_GATEWAY_IP=|d' /etc/weaver/env
+printf '%s\n' "WEAVER_OPENHANDS_HOST_GATEWAY_IP=$openhands_host_gateway" >> /etc/weaver/env
 # Older revisions sourced the env as shell syntax. Values such as JSON and
 # tokens are data, not shell, so remove that legacy hook. The wrapper below
 # validates and exports each complete KEY=value line without eval instead.

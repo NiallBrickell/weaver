@@ -17,6 +17,7 @@
 
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { isIPv4 } from 'node:net';
 import { hostname } from 'node:os';
 import { resolve } from 'node:path';
 import { loadExecutorSecrets, redactSecrets } from '../secrets.js';
@@ -40,7 +41,7 @@ export const OPENHANDS_AGENT_SERVER_IMAGE =
   'ghcr.io/openhands/agent-server:1.41.0-python';
 
 const AGENT_SERVER_PORT = '8000/tcp';
-const HARNESS_VERSION = 'openhands-agent-server-1.41.0-weaver.3';
+const HARNESS_VERSION = 'openhands-agent-server-1.41.0-weaver.4';
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENHANDS_TOOL_MODULES = {
   terminal: 'openhands.tools.terminal.definition',
@@ -67,6 +68,12 @@ export type CommandRunner = (
 export interface OpenHandsExecutorOptions {
   apiKey?: string;
   baseUrl?: string;
+  /**
+   * Host-owned IPv4 address reachable from the container bridge. Rootless
+   * Docker's `host-gateway` names its inner bridge rather than the host, so a
+   * hosted runner installs its private interface address explicitly.
+   */
+  hostGatewayIp?: string;
   dockerCommand?: string;
   fetch?: typeof globalThis.fetch;
   runCommand?: CommandRunner;
@@ -134,6 +141,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
 
   private readonly apiKeyOverride: string | undefined;
   private readonly baseUrlOverride: string | undefined;
+  private readonly hostGatewayIp: string | undefined;
   private readonly dockerCommand: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly runCommand: CommandRunner;
@@ -151,6 +159,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
   constructor(options: OpenHandsExecutorOptions = {}) {
     this.apiKeyOverride = options.apiKey;
     this.baseUrlOverride = options.baseUrl;
+    this.hostGatewayIp = options.hostGatewayIp ?? process.env.WEAVER_OPENHANDS_HOST_GATEWAY_IP;
     this.dockerCommand = options.dockerCommand ?? 'docker';
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.runCommand = options.runCommand ?? runCommand;
@@ -307,7 +316,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
           '--publish',
           `127.0.0.1::${AGENT_SERVER_PORT.split('/')[0]}`,
           '--add-host',
-          'host.docker.internal:host-gateway',
+          `host.docker.internal:${this.hostGatewayIp ?? 'host-gateway'}`,
           '--env',
           `SESSION_API_KEY=${sessionApiKey}`,
           '--env',
@@ -517,6 +526,11 @@ export class OpenHandsExecutor implements WorkerExecutor {
   }
 
   private validateRequest(req: WorkerExecutionRequest): void {
+    if (this.hostGatewayIp && !isIPv4(this.hostGatewayIp)) {
+      throw new UnsupportedOpenHandsRequest(
+        'WEAVER_OPENHANDS_HOST_GATEWAY_IP must be one IPv4 address owned by the execution host',
+      );
+    }
     if (req.supervise) {
       throw new UnsupportedOpenHandsRequest(
         'OpenHands executor does not support action-worker supervision',
