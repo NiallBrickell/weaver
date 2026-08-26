@@ -150,6 +150,20 @@ function cleanResult(
 }
 
 describe('reviewed worker routes', () => {
+  test('no checked-in route binds to general — the fallback stays unrouted', () => {
+    // A route matching `general` would match every unmatched assignment in
+    // the fleet, which no eval cohort can justify. Routing code would accept
+    // it (routeMatches checks membership only), so the registry auditor is
+    // the enforcement site — see docs/execution-profiles.md.
+    for (const route of WORK_MODEL_ROUTES) {
+      assert.ok(
+        !route.match.profiles.includes('general'),
+        `route ${route.id} must not match 'general'`,
+      );
+      assert.ok(route.match.profiles.length > 0, `route ${route.id} must declare a profile`);
+    }
+  });
+
   test('the active bounded repair route is ordered ahead of the configured fallback', () => {
     const previousExecutor = process.env.WEAVER_EXECUTOR;
     const previousModel = process.env.WEAVER_WORKER_MODEL;

@@ -8,9 +8,12 @@ made two of the four values look like dead machinery. This note is the fix.*
 ## The decision
 
 Keep the mechanism and all four values, and document what they actually are:
-**the closed routing key an assignment declares — the join between what
-harness evals can prove and what intended work can carry durably.** Nothing
-about routing behavior changes.
+**the closed routing key an assignment declares — the reviewed registry match
+between what harness evals can prove and what intended work can carry
+durably.** Nothing about routing behavior changes. The binding is a
+reviewed declaration in the registry, not a typed schema join: eval rows
+carry case ids and gates, not assignment profiles — the registry declares
+which profile a route serves.
 
 ## What a profile is, and is not
 
@@ -23,14 +26,16 @@ coordinator wrote.
 
 It is deliberately **not**:
 
-- **A persona or subagent definition.** There is no `Agent` record in the
-  schema; a "security agent" or "implementer agent" in the operator's mental
-  model is a security-shaped or implementation-shaped *assignment*, and the
-  profile is part of how that shape is declared. Reusable worker definitions
-  were absorbed into typed requirements plus reviewed routes, and that is
-  the better shape: capability requirements survive worker replacement
-  (kernel rule 1), while a named persona would invite identity where there
-  should only be intended work.
+- **A persona or subagent definition.** Weaver has never persisted a portable
+  Agent catalogue, and profiles do not create one — a "security agent" or
+  "implementer agent" in the operator's mental model is a security-shaped or
+  implementation-shaped *assignment*, and the profile is part of how that
+  shape is declared. Whether a reusable named specialist definition is ever
+  earned is held behind its own acceptance trigger
+  ([cross-harness-agent-organization-plan.md](./cross-harness-agent-organization-plan.md));
+  capability requirements survive worker replacement (kernel rule 1), while a
+  named persona would invite identity where there should only be intended
+  work.
 - **A model or provider choice.** The coordinator never names a model. The
   operator's config and the reviewed registry answer a declared requirement;
   the exact target is pinned per disposable attempt, never on intended work.

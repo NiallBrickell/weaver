@@ -65,7 +65,8 @@ export type AssignmentKind = 'work' | 'action';
  * needs from briefing prose. A value with no reviewed route today (see
  * docs/execution-profiles.md) is forward-declared route scope: routes bind to
  * exactly this declaration when an eval cohort earns one, so history carries
- * the scope. `general` is the unrouted fallback and never carries a route. */
+ * the scope. No route binds to `general` — a registry convention the
+ * registry auditor test enforces (routing code itself would accept it). */
 export type AssignmentExecutionProfile =
   | 'general'
   | 'bounded-code-repair'
