@@ -86,6 +86,40 @@ export async function createManagedWorkstream(callingSlug: string, args: CreateM
   return load(args.slug);
 }
 
+/**
+ * Human composition path: create a Workstream under an existing parent.
+ * Same semantics and same shared creation path as the coordinator's
+ * `create_workstream` tool — the only differences are WHO is creating and the
+ * preconditions, which are deliberately stricter for a human because a typo'd
+ * parent is a clean user error, not a model retry:
+ *
+ * - the parent must exist and be `active` (a paused or concluded parent is
+ *   refused — its passes are not running to manage anything);
+ * - the child's fields are exactly what was passed: no decisions, policies,
+ *   capabilities, or authority inherit implicitly from the parent;
+ * - the parent pointer is written once at creation; there is no reparenting
+ *   operation anywhere (an existing slug simply fails at the store write);
+ * - retries stay idempotent through `sourceKey` exactly like every other
+ *   creation path.
+ */
+export async function createWorkstreamUnderParent(
+  parentSlug: string,
+  args: CreateManagedWorkstreamArgs,
+): Promise<WorkstreamDoc> {
+  let parent: WorkstreamDoc;
+  try {
+    parent = await load(parentSlug);
+  } catch {
+    throw new ManagedWorkstreamError(`no workstream '${parentSlug}' to create under — check the slug`);
+  }
+  if (parent.workstream.status !== 'active') {
+    throw new ManagedWorkstreamError(
+      `cannot create under '${parentSlug}': it is ${parent.workstream.status}, not active — a non-active parent runs no passes to manage the new work`,
+    );
+  }
+  return createManagedWorkstream(parentSlug, args);
+}
+
 export interface ManagedWorkstreamSummary {
   slug: string;
   title: string;
