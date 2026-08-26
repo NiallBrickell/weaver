@@ -200,11 +200,10 @@ secure_pilot_boundary() {
   pilot_pid="$(systemctl show --property=MainPID --value weaver-pilot.service 2>/dev/null)"
   case "$pilot_pid" in ''|0|*[!0-9]*) fail 'weaver-pilot.service has no live main process' ;; esac
 
-  # ExecStartPre inherits User=weaver from the runner unit. Linux may hide a
-  # different service user's PID metadata from that account even though the
-  # socket itself is visible; inspect through the already-required narrow sudo
-  # boundary so the ownership assertion sees the same facts as provisioning.
-  pilot_listeners="$(sudo ss -H -ltnp 'sport = :9721' 2>/dev/null)" || \
+  # The runner unit uses systemd's `+` ExecStartPre prefix so this root-owned
+  # gate can see the other service's PID metadata. The runner process itself
+  # still starts as the unprivileged `weaver` account.
+  pilot_listeners="$(ss -H -ltnp 'sport = :9721' 2>/dev/null)" || \
     fail 'could not inspect the Pilot listener'
   listener_count="$(printf '%s\n' "$pilot_listeners" | awk 'NF { count++ } END { print count + 0 }')"
   listener_address="$(printf '%s\n' "$pilot_listeners" | awk 'NF { print $4 }')"

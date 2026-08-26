@@ -274,7 +274,7 @@ Wants=network-online.target user@$weaver_uid.service
 User=weaver
 Environment=DOCKER_HOST=unix:///run/user/$weaver_uid/docker.sock
 WorkingDirectory=/opt/weaver
-ExecStartPre=/usr/local/sbin/weaver-gcp-preflight
+ExecStartPre=+/usr/local/sbin/weaver-gcp-preflight
 ExecStart=/usr/local/bin/weaver run --interval 5 --concurrency $WEAVER_GCP_CONCURRENCY
 Restart=always
 RestartSec=10

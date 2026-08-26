@@ -550,7 +550,8 @@ test('GCP start runs the containment preflight before systemctl', () => {
   assert.equal(call(root, 1, 'stdin'), fs.readFileSync(gcpPreflight, 'utf8'));
   assert.match(call(root, 1, 'stdin'), /WEAVER_GCP_PREFLIGHT_WEAVER_BIN:-\/usr\/local\/bin\/weaver/);
   assert.match(call(root, 1, 'stdin'), /sudo -u "\$service_user" "\$weaver_binary" pilot-auth-check/);
-  assert.match(call(root, 1, 'stdin'), /sudo ss -H -ltnp 'sport = :9721'/);
+  assert.match(call(root, 1, 'stdin'), /ss -H -ltnp 'sport = :9721'/);
+  assert.doesNotMatch(call(root, 1, 'stdin'), /sudo ss/);
   assert.match(call(root, 1, 'stdin'), /"\$weaver_binary" github-auth-check/);
   assert.match(call(root, 1, 'args'), /weaver-gcp-preflight/);
   assert.match(call(root, 1, 'args'), /install -o root -g root -m 755/);
@@ -801,7 +802,7 @@ test('external-store provisioning selects execution-only mode and never starts s
   assert.match(call(root, count, 'stdin'), /run --interval 5 --concurrency \$WEAVER_GCP_CONCURRENCY/);
   assert.match(call(root, count, 'stdin'), /dockerd-rootless-setuptool\.sh install --force/);
   assert.match(call(root, count, 'stdin'), /DOCKER_HOST=unix:\/\/\/run\/user\/\$weaver_uid\/docker\.sock/);
-  assert.match(call(root, count, 'stdin'), /ExecStartPre=\/usr\/local\/sbin\/weaver-gcp-preflight/);
+  assert.match(call(root, count, 'stdin'), /ExecStartPre=\+\/usr\/local\/sbin\/weaver-gcp-preflight/);
   assert.match(call(root, count, 'stdin'), /install -o root -g root -m 755 \/opt\/weaver\/bin\/weaver-gcp-preflight\.sh/);
   assert.doesNotMatch(call(root, count, 'stdin'), /usermod -aG docker/);
   assert.doesNotMatch(call(root, count, 'stdin'), /SupplementaryGroups=docker/);
