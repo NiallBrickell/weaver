@@ -34,7 +34,7 @@ import {
   workerExecutorName,
   type CapacityTarget,
 } from './modelConfig.js';
-import { runnerExecutorCapabilities, workerSeatModelForAssignment } from './modelRouting.js';
+import { deterministicActionsOnly, runnerExecutorCapabilities, workerSeatModelForAssignment } from './modelRouting.js';
 import { loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
 import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, writeArtifact } from './store.js';
 import { tailMessage } from './tail.js';
@@ -364,6 +364,9 @@ export async function runWorker(
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg) throw new Error(`no assignment ${assignmentId}`);
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
+  if (asg.kind === 'action' && deterministicActionsOnly()) {
+    throw new Error(`${assignmentId} is a model-driven action, but this host permits exact engine actions only`);
+  }
   // Requirements choose one exact target before state moves. An explicitly
   // injected executor (the eval harness and deterministic tests) remains an
   // explicit target rather than being silently re-routed — but the seat's
@@ -477,7 +480,7 @@ export async function runWorker(
   const secrets = isAction ? loadSecrets(slug) : {};
   // Ephemeral MCP header credentials join the redaction set: they ride the
   // executor's env, never durable state — whatever substrate ran the loop.
-  const redactionSecrets = { ...loadRedactionSecrets(slug), ...operatorMcp.env };
+  const redactionSecrets = { ...loadRedactionSecrets(slug), ...secrets, ...operatorMcp.env };
 
   // The Weaver submission surface stays in the harness: whatever substrate
   // runs the model loop, only these closures can propose a submission through

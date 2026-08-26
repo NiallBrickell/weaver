@@ -11,6 +11,7 @@ set -euo pipefail
 
 env_file="${WEAVER_GCP_PREFLIGHT_ENV_FILE:-/etc/weaver/env}"
 service_user="${WEAVER_GCP_PREFLIGHT_SERVICE_USER:-weaver}"
+service_home="${WEAVER_GCP_PREFLIGHT_SERVICE_HOME:-/home/$service_user}"
 executor_secrets_file="${WEAVER_GCP_PREFLIGHT_EXECUTOR_SECRETS_FILE:-/home/weaver/state/executor-secrets.env}"
 weaver_binary="${WEAVER_GCP_PREFLIGHT_WEAVER_BIN:-/usr/local/bin/weaver}"
 
@@ -20,6 +21,8 @@ fail() {
 }
 
 [ -r "$env_file" ] || fail 'host env is missing or unreadable'
+id "$service_user" >/dev/null 2>&1 || fail 'Weaver service user does not exist'
+[ -d "$service_home" ] || fail 'Weaver service home does not exist'
 
 # Read raw KEY=value records as data. Never source/eval the credential-bearing
 # file, and never print a value while reporting a configuration failure.
@@ -108,6 +111,9 @@ fi
 action_executor="$(env_value WEAVER_ACTION_EXECUTOR)"
 [ -n "$action_executor" ] || action_executor=local-sdk
 [ "$action_executor" = local-sdk ] || fail 'WEAVER_ACTION_EXECUTOR must remain local-sdk; this host deliberately does not claim it'
+deterministic_actions_only="$(env_value WEAVER_DETERMINISTIC_ACTIONS_ONLY)"
+[ "$deterministic_actions_only" = 1 ] || \
+  fail 'WEAVER_DETERMINISTIC_ACTIONS_ONLY must be 1 on this credential-bearing host'
 
 runner_caps="$(env_value WEAVER_RUNNER_EXECUTORS)"
 [ -n "$runner_caps" ] || fail 'WEAVER_RUNNER_EXECUTORS must be explicit on this host'
@@ -195,10 +201,92 @@ if capability_has local-sdk; then
     fail 'installed Weaver Pilot authentication probe failed'
 fi
 
-id "$service_user" >/dev/null 2>&1 || fail 'Weaver service user does not exist'
+secure_github_app_boundary() {
+  local key count value state_root credential_file workspace_root config_file
+
+  [ -r "$executor_secrets_file" ] || fail 'executor secret store is missing or unreadable'
+  for key in \
+    WEAVER_GITHUB_APP_ID \
+    WEAVER_GITHUB_APP_INSTALLATION_ID \
+    WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64
+  do
+    count="$(awk -v key="$key" 'index($0, key "=") == 1 { count++ } END { print count + 0 }' "$executor_secrets_file")"
+    [ "$count" -eq 1 ] || fail "executor secret store must contain exactly one $key"
+    value="$(awk -v key="$key" 'index($0, key "=") == 1 { print substr($0, length(key) + 2) }' "$executor_secrets_file")"
+    [ -n "$value" ] || fail "$key must be nonempty"
+    unset value
+  done
+
+  [ ! -s "$service_home/.config/gh/hosts.yml" ] || \
+    fail 'personal GitHub CLI authentication is forbidden on this host'
+  [ ! -s "$service_home/.git-credentials" ] || \
+    fail 'persistent Git credential files are forbidden on this host'
+  if sudo -u "$service_user" env HOME="$service_home" git -C "$service_home" config --get-all credential.helper 2>/dev/null \
+    | awk 'NF { found=1 } END { exit found ? 0 : 1 }'; then
+    fail 'persistent Git credential helpers are forbidden on this host'
+  fi
+  if [ -d "$service_home/.ssh" ]; then
+    while IFS= read -r credential_file; do
+      if grep -Eq 'BEGIN ([A-Z0-9]+ )?PRIVATE KEY' "$credential_file" 2>/dev/null; then
+        fail 'personal SSH private keys are forbidden on this host'
+      fi
+    done < <(find "$service_home/.ssh" -maxdepth 1 -type f -print 2>/dev/null)
+  fi
+  command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is missing'
+  if sudo -u "$service_user" env -u GH_TOKEN -u GITHUB_TOKEN HOME="$service_home" gh auth status >/dev/null 2>&1; then
+    fail 'personal GitHub CLI authentication is forbidden on this host'
+  fi
+
+  for credential_file in "$env_file" "$executor_secrets_file"; do
+    if awk 'BEGIN { found=0 } /^(GH_TOKEN|GITHUB_TOKEN)=./ { found=1 } END { exit found ? 0 : 1 }' "$credential_file"; then
+      fail 'static GitHub tokens are forbidden in hosted secret files'
+    fi
+  done
+  state_root="$(dirname "$executor_secrets_file")"
+  while IFS= read -r credential_file; do
+    if awk 'BEGIN { found=0 } /^(GH_TOKEN|GITHUB_TOKEN)=./ { found=1 } END { exit found ? 0 : 1 }' "$credential_file"; then
+      fail 'static GitHub tokens are forbidden in hosted secret files'
+    fi
+  done < <(find "$state_root" -type f -name 'secrets.env' -print 2>/dev/null)
+
+  for config_file in "$service_home/.claude.json" "$service_home/.mcp.json"; do
+    if [ -s "$config_file" ] && grep -Eqi 'github|GH_TOKEN|GITHUB_TOKEN' "$config_file"; then
+      fail 'hosted GitHub MCP credentials are forbidden'
+    fi
+  done
+  if [ -d "$service_home/.claude" ]; then
+    while IFS= read -r config_file; do
+      if grep -Eqi 'github|GH_TOKEN|GITHUB_TOKEN' "$config_file"; then
+        fail 'hosted GitHub MCP credentials are forbidden'
+      fi
+    done < <(find "$service_home/.claude" -type f -name '*.json' -print 2>/dev/null)
+  fi
+
+  workspace_root="$(env_value WEAVER_WORKSPACE_ROOT)"
+  [ -n "$workspace_root" ] || workspace_root="$service_home/workspaces"
+  if [ -d "$workspace_root" ]; then
+    while IFS= read -r config_file; do
+      if grep -Eqi '^[[:space:]]*url[[:space:]]*=.*(x-access-token|https?://[^/@[:space:]]+:[^/@[:space:]]+@|git@github\.com|ssh://)' "$config_file"; then
+        fail 'workspace remotes must not persist GitHub or SSH credentials'
+      fi
+    done < <(find "$workspace_root" -path '*/.git/config' -type f -print 2>/dev/null)
+    while IFS= read -r config_file; do
+      if grep -Eqi 'github|GH_TOKEN|GITHUB_TOKEN' "$config_file"; then
+        fail 'hosted GitHub MCP credentials are forbidden'
+      fi
+    done < <(find "$workspace_root" -type f \( -name '.mcp.json' -o -path '*/.claude/*.json' \) -print 2>/dev/null)
+  fi
+
+  [ -x "$weaver_binary" ] || fail 'installed Weaver client is missing or not executable'
+  sudo -u "$service_user" env HOME="$service_home" "$weaver_binary" github-auth-check >/dev/null || \
+    fail 'installed Weaver GitHub App authentication probe failed'
+}
+
+secure_github_app_boundary
+
 service_uid="$(id -u "$service_user")"
 docker_host="unix:///run/user/$service_uid/docker.sock"
 sudo -u "$service_user" env DOCKER_HOST="$docker_host" docker info >/dev/null 2>&1 || \
   fail 'rootless Docker is not accessible to the Weaver service user'
 
-echo '✓ GCP execution preflight passed (workers containerized; action lane authenticated and supervised)'
+echo '✓ GCP execution preflight passed (workers containerized; action lane supervised; GitHub machine identity authenticated)'

@@ -4,6 +4,7 @@ import type { Assignment } from './types.js';
 import type { EvalCaseResult } from './evals/types.js';
 import { defaultLedgerPath, loadLedger } from './evals/ledger.js';
 import {
+  deterministicActionsOnly,
   runnerExecutorCapabilities,
   workerTargetForAssignment,
   workerTargetsForAssignment,
@@ -59,6 +60,23 @@ const TEST_ROUTE: WorkModelRoute = {
     minRuns: 3,
   },
 };
+
+test('deterministic-only action mode is explicit and fails closed on malformed config', () => {
+  const previous = process.env.WEAVER_DETERMINISTIC_ACTIONS_ONLY;
+  try {
+    delete process.env.WEAVER_DETERMINISTIC_ACTIONS_ONLY;
+    assert.equal(deterministicActionsOnly(), false);
+    process.env.WEAVER_DETERMINISTIC_ACTIONS_ONLY = '0';
+    assert.equal(deterministicActionsOnly(), false);
+    process.env.WEAVER_DETERMINISTIC_ACTIONS_ONLY = '1';
+    assert.equal(deterministicActionsOnly(), true);
+    process.env.WEAVER_DETERMINISTIC_ACTIONS_ONLY = 'yes';
+    assert.throws(() => deterministicActionsOnly(), /must be 0 or 1/);
+  } finally {
+    if (previous === undefined) delete process.env.WEAVER_DETERMINISTIC_ACTIONS_ONLY;
+    else process.env.WEAVER_DETERMINISTIC_ACTIONS_ONLY = previous;
+  }
+});
 
 const ACTIVE_CODEX_ROUTE = WORK_MODEL_ROUTES.find(
   (route) => route.id === 'codex-5-6-sol-bounded-code-repair',

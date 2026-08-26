@@ -64,7 +64,12 @@ identity) and the machine's own login applies again.
 
 ## Operator access
 
-An approved action acts *as you, on your machine* — so it gets what you have:
+On an operator-controlled laptop, an approved action uses the machine's
+existing CLIs and MCP identity. A hosted runner must use machine principals
+instead: GitHub repo egress uses a [dedicated GitHub App](./github-app.md), not
+a copied personal `gh` session or PAT.
+
+On the operator-controlled path an action gets what you have:
 
 - **Your CLIs**: real Bash in the approved working directory; `gh`, `git`, `sentry-cli`, whatever is on your PATH.
 - **Your MCP servers**: workers inherit the MCP servers you've registered for the directories the action touches, with the same stored auth your own sessions use. No re-plumbing access that already exists.
