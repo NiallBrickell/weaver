@@ -550,6 +550,7 @@ test('GCP start runs the containment preflight before systemctl', () => {
   assert.equal(call(root, 1, 'stdin'), fs.readFileSync(gcpPreflight, 'utf8'));
   assert.match(call(root, 1, 'stdin'), /WEAVER_GCP_PREFLIGHT_WEAVER_BIN:-\/usr\/local\/bin\/weaver/);
   assert.match(call(root, 1, 'stdin'), /sudo -u "\$service_user" "\$weaver_binary" pilot-auth-check/);
+  assert.match(call(root, 1, 'stdin'), /sudo ss -H -ltnp 'sport = :9721'/);
   assert.match(call(root, 1, 'stdin'), /"\$weaver_binary" github-auth-check/);
   assert.match(call(root, 1, 'args'), /weaver-gcp-preflight/);
   assert.match(call(root, 1, 'args'), /install -o root -g root -m 755/);
