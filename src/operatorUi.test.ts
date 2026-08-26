@@ -209,7 +209,8 @@ test('board, new-work, and workspace pages are live typed views with secure head
   assert.match(board.headers.get('content-security-policy') ?? '', /connect-src 'self'/);
   assert.equal(board.headers.get('strict-transport-security'), 'max-age=31536000');
   const boardHtml = await board.text();
-  assert.match(boardHtml, /New work/);
+  assert.match(boardHtml, /New job/);
+  assert.match(boardHtml, /Local fleet · this machine/);
   assert.match(boardHtml, /Find and fix the broken customer carousel/);
 
   const newWork = await fetch(`${base}/new`);
@@ -222,10 +223,10 @@ test('board, new-work, and workspace pages are live typed views with secure head
   assert.equal(workspace.status, 200);
   const html = await workspace.text();
   assert.match(html, /Repair the carousel producer/);
-  assert.match(html, /Add information/);
-  assert.match(html, /Since you left/);
-  assert.match(html, /Needs you/);
-  assert.match(html, /Why/);
+  assert.match(html, /Add context or answer a question/);
+  assert.match(html, /Recent updates/);
+  assert.match(html, /Technical details and full history/);
+  assert.doesNotMatch(html, /Work and deliverables|workspace-inspector|five-question-position/);
   assert.doesNotMatch(html, /WEAVER_SERVE_TOKEN|WEAVER_UI_TOKEN/);
   assert.doesNotMatch(html, /DISPOSABLE_PASS_SUMMARY|DISPOSABLE_SESSION/);
 
@@ -276,6 +277,55 @@ test('the evidenced answer and integrity-checked artifacts are prominent and dow
   assert.equal(tampered.status, 409);
 });
 
+test('one long attention item becomes one concise decision card instead of repeated status walls', async () => {
+  const created = await createTeamWorkstream({
+    message: 'Resolve the release blocker safely.', requestId: 'decision-card-request', actor: 'alice',
+  });
+  const summary = [
+    'DECISION NEEDED: Choose how this release should proceed.',
+    'Reply with one of:',
+    '(A) Continue on the existing test evidence.',
+    '(B) Ask a named reviewer to inspect it first.',
+    '(C) Add the missing automated review and wait for it.',
+    'WHY IT IS STUCK. This exact sentence belongs only in the collapsed full context.',
+  ].join(' ');
+  await arrive(created.slug, (doc, event) => {
+    const now = new Date().toISOString();
+    doc.attention.push({
+      id: newId('att'), kind: 'blocker', summary, status: 'open', createdAt: now,
+    });
+    doc.wakes.push({
+      id: newId('wake'), condition: { type: 'immediate' }, status: 'pending',
+      reason: summary, createdAt: now,
+    });
+    doc.assignments.push({
+      id: newId('asg'), objective: 'Fix the release blocker at its producer', briefing: 'Use deterministic evidence.',
+      kind: 'work', acceptanceCriteria: ['The blocker is fixed'], dependsOn: [], state: 'completed',
+      attempts: [{ runId: newId('run'), startedAt: now, endedAt: now }],
+      submission: { summary: 'The producer now selects the correct route.' },
+      adoption: { state: 'accepted', passId: 'pass_test', at: now }, createdAtVirtual: now,
+    });
+    event('attention.opened', 'release decision requested');
+  });
+
+  const workspace = await fetch(`${base}/workstreams/${created.slug}`);
+  const html = await workspace.text();
+  assert.equal((html.match(/data-testid="decision-needed"/g) ?? []).length, 1);
+  assert.match(html, /Choose how this release should proceed/);
+  assert.match(html, /data-testid="decision-choices"/);
+  assert.match(html, />A<.*Continue on the existing test evidence/s);
+  assert.match(html, />B<.*Ask a named reviewer/s);
+  assert.match(html, />C<.*Add the missing automated review/s);
+  assert.match(html, /Results.*Accepted work.*The producer now selects the correct route/s);
+  assert.equal((html.match(/This exact sentence belongs only in the collapsed full context/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /data-testid="current-state"|five-question-position|workspace-inspector/);
+
+  const board = await fetch(`${base}/board`);
+  const boardHtml = await board.text();
+  assert.match(boardHtml, /Needs you/);
+  assert.match(boardHtml, /1 job/);
+});
+
 test('non-loopback binding requires Basic auth and attributes requests to its username', async () => {
   await assert.rejects(startOperatorUi({ host: '0.0.0.0' }), /WEAVER_UI_TOKEN is required/);
   await running!.close();
@@ -296,7 +346,7 @@ test('non-loopback binding requires Basic auth and attributes requests to its us
   assert.equal(doc.observations[0]!.source, 'operator-ui:sales-alice');
 });
 
-test('a shared-Postgres UI does not call an unobservable remote runner offline', async () => {
+test('a shared-Postgres UI labels remote execution as normal deployment context', async () => {
   // Pin this test server to the already-selected temporary fs store, then
   // present the deployment shape to the view logic. Runner heartbeat is a
   // machine-local fact even though Workstream state is shared in Postgres.
@@ -307,12 +357,37 @@ test('a shared-Postgres UI does not call an unobservable remote runner offline',
     const response = await fetch(`${base}/board`);
     assert.equal(response.status, 200);
     const html = await response.text();
-    assert.match(html, /Remote runner liveness is not observable here/);
+    assert.match(html, /Shared fleet · execution on another host/);
+    assert.match(html, /Shared fleet is connected/);
+    assert.match(html, /Runner activity happens on another host and is not measured by this page/);
     assert.doesNotMatch(html, /Runner is offline/);
   } finally {
     if (previous === undefined) delete process.env.WEAVER_STORE;
     else process.env.WEAVER_STORE = previous;
   }
+});
+
+test('a directly opened older completed job stays visible above the folded sidebar history', async () => {
+  const slugs: string[] = [];
+  for (let index = 0; index < 9; index += 1) {
+    const created = await createTeamWorkstream({
+      message: `Complete archived outcome ${index}.`, requestId: `done-sidebar-${index}`, actor: 'alice',
+    });
+    slugs.push(created.slug);
+    await arrive(created.slug, (doc, event) => {
+      const at = `2026-01-${String(index + 1).padStart(2, '0')}T12:00:00.000Z`;
+      doc.workstream.status = 'done';
+      doc.workstream.conclusion = { summary: `Archived outcome ${index} completed.`, evidenceIds: [], atVirtual: at, passId: `pass_done_${index}` };
+      event('workstream.concluded', `archived outcome ${index} concluded`);
+    });
+  }
+
+  const response = await fetch(`${base}/workstreams/${slugs[0]}`);
+  const html = await response.text();
+  const selected = html.indexOf(`data-testid="workstream-sidebar-item-${slugs[0]}"`);
+  const folded = html.indexOf('<details class="mt-1 rounded-lg border border-zinc-900', selected);
+  assert.ok(selected >= 0, 'the selected completed job is rendered');
+  assert.ok(folded > selected, 'the selected job is visible before the folded older list');
 });
 
 test('intake with a parent creates under it through the shared path, and a bad parent is a clean error', async () => {
@@ -373,7 +448,7 @@ test('the live view renders composition relationships, parent selection, and ass
   const workspace = await fetch(`${base}/workstreams/${child.slug}`);
   const childHtml = await workspace.text();
   assert.match(childHtml, /workspace-managed-by/);
-  assert.match(childHtml, new RegExp(`managed by.*${parent.slug}`));
+  assert.match(childHtml, new RegExp(`part of.*${parent.slug}`));
   assert.match(childHtml, /zero-downtime cutover/);
   assert.match(childHtml, /1 disposable attempt/);
 
