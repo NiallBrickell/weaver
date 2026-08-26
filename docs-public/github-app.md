@@ -25,11 +25,17 @@ repository permissions:
 - Workflows: write
 - Metadata: read (GitHub adds this permission)
 
-Install the App with **Only select repositories**, and select only the
-repositories this Weaver fleet may manage. Contents write is what permits a
-reviewed branch push; Workflows write is needed only because a legitimate code
-change may touch `.github/workflows`. The installation selection is the hard
-repository ceiling even when an approved action receives a write token.
+For an organization-wide Weaver fleet, install the App with **All
+repositories** so existing and future repositories can enter Workstreams
+without an App settings change. If a fleet has a deliberately narrower
+charter, use **Only select repositories** and select that subset instead.
+Installation defines the fleet's maximum repository estate; it never grants an
+individual run access across that estate. Every operation still mints a token
+for the one exact owner/repository resolved from the assignment checkout, and
+Weaver rejects the token unless GitHub confirms that exact repository.
+
+Contents write is what permits a reviewed branch push; Workflows write is
+needed only because a legitimate code change may touch `.github/workflows`.
 
 Download one private key and record the App ID and installation ID. Register
 them in executor-only scope; never put them in `.env`, workstream state, a
