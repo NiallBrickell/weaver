@@ -44,7 +44,7 @@ home.
 
 Linear's transferable interaction pattern is the same narrow one: stable card
 identity, filters, and a detail view that does not lose the board position.
-None of these references changes Weaver's four identities or authority model.
+None of these references changes Weaver's identities or authority model.
 
 ## Root failure
 

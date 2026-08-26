@@ -8,17 +8,19 @@ This is not sub-tasking. The managed stream isn't a step inside the manager's pl
 
 ## Flat, not a tree
 
-`managedBy` is a single pointer, set once at creation. There is no chain-walking anywhere in Weaver:
+"Flat" is a statement about **semantics, not nesting**: links may compose, but no edge ever widens what another edge can see or do. `managedBy` is a single pointer, set once at creation, and Weaver never resolves a chain:
 
 - A manager sees its **direct** children only (`weaver status` shows `Manages: N workstream(s): ...`), never grandchildren.
 - A managed stream sees its **own** manager only (`Managed by: <slug>`), never its manager's manager.
-- `weaver watch`, `weaver inspect`, and `weaver status` all render this as one-line badges, never a tree or an expanded graph.
+- `weaver watch`, `weaver inspect`, and `weaver status` render direct relationships as badges; the terminal board may indent a manager's children under it, but that is a read-only projection of direct edges — it adds no inspection, control, or authority at any depth.
 
 A managed stream can itself manage others — delegation can nest — but nothing in Weaver ever resolves that nesting for you. If you want to know what C is doing, you ask C (or its manager, B), not A three levels up.
 
 ## The three coordinator tools
 
-These are coordinator-only capabilities — there's no new CLI verb, because the decision to delegate is exactly the kind of judgment call the coordinator (not the operator) makes each pass.
+## Who can create a managed Workstream
+
+These are judgment calls a coordinator makes each pass, so the three tools below are coordinator-only. The one human composition path is creation itself: `weaver create --under <parent-slug>` routes through the same creation semantics (single pointer, no inheritance, source-key idempotency) with one stricter precondition — the parent must exist and be `active`, because a typo'd slug is a clean user error and a non-active parent runs no passes to manage the new work. There is no reparenting operation: the pointer is written once at creation.
 
 1. **create_workstream**
 
