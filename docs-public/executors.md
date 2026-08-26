@@ -38,6 +38,8 @@ The coordinator declares a closed execution profile and input modalities on
 new work — requirements such as `bounded-code-repair` plus `text`, never a model
 name inferred from briefing prose. Weaver selects the target once before the
 attempt claim and stores executor, provider, and model on that attempt.
+The full story — the three typed facts, the resolution order, and why profiles
+without routes today are still declared — is in [Model routing](./model-routing.md).
 
 The same typed requirements carry a complexity tier. Work the coordinator
 declares `complexity: high` — acceptance depending on deep multi-file
@@ -57,9 +59,10 @@ itself. This keeps a stock local-SDK runner from reserving Codex work and avoids
 making cross-executor preference depend on process-local configuration. General,
 image-bearing, and other unmatched work still uses the configured fallback.
 Matching targets form an explicit preference order followed by that fallback.
-A route enters the checked-in registry only after at least
-three exact repetitions in one complete cohort pass every hard gate and every
-named quality check in the same adapter and case versions. The append-only
+A route enters the checked-in registry only after a complete cohort of its
+declared minimum runs (each active route declares ten) passes every hard gate
+and every named quality check in the same adapter and case versions; the
+auditor enforces each route's declared minimum, not a global count. The append-only
 ledger is evidence, not configuration: adding a result cannot silently change
 production routing.
 
