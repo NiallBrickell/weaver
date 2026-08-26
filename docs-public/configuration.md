@@ -121,7 +121,9 @@ CLI login or PAT: `WEAVER_GITHUB_APP_ID`,
 `WEAVER_GITHUB_APP_INSTALLATION_ID`, and
 `WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64`. They are reloaded for each mint and
 produce short-lived installation tokens; they never enter `.env` or ordinary
-worker containers. `weaver github-auth-check` proves the configured App path.
+worker containers. `weaver github-app-setup <organization>` creates, installs,
+verifies, and stores all three through one browser-confirmed loopback flow;
+`weaver github-auth-check` proves the configured App path later.
 See [GitHub access on a hosted runner](./github-app.md).
 
 OpenHands provider credentials are values, not settings. Store OpenRouter's as
