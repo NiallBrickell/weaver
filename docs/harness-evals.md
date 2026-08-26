@@ -318,6 +318,14 @@ plugin servers, and Claude.ai connectors remain outside discovery, so automatic 
 stays closed and all `.2` OpenRouter cohorts are stale for `.3` route qualification. Explicit
 OpenHands trials remain available in the meantime.
 
+The first rootless hosted run then exposed a substrate difference hidden by Docker Desktop and
+rootful test hosts: Docker's `host-gateway` names the rootless daemon's inner bridge, so the Agent
+Server could not reach the host submission MCP and failed conversation creation before a model
+call. Epoch `openhands-agent-server-1.41.0-weaver.4` keeps bridge networking, maps only
+`host.docker.internal` to an explicitly validated host-owned private IPv4, and does not grant host
+networking or loopback access. That boundary change makes `.3` evidence stale for `.4`; it fixes
+reachability but does not manufacture route qualification.
+
 ## What this does not prove yet
 
 Local Agent Server isolation means one fresh OpenHands container with only the declared evaluation

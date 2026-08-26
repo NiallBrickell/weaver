@@ -73,6 +73,16 @@ csv_entries() {
 
 worker_executor="$(env_value WEAVER_EXECUTOR)"
 [ "$worker_executor" = openhands ] || fail 'WEAVER_EXECUTOR must be openhands on this credential-bearing host'
+openhands_host_gateway="$(env_value WEAVER_OPENHANDS_HOST_GATEWAY_IP)"
+awk -v value="$openhands_host_gateway" 'BEGIN {
+  count = split(value, octets, ".")
+  if (count != 4) exit 1
+  for (i = 1; i <= 4; i++) if (octets[i] !~ /^[0-9]+$/ || octets[i] > 255) exit 1
+}' || fail 'WEAVER_OPENHANDS_HOST_GATEWAY_IP must be one IPv4 address'
+ip -4 -o addr show scope global | awk -v expected="$openhands_host_gateway" '
+  { split($4, address, "/"); if (address[1] == expected) found = 1 }
+  END { exit found ? 0 : 1 }
+' || fail 'WEAVER_OPENHANDS_HOST_GATEWAY_IP must be owned by this execution host'
 worker_model="$(env_value WEAVER_WORKER_MODEL)"
 case "$worker_model" in
   openrouter/*) ;;

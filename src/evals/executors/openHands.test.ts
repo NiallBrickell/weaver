@@ -89,6 +89,7 @@ describe('OpenHands eval executor', () => {
     const executor = new OpenHandsEvalExecutor({
       apiKey: 'provider-secret',
       baseUrl: 'https://provider.example/v1',
+      hostGatewayIp: '10.170.0.2',
       runCommand,
       fetch: fetchImpl,
       startSubmitBridge: async () => bridge,
@@ -153,7 +154,7 @@ describe('OpenHands eval executor', () => {
     assert.ok(valuesAfter(dockerRun.args, '--label').some((label) => label.startsWith('weaver.owner_host=')));
     assert.deepEqual(valuesAfter(dockerRun.args, '--volume'), [`${TEST_WORKSPACE_REAL}:/workspace:rw`]);
     assert.deepEqual(valuesAfter(dockerRun.args, '--add-host'), [
-      'host.docker.internal:host-gateway',
+      'host.docker.internal:10.170.0.2',
     ]);
     assert.ok(valuesAfter(dockerRun.args, '--env').includes('OH_CONVERSATIONS_PATH=/tmp/weaver-conversations'));
     assert.ok(valuesAfter(dockerRun.args, '--env').includes('OH_BASH_EVENTS_DIR=/tmp/weaver-bash-events'));
@@ -222,7 +223,7 @@ describe('OpenHands eval executor', () => {
       modelRequested: 'anthropic/claude-sonnet-4-5-20250929',
       providerResolved: 'anthropic',
       modelResolved: 'anthropic/claude-sonnet-4-5-20250929',
-      harnessVersion: 'openhands-agent-server-1.41.0-weaver.3',
+      harnessVersion: 'openhands-agent-server-1.41.0-weaver.4',
       isolation: 'agent-server',
       startedAt: '1970-01-01T00:00:01.000Z',
       endedAt: '1970-01-01T00:00:01.004Z',
@@ -240,6 +241,30 @@ describe('OpenHands eval executor', () => {
       terminalReason: 'completed',
       error: null,
     });
+  });
+
+  it('refuses a non-IPv4 host gateway before starting a bridge or container', async () => {
+    let sideEffects = 0;
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
+      hostGatewayIp: 'host-gateway;unsafe',
+      startSubmitBridge: async () => {
+        sideEffects += 1;
+        throw new Error('must not start');
+      },
+      runCommand: async () => {
+        sideEffects += 1;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+      now: () => 1_000,
+    });
+
+    const outcome = await executor.execute(request());
+
+    assert.equal(sideEffects, 0);
+    assert.match(outcome.error ?? '', /must be one IPv4 address owned by the execution host/);
+    assert.equal(executor.lastTelemetry()?.terminalReason, 'unsupported');
   });
 
   it('rejects supervised action work before starting a bridge or process', async () => {

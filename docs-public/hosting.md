@@ -151,6 +151,14 @@ bin/weaver-gcp.sh start                    # starts weaver-run: the explicit cut
 bin/weaver-gcp.sh status                   # services + runner heartbeat
 ```
 
+Provisioning also records the VM's current private IPv4 as host-local
+`WEAVER_OPENHANDS_HOST_GATEWAY_IP`. Rootless Docker's generic `host-gateway`
+points at its inner bridge rather than the VM, so OpenHands uses this exact
+local address to reach Weaver's ephemeral bearer-authenticated submission, MCP,
+and provider proxies. Preflight refuses a missing, malformed, or non-local
+address; the worker stays on its ordinary container bridge and never receives
+host networking or access to host loopback.
+
 The project defaults to the active gcloud project; zone, VM name, machine type,
 network, and every override use `WEAVER_GCP_*` variables at the top of the
 script. The resident unit defaults to four concurrent workstreams on the

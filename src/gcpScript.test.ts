@@ -19,6 +19,7 @@ const roots: string[] = [];
 
 const SAFE_GCP_EXECUTION_ENV = [
   'WEAVER_EXECUTOR=openhands',
+  'WEAVER_OPENHANDS_HOST_GATEWAY_IP=10.170.0.2',
   'WEAVER_WORKER_MODEL=openrouter/moonshotai/kimi-k3',
   'WEAVER_WORKER_FALLBACKS=',
   'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-latest',
@@ -129,6 +130,14 @@ esac
     `#!/bin/bash
 set -euo pipefail
 [ "\${WEAVER_GCP_TEST_DOCKER_OK:-0}" = 1 ]
+`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(bin, 'ip'),
+    `#!/bin/bash
+set -euo pipefail
+printf '%s\n' '2: eth0    inet 10.170.0.2/32 brd 10.170.0.2 scope global dynamic eth0'
 `,
     { mode: 0o755 },
   );
@@ -570,6 +579,17 @@ test('GCP start refuses host-process normal workers before systemctl', () => {
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
 });
 
+test('GCP start refuses a non-local OpenHands bridge address before systemctl', () => {
+  const unsafe = SAFE_GCP_EXECUTION_ENV.replace(
+    'WEAVER_OPENHANDS_HOST_GATEWAY_IP=10.170.0.2',
+    'WEAVER_OPENHANDS_HOST_GATEWAY_IP=10.170.0.99',
+  );
+  const { result, root } = run(['start'], undefined, '', false, unsafe);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must be owned by this execution host/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
 test('GCP restart refuses a host-process worker fallback before systemctl', () => {
   const unsafe = SAFE_GCP_EXECUTION_ENV.replace(
     'WEAVER_WORKER_FALLBACKS=',
@@ -802,6 +822,7 @@ test('external-store provisioning selects execution-only mode and never starts s
   assert.match(call(root, count, 'stdin'), /run --interval 5 --concurrency \$WEAVER_GCP_CONCURRENCY/);
   assert.match(call(root, count, 'stdin'), /dockerd-rootless-setuptool\.sh install --force/);
   assert.match(call(root, count, 'stdin'), /DOCKER_HOST=unix:\/\/\/run\/user\/\$weaver_uid\/docker\.sock/);
+  assert.match(call(root, count, 'stdin'), /WEAVER_OPENHANDS_HOST_GATEWAY_IP=\$openhands_host_gateway/);
   assert.match(call(root, count, 'stdin'), /ExecStartPre=\+\/usr\/local\/sbin\/weaver-gcp-preflight/);
   assert.match(call(root, count, 'stdin'), /install -o root -g root -m 755 \/opt\/weaver\/bin\/weaver-gcp-preflight\.sh/);
   assert.doesNotMatch(call(root, count, 'stdin'), /usermod -aG docker/);
