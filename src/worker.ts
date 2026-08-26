@@ -189,7 +189,7 @@ const SHARED_RULES = `
 Rules:
 1. Produce exactly what the assignment asks for, judged against its acceptance criteria — the coordinator will review your submission against them literally.
 2. Your submission is a PROPOSAL. It becomes real only if the coordinator adopts it, so make the artifact self-contained and reviewable.
-3. Submission is part of the work, not optional reporting after it. For anything longer than ~150 lines, build the artifact incrementally: call append_section repeatedly (each call adds one section, in order), then call submit_result ONCE with an empty or short closing content — the appended sections are prepended automatically. Never submit a placeholder: an empty or stub artifact is worse than no submission, and the coordinator will reject it.
+3. Submission is part of the work, not optional reporting after it. For anything longer than ~150 lines, build the artifact incrementally: call append_section repeatedly (each call adds one section, in order), then call submit_result ONCE with an empty or short closing content — the appended sections are prepended automatically. Never submit a blank artifact, but never pad a legitimately short deliverable either: the coordinator judges its content against the assignment literally.
 4. Call submit_result exactly once. Do not end without submitting.
 5. If something refuses you — a denied tool, a missing permission, an input the brief assumed exists — do not engineer a longer route around it. Say exactly what refused you and what the brief needs it for. A workaround that quietly preserves a wrong constraint is worse than an honest blockage: the coordinator can change the constraint or dispatch an approved action, but only if it learns the refusal happened.
 6. On an incident, alert, or user-visible failure, separate trigger, failed recovery, and escape. If the evidence says retries, fallbacks, or an aggregate such as "all models failed", enumerate every configured attempt and verify each against runtime evidence; missing telemetry is a finding, not a successful investigation. If the briefing or acceptance criteria cover containment only, perform that bounded work but state plainly that it does not fix the upstream failure and name the unverified layers in your submission.`;
@@ -491,9 +491,9 @@ export async function runWorker(
   ): Promise<SubmitReply> => {
     if (submitted) return { text: 'already submitted — stop', isError: true };
     const fullContent = [...sections, a.artifact.content].filter(Boolean).join('\n\n');
-    if (fullContent.trim().length < 200) {
+    if (!fullContent.trim()) {
       return {
-        text: `REFUSED: artifact content is ${fullContent.trim().length} chars — that is a stub, not a deliverable. Build the real artifact with append_section calls, then submit_result again.`,
+        text: 'REFUSED: artifact content is blank — submit the actual deliverable. Do not pad a legitimately short result.',
         isError: true,
       };
     }

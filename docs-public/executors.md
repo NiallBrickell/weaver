@@ -20,6 +20,13 @@ Weaver preserves those sections as an explicitly incomplete candidate. A fresh
 coordinator can inspect and reject that checkpoint before dispatching only the
 missing work, but it cannot adopt the checkpoint as a completed result.
 
+A complete submission must contain non-whitespace content, but Weaver does not
+use byte or line count as a quality gate. A one-byte flag, a short identifier,
+or a byte-exact fixture can be the whole requested deliverable. It remains only
+a `proposed` candidate until a fresh coordinator checks it against the typed
+acceptance criteria; padding a short result would make that review less honest,
+not more complete.
+
 ## The substrates
 
 | `WEAVER_EXECUTOR` | Where the loop runs | Containment |

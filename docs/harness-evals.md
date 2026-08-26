@@ -409,5 +409,6 @@ would invalidate the bakeoff.
   not contaminate the graded workspace.
 - Startup telemetry is candidate-native, not a cross-harness benchmark: Codex reports thread start,
   OpenCode reports server readiness, and OpenHands reports Agent Server health. Time to submission,
-  by contrast, records only a submission Weaver actually accepted; refused stubs do not win on
-  latency.
+  by contrast, records only a non-blank candidate the worker harness preserved; refused blank
+  candidates do not win on latency, while legitimate short artifacts remain for coordinator
+  acceptance rather than being padded to a harness-owned byte threshold.
