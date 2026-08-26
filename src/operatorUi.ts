@@ -18,7 +18,7 @@ import { userInfo } from 'node:os';
 
 import { capacityPresentation } from './capacity.js';
 import { virtualNow } from './clock.js';
-import { fleetIncidents } from './fleetHealth.js';
+import { FLEET_ATTENTION_STEWARD_SOURCE_KEY, fleetIncidents } from './fleetHealth.js';
 import { createOrGetWorkstream, recordObservation } from './ingress.js';
 import { ManagedWorkstreamError } from './managedWorkstreams.js';
 import { deriveFallback, loadHouse } from './onboard.js';
@@ -89,7 +89,7 @@ interface LoadedFleet {
 const MAX_BODY_BYTES = 1_000_000;
 const MAX_MESSAGE_LENGTH = 50_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
-export const FLEET_ATTENTION_STEWARD_SOURCE_KEY = 'weaver:fleet-attention-steward:v1';
+export { FLEET_ATTENTION_STEWARD_SOURCE_KEY } from './fleetHealth.js';
 
 class OperatorUiHttpError extends Error {
   constructor(readonly status: 400 | 409, message: string) {
@@ -179,14 +179,14 @@ export async function createFleetAttentionSteward(actor: string): Promise<TeamIn
     slug: 'fleet-attention-steward',
     title: 'Fleet attention steward',
     objective: [
-      'Own a recurring fleet-wide operational triage loop. Each cycle, inspect the shared fleet\'s typed Workstream state — never transcripts — for approval-service incidents, capacity backoff, overdue wakes, dormant routines, missed deliverables, and results awaiting review.',
-      'Group symptoms that share one dependency. Investigate and repair reversible root causes, or create a bounded managed repair Workstream when the remediation has its own outcome. Surface one concise question only when a specific judgment genuinely requires a person.',
+      'Own a recurring fleet-wide attention triage loop. Each cycle, inspect the harness-provided typed attention evidence — never transcripts — for open human asks and approval-service incidents.',
+      'Group symptoms that share one dependency, challenge requests that do not genuinely require founder judgment, and create a bounded managed repair Workstream when a reversible root cause has its own outcome. Surface one concise question only when a specific judgment genuinely requires a person.',
       'When the fleet is quiet, schedule the next check about two hours out. While an operational incident is active, re-check in about fifteen minutes. Report deltas only.',
       ...(house.repoMap.trim() ? [`Repository context for this execution host:\n${house.repoMap.trim()}`] : []),
     ].join('\n\n'),
     tags: [...new Set([...house.tags, 'routine', 'fleet-operations'])],
     successCriteria: [
-      'Each cycle produces one adopted fleet-position report that groups shared causes and names affected outcomes.',
+      'Each cycle produces one adopted attention report that groups shared causes and cites affected Workstream revisions and entity ids.',
       'Reversible operational causes are repaired or delegated to a bounded managed Workstream with verification.',
       'Only unresolved human judgment is surfaced; routine dependency noise never becomes one request per affected action.',
       'A future wake is scheduled after every completed cycle.',

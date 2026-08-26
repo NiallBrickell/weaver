@@ -118,11 +118,15 @@ action or an explicit deny/ask verdict remains an individual decision because
 its consequence genuinely requires authority or judgment.
 
 **Start attention steward** creates one source-keyed routine Workstream. Each
-cycle audits typed fleet state, groups related symptoms, repairs reversible
+cycle audits typed attention state, groups related symptoms, repairs reversible
 causes or delegates a bounded repair outcome, and asks a person only for
-irreducible judgment. The steward does not inherit operator authority: it cannot
-approve or resolve sends, merges, deploys, spending, or any other external
-effect, and its worker output is still only a proposal until adopted.
+irreducible judgment. Before each steward worker starts, the harness writes a
+fresh read-only input containing only open human asks, approval-service waits,
+grouped incidents, counts, and source revisions. It does not expose unrelated
+objectives, decisions, artifacts, event history, or database credentials. The
+steward does not inherit operator authority: it cannot approve or resolve sends,
+merges, deploys, spending, or any other external effect, and its worker output
+is still only a proposal until adopted.
 
 ## Authority limits
 
