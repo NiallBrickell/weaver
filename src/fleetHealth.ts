@@ -1,4 +1,4 @@
-import { actionAwaitingPilot, actionNeedsHuman, humanAttention } from './actionApproval.js';
+import { actionHasLivePilotOutage, actionNeedsHuman, humanAttention } from './actionApproval.js';
 import type { WorkstreamDoc } from './types.js';
 
 export const FLEET_ATTENTION_STEWARD_SOURCE_KEY = 'weaver:fleet-attention-steward:v1';
@@ -32,9 +32,7 @@ interface FleetHumanNeed {
  */
 export function fleetIncidents(docs: WorkstreamDoc[]): FleetIncident[] {
   const affected = docs.flatMap((doc) => doc.assignments
-    .filter((assignment) =>
-      actionAwaitingPilot(assignment) && !!assignment.exec?.pilotUnavailableSince
-    )
+    .filter((assignment) => actionHasLivePilotOutage(doc, assignment))
     .map((assignment) => ({
       slug: doc.workstream.slug,
       at: assignment.exec!.pilotUnavailableSince!,
@@ -111,7 +109,7 @@ export function fleetAttentionEvidence(
         status: doc.workstream.status,
         humanNeeds: needs,
         approvalServiceWaits: doc.assignments
-          .filter((assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince)
+          .filter((assignment) => actionHasLivePilotOutage(doc, assignment))
           .map((assignment) => ({
             assignmentId: assignment.id,
             unavailableSince: assignment.exec!.pilotUnavailableSince!,

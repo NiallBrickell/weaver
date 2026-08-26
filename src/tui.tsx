@@ -40,8 +40,8 @@ import { requestedPrintoutScope } from './printoutControls.js';
 import { publishPrintoutHtml } from './printoutHtml.js';
 import { acquireRunnerLock, liveRunnerPid, promoteOnRunnerVacancy, runLoop, runnerLoopHealthy, runnerSourceStale } from './runner.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
-import type { ProviderCapacityObservation, WorkstreamDoc } from './types.js';
-import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
+import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
+import { actionAwaitingPilot, actionIsLivePilotWait, humanAttention } from './actionApproval.js';
 
 const STALE_ATTEMPT_MS = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
 
@@ -252,6 +252,15 @@ function wrapRows(text: string, width: number): string[] {
   return rows;
 }
 
+/** Keep Pilot-owned work out of Needs you even while its Workstream is paused. */
+export function gatedActionPosition(
+  doc: WorkstreamDoc,
+  assignment: Assignment,
+): 'pilot-live' | 'pilot-held' | 'human' {
+  if (!actionAwaitingPilot(assignment)) return 'human';
+  return actionIsLivePilotWait(doc, assignment) ? 'pilot-live' : 'pilot-held';
+}
+
 async function snapshot(): Promise<Snapshot> {
   const items: NeedsYouItem[] = [];
   const streams: StreamRow[] = [];
@@ -311,9 +320,11 @@ async function snapshot(): Promise<Snapshot> {
       // A gated action with no Pilot verdict is operational dependency state,
       // never a human judgment. The fleet projection groups an outage once;
       // only an explicit Pilot deny/ask (or human-only mode) enters Needs you.
-      const awaitingPilot = actionAwaitingPilot(a);
-      if (awaitingPilot) {
-        pendingPilot.push(`⧗ awaiting pilot: "${a.objective.slice(0, 70)}"`);
+      const position = gatedActionPosition(doc, a);
+      if (position !== 'human') {
+        if (position === 'pilot-live') {
+          pendingPilot.push(`⧗ awaiting pilot: "${a.objective.slice(0, 70)}"`);
+        }
         continue;
       }
       needsYou++;

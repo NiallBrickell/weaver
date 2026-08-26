@@ -117,6 +117,10 @@ recovery. Those actions do not become repeated **Needs you** cards. A human-only
 action or an explicit deny/ask verdict remains an individual decision because
 its consequence genuinely requires authority or judgment.
 
+Only active jobs contribute to a live approval-service incident. Pausing a job
+also pauses its retries, so its last outage marker remains durable history until
+the job resumes; it is not evidence that the shared service is still down.
+
 **Start attention steward** creates one source-keyed routine Workstream. Each
 cycle audits typed attention state, groups related symptoms, repairs reversible
 causes or delegates a bounded repair outcome, and asks a person only for

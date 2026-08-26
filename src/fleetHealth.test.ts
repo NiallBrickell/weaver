@@ -88,3 +88,43 @@ test('fleet attention evidence includes every real ask while excluding unrelated
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('paused outage markers are durable history, not a live fleet incident', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-fleet-paused-evidence-'));
+  process.env.WEAVER_HOME = home;
+  try {
+    await createWorkstream({
+      slug: 'paused-after-outage',
+      title: 'Paused after outage',
+      objective: 'Stay paused until deliberately resumed',
+      tags: [], successCriteria: [], constraints: [],
+      autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('paused-after-outage', (doc) => {
+      doc.workstream.status = 'paused';
+      doc.assignments.push({
+        id: 'asg_paused_pilot_wait', objective: 'A previously gated effect', briefing: 'Remain paused.',
+        kind: 'action', exec: {
+          cwd: '/repo', verify: 'true', approvalMode: 'pilot-or-human',
+          pilotUnavailableSince: '2026-08-26T10:01:00.000Z',
+        },
+        acceptanceCriteria: [], dependsOn: [], state: 'gated', attempts: [],
+        adoption: { state: 'none' }, createdAtVirtual: '2026-08-26T10:01:00.000Z',
+      });
+    });
+
+    const evidence = fleetAttentionEvidence(
+      [await load('paused-after-outage')],
+      [],
+      new Date('2026-08-26T11:00:00.000Z'),
+    );
+
+    assert.equal(evidence.incidents.length, 0);
+    assert.equal(evidence.totals.approvalServiceWaits, 0);
+    assert.equal(evidence.workstreams.length, 0);
+  } finally {
+    await closeStore();
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

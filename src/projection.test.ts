@@ -186,6 +186,12 @@ test('a legacy approval-service outage card is operational state, never a fresh-
   assert.match(projection, /Needs a human[\s\S]*- \(nothing\)/);
   assert.match(projection, /Operational dependency waits[\s\S]*asg_pilot_wait: approval service unavailable/);
   assert.doesNotMatch(projection, /approve manually or restart it/);
+
+  doc.workstream.status = 'paused';
+  const paused = buildProjection(doc, []);
+  assert.match(paused, /Needs a human[\s\S]*- \(nothing\)/);
+  assert.match(paused, /Operational dependency waits[\s\S]*- \(none\)/);
+  assert.doesNotMatch(paused, /approve manually or restart it/);
 });
 
 test('legacy dollar and lifetime pass caps never reach the coordinator as remaining authority', () => {

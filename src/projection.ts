@@ -16,7 +16,7 @@ import { pendingSteering } from './steering.js';
 import { virtualNow } from './clock.js';
 import { capacityPresentation } from './capacity.js';
 import { executionSafetyConfig } from './executionSafety.js';
-import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
+import { actionHasLivePilotOutage, humanAttention } from './actionApproval.js';
 
 const SCHEMA_VERSION = 1;
 export const PROMPT_VERSION = 1;
@@ -233,7 +233,7 @@ export function buildProjection(
   // 6. Unresolved approvals, steering, active interactions
   const openAttention = humanAttention(doc);
   const pilotUnavailable = doc.assignments.filter(
-    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+    (assignment) => actionHasLivePilotOutage(doc, assignment),
   );
   const unconsumedSteering = pendingSteering(doc.steering);
   const activeInteractions = doc.interactions.filter(

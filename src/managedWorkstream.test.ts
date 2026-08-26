@@ -351,6 +351,14 @@ test('managed inspection and plain watch preserve an approval outage as operatio
   assert.match(watch.row, /WAITING/);
   assert.ok(watch.details.some((line) => line.includes('approval service unavailable')));
   assert.ok(!watch.details.some((line) => line.includes('approve manually')));
+
+  await arrive('pilot-child', (doc) => { doc.workstream.status = 'paused'; });
+  const paused = await inspectManagedWorkstream('pilot-mgr', 'pilot-child');
+  assert.deepEqual(paused.openAttention, []);
+  assert.deepEqual(paused.operationalWaits, []);
+  const pausedWatch = await viewOf('pilot-child');
+  assert.ok(!pausedWatch.details.some((line) => line.includes('approval service unavailable')));
+  assert.ok(!pausedWatch.details.some((line) => line.includes('approve manually')));
 });
 
 test("a managed workstream's reconciliation is independent of its manager's status", async () => {

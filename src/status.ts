@@ -14,7 +14,7 @@ import {
   executionPosition,
   isWakeDue,
 } from './executionSafety.js';
-import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
+import { actionHasLivePilotOutage, humanAttention } from './actionApproval.js';
 
 const MANAGES_SHOWN_MAX = 5;
 
@@ -91,7 +91,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   const nowVirtual = virtual.toISOString();
   const capacity = capacityPresentation(doc, nowVirtual);
   const pilotUnavailable = doc.assignments.filter(
-    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+    (assignment) => actionHasLivePilotOutage(doc, assignment),
   );
   const coordinatorPass = doc.lease
     ? doc.passes.find((pass) => pass.id === doc.lease?.passId && pass.outcome === 'running')
