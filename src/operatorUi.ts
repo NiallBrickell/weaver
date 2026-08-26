@@ -19,6 +19,7 @@ import { userInfo } from 'node:os';
 import { capacityPresentation } from './capacity.js';
 import { virtualNow } from './clock.js';
 import { createOrGetWorkstream, recordObservation } from './ingress.js';
+import { ManagedWorkstreamError } from './managedWorkstreams.js';
 import { deriveFallback, loadHouse } from './onboard.js';
 import { loadPolicies } from './policies.js';
 import { liveRunnerPid, runnerLoopHealthy, runnerSourceStale } from './runner.js';
@@ -63,6 +64,8 @@ export interface TeamIntakeRequest {
   done?: string;
   requestId: string;
   actor: string;
+  /** Optional parent slug: create under an existing active Workstream. */
+  under?: string;
 }
 
 export interface TeamIntakeResult {
@@ -119,6 +122,7 @@ export async function createTeamWorkstream(req: TeamIntakeRequest): Promise<Team
     ? `${derived.objective}\n\nRepository context for this execution host:\n${house.repoMap.trim()}`
     : derived.objective;
   const sourceKey = sourceKeyFor(message, requestId);
+  const under = req.under?.trim() || undefined;
   const result = await createOrGetWorkstream({
     sourceKey,
     slug: derived.slug,
@@ -127,6 +131,7 @@ export async function createTeamWorkstream(req: TeamIntakeRequest): Promise<Team
     tags: house.tags,
     successCriteria: derived.successCriteria,
     constraints: house.constraints,
+    ...(under ? { under } : {}),
   });
 
   // The Workstream owns the requested outcome. This separately preserves who
@@ -251,6 +256,10 @@ async function loadFleet(): Promise<LoadedFleet> {
       board,
       groups: fleetGroups(board),
       health: fleetHealth(docs, board, unreadable),
+      intakeParents: docs
+        .filter((doc) => doc.workstream.status === 'active')
+        .map((doc) => ({ slug: doc.workstream.slug, title: doc.workstream.title }))
+        .sort((a, b) => a.slug.localeCompare(b.slug)),
       revision,
     },
   };
@@ -446,6 +455,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, token?: string)
       done: form.get('done') ?? undefined,
       requestId: form.get('request_id') ?? '',
       actor,
+      under: form.get('under') ?? undefined,
     });
     return redirect(res, `/workstreams/${encodeURIComponent(result.slug)}?${result.created ? 'created' : 'existing'}=1`);
   }
@@ -512,7 +522,8 @@ export async function startOperatorUi(opts: OperatorUiOptions = {}): Promise<Run
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      const status = /required|too large|at most|content type/i.test(message) ? 400 : 500;
+      const userError = error instanceof ManagedWorkstreamError || /required|too large|at most|content type/i.test(message);
+      const status = userError ? 400 : 500;
       sendText(res, status, `${status === 400 ? 'Request could not be stored' : 'Weaver UI failed'}\n\n${message}\n`);
     });
   });

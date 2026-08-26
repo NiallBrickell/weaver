@@ -17,6 +17,7 @@
  */
 
 import { arrive, createWorkstream, findBySourceKey, listWorkstreams, load, newId, SourceKeyConflictError } from './store.js';
+import { createWorkstreamUnderParent } from './managedWorkstreams.js';
 import { sanitizeSlug } from './onboard.js';
 import { virtualNow } from './clock.js';
 import { newExecutionSafety } from './executionSafety.js';
@@ -34,6 +35,12 @@ export interface CreateWorkstreamRequest {
   constraints?: string[];
   executionWindowSeconds?: number;
   maxModelStarts?: number;
+  /** Optional parent: create under an existing active Workstream through the
+   * shared managed-creation path (single managedBy pointer, no inheritance,
+   * source-key idempotency). A non-active or missing parent fails cleanly —
+   * browser intake never runs a model, so this is intake validation, not a
+   * judgment call. */
+  under?: string;
 }
 
 export interface CreateOrGetResult {
@@ -59,7 +66,23 @@ export async function createOrGetWorkstream(req: CreateWorkstreamRequest): Promi
   const taken = new Set(await listWorkstreams());
   const slug = sanitizeSlug(req.slug || req.title || req.sourceKey, taken);
   try {
-    const doc = await createWorkstream({
+    const doc = req.under
+      // Browser composition reuses the SAME shared path as the coordinator's
+      // create_workstream and the CLI's --under: one creation contract. The
+      // parent precondition (exists + active) is enforced there; a clean
+      // ManagedWorkstreamError surfaces to the requester.
+      ? await createWorkstreamUnderParent(req.under, {
+        slug,
+        title: req.title,
+        objective: req.objective,
+        tags: req.tags ?? [],
+        successCriteria: req.successCriteria ?? [],
+        constraints: req.constraints ?? [],
+        ...(req.sourceKey ? { sourceKey: req.sourceKey } : {}),
+        ...(req.executionWindowSeconds !== undefined ? { executionWindowSeconds: req.executionWindowSeconds } : {}),
+        ...(req.maxModelStarts !== undefined ? { maxModelStarts: req.maxModelStarts } : {}),
+      })
+      : await createWorkstream({
       slug,
       title: req.title,
       objective: req.objective,
@@ -75,16 +98,21 @@ export async function createOrGetWorkstream(req: CreateWorkstreamRequest): Promi
     });
     // Creation is the first wake: direction needs establishing. The resident
     // runner (`weaver run`) picks it up — this adapter never runs a model.
-    await arrive(slug, (d, event) => {
-      d.wakes.push({
-        id: newId('wake'),
-        reason: 'workstream created — establish direction and dispatch initial work',
-        condition: { type: 'immediate' },
-        status: 'pending',
-        createdAt: new Date().toISOString(),
+    // (The managed path seeds this wake itself; the arrive() here is
+    // idempotent-by-construction with it only in shape — skip the duplicate
+    // when the shared managed path already seeded it.)
+    if (!req.under) {
+      await arrive(slug, (d, event) => {
+        d.wakes.push({
+          id: newId('wake'),
+          reason: 'workstream created — establish direction and dispatch initial work',
+          condition: { type: 'immediate' },
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        event('wake.scheduled', 'initial reconciliation wake');
       });
-      event('wake.scheduled', 'initial reconciliation wake');
-    });
+    }
     return { slug, id: doc.workstream.id, created: true };
   } catch (e) {
     // Lost an at-least-once race to a concurrent creator: resolve to a GET.

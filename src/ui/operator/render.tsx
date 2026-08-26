@@ -31,6 +31,9 @@ export interface OperatorFleetView {
     headline: string;
     detail: string;
   };
+  /** Active Workstreams selectable as a parent at intake — the human
+   * composition surface over the same create-under-parent primitive. */
+  intakeParents: Array<{ slug: string; title: string }>;
   revision: string;
 }
 
@@ -441,6 +444,8 @@ function BoardWorkstreamCard({ card }: { card: WorkstreamCardView }) {
     >
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge variant={stateVariant(card)}>{card.state}</Badge>
+        {card.managedBy ? <Badge variant="outline">under {card.managedBy}</Badge> : null}
+        {card.manages.length ? <Badge variant="outline">manages {card.manages.length}</Badge> : null}
         {card.priority && card.priority !== 'normal' ? <Badge variant="warning">{card.priority}</Badge> : null}
         {card.integrityWarnings.length ? <Badge variant="attention">State problem</Badge> : null}
       </div>
@@ -527,7 +532,7 @@ function BoardPage({ fleet }: { fleet: OperatorFleetView }) {
   );
 }
 
-function NewWorkPage({ requestId }: { requestId: string }) {
+function NewWorkPage({ requestId, fleet }: { requestId: string; fleet: OperatorFleetView }) {
   return (
     <div data-testid="operator-new-page">
       <PageHeader
@@ -566,6 +571,22 @@ function NewWorkPage({ requestId }: { requestId: string }) {
                   placeholder="The issue is fixed, validated in the real user path, and the result is recorded."
                   className="mt-2 w-full resize-y rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-700 focus:border-violet-500/60"
                 />
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-zinc-300">Manage under <span className="text-zinc-500">(optional)</span></span>
+                <select
+                  data-testid="new-work-under"
+                  name="under"
+                  className="mt-2 w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-100 outline-none focus:border-violet-500/60"
+                >
+                  <option value="">No parent — a standalone outcome</option>
+                  {fleet.intakeParents.map((parent) => (
+                    <option key={parent.slug} value={parent.slug}>{parent.slug} — {parent.title}</option>
+                  ))}
+                </select>
+                <span className="mt-1.5 block text-xs leading-5 text-zinc-500">
+                  Placing work under a parent gives it organizational context: the parent is told when this finishes or needs a human. It never widens authority, and nothing is inherited automatically.
+                </span>
               </label>
               <div className="flex items-center justify-between gap-4 border-t border-zinc-800 pt-4">
                 <p className="text-xs leading-5 text-zinc-500">Creating work records intent; it does not grant new authority for irreversible actions.</p>
@@ -886,6 +907,15 @@ function InspectorAssignments({ view }: { view: WorkstreamPageView }) {
                       <Badge variant={assignmentVariant(card)}>{card.assignmentState.replaceAll('_', ' ')}</Badge>
                     </div>
                     {card.submission ? <p className="mt-2 text-xs leading-5 text-zinc-500">{displayText(card.submission.summary)}</p> : null}
+                    {card.acceptanceCriteria.length ? (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-[11px] font-medium text-zinc-500 hover:text-zinc-400">Acceptance criteria ({card.acceptanceCriteria.length})</summary>
+                        <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-[11px] leading-5 text-zinc-500">
+                          {card.acceptanceCriteria.map((criterion, index) => <li key={index}>{displayText(criterion)}</li>)}
+                        </ul>
+                      </details>
+                    ) : null}
+                    {card.attemptCount ? <p className="mt-1.5 text-[11px] text-zinc-600">{card.attemptCount} disposable attempt{card.attemptCount === 1 ? '' : 's'} — full execution history in the static record</p> : null}
                     {card.action?.awaitingApproval ? <p className="mt-2 text-xs text-rose-300">Approval needed before this external action can run.</p> : null}
                   </article>
                 ))}
@@ -991,6 +1021,29 @@ function WorkspacePage({ view, actor }: { view: WorkstreamPageView; actor: strin
         )}
       />
       <div className="space-y-6 p-5 sm:p-8">
+        {(view.doc.workstream.managedBy || view.managed.length) ? (
+          <nav data-testid="workspace-relationships" aria-label="Workstream relationships" className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+            {view.doc.workstream.managedBy ? (
+              <a
+                data-testid="workspace-managed-by"
+                href={`/workstreams/${encodeURIComponent(view.doc.workstream.managedBy.slug)}`}
+                className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-1.5 text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-100"
+              >
+                ↑ managed by <span className="font-medium">{view.doc.workstream.managedBy.slug}</span>
+              </a>
+            ) : null}
+            {view.managed.map((child) => (
+              <a
+                key={child.slug}
+                data-testid={`workspace-manages-${child.slug}`}
+                href={`/workstreams/${encodeURIComponent(child.slug)}`}
+                className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-1.5 text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-100"
+              >
+                ↳ manages <span className="font-medium">{child.slug}</span> <span className="text-zinc-600">({child.status})</span>
+              </a>
+            ))}
+          </nav>
+        ) : null}
         <Card data-testid="current-position" className={cn('bg-zinc-900/30', view.needs.length ? 'border-rose-500/30' : 'border-violet-500/20')}>
           <CardHeader>
             <div className="flex flex-wrap items-center gap-1.5">
@@ -1045,7 +1098,7 @@ export function renderOperatorNewHtml(props: OperatorNewRenderProps): string {
       revisionEndpoint="/api/fleet-revision"
       initialRevision={props.fleet.revision}
     >
-      <NewWorkPage requestId={props.requestId} />
+      <NewWorkPage requestId={props.requestId} fleet={props.fleet} />
     </OperatorShell>,
   );
 }

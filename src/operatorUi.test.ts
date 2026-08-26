@@ -314,3 +314,79 @@ test('a shared-Postgres UI does not call an unobservable remote runner offline',
     else process.env.WEAVER_STORE = previous;
   }
 });
+
+test('intake with a parent creates under it through the shared path, and a bad parent is a clean error', async () => {
+  // A parent to create under (created through the same model-independent intake).
+  await createTeamWorkstream({ message: 'Own the migration program end to end', requestId: 'parent-1', actor: 'alice' });
+  const all = await listWorkstreams();
+  assert.equal(all.length, 1);
+  const parent = all[0]!;
+
+  const child = await createTeamWorkstream({
+    message: 'Ship the account-settings migration safely',
+    requestId: 'child-1',
+    actor: 'bob',
+    under: parent,
+  });
+  const doc = await load(child.slug);
+  assert.equal(doc.workstream.managedBy?.slug, parent);
+  assert.ok(doc.wakes.some((w) => w.status === 'pending'), 'child got its first wake exactly from the shared managed path');
+
+  // Idempotent retry resolves to the same stream, still under the parent.
+  const retry = await createTeamWorkstream({
+    message: 'Ship the account-settings migration safely',
+    requestId: 'child-1',
+    actor: 'bob',
+    under: parent,
+  });
+  assert.equal(retry.slug, child.slug);
+  assert.equal(retry.created, false);
+
+  // A parent that does not exist is a clean intake error, not a stack trace.
+  await assert.rejects(
+    createTeamWorkstream({ message: 'Another outcome entirely', requestId: 'child-2', actor: 'bob', under: 'no-such-parent' }),
+    /no workstream 'no-such-parent'/,
+  );
+});
+
+test('the live view renders composition relationships, parent selection, and assignment detail', async () => {
+  const parent = await createTeamWorkstream({
+    message: 'Own the payments program end to end', requestId: 'rel-parent', actor: 'alice',
+  });
+  const child = await createTeamWorkstream({
+    message: 'Ship the refunds migration safely', requestId: 'rel-child', actor: 'alice',
+    under: parent.slug,
+  });
+  // A real assignment on the child, with acceptance criteria and an attempt.
+  await arrive(child.slug, (doc, event) => {
+    doc.assignments.push({
+      id: 'asg_rel_1', objective: 'Implement the refunds table migration',
+      briefing: 'brief', kind: 'work',
+      acceptanceCriteria: ['zero-downtime cutover', 'rollback tested'],
+      dependsOn: [], state: 'queued',
+      attempts: [{ runId: 'run_rel_1', startedAt: new Date().toISOString() }],
+      adoption: { state: 'none' }, createdAtVirtual: new Date().toISOString(),
+    });
+    event('assignment.created', 'queued refunds migration work');
+  });
+
+  const workspace = await fetch(`${base}/workstreams/${child.slug}`);
+  const childHtml = await workspace.text();
+  assert.match(childHtml, /workspace-managed-by/);
+  assert.match(childHtml, new RegExp(`managed by.*${parent.slug}`));
+  assert.match(childHtml, /zero-downtime cutover/);
+  assert.match(childHtml, /1 disposable attempt/);
+
+  const parentPage = await fetch(`${base}/workstreams/${parent.slug}`);
+  const parentHtml = await parentPage.text();
+  assert.match(parentHtml, new RegExp(`workspace-manages-${child.slug}`));
+
+  const board = await fetch(`${base}/board`);
+  const boardHtml = await board.text();
+  assert.match(boardHtml, new RegExp(`under ${parent.slug}`));
+
+  const newWork = await fetch(`${base}/new`);
+  const newHtml = await newWork.text();
+  assert.match(newHtml, /new-work-under/);
+  assert.match(newHtml, new RegExp(`${parent.slug} — `));
+});
