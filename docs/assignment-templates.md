@@ -1,22 +1,23 @@
 # Assignment templates — plan
 
-*26 August 2026; revised the same day after the #128 review. Status:
-**held, plan-only** — implementation waits on the acceptance trigger below.
-Org composition itself stays managed Workstreams → Assignments → Attempts
-([cross-harness-agent-organization-plan.md](./cross-harness-agent-organization-plan.md));
-templates are not the team-setup architecture.*
+*26 August 2026; revised twice the same day. Status, per the operator's
+decision (2026-08-26): **deferred — templates come later, not now — and
+gate nothing**. Composition, dashboard, portability, and the
+named-specialist decision all proceed independently
+([#128](https://github.com/NiallBrickell/weaver/pull/128) states the same
+independence); templates are not the team-setup architecture.*
 
-## Acceptance trigger (adopted from the #128 review — this plan is held until it fires)
+## Acceptance trigger (this plan stays deferred until it fires)
 
-An operator needs to **enforce and audit one named work standard across
-workstreams**, including which immutable version each Assignment materialized.
-Until that requirement is real, the self-contained Assignment brief remains
-the only cross-harness work contract guaranteed today; Workstream constraints,
-standing decisions, doctrine, and repository rules are sources a coordinator
-*may compose from*, not portable substitutes for a brief. The role label
-("security reviewer") alone does not establish the stronger contract —
-define-once selection across unrelated Assignments and harnesses, with
-durable revision attribution.
+An operator needs to **reuse and audit a named, versioned work-contract
+skeleton across workstreams** — define-once selection across unrelated
+Assignments and harnesses, with durable attribution of which version each
+Assignment **derived from**. Until that requirement is real, the
+self-contained Assignment brief remains the only cross-harness work contract
+guaranteed today; Workstream constraints, standing decisions, doctrine, and
+repository rules are sources a coordinator *may compose from*, not portable
+substitutes for a brief. The role label ("security reviewer") alone does not
+establish the stronger contract.
 
 ## The problem
 
@@ -75,11 +76,19 @@ writes the instance around the current workstream's actual state.
    the named template from the store, materializes every template-owned field
    into the Assignment (instance-declared values win; the template fills the
    rest), and stamps `templateRef: { name, version }` as a harness-written
-   fact. A model-claimed reference is never trusted — the stamp exists only
-   because the harness made the copy, which is what makes the provenance
-   honest. The projection renders tag-matching templates (bounded, like
-   policies, matched against the **workstream's** tags — the same scope
-   policies use) and the system prompt states the copy rule.
+   fact. **The ref records derivation, never enforcement.**
+   Instance-declared values win over every template field (the coordinator
+   adapts the skeleton to the actual workstream state — that is its job), so
+   `templateRef` honestly proves "derived from vN", not "vN was applied
+   verbatim". The rejected alternative — invariant fields whose conflicting
+   overrides the mutation refuses — is a different, stronger contract; if a
+   future operator need is verbatim enforcement, it must be designed as
+   such, not smuggled into this one. A model-claimed reference is never
+   trusted — the stamp exists only because the harness made the copy, which
+   is what makes the provenance honest. The projection renders tag-matching
+   templates (bounded, like policies, matched against the **workstream's**
+   tags — the same scope policies use) and the system prompt states the
+   copy rule.
 4. **No authority screen — because none is needed.** Template text is
    briefing text, and the boundary for briefs is the lifecycle (kernel rule
    7): a work brief cannot egress, whatever it says. Templates never render
@@ -120,9 +129,11 @@ is implemented while the plan is held.
    leaves past `templateRef` provenance resolvable-as-history (name+version
    rendered, never a dangling pointer that breaks rendering).
 2. **Projection + coordinator**: bounded render of tag-matching templates in
-   the projection; system-prompt copy rule; `create_assignment` unchanged.
-   Test: projection bound, template render, and the copy-path produces an
-   ordinary assignment with `templateRef` provenance.
+   the projection; system-prompt copy rule; `create_assignment` gains the
+   optional `template` input with the mutation-owned materialization and
+   `templateRef` stamp from design line 3. Test: projection bound, template
+   render, and the copy-path produces an ordinary assignment carrying the
+   harness-stamped `templateRef`.
 3. **Export/import + docs**: `weaver templates export/import` idempotent on
    name; `docs-public/templates.md` (share your work shapes, never your
    authority); cross-links from team-seeds and the future team page.
@@ -144,7 +155,7 @@ is implemented while the plan is held.
 ## Relationship to the other team-organization work
 
 - [execution-profiles.md](./execution-profiles.md) — the routing key a
-  template may *suggest* (shipped as documentation in the profiles PR).
+  template may *suggest* (shipped as documentation in the profiles PR, #122).
 - Team recipes page (`docs-public`, planned) — "running Weaver as a team":
   org shapes, specialists via tags+doctrine, where templates and seeds fit,
   and where personas are allowed to live (inside workers, as today).
