@@ -1,12 +1,22 @@
 # Assignment templates — plan
 
-*26 August 2026. The gap, from the cross-harness team review: a team can
-express any org shape and any specialist as durable text (tags + doctrine,
-steering, managed workstreams, eval-backed routes), but a **repeatable named
-assignment shape** — "every security review runs this exact brief" — has no
-durable home. It gets re-stated in steering, or stays tribal. This plan adds
-the smallest object that fixes that, without personas, registries of agents,
-or a new write path.*
+*26 August 2026; revised the same day after the #128 review. Status:
+**held, plan-only** — implementation waits on the acceptance trigger below.
+Org composition itself stays managed Workstreams → Assignments → Attempts
+([cross-harness-agent-organization-plan.md](./cross-harness-agent-organization-plan.md));
+templates are not the team-setup architecture.*
+
+## Acceptance trigger (adopted from the #128 review — this plan is held until it fires)
+
+An operator needs to **enforce and audit one named work standard across
+workstreams**, including which immutable version each Assignment materialized.
+Until that requirement is real, the self-contained Assignment brief remains
+the only cross-harness work contract guaranteed today; Workstream constraints,
+standing decisions, doctrine, and repository rules are sources a coordinator
+*may compose from*, not portable substitutes for a brief. The role label
+("security reviewer") alone does not establish the stronger contract —
+define-once selection across unrelated Assignments and harnesses, with
+durable revision attribution.
 
 ## The problem
 
@@ -35,7 +45,7 @@ interface AssignmentTemplate {
   objective: string;       // plain prose skeleton
   briefing: string;        // plain prose skeleton
   acceptanceCriteria: string[];
-  tags: string[];          // suggested policy-scope tags for instantiated work
+  tags: string[];          // WORKSTREAM tags this template matches on for render — same scope discipline as policies; there is no Assignment-level tag destination today
   executionRequirements?: AssignmentExecutionRequirements; // SUGGESTED profile/modalities/complexity
   provenance: { author: string; source: 'operator' | 'import'; at: Iso };
 }
@@ -54,18 +64,22 @@ writes the instance around the current workstream's actual state.
    unchanged.
 2. **Copy at instantiation, never reference.** Using a template copies its
    fields into the assignment and records `templateRef: { name, version }` as
-   provenance. Nothing at runtime reads the template back: routing reads the
-   copied `executionRequirements` (declared on the assignment as today),
-   adoption, gates, and readback are untouched, and editing a template never
-   rewrites history. Templates are not load-bearing — delete one and every
-   past assignment stands.
-3. **No new write path.** The coordinator composes through the existing
-   `create_assignment` tool. No `use_template` tool: one mutation path for
-   intended work stays one. The projection renders tag-matching templates
-   (bounded, like policies) and the system prompt states the copy rule: when
-   human direction names a template or the work matches one, copy its
-   skeleton; declare requirements as usual; the template is briefing text,
-   never authority.
+   harness-written provenance (mechanism in design line 3). Nothing at runtime
+   reads the template back: routing reads the copied `executionRequirements`
+   (declared on the assignment as today), adoption, gates, and readback are
+   untouched, and editing a template never rewrites history. Templates are not
+   load-bearing — delete one and every past assignment stands.
+3. **One write path, expanded — and the mutation writes the ref.** The
+   coordinator composes through `create_assignment`, which gains an optional
+   `template` input. When it is used, the **mutation** (not the model) resolves
+   the named template from the store, materializes every template-owned field
+   into the Assignment (instance-declared values win; the template fills the
+   rest), and stamps `templateRef: { name, version }` as a harness-written
+   fact. A model-claimed reference is never trusted — the stamp exists only
+   because the harness made the copy, which is what makes the provenance
+   honest. The projection renders tag-matching templates (bounded, like
+   policies, matched against the **workstream's** tags — the same scope
+   policies use) and the system prompt states the copy rule.
 4. **No authority screen — because none is needed.** Template text is
    briefing text, and the boundary for briefs is the lifecycle (kernel rule
    7): a work brief cannot egress, whatever it says. Templates never render
@@ -80,6 +94,9 @@ writes the instance around the current workstream's actual state.
 
 ## Non-goals
 
+- **Not the team-setup architecture.** Org composition is managed
+  Workstreams, Assignments, and Attempts; this plan sits behind its own
+  trigger and never adds identity records.
 - **No dispatch triggers or scheduling.** A template never runs itself;
   recurring work is a routine workstream's job. Templates are shapes, not
   engines.
@@ -93,6 +110,9 @@ writes the instance around the current workstream's actual state.
   humans, not accounts.
 
 ## Implementation slices
+
+All three are sequenced **after** the acceptance trigger fires; nothing here
+is implemented while the plan is held.
 
 1. **Store + CLI**: `AssignmentTemplate` in a fleet-level store (policy-store
    pattern); `weaver template set <name>` (fields from stdin, version bumped
