@@ -57,7 +57,9 @@ export function providerFromModel(model: string): string | null {
 }
 
 export function providerForExecutor(executor: string, model: string): string {
-  if (executor === 'local-sdk' || executor === 'claude-sdk') return 'anthropic';
+  if (executor === 'local-sdk' || executor === 'claude-sdk') {
+    return providerFromModel(model) ?? 'anthropic';
+  }
   if (executor === 'codex-sdk') return 'openai';
   return providerFromModel(model) ?? 'unknown';
 }

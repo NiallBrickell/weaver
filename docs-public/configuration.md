@@ -59,7 +59,7 @@ and keeps reconciling while the earlier seats' retries are pending (see
 
 | Variable | Default | What it sets |
 | --- | --- | --- |
-| `WEAVER_COORDINATOR_MODEL` | `claude-fable-5` | The coordinator's primary model |
+| `WEAVER_COORDINATOR_MODEL` | `claude-fable-5` | The coordinator's primary model. `local-sdk` may use an `openrouter/`-qualified model with a registered `OPENROUTER_API_KEY`; the prefix is retained in durable provider attribution and removed only for the API call |
 | `WEAVER_COORDINATOR_EXECUTOR` | `local-sdk` | Runtime for the primary coordinator: `local-sdk` (Claude) or `codex-sdk` (Codex) |
 | `WEAVER_COORDINATOR_FALLBACKS` | *(unset → legacy pair below)* | Ordered fallback seats tried after the primary, as comma-separated `executor:model` entries — e.g. `local-sdk:claude-opus-5,codex-sdk:gpt-5.6-sol`. When set, the legacy pair below is ignored |
 | `WEAVER_COORDINATOR_FALLBACK_MODEL` | `claude-opus-5` | Legacy single fallback model, used only while `WEAVER_COORDINATOR_FALLBACKS` is unset |

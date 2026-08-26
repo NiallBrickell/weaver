@@ -82,7 +82,22 @@ test('render forwards registered provider keys and mirrors config, and flags cod
   assert.ok(lines.includes('WEAVER_WORKSPACE_ROOT=/var/lib/weaver/workspaces'));
   assert.ok(lines.includes('WEAVER_PILOT_URL=http://127.0.0.1:9721'));
   assert.ok(!lines.some((l) => l.startsWith('WEAVER_RUNNER_EXECUTORS=')));
-  assert.ok(warnings.some((w) => w.includes('codex-sdk auth is a login file')));
+  assert.ok(warnings.some((w) => w.includes('remote rendering never copies personal auth.json')));
+});
+
+test('an API-backed hosted coordinator does not pretend it needs a Claude device identity', () => {
+  const { warnings } = renderRemoteEnvLines(
+    { OPENROUTER_API_KEY: 'router-key', WEAVER_SERVE_TOKEN: 'serve-key' },
+    {
+      WEAVER_EXECUTOR: 'openhands',
+      WEAVER_COORDINATOR_EXECUTOR: 'local-sdk',
+      WEAVER_COORDINATOR_MODEL: 'openrouter/~anthropic/claude-opus-latest',
+      WEAVER_COORDINATOR_FALLBACKS: 'local-sdk:openrouter/~anthropic/claude-sonnet-latest',
+      WEAVER_ACTION_EXECUTOR: 'local-sdk',
+      WEAVER_DETERMINISTIC_ACTIONS_ONLY: '1',
+    },
+  );
+  assert.ok(!warnings.some((warning) => warning.includes('no Claude identity registered')));
 });
 
 test('executor-secret render carries every registered secret exactly and no config', () => {

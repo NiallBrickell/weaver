@@ -43,7 +43,6 @@ NETWORK="${WEAVER_GCP_NETWORK:-weaver-vpc}"
 SUBNET="${WEAVER_GCP_SUBNET:-weaver-subnet}"
 REPO_URL="https://github.com/NiallBrickell/weaver"
 REPO="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
-CODEX_AUTH_HOME="${CODEX_HOME:-$HOME/.codex}"
 PREFLIGHT="$REPO/bin/weaver-gcp-preflight.sh"
 
 GC=()
@@ -351,41 +350,80 @@ cmd_set_store() {
 # metadata. Adapters deliberately load the latter instead of ambient identity.
 cmd_push_env() {
   local restart=0
+  local hosted_worker_model hosted_worker_complex_model hosted_worker_fallbacks
+  local hosted_coordinator_model hosted_coordinator_fallbacks
   case "${1:-}" in
     --restart) restart=1; shift ;;
     "") ;;
     *) echo "❌ usage: weaver-gcp push-env [--restart]" >&2; exit 1 ;;
   esac
   [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp push-env [--restart]" >&2; exit 1; }
+  hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-openrouter/moonshotai/kimi-k3}"
+  hosted_worker_complex_model="${WEAVER_GCP_WORKER_MODEL_COMPLEX:-$hosted_worker_model}"
+  hosted_worker_fallbacks="${WEAVER_GCP_WORKER_FALLBACKS:-}"
+  hosted_coordinator_model="${WEAVER_GCP_COORDINATOR_MODEL:-openrouter/~anthropic/claude-opus-latest}"
+  hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-local-sdk:openrouter/~anthropic/claude-sonnet-latest}"
+
+  PUSH_ENV_RAW_TMP="$(mktemp)"
   PUSH_ENV_TMP="$(mktemp)"
+  PUSH_EXECUTOR_SECRETS_RAW_TMP="$(mktemp)"
   PUSH_EXECUTOR_SECRETS_TMP="$(mktemp)"
-  trap 'rm -f -- "${PUSH_ENV_TMP:-}" "${PUSH_EXECUTOR_SECRETS_TMP:-}"' EXIT
-  chmod 600 "$PUSH_ENV_TMP" "$PUSH_EXECUTOR_SECRETS_TMP"
-  "$REPO/bin/weaver.mjs" login --render-remote-env > "$PUSH_ENV_TMP"
+  trap 'rm -f -- "${PUSH_ENV_RAW_TMP:-}" "${PUSH_ENV_TMP:-}" "${PUSH_EXECUTOR_SECRETS_RAW_TMP:-}" "${PUSH_EXECUTOR_SECRETS_TMP:-}"' EXIT
+  chmod 600 "$PUSH_ENV_RAW_TMP" "$PUSH_ENV_TMP" "$PUSH_EXECUTOR_SECRETS_RAW_TMP" "$PUSH_EXECUTOR_SECRETS_TMP"
+  env \
+    WEAVER_EXECUTOR=openhands \
+    WEAVER_WORKER_MODEL="$hosted_worker_model" \
+    WEAVER_WORKER_MODEL_COMPLEX="$hosted_worker_complex_model" \
+    WEAVER_WORKER_FALLBACKS="$hosted_worker_fallbacks" \
+    WEAVER_COORDINATOR_EXECUTOR=local-sdk \
+    WEAVER_COORDINATOR_MODEL="$hosted_coordinator_model" \
+    WEAVER_COORDINATOR_FALLBACK_EXECUTOR=local-sdk \
+    WEAVER_COORDINATOR_FALLBACK_MODEL="$hosted_coordinator_model" \
+    WEAVER_COORDINATOR_FALLBACKS="$hosted_coordinator_fallbacks" \
+    WEAVER_ACTION_EXECUTOR=local-sdk \
+    WEAVER_DETERMINISTIC_ACTIONS_ONLY=1 \
+    WEAVER_RUNNER_EXECUTORS=openhands,local-sdk \
+    "$REPO/bin/weaver.mjs" login --render-remote-env > "$PUSH_ENV_RAW_TMP"
+  # Provider/App identities have their own exact executor-only synchronization
+  # below. Do not duplicate them into the ambient systemd environment; only
+  # the ingress bearer and non-secret runner configuration belong there.
+  awk -F= '
+    {
+      key = $1
+      if (key ~ /_API_KEY$/ || key == "CLAUDE_CODE_OAUTH_TOKEN" ||
+          key == "ANTHROPIC_AUTH_TOKEN" || key == "GH_TOKEN" ||
+          key == "GITHUB_TOKEN") next
+      print
+    }
+  ' "$PUSH_ENV_RAW_TMP" > "$PUSH_ENV_TMP"
   if [ ! -s "$PUSH_ENV_TMP" ]; then
     echo "❌ weaver login produced no remote env — run: weaver login" >&2; exit 1
   fi
-  "$REPO/bin/weaver.mjs" login --render-remote-executor-secrets > "$PUSH_EXECUTOR_SECRETS_TMP"
+  "$REPO/bin/weaver.mjs" login --render-remote-executor-secrets > "$PUSH_EXECUTOR_SECRETS_RAW_TMP"
+  awk -F= '
+    $1 == "OPENROUTER_API_KEY" ||
+    $1 == "WEAVER_GITHUB_APP_ID" ||
+    $1 == "WEAVER_GITHUB_APP_INSTALLATION_ID" ||
+    $1 == "WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64" ||
+    $1 == "WEAVER_PILOT_TOKEN" ||
+    $1 == "WEAVER_SERVE_TOKEN" { print }
+  ' "$PUSH_EXECUTOR_SECRETS_RAW_TMP" > "$PUSH_EXECUTOR_SECRETS_TMP"
   # Stream this checkout's installer before invoking it. The VM may still run
   # an older checkout whose helper lacks the new mode; helper code is public
   # and travels alone, while every credential remains on its later SSH stdin.
   "${GSSH[@]}" --command 'helper="/tmp/weaver-install-env.local.$$"; staged="/usr/local/sbin/.weaver-install-env.$$"; trap "rm -f -- $helper; sudo rm -f -- $staged" EXIT; umask 077; cat > "$helper"; sudo install -o root -g root -m 755 "$helper" "$staged"; sudo mv -f "$staged" /usr/local/sbin/weaver-install-env' < "$REPO/bin/weaver-install-env.sh"
   "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env merge' < "$PUSH_ENV_TMP"
   "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env executor-secrets' < "$PUSH_EXECUTOR_SECRETS_TMP"
-  # Codex auth rides alongside if the local machine has it
-  if [ -f "$CODEX_AUTH_HOME/auth.json" ]; then
-    "${GSSH[@]}" --command 'sudo -u weaver bash -c "umask 077; mkdir -p ~/.codex; cat > ~/.codex/auth.json"' \
-      < "$CODEX_AUTH_HOME/auth.json"
-    echo "✓ codex auth.json delivered"
-  fi
   if [ "$restart" -eq 1 ]; then
     run_after_execution_preflight restart
     echo "✓ env + executor identities installed, services restarted"
   else
     echo "✓ env + executor identities installed; services were not restarted"
   fi
-  rm -f -- "$PUSH_ENV_TMP" "$PUSH_EXECUTOR_SECRETS_TMP"
+  rm -f -- "$PUSH_ENV_RAW_TMP" "$PUSH_ENV_TMP" "$PUSH_EXECUTOR_SECRETS_RAW_TMP" "$PUSH_EXECUTOR_SECRETS_TMP"
+  PUSH_ENV_RAW_TMP=""
   PUSH_ENV_TMP=""
+  PUSH_EXECUTOR_SECRETS_RAW_TMP=""
   PUSH_EXECUTOR_SECRETS_TMP=""
   trap - EXIT
 }

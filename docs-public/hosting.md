@@ -143,15 +143,8 @@ bin/weaver-gcp.sh set-store               # hidden prompt; URL goes only over SS
 # without them preserves the installed host values.
 WEAVER_HOUSE_JSON='{"repoMap":"Primary application: /srv/application","tags":["application"]}' \
 WEAVER_WORKSPACE_ROOT=/home/weaver/workspaces \
-WEAVER_EXECUTOR=openhands \
-WEAVER_WORKER_FALLBACKS= \
-WEAVER_COORDINATOR_EXECUTOR=codex-sdk \
-WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol \
-WEAVER_ACTION_EXECUTOR=local-sdk \
-WEAVER_DETERMINISTIC_ACTIONS_ONLY=1 \
 WEAVER_PILOT_URL=http://127.0.0.1:9721 \
-WEAVER_RUNNER_EXECUTORS=openhands,codex-sdk,local-sdk \
-  bin/weaver-gcp.sh push-env               # merge identity + every model/fallback setting
+  bin/weaver-gcp.sh push-env               # install hosted profile + executor identities
 
 bin/weaver-gcp.sh update                   # pull/install only; still no restart
 bin/weaver-gcp.sh start                    # starts weaver-run: the explicit cutover
@@ -173,13 +166,16 @@ values as shell.
 same fail-closed host preflight before systemd can launch the runner. This GCP
 helper is deliberately narrower than Weaver's general executor support:
 ordinary work and every worker fallback must use `openhands`, the coordinator
-must use its tool-restricted `codex-sdk` seam, the capability declaration must
-be explicit, and the service user's rootless Docker daemon must answer. Pi,
-local Claude, and ordinary Codex workers remain valid on operator-controlled
-machines; they are refused as normal-worker routes on this credential-bearing
-host. Rootless Docker is separate from the root-owned daemon used by the
-optional bundled Postgres, so running disposable workers does not make the
-service account root-equivalent through the Docker group.
+uses the tool-restricted Claude SDK over OpenRouter with the registered
+organization API key, the capability declaration is explicit, and the service
+user's rootless Docker daemon must answer. The durable model target retains an
+`openrouter/` prefix so attempts and capacity state name the real billing pool;
+the adapter removes that prefix only for the upstream call. Pi, local-login
+Claude, and Codex remain valid on operator-controlled machines; they are
+refused as hosted worker/coordinator routes on this credential-bearing host.
+Rootless Docker is separate from the root-owned daemon used by the optional
+bundled Postgres, so disposable workers do not make the service account
+root-equivalent through the Docker group.
 
 The hosted action lane is deterministic-only: exact `exec_run` commands are
 evaluated by Pilot and executed by the engine, while same-UID model-driven
@@ -218,13 +214,21 @@ fleet you intend to execute: changing the URL selects a store; it does not copy
 one. Use the [exact filesystem-to-Postgres copy](./hosted-state.md) first.
 
 `push-env` synchronizes two distinct host inputs before any optional restart:
-portable service configuration remains in `/etc/weaver/env`, while the exact
-set of credentials registered on the operator machine is installed at
+the helper's fixed hosted execution profile plus ingress configuration remains
+in `/etc/weaver/env`, while the hosted allowlist of registered credentials
+(OpenRouter, Pilot, serve, and the GitHub App identity) is installed at
 `/home/weaver/state/executor-secrets.env`. Both are mode `0600`; the second is
 the canonical adapter-only store read by Weaver executors. Removing a locally
-registered executor credential and pushing again removes it from the host too.
-Codex's login remains a separate `~/.codex/auth.json` file delivered by the
-same command.
+registered allowed credential and pushing again removes it from the host too.
+Provider keys are filtered out of the ambient systemd environment and exist
+only in that executor store. `WEAVER_GCP_WORKER_MODEL`,
+`WEAVER_GCP_WORKER_MODEL_COMPLEX`, `WEAVER_GCP_WORKER_FALLBACKS`,
+`WEAVER_GCP_COORDINATOR_MODEL`, and `WEAVER_GCP_COORDINATOR_FALLBACKS` may
+override the profile's model seats without weakening its substrate checks.
+Personal CLI and device-login state is never copied to the host. In particular,
+`push-env` does not deliver `~/.codex/auth.json`, `gh` authentication, or
+`gcloud` authentication. A hosted executor must instead use a deliberately
+registered, organization-owned credential supported by that executor.
 
 ## Deploying with Docker Compose (any host)
 

@@ -182,9 +182,30 @@ export function renderRemoteEnvLines(
     included.push(name);
   };
 
+  const needsClaudeIdentity = (() => {
+    if ((config.WEAVER_EXECUTOR ?? 'local-sdk') === 'local-sdk') return true;
+    const coordinatorExecutor = config.WEAVER_COORDINATOR_EXECUTOR ?? 'local-sdk';
+    const coordinatorModel = config.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5';
+    if (coordinatorExecutor === 'local-sdk' && !coordinatorModel.startsWith('openrouter/')) return true;
+    const fallbacks = config.WEAVER_COORDINATOR_FALLBACKS;
+    if (fallbacks !== undefined) {
+      for (const entry of fallbacks.split(',').map((value) => value.trim()).filter(Boolean)) {
+        const colon = entry.indexOf(':');
+        if (colon > 0 && entry.slice(0, colon).trim() === 'local-sdk' &&
+            !entry.slice(colon + 1).trim().startsWith('openrouter/')) return true;
+      }
+    } else {
+      const fallbackExecutor = config.WEAVER_COORDINATOR_FALLBACK_EXECUTOR ?? coordinatorExecutor;
+      const fallbackModel = config.WEAVER_COORDINATOR_FALLBACK_MODEL ?? 'claude-opus-4-8';
+      if (fallbackExecutor === 'local-sdk' && !fallbackModel.startsWith('openrouter/')) return true;
+    }
+    return (config.WEAVER_ACTION_EXECUTOR ?? 'local-sdk') === 'local-sdk' &&
+      config.WEAVER_DETERMINISTIC_ACTIONS_ONLY !== '1';
+  })();
+
   const identity = CLAUDE_IDENTITY_NAMES.find((name) => executorSecrets[name]);
   if (identity) emit(identity, executorSecrets[identity]!);
-  else {
+  else if (needsClaudeIdentity) {
     warnings.push(
       'no Claude identity registered — the remote host cannot run local-sdk work until you run `weaver login` and register CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY',
     );
@@ -207,7 +228,7 @@ export function renderRemoteEnvLines(
   }
   if ([...configured].some((v) => v.split(',').map((s) => s.trim()).includes('codex-sdk'))) {
     warnings.push(
-      'codex-sdk auth is a login file (~/.codex/auth.json), delivered by the provisioning script, not by env',
+      'codex-sdk needs a machine-local ChatGPT login; remote rendering never copies personal auth.json device state',
     );
   }
   return { lines, included, warnings };

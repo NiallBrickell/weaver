@@ -49,6 +49,20 @@ test('a capacity chain splits each entry on the first colon so provider-qualifie
   );
 });
 
+test('a provider-qualified Claude SDK route records its actual API provider', () => {
+  assert.deepEqual(
+    parseCapacityTargetList(
+      'local-sdk:openrouter/~anthropic/claude-opus-latest',
+      'WEAVER_COORDINATOR_FALLBACKS',
+    ),
+    [{
+      executor: 'local-sdk',
+      provider: 'openrouter',
+      model: 'openrouter/~anthropic/claude-opus-latest',
+    }],
+  );
+});
+
 test('an unknown executor or a colonless entry in a chain fails hard, naming the variable', () => {
   assert.throws(
     () => parseCapacityTargetList('managed-agents:gpt-6', 'WEAVER_COORDINATOR_FALLBACKS'),

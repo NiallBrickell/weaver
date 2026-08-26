@@ -9,6 +9,7 @@ import type {
 } from '@openai/codex-sdk';
 import { z } from 'zod';
 import {
+  ClaudeCoordinatorExecutor,
   CodexCoordinatorExecutor,
   selectCoordinatorExecutor,
   type CoordinatorExecutionRequest,
@@ -42,6 +43,66 @@ function request(overrides: Partial<CoordinatorExecutionRequest> = {}): Coordina
     ...overrides,
   };
 }
+
+describe('ClaudeCoordinatorExecutor', () => {
+  test('uses a fresh OpenRouter API identity without ambient Claude or device-login state', async () => {
+    let captured: any;
+    let cleaned = 0;
+    const executor = new ClaudeCoordinatorExecutor({
+      loadExecutorSecrets: () => ({ OPENROUTER_API_KEY: 'registered-router-key' }),
+      prepareApiHome: () => ({
+        path: '/tmp/fresh-claude-api-home',
+        cleanup() { cleaned++; },
+      }),
+      runQuery: ((args: any) => {
+        captured = args;
+        return (async function* () {})();
+      }) as any,
+    });
+
+    const outcome = await executor.execute(request({
+      model: 'openrouter/~anthropic/claude-opus-latest',
+      env: {
+        PATH: '/usr/bin',
+        CLAUDE_CODE_OAUTH_TOKEN: 'personal-device-login',
+        ANTHROPIC_API_KEY: 'ambient-api-key',
+        OPENROUTER_API_KEY: 'ambient-router-key',
+      },
+    }));
+
+    assert.deepEqual(outcome, { costUsd: 0 });
+    assert.equal(cleaned, 1);
+    assert.equal(captured.options.model, '~anthropic/claude-opus-latest');
+    assert.deepEqual(captured.options.env, {
+      PATH: '/usr/bin',
+      CLAUDE_CONFIG_DIR: '/tmp/fresh-claude-api-home',
+      ANTHROPIC_BASE_URL: 'https://openrouter.ai/api',
+      ANTHROPIC_AUTH_TOKEN: 'registered-router-key',
+      ANTHROPIC_API_KEY: '',
+    });
+    assert.deepEqual(captured.options.tools, []);
+    assert.deepEqual(captured.options.allowedTools, ['mcp__weaver__*']);
+    assert.equal(captured.options.persistSession, false);
+  });
+
+  test('fails closed without the registered OpenRouter key', async () => {
+    let queried = false;
+    const executor = new ClaudeCoordinatorExecutor({
+      loadExecutorSecrets: () => ({}),
+      runQuery: (() => {
+        queried = true;
+        return (async function* () {})();
+      }) as any,
+    });
+
+    const outcome = await executor.execute(request({
+      model: 'openrouter/~anthropic/claude-opus-latest',
+    }));
+
+    assert.equal(queried, false);
+    assert.match(outcome.error ?? '', /requires OPENROUTER_API_KEY in executor-only secrets/);
+  });
+});
 
 describe('CodexCoordinatorExecutor', () => {
   test('runs one fresh, isolated, subscription-backed thread over only the authenticated Weaver tools', async () => {

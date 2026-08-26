@@ -13,7 +13,11 @@ import {
 import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { stripClaudeCredentials } from '../secrets.js';
+import {
+  loadExecutorSecrets,
+  redactSecrets,
+  stripClaudeCredentials,
+} from '../secrets.js';
 import { startToolBridge, type BridgeToolDefinition, type ToolBridge } from './toolBridge.js';
 
 const CODEX_COORDINATOR_TOKEN_ENV = 'WEAVER_CODEX_COORDINATOR_TOKEN';
@@ -40,8 +44,37 @@ export interface CoordinatorExecutor {
   execute(req: CoordinatorExecutionRequest): Promise<CoordinatorExecutionOutcome>;
 }
 
+interface PreparedClaudeApiHome {
+  path: string;
+  cleanup(): void;
+}
+
+export interface ClaudeCoordinatorExecutorDependencies {
+  runQuery?: typeof query;
+  loadExecutorSecrets?: typeof loadExecutorSecrets;
+  prepareApiHome?: () => PreparedClaudeApiHome;
+}
+
+function isolatedClaudeApiHome(): PreparedClaudeApiHome {
+  const path = mkdtempSync(join(tmpdir(), 'weaver-claude-api-coordinator-'));
+  return {
+    path,
+    cleanup() { rmSync(path, { recursive: true, force: true }); },
+  };
+}
+
 export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
   readonly id = 'local-sdk' as const;
+
+  private readonly runQuery: typeof query;
+  private readonly executorSecretsLoader: typeof loadExecutorSecrets;
+  private readonly prepareApiHome: () => PreparedClaudeApiHome;
+
+  constructor(dependencies: ClaudeCoordinatorExecutorDependencies = {}) {
+    this.runQuery = dependencies.runQuery ?? query;
+    this.executorSecretsLoader = dependencies.loadExecutorSecrets ?? loadExecutorSecrets;
+    this.prepareApiHome = dependencies.prepareApiHome ?? isolatedClaudeApiHome;
+  }
 
   async execute(req: CoordinatorExecutionRequest): Promise<CoordinatorExecutionOutcome> {
     const server = createSdkMcpServer({
@@ -52,11 +85,36 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
     let costUsd = 0;
     let sessionId: string | undefined;
     let error: string | undefined;
+    let apiHome: PreparedClaudeApiHome | null = null;
+    let model = req.model;
+    let env = req.env;
+    let redactions: Record<string, string> = {};
     try {
-      for await (const message of query({
+      if (model.startsWith('openrouter/')) {
+        model = model.slice('openrouter/'.length);
+        if (!model) throw new Error('OpenRouter coordinator model must name a model after openrouter/');
+        const key = this.executorSecretsLoader().OPENROUTER_API_KEY;
+        if (!key) {
+          throw new Error(
+            'OpenRouter coordinator requires OPENROUTER_API_KEY in executor-only secrets',
+          );
+        }
+        redactions = { OPENROUTER_API_KEY: key };
+        apiHome = this.prepareApiHome();
+        env = { ...req.env };
+        stripClaudeCredentials(env);
+        delete env.OPENROUTER_API_KEY;
+        env.CLAUDE_CONFIG_DIR = apiHome.path;
+        env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api';
+        env.ANTHROPIC_AUTH_TOKEN = key;
+        // Claude Code treats an absent key differently from an explicitly
+        // empty one on its supported OpenRouter route.
+        env.ANTHROPIC_API_KEY = '';
+      }
+      for await (const message of this.runQuery({
         prompt: req.prompt,
         options: {
-          model: req.model,
+          model,
           systemPrompt: req.systemPrompt,
           // The coordinator is a controller over typed state, not a worker.
           // Its only capabilities are the revision-checked Weaver tools.
@@ -68,7 +126,7 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
           strictMcpConfig: true,
           maxTurns: 60,
           persistSession: false,
-          env: req.env,
+          env,
           abortController: req.abort,
         },
       })) {
@@ -80,7 +138,15 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
         }
       }
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      const raw = caught instanceof Error ? caught.message : String(caught);
+      error = redactSecrets(raw, redactions);
+    } finally {
+      if (apiHome) {
+        try { apiHome.cleanup(); }
+        catch (caught) {
+          error = error ?? `temporary Claude API home cleanup failed: ${caught instanceof Error ? caught.message : String(caught)}`;
+        }
+      }
     }
     return {
       costUsd,

@@ -23,6 +23,8 @@ fail() {
 [ -r "$env_file" ] || fail 'host env is missing or unreadable'
 id "$service_user" >/dev/null 2>&1 || fail 'Weaver service user does not exist'
 [ -d "$service_home" ] || fail 'Weaver service home does not exist'
+[ ! -s "$service_home/.codex/auth.json" ] || \
+  fail 'personal Codex device authentication is forbidden on this host'
 
 # Read raw KEY=value records as data. Never source/eval the credential-bearing
 # file, and never print a value while reporting a configuration failure.
@@ -71,22 +73,44 @@ csv_entries() {
 
 worker_executor="$(env_value WEAVER_EXECUTOR)"
 [ "$worker_executor" = openhands ] || fail 'WEAVER_EXECUTOR must be openhands on this credential-bearing host'
+worker_model="$(env_value WEAVER_WORKER_MODEL)"
+case "$worker_model" in
+  openrouter/*) ;;
+  *) fail 'WEAVER_WORKER_MODEL must be an openrouter/ provider-qualified model on this host' ;;
+esac
+worker_complex_model="$(env_value WEAVER_WORKER_MODEL_COMPLEX)"
+if [ -n "$worker_complex_model" ]; then
+  case "$worker_complex_model" in
+    openrouter/*) ;;
+    *) fail 'WEAVER_WORKER_MODEL_COMPLEX must use the openrouter/ provider prefix on this host' ;;
+  esac
+fi
 
 worker_fallbacks="$(env_value WEAVER_WORKER_FALLBACKS)"
 while IFS= read -r entry; do
   [ -z "$entry" ] && continue
   executor="$(parse_target_executor "$entry" WEAVER_WORKER_FALLBACKS)"
   [ "$executor" = openhands ] || fail 'every WEAVER_WORKER_FALLBACKS target must use openhands on this host'
+  model="$(trim "${entry#*:}")"
+  case "$model" in
+    openrouter/*) ;;
+    *) fail 'every WEAVER_WORKER_FALLBACKS model must use the openrouter/ provider prefix on this host' ;;
+  esac
 done < <(csv_entries "$worker_fallbacks")
 
-# The coordinator is a separate, tool-restricted process seam. Codex is
-# permitted there, but listing codex-sdk as a normal worker fallback above is
-# still refused. A local-sdk coordinator cannot be represented in the coarse
-# runner capability set without also enabling the currently unsafe action
-# lane, so this host keeps its coordinator entirely on Codex.
+# The coordinator is a separate, tool-restricted process seam. On this hosted
+# profile it uses the Claude Agent SDK against OpenRouter's supported Anthropic
+# API surface: an organization API key, never a copied CLI/device login. The
+# provider prefix stays on the durable target so attempts name their real
+# billing pool; the adapter removes it only when calling the upstream model.
 coordinator_executor="$(env_value WEAVER_COORDINATOR_EXECUTOR)"
 [ -n "$coordinator_executor" ] || coordinator_executor=local-sdk
-[ "$coordinator_executor" = codex-sdk ] || fail 'WEAVER_COORDINATOR_EXECUTOR must be codex-sdk on this host'
+[ "$coordinator_executor" = local-sdk ] || fail 'WEAVER_COORDINATOR_EXECUTOR must be local-sdk on this host'
+coordinator_model="$(env_value WEAVER_COORDINATOR_MODEL)"
+case "$coordinator_model" in
+  openrouter/*) ;;
+  *) fail 'WEAVER_COORDINATOR_MODEL must be an openrouter/ provider-qualified model on this host' ;;
+esac
 
 coordinator_executors=("$coordinator_executor")
 if env_has WEAVER_COORDINATOR_FALLBACKS; then
@@ -94,13 +118,23 @@ if env_has WEAVER_COORDINATOR_FALLBACKS; then
   while IFS= read -r entry; do
     [ -z "$entry" ] && continue
     executor="$(parse_target_executor "$entry" WEAVER_COORDINATOR_FALLBACKS)"
-    [ "$executor" = codex-sdk ] || fail 'every WEAVER_COORDINATOR_FALLBACKS target must use codex-sdk on this host'
+    [ "$executor" = local-sdk ] || fail 'every WEAVER_COORDINATOR_FALLBACKS target must use local-sdk on this host'
+    model="$(trim "${entry#*:}")"
+    case "$model" in
+      openrouter/*) ;;
+      *) fail 'every WEAVER_COORDINATOR_FALLBACKS model must use the openrouter/ provider prefix on this host' ;;
+    esac
     coordinator_executors+=("$executor")
   done < <(csv_entries "$coordinator_fallbacks")
 else
   coordinator_fallback_executor="$(env_value WEAVER_COORDINATOR_FALLBACK_EXECUTOR)"
   [ -n "$coordinator_fallback_executor" ] || coordinator_fallback_executor="$coordinator_executor"
-  [ "$coordinator_fallback_executor" = codex-sdk ] || fail 'WEAVER_COORDINATOR_FALLBACK_EXECUTOR must be codex-sdk on this host'
+  [ "$coordinator_fallback_executor" = local-sdk ] || fail 'WEAVER_COORDINATOR_FALLBACK_EXECUTOR must be local-sdk on this host'
+  coordinator_fallback_model="$(env_value WEAVER_COORDINATOR_FALLBACK_MODEL)"
+  case "$coordinator_fallback_model" in
+    openrouter/*) ;;
+    *) fail 'WEAVER_COORDINATOR_FALLBACK_MODEL must use the openrouter/ provider prefix on this host' ;;
+  esac
   coordinator_executors+=("$coordinator_fallback_executor")
 fi
 
@@ -121,8 +155,8 @@ capabilities=()
 while IFS= read -r executor; do
   [ -z "$executor" ] && continue
   case "$executor" in
-    openhands|codex-sdk) capabilities+=("$executor") ;;
-    local-sdk) capabilities+=("$executor") ;;
+    openhands|local-sdk) capabilities+=("$executor") ;;
+    codex-sdk) fail 'codex-sdk requires forbidden personal device authentication on this host' ;;
     *) fail 'WEAVER_RUNNER_EXECUTORS contains a host-process ordinary-worker capability' ;;
   esac
 done < <(csv_entries "$runner_caps")
@@ -139,6 +173,18 @@ capability_has openhands || fail 'WEAVER_RUNNER_EXECUTORS must include openhands
 for executor in "${coordinator_executors[@]}"; do
   capability_has "$executor" || fail 'WEAVER_RUNNER_EXECUTORS is missing a configured coordinator capability'
 done
+
+secure_openrouter_coordinator_boundary() {
+  local count value
+  [ -r "$executor_secrets_file" ] || fail 'executor secret store is missing or unreadable'
+  count="$(awk 'index($0, "OPENROUTER_API_KEY=") == 1 { count++ } END { print count + 0 }' "$executor_secrets_file")"
+  [ "$count" -eq 1 ] || fail 'executor secret store must contain exactly one OPENROUTER_API_KEY'
+  value="$(awk 'index($0, "OPENROUTER_API_KEY=") == 1 { print substr($0, 20) }' "$executor_secrets_file")"
+  [ -n "$value" ] || fail 'OPENROUTER_API_KEY must be nonempty'
+  unset value
+}
+
+secure_openrouter_coordinator_boundary
 
 secure_pilot_boundary() {
   local pilot_url token_count pilot_token pilot_user pilot_pid pilot_listeners
