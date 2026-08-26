@@ -15,7 +15,8 @@ import { secretNames } from './secrets.js';
 import { pendingSteering } from './steering.js';
 import { virtualNow } from './clock.js';
 import { capacityPresentation } from './capacity.js';
-import { executionSafetyConfig, isLegacyDollarBudgetAttention } from './executionSafety.js';
+import { executionSafetyConfig } from './executionSafety.js';
+import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
 
 const SCHEMA_VERSION = 1;
 export const PROMPT_VERSION = 1;
@@ -230,7 +231,10 @@ export function buildProjection(
   ].join('\n');
 
   // 6. Unresolved approvals, steering, active interactions
-  const openAttention = doc.attention.filter((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a));
+  const openAttention = humanAttention(doc);
+  const pilotUnavailable = doc.assignments.filter(
+    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+  );
   const unconsumedSteering = pendingSteering(doc.steering);
   const activeInteractions = doc.interactions.filter(
     (i) => i.status !== 'rejected',
@@ -248,6 +252,12 @@ export function buildProjection(
     `## 6. Open loops`,
     `Needs a human (do NOT act on these yourself):`,
     fmtList(openAttention.map((a) => `${a.id} [${a.kind}] ${a.summary}`), 'nothing'),
+    ``,
+    `Operational dependency waits (not human decisions; preserve the gate and investigate the shared cause):`,
+    fmtList(
+      pilotUnavailable.map((assignment) => `${assignment.id}: approval service unavailable since ${assignment.exec!.pilotUnavailableSince}; external action remains safely gated`),
+      'none',
+    ),
     ``,
     `Unconsumed human steering (durable input — acknowledge and act):`,
     fmtList(unconsumedSteering.map((s) => `${s.id}: "${s.body}"`), 'none'),

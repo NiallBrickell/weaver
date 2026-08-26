@@ -2,10 +2,13 @@ import { compactAge } from '../../activity.js';
 import { capacityPresentation } from '../../capacity.js';
 import { assignmentBoard, type AssignmentBoardView } from '../../assignmentBoard.js';
 import { virtualNow } from '../../clock.js';
-import { isLegacyDollarBudgetAttention } from '../../executionSafety.js';
 import { isDoctrine, type PolicyRecord } from '../../policies.js';
 import type { Decision, Steering, WorkstreamDoc } from '../../types.js';
-import { actionNeedsHuman } from '../../actionApproval.js';
+import {
+  actionAwaitingPilot,
+  actionNeedsHuman,
+  humanAttention,
+} from '../../actionApproval.js';
 
 export interface ManagedWorkstreamLink {
   slug: string;
@@ -169,6 +172,23 @@ export function firstSentence(value: string, max = 180): string {
   return firstLine(sentence, max);
 }
 
+/** Decision-bearing text may wrap, but it must never lose the deciding clause. */
+function completeDecisionSentence(value: string): string {
+  const clean = displayText(value).replace(/^\s*(?:decision|action|approval)\s+needed\s*:\s*/i, '');
+  return clean.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? clean;
+}
+
+/**
+ * Preserve every clause belonging to an option. Only the final option can
+ * contain the diagnostic tail, whose explicit heading remains in Full context.
+ */
+function completeDecisionChoice(value: string, final: boolean): string {
+  const clean = displayText(value);
+  if (!final) return clean;
+  const diagnostic = clean.search(/\s+(?=(?:WHY (?:IT IS|IT'S|THIS IS)|DIAGNOSTIC(?: DETAIL)?|EVERYTHING ELSE|WHAT THE FIX DOES|CURRENT STATE|BACKGROUND|EVIDENCE|CONTEXT|DETAILS?)\b[\s:—.-])/);
+  return (diagnostic >= 0 ? clean.slice(0, diagnostic) : clean).trim();
+}
+
 /** Keep the source fact intact while exposing labelled choices as controls. */
 export function presentNeed(summary: string): NeedPresentation {
   const full = displayText(summary);
@@ -179,11 +199,14 @@ export function presentNeed(summary: string): NeedPresentation {
     const end = matches[index + 1]?.index ?? full.length;
     return {
       label: match[1]!,
-      text: firstSentence(full.slice(start, end), 220),
+      text: completeDecisionChoice(full.slice(start, end), index === matches.length - 1),
     };
   });
   const preamble = matches[0]?.index === undefined ? full : full.slice(0, matches[0].index);
-  return { headline: firstSentence(preamble), choices, full };
+  const headline = choices.length
+    ? displayText(preamble).replace(/^\s*(?:decision|action|approval)\s+needed\s*:\s*/i, '')
+    : completeDecisionSentence(preamble);
+  return { headline, choices, full };
 }
 
 export function formatTimestamp(value: string): string {
@@ -220,8 +243,7 @@ export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
   for (const doc of docs) {
     const slug = doc.workstream.slug;
     const representedRefs = new Set<string>();
-    for (const attention of doc.attention) {
-      if (attention.status === 'open' && !isLegacyDollarBudgetAttention(attention)) {
+    for (const attention of humanAttention(doc)) {
         if (attention.refId && representedRefs.has(attention.refId)) continue;
         const action = attention.refId
           ? doc.assignments.find((assignment) => assignment.id === attention.refId && assignment.state === 'gated')
@@ -235,13 +257,14 @@ export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
           kind: action ? 'action' : send ? 'send' : attention.kind,
           at: attention.createdAt,
           summary: action
-            ? action.exec?.ask ?? action.objective
+            ? action.exec?.pilotVerdict && action.exec.pilotVerdict.decision !== 'approve'
+              ? attention.summary
+              : action.exec?.ask ?? action.objective
             : send
               ? `Send to ${send.to}: ${send.subject}`
               : attention.summary,
         });
         if (attention.refId) representedRefs.add(attention.refId);
-      }
     }
     for (const assignment of doc.assignments) {
       if (!actionNeedsHuman(assignment)) continue;
@@ -251,7 +274,9 @@ export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
         source: { type: 'assignment', id: assignment.id },
         kind: 'action',
         at: assignment.createdAtVirtual,
-        summary: assignment.exec?.ask ?? assignment.objective,
+        summary: assignment.exec?.pilotVerdict && assignment.exec.pilotVerdict.decision !== 'approve'
+          ? `Pilot ${assignment.exec.pilotVerdict.decision === 'deny' ? 'denied this action' : 'requires your judgment'}: ${assignment.exec.pilotVerdict.reason}. Decide whether to approve: "${assignment.exec.ask ?? assignment.objective}"`
+          : assignment.exec?.ask ?? assignment.objective,
       });
       representedRefs.add(assignment.id);
     }
@@ -419,6 +444,9 @@ function cardFor(
   const pilotApproved = doc.assignments.find(
     (assignment) => assignment.state === 'gated' && assignment.exec?.pilotVerdict?.decision === 'approve',
   );
+  const pilotUnavailable = doc.assignments.find(
+    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+  );
   const capacity = capacityPresentation(doc, organizationalNow.toISOString());
   const wake = soonestWake(doc, wallNow, organizationalNow);
   const standing = standingCourse(doc, organizationalNow)[0]?.decision;
@@ -454,18 +482,23 @@ function cardFor(
         ? compactAge(organizationalAt, organizationalNow)
         : undefined;
   } else if (
+    pilotUnavailable ||
     doc.workstream.status === 'paused' ||
     capacity.blocking ||
     capacity.executorUnavailable ||
     (wake && wake.remaining > 0 && (wake.blocking || !queued))
   ) {
     lane = 'waiting';
-    state = doc.workstream.status === 'paused'
+    state = pilotUnavailable
+      ? 'Approval service unavailable'
+      : doc.workstream.status === 'paused'
       ? 'Paused'
       : capacity.blocking || capacity.executorUnavailable || wake?.blocking
         ? 'Temporarily blocked'
         : 'Next check scheduled';
-    next = doc.workstream.status === 'paused'
+    next = pilotUnavailable
+      ? 'A gated external action remains safe and will continue when the approval service responds.'
+      : doc.workstream.status === 'paused'
       ? 'Paused by the human'
       : capacity.blocking
         ? `${capacity.blocking.summary}. ${capacity.blocking.recovery}`

@@ -511,11 +511,22 @@ test('a routine gated action waiting for Pilot is not human attention', async ()
     const gated = assignment('asg_action', 'gated');
     gated.kind = 'action';
     gated.exec = { cwd: '/repo', verify: 'gh pr view 7', ask: 'Open the reviewed pull request?', approvalMode: 'pilot-or-human' };
+    gated.exec.pilotUnavailableSince = new Date().toISOString();
     doc.assignments.push(gated);
+    doc.attention.push({
+      id: 'att_legacy_pilot_timeout',
+      kind: 'approval',
+      refId: gated.id,
+      summary: 'Pilot has been unavailable; the action remains gated.',
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    });
   });
   const view = fleetBoard([await load('pilot-pending')], [], new Map());
   assert.equal(view.needs.length, 0);
   assert.equal(view.lanes['needs-you'].length, 0);
+  assert.equal(view.lanes.waiting[0]?.state, 'Approval service unavailable');
+  assert.match(view.lanes.waiting[0]?.next ?? '', /remains safe/);
 });
 
 test('human attention keeps a concluded Workstream out of the folded Done list', async () => {

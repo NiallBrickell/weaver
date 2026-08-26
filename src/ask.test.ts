@@ -37,6 +37,15 @@ test('digest covers live and archived streams with citable ids', async () => {
       status: 'open',
       createdAt: new Date().toISOString(),
     });
+    d.assignments.push({
+      id: 'asg_pilot_wait', objective: 'Open the reviewed change', briefing: 'Use the gated action path.',
+      kind: 'action', exec: { cwd: '/repo', verify: 'true', approvalMode: 'pilot-or-human', pilotUnavailableSince: '2026-08-26T10:00:00.000Z' },
+      acceptanceCriteria: [], dependsOn: [], state: 'gated', attempts: [], adoption: { state: 'none' }, createdAtVirtual: '2026-08-26T10:00:00.000Z',
+    });
+    d.attention.push({
+      id: 'att_legacy_pilot', kind: 'approval', refId: 'asg_pilot_wait',
+      summary: 'Pilot unavailable; approve manually.', status: 'open', createdAt: '2026-08-26T10:00:00.000Z',
+    });
     event('attention.raised', 'needs a decision', ['att_x1']);
   });
   // Archive a second stream by moving its dir wholesale.
@@ -57,6 +66,8 @@ test('digest covers live and archived streams with citable ids', async () => {
   const digest = await buildFleetDigest();
   assert.match(digest, /## live-one \[active\] — Live stream/);
   assert.match(digest, /att_x1/);
+  assert.match(digest, /operational wait: approval service unavailable/);
+  assert.doesNotMatch(digest, /att_legacy_pilot|approve manually/);
   assert.match(digest, /## old-one \(archived\)/);
   assert.match(digest, /finished long ago/);
 });

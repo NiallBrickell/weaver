@@ -50,11 +50,9 @@ import {
 } from './capacity.js';
 import { runnerExecutorCapabilities } from './modelRouting.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
-import { ensureActionApprovalAttention } from './actionApproval.js';
+import { ensureActionApprovalAttention, isPilotUnavailableApprovalAttention } from './actionApproval.js';
 import { pilotFetch, readPilotVerdict } from './pilot.js';
 import { githubAppEnvironment, type GitHubAppAccess } from './githubApp.js';
-
-const PILOT_UNAVAILABLE_GRACE_MS = 2 * 60_000;
 
 /**
  * The shell a declared action's `run`/`verify` command is executed with.
@@ -338,9 +336,9 @@ export async function deliverManagerNotices(slug: string): Promise<number> {
  * small-model evaluator). Every command the action declares (exec.run, or the
  * briefing's fenced blocks, plus the verify readback) is evaluated; only if
  * ALL are approved does the action auto-approve, recorded as by:'pilot'.
- * Anything else — a deny, an unreachable daemon, a briefing with no explicit
- * commands to evaluate — FAILS CLOSED to the human queue. Pilot can only
- * narrow the human's involvement, never widen what may run.
+ * A deny/ask fails closed to the human queue. An unreachable daemon remains a
+ * typed operational wait and never manufactures human authority; a briefing
+ * with no explicit engine command is supervised live by Pilot in the worker.
  */
 async function pilotApproveGatedActions(slug: string): Promise<number> {
   const doc = await load(slug);
@@ -425,33 +423,19 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
         }
       }
     } catch {
-      // A transient Pilot outage is internal retry state, not a human task.
-      // After a sustained outage, fail closed visibly while keeping the
-      // verdict unset so a recovered daemon can still decide the action.
+      // An unavailable Pilot is one fleet dependency incident, never one human
+      // decision per gated action. Persist the typed first-failure marker and
+      // keep retrying; the fleet projection groups every affected action while
+      // the authority firewall keeps each one safely gated with no verdict.
       const current = await load(slug);
       const currentAction = current.assignments.find((candidate) => candidate.id === asg.id);
-      const unavailableSince = currentAction?.exec?.pilotUnavailableSince;
-      const alreadyVisible = current.attention.some((attention) =>
-        attention.refId === asg.id && attention.kind === 'approval' && attention.status === 'open'
-      );
-      if (alreadyVisible || (unavailableSince
-        && Date.now() - new Date(unavailableSince).getTime() < PILOT_UNAVAILABLE_GRACE_MS)) {
-        continue;
-      }
+      if (currentAction?.exec?.pilotUnavailableSince) continue;
       try {
         await mutate(slug, current.revision, (d, event) => {
           const a2 = d.assignments.find((x) => x.id === asg.id);
           if (!a2?.exec || a2.state !== 'gated' || a2.exec.approval || a2.exec.pilotVerdict) return;
-          const now = new Date();
-          a2.exec.pilotUnavailableSince ??= now.toISOString();
-          if (now.getTime() - new Date(a2.exec.pilotUnavailableSince).getTime() < PILOT_UNAVAILABLE_GRACE_MS) return;
-          const created = ensureActionApprovalAttention(
-            d,
-            a2,
-            () => newId('att'),
-            `Pilot has been unavailable for two minutes; action ${a2.id} remains safely gated. You may approve it manually or restart Pilot: "${a2.exec.ask ?? a2.objective}"`,
-          );
-          if (created) event('action.pilot_unavailable', `${a2.id} remains gated — Pilot unavailable for two minutes`, [a2.id]);
+          a2.exec.pilotUnavailableSince = new Date().toISOString();
+          event('action.pilot_unavailable', `${a2.id} remains safely gated — Pilot is unavailable`, [a2.id]);
         });
       } catch (error) {
         if (!(error instanceof RevisionConflictError)) throw error;
@@ -465,6 +449,11 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
       await mutate(slug, current.revision, (d, event) => {
         const a2 = d.assignments.find((x) => x.id === asg.id);
         if (!a2?.exec || a2.state !== 'gated' || a2.exec.approval || a2.exec.pilotVerdict) return;
+        const legacyOutageAttention = new Set(
+          d.attention
+            .filter((attention) => isPilotUnavailableApprovalAttention(d, attention) && attention.refId === a2.id)
+            .map((attention) => attention.id),
+        );
         a2.exec.pilotVerdict = { ...verdict!, at: new Date().toISOString() };
         delete a2.exec.pilotUnavailableSince;
         if (verdict!.decision === 'approve') {
@@ -479,7 +468,19 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
           }
           event('action.auto_approved', `${asg.id} auto-approved via pilot — ${verdict!.reason}`, [asg.id]);
         } else {
-          ensureActionApprovalAttention(d, a2, () => newId('att'));
+          for (const attention of d.attention) {
+            if (!legacyOutageAttention.has(attention.id)) continue;
+            attention.status = 'resolved';
+            attention.resolvedAt = new Date().toISOString();
+            attention.resolvedBy = 'pilot';
+          }
+          const decision = verdict!.decision === 'deny' ? 'denied this action' : 'requires your judgment';
+          ensureActionApprovalAttention(
+            d,
+            a2,
+            () => newId('att'),
+            `Pilot ${decision}: ${verdict!.reason}. Decide whether to approve: "${a2.exec.ask ?? a2.objective}"`,
+          );
           event('action.pilot_escalated', `${asg.id} stays gated for the human — pilot said ${verdict!.decision}: ${verdict!.reason.slice(0, 120)}`, [asg.id]);
         }
       });

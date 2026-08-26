@@ -70,6 +70,28 @@ function deliverable(id: string, assignmentId: string, adopted: boolean): Delive
   };
 }
 
+test('current printout separates an approval-service wait from human attention', async () => {
+  await make('pilot-printout');
+  await arrive('pilot-printout', (doc) => {
+    doc.assignments.push(assignment('asg_pilot_wait', 'action', 'Open the reviewed change', {
+      state: 'gated',
+      attempts: [],
+      exec: { cwd: '/repo', verify: 'true', approvalMode: 'pilot-or-human', pilotUnavailableSince: '2026-08-26T10:00:00.000Z' },
+    }));
+    doc.attention.push({
+      id: 'att_legacy_pilot', kind: 'approval', refId: 'asg_pilot_wait',
+      summary: 'Pilot unavailable; approve manually.', status: 'open', createdAt: '2026-08-26T10:00:00.000Z',
+    });
+  });
+
+  const report = (await preparePrintout('pilot-printout')).text;
+  const boundary = report.split('## Exact organizational mutation timeline')[0]!;
+  assert.match(boundary, /Open needs-you items: none/);
+  assert.match(boundary, /Operational waits: approval service unavailable for 1 safely gated action/);
+  assert.doesNotMatch(boundary, /approve manually/);
+  assert.match(report, /approve manually/, 'the historical card remains exact provenance outside current truth');
+});
+
 test('printout separates claims, adoption, deterministic readback, and provider receipts', async () => {
   await make('truth');
   await delivered('truth');

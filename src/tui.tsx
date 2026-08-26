@@ -23,7 +23,7 @@ import {
 } from './capacity.js';
 import { activitySummary } from './activity.js';
 import { pendingSteering } from './steering.js';
-import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
+import { isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
 import {
   approveAction,
@@ -41,8 +41,7 @@ import { publishPrintoutHtml } from './printoutHtml.js';
 import { acquireRunnerLock, liveRunnerPid, promoteOnRunnerVacancy, runLoop, runnerLoopHealthy, runnerSourceStale } from './runner.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
 import type { ProviderCapacityObservation, WorkstreamDoc } from './types.js';
-import { actionAwaitingPilot } from './actionApproval.js';
-import { pilotFetch } from './pilot.js';
+import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
 
 const STALE_ATTEMPT_MS = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
 
@@ -222,21 +221,6 @@ function wrapDetail(text: string, columns: number): string[] {
 }
 
 /**
- * Cached pilot liveness, probed off the render path. The pilot-pending grace
- * window is 120s when pilot may be down (fail closed, visibly) — but while
- * pilot is demonstrably alive, a gated action is pilot's to rule on, not the
- * human's, however long the runner's tick takes to get there: cards leaking
- * into NEEDS YOU during busy-fleet tick latency spooked the human into
- * approving what pilot was seconds from handling.
- */
-let pilotOkAt = 0;
-function probePilot(): void {
-  pilotFetch('/status', { signal: AbortSignal.timeout(3_000) })
-    .then((r) => { if (r.ok) pilotOkAt = Date.now(); })
-    .catch(() => {});
-}
-
-/**
  * Word-wrap into EXACT single rows for the height-budgeted panes. Ink's own
  * wrapping desyncs the frame (one wrapped line = ghost frames), and
  * truncate-end silently amputates a long paragraph — "expanded" once showed
@@ -299,7 +283,7 @@ async function snapshot(): Promise<Snapshot> {
     const commentary = new Map<string, string[]>();
     const seenRefs = new Set<string>();
     const seenSummaries = new Set<string>();
-    for (const a of doc.attention.filter((x) => x.status === 'open' && !isLegacyDollarBudgetAttention(x))) {
+    for (const a of humanAttention(doc)) {
       if (a.refId && approvableIds.has(a.refId)) {
         commentary.set(a.refId, [...(commentary.get(a.refId) ?? []), a.summary]);
         continue;
@@ -324,18 +308,11 @@ async function snapshot(): Promise<Snapshot> {
     }
     const pendingPilot: string[] = [];
     for (const a of gated) {
-      // Intermediate state: a fresh gated action the pilot hasn't ruled on
-      // yet is NOT the human's decision — surfacing it early makes cards
-      // flash into the queue and vanish when pilot approves a tick later
-      // (spooking the human into approving what pilot was about to handle).
-      // It reaches NEEDS YOU only when pilot escalated it, or when no verdict
-      // arrived within the grace window (pilot down ⇒ fail closed, visibly).
-      const ageMs = Date.now() - new Date(a.createdAtVirtual).getTime();
+      // A gated action with no Pilot verdict is operational dependency state,
+      // never a human judgment. The fleet projection groups an outage once;
+      // only an explicit Pilot deny/ask (or human-only mode) enters Needs you.
       const awaitingPilot = actionAwaitingPilot(a);
-      // Healthy pilot ⇒ long grace (it WILL rule; only a stuck runner should
-      // surface this). Pilot silent >90s ⇒ short grace, fail closed visibly.
-      const grace = Date.now() - pilotOkAt < 90_000 ? 600_000 : 120_000;
-      if (awaitingPilot && ageMs < grace) {
+      if (awaitingPilot) {
         pendingPilot.push(`⧗ awaiting pilot: "${a.objective.slice(0, 70)}"`);
         continue;
       }
@@ -418,7 +395,7 @@ async function snapshot(): Promise<Snapshot> {
     const bucket: StreamRow['bucket'] =
       ws.status === 'paused' && !needsYou ? 3
       : needsYou ? 0
-      : (capacity.blocking || capacity.executorUnavailable) && !working ? 2
+      : (capacity.blocking || capacity.executorUnavailable || pendingPilot.length) && !working ? 2
       : working || queued ? 1
       : ws.status === 'active' && operationalPending.length ? 2
       : 3;
@@ -615,8 +592,6 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const inspectOpening = React.useRef(false);
 
   useEffect(() => {
-    probePilot();
-    const p = setInterval(probePilot, 30_000);
     let polling = false;
     const poll = async () => {
       if (polling) return; // never let a slow poll stack a second one
@@ -638,7 +613,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
     };
     void poll(); // first frame: same data path as every later one
     const t = setInterval(() => void poll(), 2000);
-    return () => { clearInterval(t); clearInterval(p); };
+    return () => { clearInterval(t); };
   }, [embeddedRunner]);
 
   useEffect(() => () => {

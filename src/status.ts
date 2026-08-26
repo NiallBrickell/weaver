@@ -12,9 +12,9 @@ import {
 } from './capacity.js';
 import {
   executionPosition,
-  isLegacyDollarBudgetAttention,
   isWakeDue,
 } from './executionSafety.js';
+import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
 
 const MANAGES_SHOWN_MAX = 5;
 
@@ -90,6 +90,9 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   const virtual = virtualNow();
   const nowVirtual = virtual.toISOString();
   const capacity = capacityPresentation(doc, nowVirtual);
+  const pilotUnavailable = doc.assignments.filter(
+    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+  );
   const coordinatorPass = doc.lease
     ? doc.passes.find((pass) => pass.id === doc.lease?.passId && pass.outcome === 'running')
     : undefined;
@@ -99,6 +102,9 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
       : `recovering: ${coordinatorPass.id} lease expired — recovery pending`
     : undefined;
   const nowLines = [
+    ...(pilotUnavailable.length
+      ? [`WAITING — approval service unavailable; ${pilotUnavailable.length} gated action${pilotUnavailable.length === 1 ? ' remains' : 's remain'} safe`]
+      : []),
     ...(capacity.blocking ? [`WAITING — ${capacity.blocking.summary}. ${capacity.blocking.recovery}`] : []),
     ...(capacity.executorUnavailable ? [`WAITING — ${capacity.executorUnavailable.summary}`] : []),
     ...capacity.details
@@ -133,7 +139,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   out.push('');
 
   // NEEDS YOU
-  const needs = doc.attention.filter((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a));
+  const needs = humanAttention(doc);
   out.push(
     section(
       '## Needs you',
@@ -145,6 +151,9 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
 
   // NEXT
   const nextLines = [
+    ...(pilotUnavailable.length
+      ? ['waiting for a fresh approval-service verdict; no human approval has been requested']
+      : []),
     ...(capacity.blocking
       ? [`provider retry scheduled at ${capacity.blocking.retryAt.slice(0, 16)}`]
       : []),

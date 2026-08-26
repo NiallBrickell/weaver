@@ -37,10 +37,38 @@ export interface OperatorFleetView {
     headline: string;
     detail: string;
   };
+  status: {
+    storage: FleetStatusClaim;
+    execution: FleetStatusClaim;
+    attention: FleetStatusClaim;
+  };
+  incidents: Array<{
+    key: string;
+    tone: 'warning';
+    title: string;
+    detail: string;
+    recovery: string;
+    firstObservedAt: string;
+    affectedActions: number;
+    affectedWorkstreams: string[];
+  }>;
+  steward: {
+    state: 'not-configured' | 'active' | 'paused' | 'done';
+    title: string;
+    detail: string;
+    slug?: string;
+  };
   /** Active Workstreams selectable as a parent at intake — the human
    * composition surface over the same create-under-parent primitive. */
   intakeParents: Array<{ slug: string; title: string }>;
   revision: string;
+}
+
+interface FleetStatusClaim {
+  label: string;
+  value: string;
+  detail: string;
+  tone: 'neutral' | 'healthy' | 'warning' | 'critical';
 }
 
 export interface OperatorBaseRenderProps {
@@ -50,6 +78,8 @@ export interface OperatorBaseRenderProps {
 }
 
 export interface OperatorBoardRenderProps extends OperatorBaseRenderProps {}
+
+export interface OperatorFleetRenderProps extends OperatorBaseRenderProps {}
 
 export interface OperatorNewRenderProps extends OperatorBaseRenderProps {
   requestId: string;
@@ -139,10 +169,12 @@ function WorkstreamSidebar({
   fleet,
   actor,
   currentSlug,
+  currentPage,
 }: {
   fleet: OperatorFleetView;
   actor: string;
   currentSlug?: string;
+  currentPage: 'board' | 'fleet' | 'new' | 'workspace';
 }) {
   const selectedDone = currentSlug
     ? fleet.board.done.find((item) => item.slug === currentSlug)
@@ -164,17 +196,27 @@ function WorkstreamSidebar({
         </div>
         <p data-testid="fleet-scope" className="mt-2 text-[11px] font-medium text-emerald-300" title={fleet.scope.detail}>{fleet.scope.label}</p>
       </div>
-      <nav aria-label="Operator" className="grid grid-cols-2 gap-2 border-b border-zinc-900 p-3">
+      <nav aria-label="Operator" className="grid grid-cols-3 gap-2 border-b border-zinc-900 p-3">
         <a
           data-testid="overview-link"
           href="/"
+          aria-current={currentPage === 'board' ? 'page' : undefined}
           className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-center text-xs font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-white"
         >
           All jobs
         </a>
         <a
+          data-testid="fleet-link"
+          href="/fleet"
+          aria-current={currentPage === 'fleet' ? 'page' : undefined}
+          className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-center text-xs font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-white"
+        >
+          Fleet
+        </a>
+        <a
           data-testid="new-work-link"
           href="/new"
+          aria-current={currentPage === 'new' ? 'page' : undefined}
           className="rounded-lg bg-violet-500 px-3 py-2 text-center text-xs font-semibold text-white transition hover:bg-violet-400"
         >
           New job
@@ -284,12 +326,14 @@ function OperatorShell({
   revisionEndpoint,
   initialRevision,
   currentSlug,
+  currentPage,
   children,
 }: OperatorBaseRenderProps & {
   title: string;
   revisionEndpoint: string;
   initialRevision: string;
   currentSlug?: string;
+  currentPage: 'board' | 'fleet' | 'new' | 'workspace';
   children: ReactNode;
 }) {
   return (
@@ -308,7 +352,7 @@ function OperatorShell({
           data-revision-endpoint={revisionEndpoint}
           className="min-h-screen lg:grid lg:h-screen lg:grid-cols-[18rem_minmax(0,1fr)]"
         >
-          <WorkstreamSidebar fleet={fleet} actor={actor} currentSlug={currentSlug} />
+          <WorkstreamSidebar fleet={fleet} actor={actor} currentSlug={currentSlug} currentPage={currentPage} />
           <main className="min-h-0 min-w-0 overflow-y-auto">
             {notice ? (
               <div data-testid="operator-notice" role="status" className="m-4 mb-0 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-3 text-sm text-violet-200 sm:m-6 sm:mb-0">
@@ -356,10 +400,11 @@ function HealthCard({ fleet }: { fleet: OperatorFleetView }) {
           tone === 'warning' && 'bg-amber-400',
           tone === 'critical' && 'bg-rose-400',
         )} />
-        <div>
+        <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-zinc-100">{fleet.health.headline}</p>
           <p className="mt-1 text-sm leading-6 text-zinc-400">{fleet.health.detail}</p>
         </div>
+        <a href="/fleet" className="shrink-0 text-xs font-medium text-violet-300 hover:text-violet-200">Fleet details</a>
       </CardContent>
     </Card>
   );
@@ -458,6 +503,91 @@ function BoardPage({ fleet }: { fleet: OperatorFleetView }) {
             </div>
           </details>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+function statusTone(claim: FleetStatusClaim): string {
+  if (claim.tone === 'healthy') return 'text-emerald-300';
+  if (claim.tone === 'warning') return 'text-amber-300';
+  if (claim.tone === 'critical') return 'text-rose-300';
+  return 'text-zinc-300';
+}
+
+function FleetPage({ fleet }: { fleet: OperatorFleetView }) {
+  const claims = [fleet.status.storage, fleet.status.execution, fleet.status.attention];
+  return (
+    <div data-testid="operator-fleet-page">
+      <PageHeader
+        eyebrow="Fleet"
+        title="System status"
+        description="Shared infrastructure and attention, separate from the jobs it affects."
+      />
+      <div className="mx-auto max-w-5xl space-y-4 p-5 sm:p-8">
+        <Card className="bg-zinc-900/30">
+          <CardContent className="p-0">
+            <dl data-testid="fleet-status-claims" className="grid md:grid-cols-3">
+              {claims.map((claim, index) => (
+                <div key={claim.label} className={cn('p-4', index > 0 && 'border-t border-zinc-800 md:border-l md:border-t-0')}>
+                  <dt className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-600">{claim.label}</dt>
+                  <dd className={cn('mt-2 text-sm font-semibold', statusTone(claim))}>{claim.value}</dd>
+                  <dd className="mt-1 text-xs leading-5 text-zinc-500">{claim.detail}</dd>
+                </div>
+              ))}
+            </dl>
+          </CardContent>
+        </Card>
+
+        <div className="grid items-start gap-4 lg:grid-cols-2">
+          <Card data-testid="fleet-incidents" className="bg-zinc-900/20">
+            <CardHeader>
+              <CardTitle>Incidents</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {fleet.incidents.length ? fleet.incidents.map((incident) => (
+                <article key={incident.key} data-testid={`fleet-incident-${incident.key}`} className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-amber-200">{incident.title}</p>
+                    <Badge variant="warning">Operational</Badge>
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-zinc-300">{incident.detail}</p>
+                  <p className="mt-2 text-xs leading-5 text-zinc-500">{incident.recovery}</p>
+                  <details className="mt-3 border-t border-amber-500/15 pt-3">
+                    <summary className="cursor-pointer text-xs font-medium text-zinc-500">Affected jobs ({incident.affectedWorkstreams.length})</summary>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {incident.affectedWorkstreams.map((slug) => (
+                        <a key={slug} href={`/workstreams/${encodeURIComponent(slug)}`} className="rounded-md border border-zinc-800 px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200">{slug}</a>
+                      ))}
+                    </div>
+                  </details>
+                </article>
+              )) : (
+                <p className="text-sm leading-6 text-zinc-500">No shared dependency incident is visible in typed fleet state.</p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card data-testid="attention-steward" className="bg-zinc-900/20">
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle>{fleet.steward.title}</CardTitle>
+                <Badge variant={fleet.steward.state === 'active' ? 'success' : 'outline'}>{fleet.steward.state.replace('-', ' ')}</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <p className="text-sm leading-6 text-zinc-400">{fleet.steward.detail}</p>
+              {fleet.steward.slug ? (
+                <a href={`/workstreams/${encodeURIComponent(fleet.steward.slug)}`} className="mt-4 inline-flex rounded-lg border border-zinc-700 px-3 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-600 hover:text-white">Open steward job</a>
+              ) : (
+                <form method="post" action="/fleet/attention-steward" className="mt-4">
+                  <button data-testid="enable-attention-steward" type="submit" className="rounded-lg bg-violet-500 px-3 py-2 text-sm font-semibold text-white transition hover:bg-violet-400">Start attention steward</button>
+                </form>
+              )}
+              <p className="mt-3 text-xs leading-5 text-zinc-600">The steward may investigate and repair reversible causes. It cannot approve sends, merges, deploys, spending, or any other external effect.</p>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );
@@ -731,7 +861,7 @@ function DecisionCard({ view, responseId, needVersion }: { view: WorkstreamPageV
           <Badge variant="attention">Decision needed</Badge>
           {view.needs.length > 1 ? <span className="text-xs text-rose-300">{view.needs.length} separate asks</span> : null}
         </div>
-        <CardTitle className="text-lg leading-7">{need.headline}</CardTitle>
+        <CardTitle id="decision-question" data-testid="decision-question" className="break-words text-lg leading-7">{need.headline}</CardTitle>
       </CardHeader>
       <CardContent>
         <form data-testid="decision-response-form" method="post" action={`/workstreams/${encodeURIComponent(view.doc.workstream.slug)}/responses`}>
@@ -740,7 +870,7 @@ function DecisionCard({ view, responseId, needVersion }: { view: WorkstreamPageV
           <input type="hidden" name="need_version" value={needVersion ?? ''} />
           <input type="hidden" name="response_id" value={responseId} />
           {need.choices.length ? (
-            <fieldset data-testid="decision-choices" className="space-y-2">
+            <fieldset data-testid="decision-choices" aria-labelledby="decision-question" className="space-y-2">
               <legend className="sr-only">Choose a response</legend>
               {need.choices.map((choice) => (
                 <label key={choice.label} className="group flex cursor-pointer gap-3 rounded-lg border border-rose-500/20 bg-zinc-950/50 px-3 py-3 transition hover:border-rose-400/50 has-[:checked]:border-rose-400/70 has-[:checked]:bg-rose-500/10">
@@ -1218,8 +1348,23 @@ export function renderOperatorBoardHtml(props: OperatorBoardRenderProps): string
       title="Weaver · Work"
       revisionEndpoint="/api/fleet-revision"
       initialRevision={props.fleet.revision}
+      currentPage="board"
     >
       <BoardPage fleet={props.fleet} />
+    </OperatorShell>,
+  );
+}
+
+export function renderOperatorFleetHtml(props: OperatorFleetRenderProps): string {
+  return documentHtml(
+    <OperatorShell
+      {...props}
+      title="Weaver · Fleet"
+      revisionEndpoint="/api/fleet-revision"
+      initialRevision={props.fleet.revision}
+      currentPage="fleet"
+    >
+      <FleetPage fleet={props.fleet} />
     </OperatorShell>,
   );
 }
@@ -1231,6 +1376,7 @@ export function renderOperatorNewHtml(props: OperatorNewRenderProps): string {
       title="Weaver · New job"
       revisionEndpoint="/api/fleet-revision"
       initialRevision={props.fleet.revision}
+      currentPage="new"
     >
       <NewWorkPage requestId={props.requestId} fleet={props.fleet} />
     </OperatorShell>,
@@ -1246,6 +1392,7 @@ export function renderOperatorWorkspaceHtml(props: OperatorWorkspaceRenderProps)
       revisionEndpoint={`/api/workstreams/${encodeURIComponent(slug)}/revision`}
       initialRevision={String(props.view.doc.revision)}
       currentSlug={slug}
+      currentPage="workspace"
     >
       <WorkspacePage
         view={props.view}

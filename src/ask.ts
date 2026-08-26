@@ -17,7 +17,7 @@ import { sdkEnv } from './secrets.js';
 import { listWorkstreams, weaverHome, workstreamDir } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 import { localTextModel } from './modelConfig.js';
-import { isLegacyDollarBudgetAttention } from './executionSafety.js';
+import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
 
 function digestOne(slug: string, dir: string): string {
   let doc: WorkstreamDoc;
@@ -28,7 +28,10 @@ function digestOne(slug: string, dir: string): string {
   }
   const ws = doc.workstream;
   const decisions = doc.decisions.slice(-4).map((d) => `  - [${d.id}${d.status !== 'standing' ? `, ${d.status}` : ''}] ${d.title.replace(/\s+/g, ' ').slice(0, 160)}`);
-  const attention = doc.attention.filter((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a)).map((a) => `  - OPEN [${a.id}] ${a.summary.replace(/\s+/g, ' ').slice(0, 120)}`);
+  const attention = humanAttention(doc).map((a) => `  - OPEN [${a.id}] ${a.summary.replace(/\s+/g, ' ').slice(0, 120)}`);
+  const pilotUnavailable = doc.assignments.filter(
+    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+  );
   const adopted = doc.deliverables.filter((d) => d.adopted).slice(-4).map((d) => `  - [${d.id}] ${d.title.slice(0, 100)}`);
   const events = doc.events.slice(-5).map((e) => `  - ${e.at.slice(0, 16)} ${e.type}: ${e.summary.replace(/\s+/g, ' ').slice(0, 110)}`);
   return [
@@ -36,6 +39,7 @@ function digestOne(slug: string, dir: string): string {
     `objective: ${ws.objective.replace(/\s+/g, ' ').slice(0, 220)}`,
     ...(decisions.length ? ['recent decisions:', ...decisions] : []),
     ...(attention.length ? ['open attention:', ...attention] : []),
+    ...(pilotUnavailable.length ? [`operational wait: approval service unavailable; ${pilotUnavailable.length} external action${pilotUnavailable.length === 1 ? '' : 's'} remain safely gated`] : []),
     ...(adopted.length ? ['adopted deliverables:', ...adopted] : []),
     ...(events.length ? ['recent events:', ...events] : []),
   ].join('\n');

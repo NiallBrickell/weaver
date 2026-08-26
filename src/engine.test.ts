@@ -1213,6 +1213,14 @@ test('pilot unreachable → fails closed: gated, no verdict recorded, retried la
     await makeActionWorkstream('pilot-down-ws', {
       ...GATED_WITH_CMDS,
       exec: { ...GATED_WITH_CMDS.exec, cwd: process.env.WEAVER_HOME! },
+      dependsOn: ['asg_hold'],
+    });
+    await arrive('pilot-down-ws', (d) => {
+      d.assignments.push({
+        id: 'asg_hold', objective: 'hold', briefing: 'n/a', kind: 'work',
+        acceptanceCriteria: ['n/a'], dependsOn: [], state: 'awaiting_review',
+        attempts: [], adoption: { state: 'proposed' }, createdAtVirtual: virtualNow().toISOString(),
+      });
     });
     await tick('pilot-down-ws', { maxPasses: 0 });
     const asg = (await load('pilot-down-ws')).assignments[0]!;
@@ -1221,14 +1229,60 @@ test('pilot unreachable → fails closed: gated, no verdict recorded, retried la
     assert.ok(asg.exec!.pilotUnavailableSince);
     assert.equal((await load('pilot-down-ws')).attention.length, 0, 'one transient failure is not a human task');
 
-    await arrive('pilot-down-ws', (d) => {
-      d.assignments[0]!.exec!.pilotUnavailableSince = new Date(Date.now() - 121_000).toISOString();
-    });
     await tick('pilot-down-ws', { maxPasses: 0 });
-    assert.equal((await load('pilot-down-ws')).attention.filter((a) => a.refId === 'asg_act' && a.status === 'open').length, 1);
+    assert.equal((await load('pilot-down-ws')).attention.filter((a) => a.refId === 'asg_act' && a.status === 'open').length, 0, 'a shared dependency outage never becomes one human card per action');
   } finally {
     delete process.env.WEAVER_PILOT_URL;
   }
+
+  await withPilotStub(() => 'approve', async () => {
+    await tick('pilot-down-ws', { maxPasses: 0 });
+    const recovered = (await load('pilot-down-ws')).assignments.find((assignment) => assignment.id === 'asg_act')!;
+    assert.equal(recovered.state, 'queued');
+    assert.equal(recovered.exec!.approval!.by, 'pilot');
+    assert.equal(recovered.exec!.pilotUnavailableSince, undefined);
+    assert.equal((await load('pilot-down-ws')).attention.filter((attention) => attention.refId === recovered.id && attention.status === 'open').length, 0);
+  });
+});
+
+test('a recovered Pilot escalation replaces legacy outage noise with the actual deny reason', async () => {
+  await makeActionWorkstream('pilot-outage-deny-ws', {
+    ...GATED_WITH_CMDS,
+    objective: 'Publish the release tag',
+    exec: { ...GATED_WITH_CMDS.exec, cwd: process.env.WEAVER_HOME! },
+    dependsOn: ['asg_hold'],
+  });
+  await arrive('pilot-outage-deny-ws', (doc) => {
+    doc.assignments.push({
+      id: 'asg_hold', objective: 'hold', briefing: 'n/a', kind: 'work',
+      acceptanceCriteria: ['n/a'], dependsOn: [], state: 'awaiting_review',
+      attempts: [], adoption: { state: 'proposed' }, createdAtVirtual: virtualNow().toISOString(),
+    });
+  });
+  await tick('pilot-outage-deny-ws', { maxPasses: 0 });
+  await arrive('pilot-outage-deny-ws', (doc) => {
+    doc.attention.push({
+      id: 'att_legacy_outage',
+      kind: 'approval',
+      refId: 'asg_act',
+      summary: 'Pilot has been unavailable for two minutes; restart it or approve manually.',
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    });
+  });
+
+  await withPilotStub(() => 'deny', async () => {
+    await tick('pilot-outage-deny-ws', { maxPasses: 0 });
+  });
+  const doc = await load('pilot-outage-deny-ws');
+  const action = doc.assignments.find((assignment) => assignment.id === 'asg_act')!;
+  assert.equal(action.exec!.pilotVerdict?.decision, 'deny');
+  assert.equal(action.exec!.pilotUnavailableSince, undefined);
+  assert.equal(doc.attention.find((attention) => attention.id === 'att_legacy_outage')?.status, 'resolved');
+  const open = doc.attention.filter((attention) => attention.refId === action.id && attention.status === 'open');
+  assert.equal(open.length, 1);
+  assert.match(open[0]!.summary, /Pilot denied this action: stub/);
+  assert.doesNotMatch(open[0]!.summary, /unavailable|restart/i);
 });
 
 test('steering that answers an attention card resolves it in the same act', async () => {

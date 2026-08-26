@@ -118,6 +118,42 @@ function occurrences(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }
 
+test('an unavailable approval service remains operational state, not a per-action human ask', () => {
+  const current = doc([]);
+  current.assignments.push({
+    id: 'asg_pilot_wait',
+    objective: 'Open the reviewed change',
+    briefing: 'Use the gated action path.',
+    kind: 'action',
+    exec: {
+      cwd: '/repo',
+      verify: 'true',
+      approvalMode: 'pilot-or-human',
+      pilotUnavailableSince: NOW,
+    },
+    acceptanceCriteria: ['The effect is verified'],
+    dependsOn: [],
+    state: 'gated',
+    attempts: [],
+    adoption: { state: 'none' },
+    createdAtVirtual: NOW,
+  });
+  current.attention.push({
+    id: 'att_legacy_pilot',
+    kind: 'approval',
+    refId: 'asg_pilot_wait',
+    summary: 'Legacy timeout card that must not interrupt a person.',
+    status: 'open',
+    createdAt: NOW,
+  });
+
+  const status = renderStatus(current);
+  assert.match(status, /WAITING — approval service unavailable; 1 gated action remains safe/);
+  assert.match(status, /## Needs you\n  \(nothing — the workstream can proceed without you\)/);
+  assert.match(status, /waiting for a fresh approval-service verdict; no human approval has been requested/);
+  assert.doesNotMatch(status, /Legacy timeout card/);
+});
+
 test('legacy credit state renders the current plan-usage recovery contract', () => {
   const credit = infrastructure(
     'sdk_credit_exhausted',

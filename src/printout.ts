@@ -20,7 +20,8 @@ import type {
   JsonValue,
   WorkstreamDoc,
 } from './types.js';
-import { executionPosition, isLegacyDollarBudgetAttention } from './executionSafety.js';
+import { executionPosition } from './executionSafety.js';
+import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
 import {
   loadPolicies,
   policyOrigin,
@@ -192,7 +193,10 @@ function renderInteraction(interaction: Interaction, revision?: number): string[
 
 function currentBoundary(doc: WorkstreamDoc): string[] {
   const standing = doc.decisions.filter((decision) => decision.status === 'standing');
-  const open = doc.attention.filter((item) => item.status === 'open' && !isLegacyDollarBudgetAttention(item));
+  const open = humanAttention(doc);
+  const pilotUnavailable = doc.assignments.filter(
+    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+  );
   const live = doc.assignments.filter((assignment) => !['completed', 'failed', 'cancelled'].includes(assignment.state));
   const wakes = doc.wakes.filter((wake) => wake.status === 'pending');
   const safety = executionPosition(doc);
@@ -212,6 +216,7 @@ function currentBoundary(doc: WorkstreamDoc): string[] {
     `- Provider backoffs: ${doc.capacity ? Object.values(doc.capacity.byModel).map((entry) => `${entry.wait.provider ?? 'unknown provider'} via ${entry.wait.executor ?? 'legacy executor'} · ${entry.wait.model} ${entry.wait.kind}, retry ${entry.wait.retryAt}`).join('; ') : 'none recorded'}`,
     `- Standing course: ${standing.length ? standing.map((decision) => `${decision.id} “${flat(decision.title)}”`).join('; ') : 'none recorded'}`,
     `- Open needs-you items: ${open.length ? open.map((item) => `${item.id} ${flat(item.summary)}`).join('; ') : 'none'}`,
+    `- Operational waits: ${pilotUnavailable.length ? `approval service unavailable for ${pilotUnavailable.length} safely gated action${pilotUnavailable.length === 1 ? '' : 's'}` : 'none'}`,
     `- Work still live: ${live.length ? live.map((assignment) => `${assignment.id} [${assignment.state}]`).join(', ') : 'none'}`,
     `- Pending wakes: ${wakes.length ? wakes.map((wake) => `${wake.id} ${flat(wake.reason)}`).join('; ') : 'none'}`,
   ];
