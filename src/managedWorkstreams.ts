@@ -17,10 +17,10 @@ import { arrive, createWorkstream, load, newId } from './store.js';
 import { virtualNow } from './clock.js';
 import {
   executionSafetyConfig,
-  isLegacyDollarBudgetAttention,
   newExecutionSafety,
   type ExecutionSafetyConfig,
 } from './executionSafety.js';
+import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
 
 export class ManagedWorkstreamError extends Error {}
 
@@ -131,6 +131,7 @@ export interface ManagedWorkstreamSummary {
   executionSafety: ExecutionSafetyConfig;
   activity: { coordinatorPasses: number };
   openAttention: { id: string; kind: string; summary: string }[];
+  operationalWaits: { kind: 'approval-service-unavailable'; affectedActions: number; firstObservedAt: string }[];
   conclusion?: { summary: string; evidenceIds: string[]; atVirtual: string };
   recentEvents: { type: string; summary: string; atVirtual: string }[];
   /** Directions THIS manager sent to the target — never another manager's. */
@@ -162,9 +163,18 @@ export async function inspectManagedWorkstream(callingSlug: string, targetSlug: 
     tags: ws.tags,
     executionSafety: executionSafetyConfig(ws),
     activity: { coordinatorPasses: doc.spend.coordinatorPasses },
-    openAttention: doc.attention
-      .filter((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a))
+    openAttention: humanAttention(doc)
       .map((a) => ({ id: a.id, kind: a.kind, summary: a.summary })),
+    operationalWaits: (() => {
+      const affected = doc.assignments.filter(
+        (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+      );
+      return affected.length ? [{
+        kind: 'approval-service-unavailable' as const,
+        affectedActions: affected.length,
+        firstObservedAt: affected.map((assignment) => assignment.exec!.pilotUnavailableSince!).sort()[0]!,
+      }] : [];
+    })(),
     ...(ws.conclusion
       ? { conclusion: { summary: ws.conclusion.summary, evidenceIds: [...ws.conclusion.evidenceIds], atVirtual: ws.conclusion.atVirtual } }
       : {}),

@@ -11,7 +11,12 @@ import { request as httpRequest } from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { createTeamWorkstream, startOperatorUi, type RunningOperatorUi } from './operatorUi.js';
+import {
+  createTeamWorkstream,
+  FLEET_ATTENTION_STEWARD_SOURCE_KEY,
+  startOperatorUi,
+  type RunningOperatorUi,
+} from './operatorUi.js';
 import { arrive, listWorkstreams, load, newId, writeArtifact } from './store.js';
 
 let home: string;
@@ -264,7 +269,7 @@ test('board, new-work, and workspace pages are live typed views with secure head
   assert.equal(board.headers.get('strict-transport-security'), 'max-age=31536000');
   const boardHtml = await board.text();
   assert.match(boardHtml, /New job/);
-  assert.match(boardHtml, /Local fleet · this machine/);
+  assert.match(boardHtml, /Local fleet/);
   assert.match(boardHtml, /Find and fix the broken customer carousel/);
 
   const newWork = await fetch(`${base}/new`);
@@ -404,6 +409,114 @@ test('one long attention item becomes one concise decision card instead of repea
   assert.match(boardHtml, /1 job/);
 });
 
+test('a decision question and options wrap in full instead of losing deciding clauses to ellipses', async () => {
+  const created = await createTeamWorkstream({
+    message: 'Choose the release course safely.', requestId: 'complete-decision-copy', actor: 'alice',
+  });
+  const question = 'The change is ready on every measurable condition except the repository does not run its own automated reviewer, so waiting cannot produce the missing check and the release will remain blocked until a person chooses how that structural exception should be handled.';
+  const optionA = 'Proceed on the exact green test evidence already recorded at the current head, while preserving the existing authority gate and requiring the normal provider readback after the merge so the exception applies only to this repository and only to this revision.';
+  const optionB = 'Ask a named reviewer to inspect the current head first. Preserve their exact scope note as a condition before proceeding.';
+  await arrive(created.slug, (doc, event) => {
+    doc.attention.push({
+      id: 'att_complete_copy',
+      kind: 'blocker',
+      summary: `DECISION NEEDED: ${question} (A) ${optionA} (B) ${optionB} DIAGNOSTIC DETAIL. This remains available only in full context.`,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    });
+    event('attention.opened', 'complete decision copy requested');
+  });
+
+  const html = await (await fetch(`${base}/workstreams/${created.slug}`)).text();
+  assert.match(html, new RegExp(`data-testid="decision-question"[^>]*>${question.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}<`));
+  assert.match(html, new RegExp(optionA.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(html, new RegExp(optionB.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const renderedQuestion = html.match(/data-testid="decision-question"[^>]*>(.*?)<\/h[1-6]>/)?.[1] ?? '';
+  assert.doesNotMatch(renderedQuestion, /…/);
+  assert.doesNotMatch(html.slice(html.indexOf(optionA), html.indexOf(optionA) + optionA.length + 1), /…/);
+  assert.equal((html.match(/This remains available only in full context/g) ?? []).length, 1);
+});
+
+test('fleet page groups one unavailable approval service and can start a constrained steward', async () => {
+  for (const [index, requestId] of ['fleet-incident-a', 'fleet-incident-b'].entries()) {
+    const created = await createTeamWorkstream({
+      message: `Own fleet outcome ${index}.`, requestId, actor: 'alice',
+    });
+    await arrive(created.slug, (doc, event) => {
+      const assignmentId = `asg_pilot_${index}`;
+      doc.assignments.push({
+        id: assignmentId,
+        objective: `Perform gated action ${index}`,
+        briefing: 'Use the ordinary action lifecycle.',
+        kind: 'action',
+        exec: {
+          cwd: home,
+          verify: 'true',
+          ask: `Approve action ${index}?`,
+          approvalMode: 'pilot-or-human',
+          pilotUnavailableSince: `2026-08-26T0${index}:00:00.000Z`,
+        },
+        acceptanceCriteria: ['The verified effect is recorded'],
+        dependsOn: [],
+        state: 'gated',
+        attempts: [],
+        adoption: { state: 'none' },
+        createdAtVirtual: new Date().toISOString(),
+      });
+      doc.attention.push({
+        id: `att_pilot_${index}`,
+        kind: 'approval',
+        refId: assignmentId,
+        summary: 'Legacy per-action timeout card from the unavailable approval service.',
+        status: 'open',
+        createdAt: new Date().toISOString(),
+      });
+      event('action.pilot_unavailable', `${assignmentId} remains gated`);
+    });
+  }
+
+  const boardHtml = await (await fetch(`${base}/board`)).text();
+  assert.doesNotMatch(boardHtml, /2 separate asks|Legacy per-action timeout card/);
+  const response = await fetch(`${base}/fleet`);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /data-testid="operator-fleet-page"/);
+  assert.match(html, /data-testid="fleet-status-claims"/);
+  assert.match(html, /2 gated actions across 2 jobs remain safe and waiting/);
+  assert.equal((html.match(/data-testid="fleet-incident-approval-service-unavailable"/g) ?? []).length, 1);
+  assert.match(html, /Agent execution.*Offline/s);
+  assert.match(html, /href="\/fleet" aria-current="page"/);
+  assert.doesNotMatch(html, /another host/);
+
+  const enabled = await fetch(`${base}/fleet/attention-steward`, form({}));
+  assert.equal(enabled.status, 303);
+  assert.equal(enabled.headers.get('location'), '/fleet?steward=created');
+  const steward = (await Promise.all((await listWorkstreams()).map((slug) => load(slug))))
+    .find((doc) => doc.workstream.sourceKey === FLEET_ATTENTION_STEWARD_SOURCE_KEY);
+  assert.ok(steward);
+  assert.ok(steward.workstream.tags.includes('routine'));
+  assert.match(steward.workstream.constraints.join('\n'), /Never approve or resolve a human-only action/);
+  assert.match(steward.workstream.constraints.join('\n'), /Worker output is a proposal, never permission/);
+
+  const retry = await fetch(`${base}/fleet/attention-steward`, form({}));
+  assert.equal(retry.headers.get('location'), '/fleet?steward=existing');
+  assert.equal((await Promise.all((await listWorkstreams()).map((slug) => load(slug))))
+    .filter((doc) => doc.workstream.sourceKey === FLEET_ATTENTION_STEWARD_SOURCE_KEY).length, 1);
+});
+
+test('fleet polling revision changes when observable runner state changes without a Workstream write', async () => {
+  const before = await (await fetch(`${base}/api/fleet-revision`)).json() as { revision: string };
+  const lock = path.join(home, '.runner.lock');
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, 'pid'), String(process.pid));
+  fs.writeFileSync(path.join(home, '.runner.heartbeat'), 'alive');
+
+  const after = await (await fetch(`${base}/api/fleet-revision`)).json() as { revision: string };
+  assert.notEqual(after.revision, before.revision);
+  const html = await (await fetch(`${base}/fleet`)).text();
+  assert.match(html, /Agent execution[\s\S]*Running/);
+});
+
 test('decision responses accept an option with a condition or a custom answer without granting authority', async () => {
   const created = await createTeamWorkstream({
     message: 'Resolve the release choice.', requestId: 'response-request', actor: 'alice',
@@ -517,7 +630,7 @@ test('non-loopback binding requires Basic auth and attributes requests to its us
   assert.equal(doc.observations[0]!.source, 'operator-ui:sales-alice');
 });
 
-test('a shared-Postgres UI labels remote execution as normal deployment context', async () => {
+test('a shared-Postgres UI separates connected data from unobservable execution', async () => {
   // Pin this test server to the already-selected temporary fs store, then
   // present the deployment shape to the view logic. Runner heartbeat is a
   // machine-local fact even though Workstream state is shared in Postgres.
@@ -528,9 +641,14 @@ test('a shared-Postgres UI labels remote execution as normal deployment context'
     const response = await fetch(`${base}/board`);
     assert.equal(response.status, 200);
     const html = await response.text();
-    assert.match(html, /Shared fleet · execution on another host/);
+    assert.match(html, /Shared fleet/);
     assert.match(html, /Shared fleet is connected/);
-    assert.match(html, /Runner activity happens on another host and is not measured by this page/);
+    assert.match(html, /The worker heartbeat is not visible to this web service/);
+    const fleet = await (await fetch(`${base}/fleet`)).text();
+    assert.match(fleet, /Shared team database · Connected/);
+    assert.match(fleet, /Worker heartbeat · Not visible here/);
+    assert.match(fleet, /cannot claim that execution is running or offline/);
+    assert.doesNotMatch(fleet, /another host/);
     assert.doesNotMatch(html, /Runner is offline/);
   } finally {
     if (previous === undefined) delete process.env.WEAVER_STORE;

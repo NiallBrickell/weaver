@@ -182,11 +182,17 @@ organizational-position projector before making the browser live so all three
 surfaces make the same capacity claim.
 
 Store scope and runner liveness are separate claims. A Postgres-backed UI is
-reading the shared fleet; absence of a machine-local runner PID on that UI host
-is normal and must render as **Shared fleet · execution on another host**, not
-as a degraded-health warning. Filesystem storage renders **Local fleet · this
-machine**. A remote runner can be called offline only from provider evidence or
-a heartbeat source that the UI can actually observe.
+reading the **Shared fleet**; absence of a machine-local runner PID on that web
+service must render execution as **Worker heartbeat · Not visible here**, not
+as running, separate, or offline. Filesystem storage renders **Local fleet**
+and may measure its local runner. A worker can be called offline only from
+provider evidence or a heartbeat source that the UI can actually observe.
+
+The same boundary applies to attention. Pilot unavailability is one typed fleet
+incident derived from `pilotUnavailableSince` markers, with affected action and
+Workstream counts plus recovery evidence. It is not one approval decision per
+gated action. Human-only actions and explicit Pilot deny/ask verdicts remain
+individual consequence decisions.
 
 The retrospective also exposed a lifecycle defect to settle before the UI is
 trusted: an explicitly non-blocking review unrelated to an already-evidenced
@@ -378,7 +384,19 @@ time and immediately before every merge.
 - later add those privileged acts as separate capabilities with immediate
   authority revalidation.
 
-### 4. Source publishers and “status of X”
+### 4. Fleet operations
+
+- keep `/fleet` separate from `/board` and every Workstream workspace;
+- show three bounded claims: shared data, execution observability, and human
+  attention, followed by grouped shared-dependency incidents;
+- provision the optional attention steward as an ordinary source-keyed routine
+  Workstream. It audits typed fleet state, repairs reversible causes, and may
+  create bounded repair Workstreams, but it cannot resolve or approve another
+  Workstream's external effect;
+- preserve the operator-side delegate skill as a mechanism and doctrine source,
+  never as transferable authority. Worker output remains a proposal.
+
+### 5. Source publishers and “status of X”
 
 - publish review, CI/deploy and evaluation facts through `weaver serve`;
 - standardize source keys and idempotency keys;

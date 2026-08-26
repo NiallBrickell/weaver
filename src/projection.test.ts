@@ -170,6 +170,24 @@ test('bounded projection still carries live work and standing commitments', () =
   assert.match(p, /latest-target:codex-sdk\/openai\/gpt-5\.6-sol/);
 });
 
+test('a legacy approval-service outage card is operational state, never a fresh-coordinator human ask', () => {
+  const doc = routineDoc(0);
+  doc.assignments.push({
+    id: 'asg_pilot_wait', objective: 'Open the reviewed change', briefing: 'Use the gated action path.',
+    kind: 'action', exec: { cwd: '/repo', verify: 'true', approvalMode: 'pilot-or-human', pilotUnavailableSince: NOW },
+    acceptanceCriteria: [], dependsOn: [], state: 'gated', attempts: [], adoption: { state: 'none' }, createdAtVirtual: NOW,
+  });
+  doc.attention.push({
+    id: 'att_legacy_pilot', kind: 'approval', refId: 'asg_pilot_wait',
+    summary: 'Pilot has been unavailable; approve manually or restart it.', status: 'open', createdAt: NOW,
+  });
+
+  const projection = buildProjection(doc, []);
+  assert.match(projection, /Needs a human[\s\S]*- \(nothing\)/);
+  assert.match(projection, /Operational dependency waits[\s\S]*asg_pilot_wait: approval service unavailable/);
+  assert.doesNotMatch(projection, /approve manually or restart it/);
+});
+
 test('legacy dollar and lifetime pass caps never reach the coordinator as remaining authority', () => {
   const p = buildProjection(routineDoc(50), []);
   assert.doesNotMatch(p, /Remaining budget|passes so far|\$100000/);

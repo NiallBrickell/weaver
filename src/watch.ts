@@ -16,11 +16,11 @@ import {
   providerCapacityHeadline,
 } from './capacity.js';
 import { activitySummary } from './activity.js';
-import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
+import { isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
 import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
-import { actionNeedsHuman } from './actionApproval.js';
+import { actionAwaitingPilot, actionNeedsHuman, humanAttention } from './actionApproval.js';
 
 const R = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -122,10 +122,16 @@ export async function viewOf(slug: string): Promise<WsView> {
   }
   const ws = doc.workstream;
   const details: string[] = [];
+  const pendingPilot = doc.assignments.filter(
+    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+  );
+  for (const assignment of pendingPilot) {
+    details.push(`${AMBER}▸ approval service unavailable${R} ${fit(`"${assignment.objective}" remains safely gated`, 34)}`);
+  }
 
   let needsYou = 0;
   const representedRefs = new Set<string>();
-  for (const a of doc.attention.filter((x) => x.status === 'open' && !isLegacyDollarBudgetAttention(x))) {
+  for (const a of humanAttention(doc)) {
     if (a.refId && representedRefs.has(a.refId)) continue;
     if (a.refId) representedRefs.add(a.refId);
     needsYou++;
@@ -213,7 +219,7 @@ export async function viewOf(slug: string): Promise<WsView> {
       ? 3
       : needsYou
         ? 0
-        : (capacity.blocking || capacity.executorUnavailable) && !working
+        : (capacity.blocking || capacity.executorUnavailable || pendingPilot.length) && !working
           ? 2
         : working || queued
           ? 1

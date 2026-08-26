@@ -18,6 +18,7 @@ import { userInfo } from 'node:os';
 
 import { capacityPresentation } from './capacity.js';
 import { virtualNow } from './clock.js';
+import { fleetIncidents } from './fleetHealth.js';
 import { createOrGetWorkstream, recordObservation } from './ingress.js';
 import { ManagedWorkstreamError } from './managedWorkstreams.js';
 import { deriveFallback, loadHouse } from './onboard.js';
@@ -44,6 +45,7 @@ import {
 } from './ui/inspect/model.js';
 import {
   renderOperatorBoardHtml,
+  renderOperatorFleetHtml,
   renderOperatorNewHtml,
   renderOperatorWorkspaceHtml,
   type OperatorFleetView,
@@ -87,6 +89,7 @@ interface LoadedFleet {
 const MAX_BODY_BYTES = 1_000_000;
 const MAX_MESSAGE_LENGTH = 50_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+export const FLEET_ATTENTION_STEWARD_SOURCE_KEY = 'weaver:fleet-attention-steward:v1';
 
 class OperatorUiHttpError extends Error {
   constructor(readonly status: 400 | 409, message: string) {
@@ -163,6 +166,47 @@ export async function createTeamWorkstream(req: TeamIntakeRequest): Promise<Team
   return { slug: result.slug, created: result.created };
 }
 
+/**
+ * Install the operator delegate's useful doctrine as ordinary durable work —
+ * root-cause shared incidents, repair reversible causes, and interrupt only for
+ * genuine judgment. The routine receives no approval authority: every external
+ * effect still follows its original Workstream's action lifecycle.
+ */
+export async function createFleetAttentionSteward(actor: string): Promise<TeamIntakeResult> {
+  const house = loadHouse();
+  const result = await createOrGetWorkstream({
+    sourceKey: FLEET_ATTENTION_STEWARD_SOURCE_KEY,
+    slug: 'fleet-attention-steward',
+    title: 'Fleet attention steward',
+    objective: [
+      'Own a recurring fleet-wide operational triage loop. Each cycle, inspect the shared fleet\'s typed Workstream state — never transcripts — for approval-service incidents, capacity backoff, overdue wakes, dormant routines, missed deliverables, and results awaiting review.',
+      'Group symptoms that share one dependency. Investigate and repair reversible root causes, or create a bounded managed repair Workstream when the remediation has its own outcome. Surface one concise question only when a specific judgment genuinely requires a person.',
+      'When the fleet is quiet, schedule the next check about two hours out. While an operational incident is active, re-check in about fifteen minutes. Report deltas only.',
+      ...(house.repoMap.trim() ? [`Repository context for this execution host:\n${house.repoMap.trim()}`] : []),
+    ].join('\n\n'),
+    tags: [...new Set([...house.tags, 'routine', 'fleet-operations'])],
+    successCriteria: [
+      'Each cycle produces one adopted fleet-position report that groups shared causes and names affected outcomes.',
+      'Reversible operational causes are repaired or delegated to a bounded managed Workstream with verification.',
+      'Only unresolved human judgment is surfaced; routine dependency noise never becomes one request per affected action.',
+      'A future wake is scheduled after every completed cycle.',
+    ],
+    constraints: [...house.constraints,
+      'Never approve or resolve a human-only action, send, merge, deploy, push, spend, or other external effect; preserve the originating Workstream authority gate.',
+      'Worker output is a proposal, never permission. Read provider state back after an unknown result and never retry an external mutation blindly.',
+      'Use typed fleet state as truth. A generated report may group evidence but cannot change another Workstream\'s decision, completion, attention, or authority.',
+    ],
+  });
+  if (result.created) {
+    await recordObservation(result.slug, {
+      source: `operator-ui:${safeActor(actor)}`,
+      summary: 'Start the standing fleet attention steward using its recorded safety constraints.',
+      ingressKey: `${FLEET_ATTENTION_STEWARD_SOURCE_KEY}:enabled`,
+    });
+  }
+  return { slug: result.slug, created: result.created };
+}
+
 function managedIndex(docs: WorkstreamDoc[]): Map<string, ManagedWorkstreamLink[]> {
   const index = new Map<string, ManagedWorkstreamLink[]>();
   for (const doc of docs) {
@@ -186,31 +230,40 @@ function fleetGroups(board: FleetBoardView): OperatorFleetView['groups'] {
   return definitions.map(([label, cards]) => ({ label, cards }));
 }
 
+interface RunnerObservation {
+  pid: number | null;
+  stale: boolean;
+  healthy: boolean;
+}
+
+function observeRunner(): RunnerObservation {
+  const pid = liveRunnerPid();
+  const stale = pid !== null && runnerSourceStale();
+  return { pid, stale, healthy: pid !== null && runnerLoopHealthy() && !stale };
+}
+
 function fleetScope(): OperatorFleetView['scope'] {
   if (/^postgres(?:ql)?:\/\//.test(process.env.WEAVER_STORE ?? '')) {
     return {
-      label: 'Shared fleet · execution on another host',
-      detail: 'Jobs, decisions, results, and shared knowledge come from the shared database. Runner processes and workspaces stay on the execution host.',
+      label: 'Shared fleet',
+      detail: 'This workspace reads the shared team database. Fleet details report only the execution state this web service can actually observe.',
     };
   }
   return {
-    label: 'Local fleet · this machine',
-    detail: 'Jobs and results come from this machine\'s local Weaver store.',
+    label: 'Local fleet',
+    detail: 'This workspace reads this machine\'s local Weaver store and can measure its local runner.',
   };
 }
 
-function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: string[]): OperatorFleetView['health'] {
-  const pid = liveRunnerPid();
+function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: string[], runner: RunnerObservation): OperatorFleetView['health'] {
+  const { pid, stale: staleRunner, healthy: healthyRunner } = runner;
   // Runner locks and heartbeats are intentionally machine-local. A stateless
-  // UI reading the shared Postgres fleet cannot inspect a runner on another
-  // execution host, so absence of a local pid is unknown rather than offline.
+  // A Postgres-backed UI cannot infer a runner from shared storage, so absence
+  // of a locally observable pid is unknown rather than offline.
   const remoteRunnerUnobservable = pid === null && /^postgres(?:ql)?:\/\//.test(process.env.WEAVER_STORE ?? '');
-  const staleRunner = pid !== null && runnerSourceStale();
-  const healthyRunner = pid !== null && runnerLoopHealthy() && !staleRunner;
   const stalledRunner = pid !== null && !healthyRunner;
-  const pilotAffected = docs.filter((doc) => doc.assignments.some(
-    (assignment) => assignment.state === 'gated' && assignment.exec?.pilotUnavailableSince,
-  ));
+  const incidents = fleetIncidents(docs);
+  const pilotIncident = incidents.find((incident) => incident.key === 'approval-service-unavailable');
   const now = virtualNow().toISOString();
   const capacityBlocked = docs.filter((doc) => {
     const position = capacityPresentation(doc, now);
@@ -223,7 +276,7 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
 
   const details: string[] = [];
   if (unreadable.length) details.push(`${unreadable.length} unreadable Workstream${unreadable.length === 1 ? '' : 's'}`);
-  if (pilotAffected.length) details.push(`approval service affects ${pilotAffected.length} outcome${pilotAffected.length === 1 ? '' : 's'}`);
+  if (pilotIncident) details.push(`approval service affects ${pilotIncident.affectedWorkstreams.length} outcome${pilotIncident.affectedWorkstreams.length === 1 ? '' : 's'}`);
   if (capacityBlocked.length) details.push(`execution capacity blocks ${capacityBlocked.length} outcome${capacityBlocked.length === 1 ? '' : 's'}`);
   if (degraded.length) details.push(`${degraded.length} outcome${degraded.length === 1 ? '' : 's'} using fallbacks`);
   details.push(`${Object.values(board.lanes).flat().length} live · ${board.done.length} done`);
@@ -235,11 +288,18 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
       detail: `${details.join(' · ')}. Stored work is retained; execution needs operator attention.`,
     };
   }
+  if (pilotIncident || capacityBlocked.length || degraded.length) {
+    return {
+      tone: 'warning',
+      headline: pilotIncident || capacityBlocked.length ? 'Fleet has blocked dependencies' : 'Fleet is using fallback capacity',
+      detail: `${details.join(' · ')}. Intended work remains durable; no gated external effect is assumed to have happened.`,
+    };
+  }
   if (remoteRunnerUnobservable) {
     return {
       tone: 'healthy',
       headline: 'Shared fleet is connected',
-      detail: `${details.join(' · ')}. Runner activity happens on another host and is not measured by this page.`,
+      detail: `${details.join(' · ')}. The worker heartbeat is not visible to this web service.`,
     };
   }
   if (!healthyRunner) {
@@ -249,17 +309,43 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
       detail: `${details.join(' · ')}. New requests are stored safely and will advance when a runner starts.`,
     };
   }
-  if (pilotAffected.length || capacityBlocked.length || degraded.length) {
-    return {
-      tone: 'warning',
-      headline: pilotAffected.length || capacityBlocked.length ? 'Weaver is running with blocked dependencies' : 'Weaver is running on fallback capacity',
-      detail: `${details.join(' · ')}. Intended work remains durable; no gated external effect is assumed to have happened.`,
-    };
-  }
   return {
     tone: 'healthy',
     headline: 'Weaver is running',
     detail: details.join(' · '),
+  };
+}
+
+function fleetStatus(docs: WorkstreamDoc[], board: FleetBoardView, runner: RunnerObservation): OperatorFleetView['status'] {
+  const shared = /^postgres(?:ql)?:\/\//.test(process.env.WEAVER_STORE ?? '');
+  const { pid, stale, healthy } = runner;
+  const incidents = fleetIncidents(docs);
+  const affected = incidents.reduce((sum, incident) => sum + incident.affectedActions, 0);
+  const needJobs = new Set(board.needs.map((need) => need.slug)).size;
+  return {
+    storage: {
+      label: 'Shared data',
+      value: shared ? 'Shared team database · Connected' : 'Local store · Connected',
+      detail: shared ? 'Jobs, decisions, results, and shared knowledge come from one team database.' : 'This browser and the runner use this machine\'s local state.',
+      tone: 'healthy',
+    },
+    execution: shared && pid === null ? {
+      label: 'Agent execution',
+      value: 'Worker heartbeat · Not visible here',
+      detail: 'This web service cannot read the worker heartbeat, so it cannot claim that execution is running or offline.',
+      tone: 'neutral',
+    } : {
+      label: 'Agent execution',
+      value: healthy ? 'Running' : pid === null ? 'Offline' : 'Stalled',
+      detail: healthy ? 'The local runner heartbeat is current.' : pid === null ? 'Stored work is safe and advances when a runner starts.' : 'A runner process exists, but its loop heartbeat is not healthy.',
+      tone: healthy ? 'healthy' : stale || pid !== null ? 'critical' : 'warning',
+    },
+    attention: {
+      label: 'Attention',
+      value: board.needs.length ? `${board.needs.length} open ask${board.needs.length === 1 ? '' : 's'} across ${needJobs} job${needJobs === 1 ? '' : 's'}` : 'No human asks waiting',
+      detail: affected ? `${affected} routine approval${affected === 1 ? ' is' : 's are'} grouped below as shared operational state.` : 'Shared dependency failures are grouped as incidents instead of repeated per job.',
+      tone: board.needs.length ? 'warning' : 'healthy',
+    },
   };
 }
 
@@ -276,8 +362,17 @@ async function loadFleet(): Promise<LoadedFleet> {
   const managed = managedIndex(docs);
   const policies = (await loadPolicies()).policies;
   const board = fleetBoard(docs, policies, managed, unreadable);
+  const incidents = fleetIncidents(docs);
+  const stewardDoc = docs.find((doc) => doc.workstream.sourceKey === FLEET_ATTENTION_STEWARD_SOURCE_KEY);
+  const stewardCard = stewardDoc
+    ? Object.values(board.lanes).flat().find((card) => card.slug === stewardDoc.workstream.slug)
+    : undefined;
+  const runner = observeRunner();
   const revision = sha256(JSON.stringify(
-    docs.map((doc) => [doc.workstream.slug, doc.revision]).sort(([a], [b]) => String(a).localeCompare(String(b))),
+    {
+      docs: docs.map((doc) => [doc.workstream.slug, doc.revision]).sort(([a], [b]) => String(a).localeCompare(String(b))),
+      runner,
+    },
   )).slice(0, 20);
   return {
     docs,
@@ -287,7 +382,19 @@ async function loadFleet(): Promise<LoadedFleet> {
       board,
       groups: fleetGroups(board),
       scope: fleetScope(),
-      health: fleetHealth(docs, board, unreadable),
+      health: fleetHealth(docs, board, unreadable, runner),
+      status: fleetStatus(docs, board, runner),
+      incidents,
+      steward: stewardDoc ? {
+        state: stewardDoc.workstream.status,
+        title: 'Attention steward',
+        detail: stewardCard?.next ?? stewardDoc.workstream.conclusion?.summary ?? 'Its durable position is available in the steward job.',
+        slug: stewardDoc.workstream.slug,
+      } : {
+        state: 'not-configured',
+        title: 'Attention steward',
+        detail: 'A recurring Workstream can audit grouped incidents, repair reversible causes, and surface only the judgment that genuinely needs a person.',
+      },
       intakeParents: docs
         .filter((doc) => doc.workstream.status === 'active')
         .map((doc) => ({ slug: doc.workstream.slug, title: doc.workstream.title }))
@@ -433,6 +540,8 @@ async function readForm(req: IncomingMessage): Promise<URLSearchParams> {
 }
 
 function noticeFrom(url: URL): string | undefined {
+  if (url.searchParams.get('steward') === 'created') return 'Attention steward started. It will audit grouped incidents without acquiring approval authority.';
+  if (url.searchParams.get('steward') === 'existing') return 'The fleet already has an attention steward.';
   if (url.searchParams.get('created') === '1') return 'Request stored. Weaver can pick it up as soon as execution is available.';
   if (url.searchParams.get('existing') === '1') return 'This source already has a Workstream. Your request was added there.';
   if (url.searchParams.get('added') === '1') return 'Information added. Weaver will reconcile it on the next pass.';
@@ -479,6 +588,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, token?: string)
   if (method === 'GET' && url.pathname === '/board') {
     const fleet = await loadFleet();
     return sendHtml(res, 200, renderOperatorBoardHtml({ fleet: fleet.view, actor, notice: noticeFrom(url) }));
+  }
+
+  if (method === 'GET' && url.pathname === '/fleet') {
+    const fleet = await loadFleet();
+    return sendHtml(res, 200, renderOperatorFleetHtml({ fleet: fleet.view, actor, notice: noticeFrom(url) }));
+  }
+
+  if (method === 'POST' && url.pathname === '/fleet/attention-steward') {
+    const result = await createFleetAttentionSteward(actor);
+    return redirect(res, `/fleet?steward=${result.created ? 'created' : 'existing'}`);
   }
 
   if (method === 'GET' && url.pathname === '/new') {

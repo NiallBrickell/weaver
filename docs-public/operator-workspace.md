@@ -18,8 +18,10 @@ weaver ui --host 0.0.0.0 --port 9724
 
 ## Jobs overview and workspace
 
-The **Jobs** page is the fleet-level view: scan how many jobs need attention,
-are working, are waiting, or are done. On desktop the left sidebar uses the
+The **Jobs** page is the work overview: scan how many jobs need attention, are
+working, are waiting, or are done. **Fleet** is a separate compact system view
+for shared data, execution visibility, and grouped operational incidents; those
+facts do not become more sections inside a job. On desktop the left sidebar uses the
 same groups and stays available when you open a job; on mobile **All jobs**
 returns to that list without repeating it above the selected job.
 
@@ -28,8 +30,9 @@ so scrolling is never the way you navigate between unrelated parts of a job:
 
 - **Overview** shows one current decision or one next-state card. Labelled
   choices are clickable, and every response can carry an optional condition;
-  **Something else** accepts a different answer. Long diagnostic context stays
-  folded until you ask for it.
+  **Something else** accepts a different answer. The complete decision question
+  and each complete option wrap rather than being cut off; long diagnostic
+  context stays folded until you ask for it.
 - **Work & results** shows live assignments and evidenced outputs. Accepted
   work leads with a short human summary; the exact agent-facing result stays
   under **Full technical result**. Older accepted results are folded as a group.
@@ -95,14 +98,31 @@ and writes the same durable fleet.
 
 The sidebar states which store the page is reading:
 
-- **Shared fleet · execution on another host** means the page and remote runner
-  share Postgres. Workstreams, decisions, knowledge, and results are shared;
-  process heartbeat, checkouts, and credentials stay on the execution host.
-- **Local fleet · this machine** means the page reads the local filesystem
-  store.
+- **Shared fleet** means the workspace reads the shared team Postgres. The Fleet
+  page reports **Worker heartbeat · Not visible here** when this web service has
+  no observable runner. That is unknown, never an invented topology or
+  running/offline claim.
+- **Local fleet** means the page reads the local filesystem store and can
+  measure the runner on the same machine.
 
-A shared UI cannot measure a runner heartbeat stored only on another host.
-That is normal deployment context, not evidence that the runner is offline.
+A shared UI cannot measure a heartbeat that is not published to its store. That
+is not evidence that an execution worker is running, separate, or offline.
+
+## Fleet attention
+
+The Fleet page groups a shared dependency once. If the approval service is
+unavailable, every affected external action stays safely gated, while one
+incident names the affected action/job counts and the evidence that will prove
+recovery. Those actions do not become repeated **Needs you** cards. A human-only
+action or an explicit deny/ask verdict remains an individual decision because
+its consequence genuinely requires authority or judgment.
+
+**Start attention steward** creates one source-keyed routine Workstream. Each
+cycle audits typed fleet state, groups related symptoms, repairs reversible
+causes or delegates a bounded repair outcome, and asks a person only for
+irreducible judgment. The steward does not inherit operator authority: it cannot
+approve or resolve sends, merges, deploys, spending, or any other external
+effect, and its worker output is still only a proposal until adopted.
 
 ## Authority limits
 

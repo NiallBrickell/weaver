@@ -327,6 +327,32 @@ test('authority reaches exactly one hop — a grandparent cannot inspect or dire
   assert.deepEqual(after.managerDirections ?? [], []);
 });
 
+test('managed inspection and plain watch preserve an approval outage as operational state, not human attention', async () => {
+  await makeWorkstream('pilot-mgr');
+  await makeManaged('pilot-mgr', 'pilot-child');
+  await arrive('pilot-child', (doc) => {
+    doc.assignments.push({
+      id: 'asg_pilot_wait', objective: 'Open the reviewed change', briefing: 'Use the gated action path.',
+      kind: 'action', exec: { cwd: '/repo', verify: 'true', approvalMode: 'pilot-or-human', pilotUnavailableSince: '2026-08-26T10:00:00.000Z' },
+      acceptanceCriteria: [], dependsOn: [], state: 'gated', attempts: [], adoption: { state: 'none' }, createdAtVirtual: '2026-08-26T10:00:00.000Z',
+    });
+    doc.attention.push({
+      id: 'att_legacy_pilot', kind: 'approval', refId: 'asg_pilot_wait',
+      summary: 'Pilot unavailable; approve manually.', status: 'open', createdAt: '2026-08-26T10:00:00.000Z',
+    });
+  });
+
+  const summary = await inspectManagedWorkstream('pilot-mgr', 'pilot-child');
+  assert.deepEqual(summary.openAttention, []);
+  assert.deepEqual(summary.operationalWaits, [{
+    kind: 'approval-service-unavailable', affectedActions: 1, firstObservedAt: '2026-08-26T10:00:00.000Z',
+  }]);
+  const watch = await viewOf('pilot-child');
+  assert.match(watch.row, /WAITING/);
+  assert.ok(watch.details.some((line) => line.includes('approval service unavailable')));
+  assert.ok(!watch.details.some((line) => line.includes('approve manually')));
+});
+
 test("a managed workstream's reconciliation is independent of its manager's status", async () => {
   await makeWorkstream('indep-mgr');
   await makeManaged('indep-mgr', 'indep-child');
