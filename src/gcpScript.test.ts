@@ -20,7 +20,7 @@ const roots: string[] = [];
 const SAFE_GCP_EXECUTION_ENV = [
   'WEAVER_EXECUTOR=openhands',
   'WEAVER_OPENHANDS_HOST_GATEWAY_IP=10.170.0.2',
-  'WEAVER_WORKER_MODEL=openrouter/moonshotai/kimi-k3',
+  'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.2',
   'WEAVER_WORKER_FALLBACKS=',
   'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-latest',
   'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
@@ -507,7 +507,7 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
   assert.ok(!`${result.stdout}${result.stderr}`.includes('Primary application'));
   assert.equal(fs.readFileSync(path.join(root, 'calls', 'render-profile'), 'utf8'), [
     'WEAVER_EXECUTOR=openhands',
-    'WEAVER_WORKER_MODEL=openrouter/moonshotai/kimi-k3',
+    'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.2',
     'WEAVER_WORKER_FALLBACKS=',
     'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
     'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-latest',
