@@ -9,6 +9,16 @@ export function actionAwaitingPilot(asg: Assignment): boolean {
     && !asg.exec?.pilotVerdict;
 }
 
+/** A Pilot-owned action is a current wait only while its Workstream may advance. */
+export function actionIsLivePilotWait(doc: WorkstreamDoc, asg: Assignment): boolean {
+  return doc.workstream.status === 'active' && actionAwaitingPilot(asg);
+}
+
+/** A current fleet outage requires an active Workstream that can actually retry. */
+export function actionHasLivePilotOutage(doc: WorkstreamDoc, asg: Assignment): boolean {
+  return !!asg.exec?.pilotUnavailableSince && actionIsLivePilotWait(doc, asg);
+}
+
 /** Gated actions enter the human queue only by explicit reservation or escalation. */
 export function actionNeedsHuman(asg: Assignment): boolean {
   return asg.kind === 'action'

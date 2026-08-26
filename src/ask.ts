@@ -17,9 +17,9 @@ import { sdkEnv } from './secrets.js';
 import { listWorkstreams, weaverHome, workstreamDir } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 import { localTextModel } from './modelConfig.js';
-import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
+import { actionHasLivePilotOutage, humanAttention } from './actionApproval.js';
 
-function digestOne(slug: string, dir: string): string {
+function digestOne(slug: string, dir: string, archived = false): string {
   let doc: WorkstreamDoc;
   try {
     doc = JSON.parse(fs.readFileSync(path.join(dir, 'workstream.json'), 'utf8')) as WorkstreamDoc;
@@ -29,9 +29,9 @@ function digestOne(slug: string, dir: string): string {
   const ws = doc.workstream;
   const decisions = doc.decisions.slice(-4).map((d) => `  - [${d.id}${d.status !== 'standing' ? `, ${d.status}` : ''}] ${d.title.replace(/\s+/g, ' ').slice(0, 160)}`);
   const attention = humanAttention(doc).map((a) => `  - OPEN [${a.id}] ${a.summary.replace(/\s+/g, ' ').slice(0, 120)}`);
-  const pilotUnavailable = doc.assignments.filter(
-    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
-  );
+  const pilotUnavailable = archived
+    ? []
+    : doc.assignments.filter((assignment) => actionHasLivePilotOutage(doc, assignment));
   const adopted = doc.deliverables.filter((d) => d.adopted).slice(-4).map((d) => `  - [${d.id}] ${d.title.slice(0, 100)}`);
   const events = doc.events.slice(-5).map((e) => `  - ${e.at.slice(0, 16)} ${e.type}: ${e.summary.replace(/\s+/g, ' ').slice(0, 110)}`);
   return [
@@ -53,7 +53,7 @@ export async function buildFleetDigest(): Promise<string> {
   try {
     for (const slug of fs.readdirSync(archive)) {
       if (fs.existsSync(path.join(archive, slug, 'workstream.json'))) {
-        parts.push(digestOne(`${slug} (archived)`, path.join(archive, slug)));
+        parts.push(digestOne(`${slug} (archived)`, path.join(archive, slug), true));
       }
     }
   } catch { /* no archive yet */ }

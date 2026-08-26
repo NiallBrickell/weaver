@@ -152,6 +152,12 @@ test('an unavailable approval service remains operational state, not a per-actio
   assert.match(status, /## Needs you\n  \(nothing — the workstream can proceed without you\)/);
   assert.match(status, /waiting for a fresh approval-service verdict; no human approval has been requested/);
   assert.doesNotMatch(status, /Legacy timeout card/);
+
+  current.workstream.status = 'paused';
+  const paused = renderStatus(current);
+  assert.doesNotMatch(paused, /approval service unavailable|fresh approval-service verdict/);
+  assert.match(paused, /## Needs you\n  \(nothing — the workstream can proceed without you\)/);
+  assert.doesNotMatch(paused, /Legacy timeout card/);
 });
 
 test('legacy credit state renders the current plan-usage recovery contract', () => {

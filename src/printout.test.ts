@@ -90,6 +90,13 @@ test('current printout separates an approval-service wait from human attention',
   assert.match(boundary, /Operational waits: approval service unavailable for 1 safely gated action/);
   assert.doesNotMatch(boundary, /approve manually/);
   assert.match(report, /approve manually/, 'the historical card remains exact provenance outside current truth');
+
+  await arrive('pilot-printout', (doc) => { doc.workstream.status = 'paused'; });
+  const paused = (await preparePrintout('pilot-printout')).text;
+  const pausedBoundary = paused.split('## Exact organizational mutation timeline')[0]!;
+  assert.match(pausedBoundary, /Open needs-you items: none/);
+  assert.match(pausedBoundary, /Operational waits: none/);
+  assert.doesNotMatch(pausedBoundary, /approve manually/);
 });
 
 test('printout separates claims, adoption, deterministic readback, and provider receipts', async () => {

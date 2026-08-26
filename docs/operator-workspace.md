@@ -194,6 +194,13 @@ Workstream counts plus recovery evidence. It is not one approval decision per
 gated action. Human-only actions and explicit Pilot deny/ask verdicts remain
 individual consequence decisions.
 
+Lifecycle is part of that evidence. A paused Workstream does not retry a gated
+action, so its retained `pilotUnavailableSince` marker says what happened before
+the pause, not what Pilot is doing now. Live fleet incidents and steward input
+therefore include those markers only for active Workstreams; resuming the stream
+causes the ordinary action gate to obtain a fresh verdict or re-establish the
+outage.
+
 The retrospective also exposed a lifecycle defect to settle before the UI is
 trusted: an explicitly non-blocking review unrelated to an already-evidenced
 objective must not keep the Workstream active forever. Concluded Workstreams

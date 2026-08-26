@@ -20,7 +20,7 @@ import {
   newExecutionSafety,
   type ExecutionSafetyConfig,
 } from './executionSafety.js';
-import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
+import { actionHasLivePilotOutage, humanAttention } from './actionApproval.js';
 
 export class ManagedWorkstreamError extends Error {}
 
@@ -167,7 +167,7 @@ export async function inspectManagedWorkstream(callingSlug: string, targetSlug: 
       .map((a) => ({ id: a.id, kind: a.kind, summary: a.summary })),
     operationalWaits: (() => {
       const affected = doc.assignments.filter(
-        (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+        (assignment) => actionHasLivePilotOutage(doc, assignment),
       );
       return affected.length ? [{
         kind: 'approval-service-unavailable' as const,

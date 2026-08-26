@@ -21,7 +21,7 @@ import type {
   WorkstreamDoc,
 } from './types.js';
 import { executionPosition } from './executionSafety.js';
-import { actionAwaitingPilot, humanAttention } from './actionApproval.js';
+import { actionHasLivePilotOutage, humanAttention } from './actionApproval.js';
 import {
   loadPolicies,
   policyOrigin,
@@ -195,7 +195,7 @@ function currentBoundary(doc: WorkstreamDoc): string[] {
   const standing = doc.decisions.filter((decision) => decision.status === 'standing');
   const open = humanAttention(doc);
   const pilotUnavailable = doc.assignments.filter(
-    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+    (assignment) => actionHasLivePilotOutage(doc, assignment),
   );
   const live = doc.assignments.filter((assignment) => !['completed', 'failed', 'cancelled'].includes(assignment.state));
   const wakes = doc.wakes.filter((wake) => wake.status === 'pending');

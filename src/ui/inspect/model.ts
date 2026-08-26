@@ -5,7 +5,7 @@ import { virtualNow } from '../../clock.js';
 import { isDoctrine, type PolicyRecord } from '../../policies.js';
 import type { Decision, Steering, WorkstreamDoc } from '../../types.js';
 import {
-  actionAwaitingPilot,
+  actionHasLivePilotOutage,
   actionNeedsHuman,
   humanAttention,
 } from '../../actionApproval.js';
@@ -445,7 +445,7 @@ function cardFor(
     (assignment) => assignment.state === 'gated' && assignment.exec?.pilotVerdict?.decision === 'approve',
   );
   const pilotUnavailable = doc.assignments.find(
-    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+    (assignment) => actionHasLivePilotOutage(doc, assignment),
   );
   const capacity = capacityPresentation(doc, organizationalNow.toISOString());
   const wake = soonestWake(doc, wallNow, organizationalNow);

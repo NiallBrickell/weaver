@@ -20,7 +20,7 @@ import { isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
 import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
-import { actionAwaitingPilot, actionNeedsHuman, humanAttention } from './actionApproval.js';
+import { actionHasLivePilotOutage, actionNeedsHuman, humanAttention } from './actionApproval.js';
 
 const R = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -123,7 +123,7 @@ export async function viewOf(slug: string): Promise<WsView> {
   const ws = doc.workstream;
   const details: string[] = [];
   const pendingPilot = doc.assignments.filter(
-    (assignment) => actionAwaitingPilot(assignment) && assignment.exec?.pilotUnavailableSince,
+    (assignment) => actionHasLivePilotOutage(doc, assignment),
   );
   for (const assignment of pendingPilot) {
     details.push(`${AMBER}▸ approval service unavailable${R} ${fit(`"${assignment.objective}" remains safely gated`, 34)}`);

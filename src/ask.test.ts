@@ -59,6 +59,17 @@ test('digest covers live and archived streams with citable ids', async () => {
     autonomy: { sendsRequireApproval: true },
     budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
   });
+  await arrive('old-one', (doc) => {
+    doc.assignments.push({
+      id: 'asg_archived_pilot_wait', objective: 'A historical gated effect', briefing: 'Historical only.',
+      kind: 'action', exec: {
+        cwd: '/repo', verify: 'true', approvalMode: 'pilot-or-human',
+        pilotUnavailableSince: '2026-08-26T09:00:00.000Z',
+      },
+      acceptanceCriteria: [], dependsOn: [], state: 'gated', attempts: [],
+      adoption: { state: 'none' }, createdAtVirtual: '2026-08-26T09:00:00.000Z',
+    });
+  });
   const archive = path.join(weaverHome(), '_archive');
   fs.mkdirSync(archive, { recursive: true });
   fs.renameSync(workstreamDir('old-one'), path.join(archive, 'old-one'));
@@ -70,4 +81,10 @@ test('digest covers live and archived streams with citable ids', async () => {
   assert.doesNotMatch(digest, /att_legacy_pilot|approve manually/);
   assert.match(digest, /## old-one \(archived\)/);
   assert.match(digest, /finished long ago/);
+
+  await arrive('live-one', (doc) => { doc.workstream.status = 'paused'; });
+  const pausedDigest = await buildFleetDigest();
+  assert.match(pausedDigest, /## live-one \[paused\]/);
+  assert.doesNotMatch(pausedDigest, /operational wait: approval service unavailable/);
+  assert.doesNotMatch(pausedDigest, /att_legacy_pilot|approve manually/);
 });

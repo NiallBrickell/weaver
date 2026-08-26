@@ -527,6 +527,12 @@ test('a routine gated action waiting for Pilot is not human attention', async ()
   assert.equal(view.lanes['needs-you'].length, 0);
   assert.equal(view.lanes.waiting[0]?.state, 'Approval service unavailable');
   assert.match(view.lanes.waiting[0]?.next ?? '', /remains safe/);
+
+  await arrive('pilot-pending', (doc) => { doc.workstream.status = 'paused'; });
+  const paused = fleetBoard([await load('pilot-pending')], [], new Map());
+  assert.equal(paused.needs.length, 0);
+  assert.equal(paused.lanes.waiting[0]?.state, 'Paused');
+  assert.doesNotMatch(paused.lanes.waiting[0]?.next ?? '', /approval service/i);
 });
 
 test('human attention keeps a concluded Workstream out of the folded Done list', async () => {
