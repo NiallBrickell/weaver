@@ -17,6 +17,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { userInfo } from 'node:os';
 
 import { capacityPresentation } from './capacity.js';
+import type {
+  ClerkBrowserAssets,
+  ClerkOperatorAuthenticator,
+} from './clerkOperatorAuth.js';
 import { virtualNow } from './clock.js';
 import { FLEET_ATTENTION_STEWARD_SOURCE_KEY, fleetIncidents } from './fleetHealth.js';
 import { createOrGetWorkstream, recordObservation } from './ingress.js';
@@ -45,6 +49,7 @@ import {
 } from './ui/inspect/model.js';
 import {
   renderOperatorBoardHtml,
+  renderOperatorClerkAuthHtml,
   renderOperatorFleetHtml,
   renderOperatorNewHtml,
   renderOperatorWorkspaceHtml,
@@ -57,6 +62,8 @@ export interface OperatorUiOptions {
   port?: number;
   /** Shared password for HTTP Basic auth. The username is a caller-supplied provenance label. */
   token?: string;
+  /** Exclusive hosted auth mode. When present, the Basic token is ignored. */
+  clerk?: ClerkOperatorAuthenticator;
 }
 
 export interface RunningOperatorUi {
@@ -404,10 +411,27 @@ async function loadFleet(): Promise<LoadedFleet> {
   };
 }
 
-function secureHeaders(contentType: string): Record<string, string> {
+const clerkBrowserByResponse = new WeakMap<ServerResponse, ClerkBrowserAssets>();
+
+function secureHeaders(contentType: string, res?: ServerResponse): Record<string, string> {
+  const clerk = res ? clerkBrowserByResponse.get(res) : undefined;
+  const contentSecurityPolicy = clerk
+    ? [
+      "default-src 'none'",
+      `connect-src 'self' ${clerk.frontendOrigin} https://*.protect.clerk.com:*`,
+      "style-src 'unsafe-inline'",
+      `script-src 'unsafe-inline' ${clerk.frontendOrigin} https://challenges.cloudflare.com https://*.protect.clerk.com`,
+      "img-src 'self' https://img.clerk.com",
+      "worker-src 'self' blob:",
+      "frame-src https://challenges.cloudflare.com https://*.protect.clerk.com",
+      "form-action 'self'",
+      "base-uri 'none'",
+      "frame-ancestors 'none'",
+    ].join('; ')
+    : "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
   return {
     'content-type': contentType,
-    'content-security-policy': "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    'content-security-policy': contentSecurityPolicy,
     'referrer-policy': 'no-referrer',
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY',
@@ -418,19 +442,24 @@ function secureHeaders(contentType: string): Record<string, string> {
 
 function sendHtml(res: ServerResponse, status: number, html: string): void {
   const body = redactSecrets(html, loadAllSecrets());
-  res.writeHead(status, { ...secureHeaders('text/html; charset=utf-8'), 'content-length': String(Buffer.byteLength(body)) });
+  res.writeHead(status, { ...secureHeaders('text/html; charset=utf-8', res), 'content-length': String(Buffer.byteLength(body)) });
   res.end(body);
+}
+
+function sendClerkHtml(res: ServerResponse, status: number, html: string, browser: ClerkBrowserAssets): void {
+  clerkBrowserByResponse.set(res, browser);
+  sendHtml(res, status, html);
 }
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
   const body = redactSecrets(JSON.stringify(value), loadAllSecrets());
-  res.writeHead(status, { ...secureHeaders('application/json; charset=utf-8'), 'content-length': String(Buffer.byteLength(body)) });
+  res.writeHead(status, { ...secureHeaders('application/json; charset=utf-8', res), 'content-length': String(Buffer.byteLength(body)) });
   res.end(body);
 }
 
 function sendText(res: ServerResponse, status: number, value: string): void {
   const body = redactSecrets(value, loadAllSecrets());
-  res.writeHead(status, { ...secureHeaders('text/plain; charset=utf-8'), 'content-length': String(Buffer.byteLength(body)) });
+  res.writeHead(status, { ...secureHeaders('text/plain; charset=utf-8', res), 'content-length': String(Buffer.byteLength(body)) });
   res.end(body);
 }
 
@@ -441,28 +470,74 @@ function sendText(res: ServerResponse, status: number, value: string): void {
  */
 function sendHealth(res: ServerResponse, status: 200 | 503): void {
   res.writeHead(status, {
-    ...secureHeaders('text/plain; charset=utf-8'),
+    ...secureHeaders('text/plain; charset=utf-8', res),
     'content-length': '0',
   });
   res.end();
 }
 
 function redirect(res: ServerResponse, location: string): void {
-  res.writeHead(303, { ...secureHeaders('text/plain; charset=utf-8'), location });
+  res.writeHead(303, { ...secureHeaders('text/plain; charset=utf-8', res), location });
   res.end('See Other');
 }
 
 function unauthorized(res: ServerResponse): void {
   res.writeHead(401, {
-    ...secureHeaders('text/plain; charset=utf-8'),
+    ...secureHeaders('text/plain; charset=utf-8', res),
     'www-authenticate': 'Basic realm="Weaver", charset="UTF-8"',
   });
   res.end('Authentication required');
 }
 
 function forbidden(res: ServerResponse): void {
-  res.writeHead(403, secureHeaders('text/plain; charset=utf-8'));
+  res.writeHead(403, secureHeaders('text/plain; charset=utf-8', res));
   res.end('Same-origin request required');
+}
+
+function copyClerkHeaders(res: ServerResponse, headers: Headers): void {
+  const blocked = new Set([
+    'connection',
+    'content-length',
+    'content-security-policy',
+    'content-type',
+    'location',
+    'strict-transport-security',
+    'transfer-encoding',
+    'x-content-type-options',
+    'x-frame-options',
+  ]);
+  headers.forEach((value, name) => {
+    if (!blocked.has(name.toLowerCase()) && name.toLowerCase() !== 'set-cookie') res.setHeader(name, value);
+  });
+  const cookies = headers.getSetCookie();
+  if (cookies.length) res.setHeader('set-cookie', cookies);
+}
+
+function clerkRedirect(res: ServerResponse, location: string, headers: Headers): void {
+  copyClerkHeaders(res, headers);
+  res.writeHead(307, { ...secureHeaders('text/plain; charset=utf-8', res), location });
+  res.end('Temporary Redirect');
+}
+
+function authenticationUnavailable(res: ServerResponse): void {
+  sendText(res, 503, 'Authentication is temporarily unavailable. Please try again.');
+}
+
+function localReturnTo(value: string | null): string {
+  if (!value || !value.startsWith('/') || value.startsWith('//')) return '/board';
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    return '/board';
+  }
+  if (decoded.startsWith('//') || /[\\\r\n\0]/.test(decoded)) return '/board';
+  const target = new URL(value, 'https://weaver.invalid');
+  if (target.origin !== 'https://weaver.invalid'
+    || target.pathname.startsWith('//')
+    || /[\\\r\n\0]/.test(target.pathname)
+    || ['/sign-in', '/access-denied', '/sign-out'].includes(target.pathname)) return '/board';
+  return `${target.pathname}${target.search}${target.hash}`;
 }
 
 function requestAuthority(req: IncomingMessage): string | null {
@@ -549,7 +624,12 @@ function noticeFrom(url: URL): string | undefined {
   return undefined;
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse, token?: string): Promise<void> {
+async function handle(
+  req: IncomingMessage,
+  res: ServerResponse,
+  token?: string,
+  clerk?: ClerkOperatorAuthenticator,
+): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
   const method = req.method ?? 'GET';
@@ -565,9 +645,47 @@ async function handle(req: IncomingMessage, res: ServerResponse, token?: string)
     }
   }
 
-  const actor = actorFor(req, token);
-  if (!actor) return unauthorized(res);
+  let actor: string;
+  if (clerk) {
+    let result;
+    try {
+      result = await clerk.authenticate(req);
+    } catch {
+      return authenticationUnavailable(res);
+    }
+    if (result.kind === 'redirect') return clerkRedirect(res, result.location, result.headers);
+    copyClerkHeaders(res, result.headers);
+    if (result.kind === 'unavailable') return authenticationUnavailable(res);
+    if (result.kind === 'signed-out') {
+      if (url.pathname.startsWith('/api/')) return sendText(res, 401, 'Authentication required');
+      if (method === 'GET' && url.pathname === '/sign-in') {
+        const returnTo = localReturnTo(url.searchParams.get('return_to'));
+        return sendClerkHtml(res, 200, renderOperatorClerkAuthHtml(clerk.browser, 'sign-in', returnTo), clerk.browser);
+      }
+      const returnTo = localReturnTo(`${url.pathname}${url.search}`);
+      return redirect(res, `/sign-in?return_to=${encodeURIComponent(returnTo)}`);
+    }
+    if (result.kind === 'forbidden') {
+      if (method === 'GET' && url.pathname === '/access-denied') {
+        return sendClerkHtml(res, 403, renderOperatorClerkAuthHtml(clerk.browser, 'access-denied'), clerk.browser);
+      }
+      return redirect(res, '/access-denied');
+    }
+    actor = safeActor(result.actor);
+    if (method === 'GET' && url.pathname === '/sign-in') {
+      return redirect(res, localReturnTo(url.searchParams.get('return_to')));
+    }
+    if (method === 'GET' && url.pathname === '/access-denied') return redirect(res, '/board');
+  } else {
+    const basicActor = actorFor(req, token);
+    if (!basicActor) return unauthorized(res);
+    actor = basicActor;
+  }
   if (method === 'POST' && !isSameOriginPost(req)) return forbidden(res);
+
+  if (clerk && method === 'POST' && url.pathname === '/sign-out') {
+    return sendClerkHtml(res, 200, renderOperatorClerkAuthHtml(clerk.browser, 'sign-out'), clerk.browser);
+  }
 
   if (method === 'GET' && url.pathname === '/') return redirect(res, '/board');
 
@@ -587,12 +705,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, token?: string)
 
   if (method === 'GET' && url.pathname === '/board') {
     const fleet = await loadFleet();
-    return sendHtml(res, 200, renderOperatorBoardHtml({ fleet: fleet.view, actor, notice: noticeFrom(url) }));
+    return sendHtml(res, 200, renderOperatorBoardHtml({
+      fleet: fleet.view,
+      actor,
+      notice: noticeFrom(url),
+      ...(clerk ? { signOutAction: '/sign-out' } : {}),
+    }));
   }
 
   if (method === 'GET' && url.pathname === '/fleet') {
     const fleet = await loadFleet();
-    return sendHtml(res, 200, renderOperatorFleetHtml({ fleet: fleet.view, actor, notice: noticeFrom(url) }));
+    return sendHtml(res, 200, renderOperatorFleetHtml({
+      fleet: fleet.view,
+      actor,
+      notice: noticeFrom(url),
+      ...(clerk ? { signOutAction: '/sign-out' } : {}),
+    }));
   }
 
   if (method === 'POST' && url.pathname === '/fleet/attention-steward') {
@@ -607,6 +735,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, token?: string)
       actor,
       requestId: randomUUID(),
       notice: noticeFrom(url),
+      ...(clerk ? { signOutAction: '/sign-out' } : {}),
     }));
   }
 
@@ -700,7 +829,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, token?: string)
     const content = redactSecrets(await readArtifact(slug, deliverable.path), loadAllSecrets());
     const fileName = deliverable.path.replace(/[^a-zA-Z0-9._-]/g, '_');
     res.writeHead(200, {
-      ...secureHeaders('text/plain; charset=utf-8'),
+      ...secureHeaders('text/plain; charset=utf-8', res),
       'content-disposition': `attachment; filename="${fileName}"`,
       'content-length': String(Buffer.byteLength(content)),
     });
@@ -723,6 +852,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, token?: string)
       view,
       tab: workspaceTab(url.searchParams.get('tab')),
       responseId: randomUUID(),
+      ...(clerk ? { signOutAction: '/sign-out' } : {}),
       ...(primaryNeed ? { needVersion: needVersion(primaryNeed) } : {}),
     }));
   }
@@ -732,11 +862,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, token?: string)
 
 export async function startOperatorUi(opts: OperatorUiOptions = {}): Promise<RunningOperatorUi> {
   const host = opts.host ?? '127.0.0.1';
-  if (!LOOPBACK_HOSTS.has(host) && !opts.token) {
-    throw new Error('WEAVER_UI_TOKEN is required when weaver ui binds beyond loopback');
+  if (!LOOPBACK_HOSTS.has(host) && !opts.token && !opts.clerk) {
+    throw new Error('Clerk authentication or WEAVER_UI_TOKEN is required when weaver ui binds beyond loopback');
   }
   const server = createServer((req, res) => {
-    handle(req, res, opts.token).catch((error: unknown) => {
+    handle(req, res, opts.token, opts.clerk).catch((error: unknown) => {
       if (res.headersSent) {
         res.destroy();
         return;

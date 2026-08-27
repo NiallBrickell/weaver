@@ -38,7 +38,10 @@ export default defineRailway(() => {
     },
     env: {
       WEAVER_STORE: database.env.DATABASE_URL,
-      WEAVER_UI_TOKEN: preserve(),
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: preserve(),
+      CLERK_SECRET_KEY: preserve(),
+      WEAVER_UI_ALLOWED_EMAIL_DOMAINS: preserve(),
+      WEAVER_UI_PUBLIC_ORIGIN: preserve(),
       WEAVER_HOUSE_JSON: preserve(),
     },
   });

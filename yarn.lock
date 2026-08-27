@@ -487,6 +487,37 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@clerk/backend@npm:3.13.1":
+  version: 3.13.1
+  resolution: "@clerk/backend@npm:3.13.1"
+  dependencies:
+    "@clerk/shared": "npm:^4.25.8"
+    standardwebhooks: "npm:^1.0.0"
+    tslib: "npm:2.8.1"
+  checksum: 10c0/a3a3813fdf7d3afb7000da5b93602275abdbedd100a9e7cae4707480a474f8fa368a5108f7d29a685668a8d1cbb023d59a84550f219f9b998198758687f071ba
+  languageName: node
+  linkType: hard
+
+"@clerk/shared@npm:4.30.1, @clerk/shared@npm:^4.25.8":
+  version: 4.30.1
+  resolution: "@clerk/shared@npm:4.30.1"
+  dependencies:
+    "@tanstack/query-core": "npm:^5.100.6"
+    dequal: "npm:2.0.3"
+    glob-to-regexp: "npm:0.4.1"
+    js-cookie: "npm:3.0.7"
+  peerDependencies:
+    react: ^18.0.0 || ~19.0.3 || ~19.1.4 || ~19.2.3 || ~19.3.0-0
+    react-dom: ^18.0.0 || ~19.0.3 || ~19.1.4 || ~19.2.3 || ~19.3.0-0
+  peerDependenciesMeta:
+    react:
+      optional: true
+    react-dom:
+      optional: true
+  checksum: 10c0/88d3e2368de2806c8827f8d28c7437aec6ef758202fe7124aefd8c0fc9d436ea77132c9cde2b3ee516c3e75e3645fd8ca622f34c47bb79f38841ce52a8570963
+  languageName: node
+  linkType: hard
+
 "@earendil-works/pi-agent-core@npm:^0.84.2":
   version: 0.84.2
   resolution: "@earendil-works/pi-agent-core@npm:0.84.2"
@@ -1634,6 +1665,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@tanstack/query-core@npm:^5.100.6":
+  version: 5.102.7
+  resolution: "@tanstack/query-core@npm:5.102.7"
+  checksum: 10c0/5d1e9d0281a40819b5c6aa38b57ddd1a549787cf8fe7fe7788176269a4d5291e2dce073749a5e7e8bf8e14eac23142ef3e37265c585abf508121cb955e972fec
+  languageName: node
+  linkType: hard
+
 "@tybys/wasm-util@npm:^0.10.2, @tybys/wasm-util@npm:^0.10.3":
   version: 0.10.3
   resolution: "@tybys/wasm-util@npm:0.10.3"
@@ -2030,6 +2068,13 @@ __metadata:
   version: 2.0.0
   resolution: "depd@npm:2.0.0"
   checksum: 10c0/58bd06ec20e19529b06f7ad07ddab60e504d9e0faca4bd23079fac2d279c3594334d736508dc350e06e510aba5e22e4594483b3a6562ce7c17dd797f4cc4ad2c
+  languageName: node
+  linkType: hard
+
+"dequal@npm:2.0.3":
+  version: 2.0.3
+  resolution: "dequal@npm:2.0.3"
+  checksum: 10c0/f98860cdf58b64991ae10205137c0e97d384c3a4edc7f807603887b7c4b850af1224a33d88012009f150861cbee4fa2d322c4cc04b9313bee312e47f6ecaa888
   languageName: node
   linkType: hard
 
@@ -2521,6 +2566,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"glob-to-regexp@npm:0.4.1":
+  version: 0.4.1
+  resolution: "glob-to-regexp@npm:0.4.1"
+  checksum: 10c0/0486925072d7a916f052842772b61c3e86247f0a80cc0deb9b5a3e8a1a9faad5b04fb6f58986a09f34d3e96cd2a22a24b7e9882fb1cf904c31e9a310de96c429
+  languageName: node
+  linkType: hard
+
 "glob@npm:13.0.6":
   version: 13.0.6
   resolution: "glob@npm:13.0.6"
@@ -2834,6 +2886,13 @@ __metadata:
   version: 6.2.8
   resolution: "jose@npm:6.2.8"
   checksum: 10c0/fe4c6a7197a1adab2251b000c1eaaa8b40b6cb7cfbef43dbc9e959dacd43bf2532827b2d5e0f4069731da79d26e4d9e4368ccb26559a42a884b3fe036927e6e1
+  languageName: node
+  linkType: hard
+
+"js-cookie@npm:3.0.7":
+  version: 3.0.7
+  resolution: "js-cookie@npm:3.0.7"
+  checksum: 10c0/c921c43014e98bb94a1765663a1a10d693048d61444e374c1ecf459eba92320381f9c406e724df9aa44e819c4b606e6a7240f2abe2d5c54ad1e73a3002b191c2
   languageName: node
   linkType: hard
 
@@ -4045,7 +4104,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tslib@npm:^2.4.0, tslib@npm:^2.6.2, tslib@npm:^2.8.1":
+"tslib@npm:2.8.1, tslib@npm:^2.4.0, tslib@npm:^2.6.2, tslib@npm:^2.8.1":
   version: 2.8.1
   resolution: "tslib@npm:2.8.1"
   checksum: 10c0/9c4759110a19c53f992d9aae23aac5ced636e99887b51b9e61def52611732872ff7668757d4e4c61f19691e36f4da981cd9485e869b4a7408d689f6bf1f14e62
@@ -4170,6 +4229,8 @@ __metadata:
   dependencies:
     "@anthropic-ai/claude-agent-sdk": "npm:^0.3.220"
     "@anthropic-ai/sdk": "npm:^0.115.0"
+    "@clerk/backend": "npm:3.13.1"
+    "@clerk/shared": "npm:4.30.1"
     "@earendil-works/pi-coding-agent": "npm:0.84.2"
     "@modelcontextprotocol/sdk": "npm:^1.30.0"
     "@openai/codex-sdk": "npm:0.147.0"

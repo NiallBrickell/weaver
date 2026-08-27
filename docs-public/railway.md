@@ -159,14 +159,25 @@ replaces Docker `ENTRYPOINT`/`CMD`, and Docker-image overrides need a shell for
 /bin/sh -c "exec node bin/weaver.mjs ui --host 0.0.0.0 --port $PORT"
 ```
 
-IaC owns the private database reference and preserves the two operator-supplied
-values without writing them to source. Set those values on the `ui` service:
+IaC owns the private database reference and preserves the operator-supplied
+identity and intake values without writing them to source. Set them on the
+`ui` service:
 
 ```text
 WEAVER_STORE=${{Postgres.DATABASE_URL}}
-WEAVER_UI_TOKEN=<one long random password>
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=<the Clerk publishable key>
+CLERK_SECRET_KEY=<the Clerk secret key>
+WEAVER_UI_ALLOWED_EMAIL_DOMAINS=<the exact company email domain>
+WEAVER_UI_PUBLIC_ORIGIN=https://<the Railway or custom UI domain>
 WEAVER_HOUSE_JSON={"repoMap":"Primary application: /absolute/path/on-the-runner","tags":["application"]}
 ```
+
+The four Clerk values are atomic: a partial configuration fails startup rather
+than falling back. `WEAVER_UI_PUBLIC_ORIGIN` is used as Clerk's
+`authorizedParties` boundary and must match the URL teammates open. The secret
+key stays in Railway's server-side variables; only the publishable key is sent
+to the browser. Signed-in users are accepted only when Clerk reports a verified
+email on the exact configured domain.
 
 `WEAVER_HOUSE_JSON` uses the same shape as `WEAVER_HOME/house.json`. It lets a
 stateless UI attach the canonical repository map and policy tags to new work
@@ -186,12 +197,10 @@ The checked-in service contract pins:
 facts. Railway health checks gate deployment; they are not continuous runner
 monitoring.
 
-Railway terminates the public domain with TLS. The UI then prompts for HTTP
-Basic credentials: a teammate enters their name as the username and the shared
-`WEAVER_UI_TOKEN` as the password. The name is attribution, not verified
-identity. This is suitable for a small trusted rollout behind an
-identity-aware proxy; it is not team SSO and the service should not be exposed
-as a bare shared password to the public internet.
+Railway terminates the public domain with TLS. The UI presents the normal Clerk
+sign-in screen and records the verified email as request attribution. An
+off-domain or unverified account reaches an access-restricted page and cannot
+read fleet state or submit input.
 
 ## 4. Keep intake and execution context aligned
 
@@ -218,7 +227,7 @@ WEAVER_STORE=${{Postgres.DATABASE_URL}}
 WEAVER_SERVE_TOKEN=<a different long random token>
 ```
 
-Do not share the browser password with bots. Neither surface exposes Steering,
+Do not give bots browser-session credentials. Neither surface exposes Steering,
 approval, adoption, merge, deploy, spend, or send authority.
 
 ## What remains local to each execution host

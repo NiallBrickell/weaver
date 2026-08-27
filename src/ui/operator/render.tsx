@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
+import type { ClerkBrowserAssets } from '../../clerkOperatorAuth.js';
 import type { AssignmentBoardCard, AssignmentBoardLane } from '../../assignmentBoard.js';
 import type {
   AttentionItem,
@@ -75,6 +76,7 @@ export interface OperatorBaseRenderProps {
   fleet: OperatorFleetView;
   actor: string;
   notice?: string;
+  signOutAction?: string;
 }
 
 export interface OperatorBoardRenderProps extends OperatorBaseRenderProps {}
@@ -151,6 +153,118 @@ function documentHtml(node: ReactNode): string {
   return `<!doctype html>${renderToStaticMarkup(node)}`;
 }
 
+function inlineJson(value: string): string {
+  return JSON.stringify(value).replace(/</g, '\\u003c');
+}
+
+function clerkBootScript(kind: 'sign-in' | 'access-denied' | 'sign-out', returnTo: string): string {
+  const destination = inlineJson(returnTo);
+  return `
+window.addEventListener('load', async () => {
+  const status = document.querySelector('[data-clerk-status]');
+  try {
+    await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
+    if (${inlineJson(kind)} === 'sign-in') {
+      if (window.Clerk.user) {
+        window.location.replace(${destination});
+        return;
+      }
+      window.Clerk.mountSignIn(document.getElementById('clerk-sign-in'), {
+        routing: 'hash',
+        forceRedirectUrl: ${destination},
+      });
+      if (status) status.remove();
+      return;
+    }
+    const button = document.querySelector('[data-clerk-sign-out]');
+    const signOut = async () => {
+      if (button) button.setAttribute('disabled', '');
+      await window.Clerk.signOut({ redirectUrl: '/sign-in' });
+    };
+    if (${inlineJson(kind)} === 'sign-out') {
+      await signOut();
+      return;
+    }
+    button?.addEventListener('click', () => void signOut());
+    if (status) status.remove();
+  } catch (_) {
+    if (status) status.textContent = 'Authentication is temporarily unavailable. Please reload in a moment.';
+  }
+});`;
+}
+
+function ClerkAuthDocument({
+  assets,
+  kind,
+  returnTo,
+}: {
+  assets: ClerkBrowserAssets;
+  kind: 'sign-in' | 'access-denied' | 'sign-out';
+  returnTo: string;
+}) {
+  const denied = kind === 'access-denied';
+  const signingOut = kind === 'sign-out';
+  return (
+    <html lang="en" className="bg-zinc-950 text-zinc-100">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{denied ? 'Weaver · Access restricted' : signingOut ? 'Weaver · Signing out' : 'Weaver · Sign in'}</title>
+        <style dangerouslySetInnerHTML={{ __html: CSS }} />
+        <script defer crossOrigin="anonymous" src={assets.uiScriptUrl} />
+        <script
+          defer
+          crossOrigin="anonymous"
+          data-clerk-js-script="true"
+          data-clerk-publishable-key={assets.publishableKey}
+          src={assets.scriptUrl}
+        />
+      </head>
+      <body className="min-h-screen bg-zinc-950 text-zinc-100 antialiased">
+        <main className="mx-auto flex min-h-screen max-w-lg items-center justify-center px-5 py-12">
+          <section className="w-full rounded-2xl border border-zinc-800 bg-zinc-900/40 p-6 shadow-2xl shadow-black/30">
+            <p className="text-xs font-medium uppercase tracking-[0.14em] text-violet-300">Weaver</p>
+            {denied ? (
+              <>
+                <h1 className="mt-2 text-2xl font-semibold text-white">Access restricted</h1>
+                <p className="mt-3 text-sm leading-6 text-zinc-400">Your signed-in account does not have access to this workspace.</p>
+                <button
+                  type="button"
+                  data-clerk-sign-out=""
+                  className="mt-5 rounded-lg border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-600 hover:text-white disabled:opacity-50"
+                >
+                  Sign out and switch account
+                </button>
+              </>
+            ) : signingOut ? (
+              <>
+                <h1 className="mt-2 text-2xl font-semibold text-white">Signing out</h1>
+                <p className="mt-3 text-sm leading-6 text-zinc-400">Closing this workspace session…</p>
+              </>
+            ) : (
+              <>
+                <h1 className="mt-2 text-2xl font-semibold text-white">Sign in</h1>
+                <p className="mt-3 text-sm leading-6 text-zinc-400">Use your company account to open the shared workspace.</p>
+                <div id="clerk-sign-in" className="mt-6 flex justify-center" />
+              </>
+            )}
+            <p data-clerk-status="" className="mt-5 text-xs leading-5 text-zinc-500">Loading secure sign-in…</p>
+          </section>
+        </main>
+        <script dangerouslySetInnerHTML={{ __html: clerkBootScript(kind, returnTo) }} />
+      </body>
+    </html>
+  );
+}
+
+export function renderOperatorClerkAuthHtml(
+  assets: ClerkBrowserAssets,
+  kind: 'sign-in' | 'access-denied' | 'sign-out',
+  returnTo = '/board',
+): string {
+  return documentHtml(<ClerkAuthDocument assets={assets} kind={kind} returnTo={returnTo} />);
+}
+
 function laneDot(card: WorkstreamCardView): string {
   if (card.lane === 'needs-you') return 'bg-rose-400';
   if (card.lane === 'moving') return 'bg-violet-400';
@@ -168,11 +282,13 @@ function stateVariant(card: WorkstreamCardView): 'attention' | 'accent' | 'warni
 function WorkstreamSidebar({
   fleet,
   actor,
+  signOutAction,
   currentSlug,
   currentPage,
 }: {
   fleet: OperatorFleetView;
   actor: string;
+  signOutAction?: string;
   currentSlug?: string;
   currentPage: 'board' | 'fleet' | 'new' | 'workspace';
 }) {
@@ -192,7 +308,14 @@ function WorkstreamSidebar({
       <div className="border-b border-zinc-900 px-4 py-4">
         <div className="flex items-center justify-between">
           <a href="/" className="text-sm font-semibold tracking-tight text-white">Weaver</a>
-          <span className="max-w-32 truncate text-xs text-zinc-500" title={actor}>{actor}</span>
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="max-w-28 truncate text-xs text-zinc-500" title={actor}>{actor}</span>
+            {signOutAction ? (
+              <form method="post" action={signOutAction} className="shrink-0">
+                <button type="submit" className="text-[11px] text-zinc-600 hover:text-zinc-300">Sign out</button>
+              </form>
+            ) : null}
+          </span>
         </div>
         <p data-testid="fleet-scope" className="mt-2 text-[11px] font-medium text-emerald-300" title={fleet.scope.detail}>{fleet.scope.label}</p>
       </div>
@@ -321,6 +444,7 @@ function WorkstreamSidebar({
 function OperatorShell({
   fleet,
   actor,
+  signOutAction,
   notice,
   title,
   revisionEndpoint,
@@ -352,7 +476,7 @@ function OperatorShell({
           data-revision-endpoint={revisionEndpoint}
           className="min-h-screen lg:grid lg:h-screen lg:grid-cols-[18rem_minmax(0,1fr)]"
         >
-          <WorkstreamSidebar fleet={fleet} actor={actor} currentSlug={currentSlug} currentPage={currentPage} />
+          <WorkstreamSidebar fleet={fleet} actor={actor} signOutAction={signOutAction} currentSlug={currentSlug} currentPage={currentPage} />
           <main className="min-h-0 min-w-0 overflow-y-auto">
             {notice ? (
               <div data-testid="operator-notice" role="status" className="m-4 mb-0 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-3 text-sm text-violet-200 sm:m-6 sm:mb-0">
