@@ -94,7 +94,9 @@ the allowed-domain email revokes access without waiting for an application cache
 
 `WEAVER_UI_PUBLIC_ORIGIN` is also the Clerk token's authorized party. Weaver
 does not derive it from request or proxy headers, so a forged host cannot turn
-a leaked subdomain cookie into a valid workspace session. If any Clerk setting
+a leaked subdomain cookie into a valid workspace session. Authenticated browser
+mutations must carry that same complete HTTPS origin; a plaintext same-host
+origin is not accepted. If any Clerk setting
 is present while another is missing, the UI refuses to start; it never falls
 back to a weaker mode. The secret key is server-only. The publishable key is
 the only key rendered into the sign-in page.

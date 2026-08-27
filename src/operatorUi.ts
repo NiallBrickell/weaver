@@ -551,17 +551,16 @@ function requestAuthority(req: IncomingMessage): string | null {
 }
 
 /**
- * Basic-auth credentials are replayed automatically by browsers, including
- * on cross-site form submissions. Prefer an exact Origin-to-Host comparison.
+ * Browser credentials are replayed automatically, including on cross-site
+ * form submissions. Clerk mode compares the complete canonical HTTPS origin;
+ * legacy Basic mode compares Origin to the request host because a private
+ * reverse proxy may terminate HTTPS in front of this HTTP server.
  * The page's no-referrer policy makes Chromium serialize Origin as `null` on
  * an ordinary same-origin HTML form navigation. That path is accepted only
  * with browser-controlled Fetch Metadata proving a same-origin document
  * navigation. A non-browser request with neither signal still fails closed.
- * Scheme is deliberately ignored because a trusted reverse
- * proxy may terminate HTTPS in front of this HTTP server; host and explicit
- * port remain part of the authority comparison.
  */
-function isSameOriginPost(req: IncomingMessage): boolean {
+function isSameOriginPost(req: IncomingMessage, exactOrigin?: string): boolean {
   const value = req.headers.origin;
   const authority = requestAuthority(req);
   if (!authority) return false;
@@ -575,6 +574,7 @@ function isSameOriginPost(req: IncomingMessage): boolean {
     const origin = new URL(value);
     if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return false;
     if (origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) return false;
+    if (exactOrigin) return origin.origin === exactOrigin;
     return origin.host.toLowerCase() === authority;
   } catch {
     return false;
@@ -681,7 +681,7 @@ async function handle(
     if (!basicActor) return unauthorized(res);
     actor = basicActor;
   }
-  if (method === 'POST' && !isSameOriginPost(req)) return forbidden(res);
+  if (method === 'POST' && !isSameOriginPost(req, clerk?.publicOrigin)) return forbidden(res);
 
   if (clerk && method === 'POST' && url.pathname === '/sign-out') {
     return sendClerkHtml(res, 200, renderOperatorClerkAuthHtml(clerk.browser, 'sign-out'), clerk.browser);

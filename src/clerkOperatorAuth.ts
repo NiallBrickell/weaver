@@ -31,6 +31,8 @@ export type ClerkOperatorAuthResult =
 
 export interface ClerkOperatorAuthenticator {
   readonly browser: ClerkBrowserAssets;
+  /** Canonical browser origin used for token and mutation-origin checks. */
+  readonly publicOrigin: string;
   authenticate(req: IncomingMessage): Promise<ClerkOperatorAuthResult>;
 }
 
@@ -190,6 +192,7 @@ export function createClerkOperatorAuthenticator(
   });
   const frontendOrigin = new URL(scriptUrl).origin;
   return {
+    publicOrigin,
     browser: {
       publishableKey: config.publishableKey,
       frontendOrigin,

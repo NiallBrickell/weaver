@@ -641,6 +641,7 @@ test('Clerk mode replaces the browser password and keeps identity, domain denial
     return headers;
   };
   const clerk: ClerkOperatorAuthenticator = {
+    publicOrigin: 'https://workspace.example',
     browser: {
       publishableKey: 'pk_test_browser-safe',
       frontendOrigin: 'https://example.clerk.accounts.dev',
@@ -727,9 +728,15 @@ test('Clerk mode replaces the browser password and keeps identity, domain denial
     redirect: 'manual',
   })).status, 303, 'Basic credentials are ignored entirely in Clerk mode');
 
+  const downgrade = await fetch(`${base}/workstreams`, form({
+    message: 'This plaintext-origin request must not mutate state.', request_id: 'clerk-http-downgrade',
+  }, { 'x-test-clerk': 'allowed', origin: 'http://workspace.example' }));
+  assert.equal(downgrade.status, 403);
+  assert.deepEqual(await listWorkstreams(), [], 'an HTTP same-host origin cannot use an HTTPS Clerk session');
+
   const created = await fetch(`${base}/workstreams`, form({
     message: 'Investigate this authenticated team request.', request_id: 'clerk-actor-request',
-  }, { 'x-test-clerk': 'allowed' }));
+  }, { 'x-test-clerk': 'allowed', origin: 'https://workspace.example' }));
   assert.equal(created.status, 303);
   assert.equal((await load(slugFrom(created))).observations[0]!.source, 'operator-ui:sales@company.example');
 
@@ -737,7 +744,9 @@ test('Clerk mode replaces the browser password and keeps identity, domain denial
     'x-test-clerk': 'allowed', origin: 'https://attacker.example',
   }));
   assert.equal(crossSiteSignOut.status, 403, 'sign-out is not a cross-site GET side effect');
-  const signOut = await fetch(`${base}/sign-out`, form({}, { 'x-test-clerk': 'allowed' }));
+  const signOut = await fetch(`${base}/sign-out`, form({}, {
+    'x-test-clerk': 'allowed', origin: 'https://workspace.example',
+  }));
   assert.equal(signOut.status, 200);
   assert.match(await signOut.text(), /window\.Clerk\.signOut/);
 
