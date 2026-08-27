@@ -641,6 +641,15 @@ describe('child conclusion inside a real tick (no manual delivery call)', () => 
     const { addSteering } = await import('./humanActs.js');
     await makeWorkstream('tick-mgr');
     await makeManaged('tick-mgr', 'tick-child');
+    await arrive('tick-child', (doc) => {
+      doc.wakes.push({
+        id: 'wake_conclusion_pending',
+        reason: 'future check retired only by validated conclusion',
+        condition: { type: 'time', dueAtVirtual: new Date(virtualNow().getTime() + 3_600_000).toISOString() },
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      });
+    });
 
     // Human-directed closure: legitimate conclusion evidence (a coordinator
     // decision cannot self-certify).
@@ -678,6 +687,11 @@ describe('child conclusion inside a real tick (no manual delivery call)', () => 
     assert.equal(child.workstream.status, 'done');
     assert.ok(child.workstream.conclusion);
     assert.ok(child.workstream.conclusion!.evidenceIds.includes(steeringId));
+    const conclusionWake = child.wakes.find((wake) => wake.id === 'wake_conclusion_pending');
+    assert.deepEqual(conclusionWake?.coordinatorCancellation, {
+      kind: 'workstream-concluded',
+      passId: child.workstream.conclusion!.passId,
+    });
 
     // The parent received the finished notice AND a pending wake — produced
     // by the tick's own delivery step, never by this test.

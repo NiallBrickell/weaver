@@ -13,7 +13,7 @@ import type { PolicyRecord } from './policies.js';
 import { renderPoliciesForProjection } from './policies.js';
 import { secretNames } from './secrets.js';
 import { pendingSteering } from './steering.js';
-import { virtualNow } from './clock.js';
+import { coordinatorCancellableWakePage, virtualNow } from './clock.js';
 import { capacityPresentation } from './capacity.js';
 import { executionSafetyConfig } from './executionSafety.js';
 import { actionHasLivePilotOutage, humanAttention } from './actionApproval.js';
@@ -32,6 +32,7 @@ const RATIONALE_EXCERPT = 280; // per standing-decision rationale in the project
 const STANDING_SOFT_CAP = 20; // above this, nudge the coordinator to close stale cycle courses
 const RETIRED_SHOWN = 10; // most-recent superseded/closed decisions rendered as lineage
 const ACCEPTED_SHOWN = 25; // most-recent adopted deliverables rendered in full
+const CANCELLABLE_WAKES_SHOWN = 8; // exact remaining ids are available through a bounded typed read tool
 
 function fmtList(items: string[], empty: string): string {
   return items.length ? items.map((i) => `- ${i}`).join('\n') : `- (${empty})`;
@@ -248,6 +249,18 @@ export function buildProjection(
   const managedActive = managed.filter((m) => m.status === 'active');
   const unconsumedDirections = (doc.managerDirections ?? []).filter((d) => !d.consumedByPass);
   const unacknowledgedNotices = [...(doc.managerNotices ?? [])].slice(-15);
+  const cancellableWakePage = coordinatorCancellableWakePage(doc, {
+    limit: CANCELLABLE_WAKES_SHOWN,
+    nowVirtual: now,
+  });
+  const cancellableWakeLines = cancellableWakePage.wakes.map((wake) =>
+    `${wake.id} for ${wake.organizationalCourseId} due ${wake.dueAtVirtual}: ${excerpt(wake.reason, 240)}`,
+  );
+  if (cancellableWakePage.nextAfterWakeId) {
+    cancellableWakeLines.push(
+      `(${cancellableWakePage.total - cancellableWakePage.wakes.length} more — call list_cancellable_wakes with after_wake_id "${cancellableWakePage.nextAfterWakeId}" for bounded exact-id pages)`,
+    );
+  }
   const s6 = [
     `## 6. Open loops`,
     `Needs a human (do NOT act on these yourself):`,
@@ -278,6 +291,9 @@ export function buildProjection(
     // from becoming truth. One level only: children of children never appear.
     `Workstreams you manage (${managedActive.length} of ${managed.length} still running — this count is authoritative, do not infer it from the notices above):`,
     fmtList(managed.map((m) => `${m.slug} [${m.status}]`), 'none'),
+    ``,
+    `Pending organizational wakes you may cancel only when typed basis directly closes their stored course (${cancellableWakePage.total} total):`,
+    fmtList(cancellableWakeLines, 'none'),
     ``,
     `Interactions:`,
     fmtList(intLines, 'none'),

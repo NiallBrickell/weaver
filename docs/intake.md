@@ -127,7 +127,12 @@ fix, and it should be added then rather than in anticipation.
 
 There is no trigger primitive. A repeating stream schedules its own next wake
 with `schedule_wake` at the end of each pass, and if a pass dies before doing so
-the engine restores its unconsumed wakes (`wakes.restored`). If that turns out
+the engine restores its unconsumed wakes (`wakes.restored`). When a standing
+cycle or cadence is superseded, the coordinator cancels each exact obsolete
+ordinary wake only when typed basis directly closes its stored course, then
+schedules the replacement against the exact new decision or work item; a
+bounded read tool pages any backlog by exact id. Harness-owned waits are not
+individually coordinator-controlled. If that turns out
 to be too fragile in practice — a stream that goes quiet because no pass ever
 re-armed it — a declarative `Trigger` on the document is the fix, and it should
 be written only once that failure is observed rather than in anticipation of it.
