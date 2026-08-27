@@ -232,6 +232,14 @@ must never hand a bot the human's authority.
 8. leave printout delivery as the only acknowledged “since I last received a
    catch-up” checkpoint. Opening a page is not a read receipt.
 
+The operator pages embed the checked-in
+`src/ui/inspect/tailwind.generated.css` bundle. The server reads those bytes at
+runtime; it does not scan server-rendered JSX and compile new utilities. Every
+UI markup or Tailwind-class change therefore runs `yarn build:ui` and commits
+the regenerated bundle. Layout-critical render tests should also assert that
+their constraining selector is present, so a correct JSX shape cannot ship
+with stale CSS and expand across the viewport.
+
 The shared deployment uses Clerk through an adapter; Weaver does not grow user
 accounts, tenancy, organizations or an identity database. A signed Clerk
 session is necessary but insufficient: the adapter fetches the user, requires
