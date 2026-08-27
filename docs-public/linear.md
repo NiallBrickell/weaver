@@ -27,7 +27,7 @@ claude mcp list          # from the directory your runner or routine ticks in
 weaver create \
   --slug linear-intake \
   --title "Linear intake" \
-  --objective "On each wake, list Linear issues carrying the 'weaver' label. For each one that does not already have a workstream, create_workstream with source_key 'linear:<issue uuid>', an objective built from the issue title and description, and a constraint telling it to post progress and the outcome back to that issue. Then schedule_wake in 15m." \
+  --objective "On each wake, list Linear issues carrying the 'weaver' label. For each one that does not already have a workstream, create_workstream with source_key 'linear:<issue uuid>', an objective built from the issue title and description, and a constraint telling it to post progress and the outcome back to that issue. Keep one standing intake-cadence decision and schedule_wake in 15m with that decision as course_id." \
   --tag intake
 ```
 

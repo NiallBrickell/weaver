@@ -14,7 +14,7 @@ import {
   runCoordinatorPass,
 } from './coordinator.js';
 import { arrive, createWorkstream, load, writeArtifact } from './store.js';
-import { virtualNow } from './clock.js';
+import { isCoordinatorCancellableWake, virtualNow, type CancellableWakePage } from './clock.js';
 import type { CapacityCategory, InfrastructureWait } from './types.js';
 import type { CoordinatorExecutor } from './executor/coordinator.js';
 
@@ -330,6 +330,273 @@ test('a pass pins executor, provider, and model while a fake Codex loop finishes
   assert.equal(pass.model, 'gpt-5.6-sol');
   assert.equal(pass.sessionId, 'codex-thread-fixture');
   assert.equal(pass.outcome, 'completed');
+});
+
+test('a coordinator cancels only a specific obsolete pending wake', async () => {
+  await arrive('coordinator-capacity', (doc) => {
+    const createdAt = new Date().toISOString();
+    const due = (minutes: number) =>
+      new Date(virtualNow().getTime() + minutes * 60_000).toISOString();
+    const infrastructure = wait('rate_limit', 77);
+    const currentCycleHash = 'a'.repeat(64);
+    const unrelatedHash = 'b'.repeat(64);
+    const assignment = (id: string) => ({
+      id, objective: `Completed ${id}`, briefing: 'bounded test work', kind: 'work' as const,
+      acceptanceCriteria: [], dependsOn: [], state: 'completed' as const, attempts: [],
+      adoption: { state: 'accepted' as const, passId: 'pass_prior' }, createdAtVirtual: createdAt,
+    });
+    doc.assignments.push(assignment('asg_cycle'), assignment('asg_unrelated'));
+    doc.deliverables.push({
+      id: 'del_current_cycle', title: 'Adopted current cycle result', kind: 'report',
+      path: 'current-cycle.md', contentHash: currentCycleHash, createdAtVirtual: createdAt,
+      producedByAssignment: 'asg_cycle',
+      adopted: { contentHash: currentCycleHash, passId: 'pass_prior', atVirtual: createdAt },
+    }, {
+      id: 'del_unrelated', title: 'Real but unrelated adopted result', kind: 'report',
+      path: 'unrelated.md', contentHash: unrelatedHash, createdAtVirtual: createdAt,
+      producedByAssignment: 'asg_unrelated',
+      adopted: { contentHash: unrelatedHash, passId: 'pass_prior', atVirtual: createdAt },
+    });
+    doc.decisions.push({
+      id: 'dec_unrelated', title: 'A standing decision with no supersession lineage',
+      rationale: 'Being standing alone is not cancellation evidence.', madeBy: 'coordinator',
+      status: 'standing', decidedAtVirtual: createdAt,
+    }, {
+      id: 'dec_kept_cycle', title: 'The real next cadence remains standing',
+      rationale: 'This course is intentionally not closed.', madeBy: 'coordinator',
+      status: 'standing', decidedAtVirtual: createdAt,
+    }, {
+      id: 'dec_old_cycle', title: 'Earlier detection cadence',
+      rationale: 'Replaced by the current cadence.', madeBy: 'coordinator',
+      status: 'superseded', supersededBy: 'dec_current_cycle', decidedAtVirtual: createdAt,
+    }, {
+      id: 'dec_current_cycle', title: 'Current detection cadence',
+      rationale: 'The typed successor to the earlier cadence.', madeBy: 'coordinator',
+      status: 'standing', supersedes: 'dec_old_cycle', decidedAtVirtual: createdAt,
+    });
+    doc.wakes.push(
+      {
+        id: 'wake_obsolete',
+        reason: 'safety net for a submission that has already been adopted',
+        condition: { type: 'time', dueAtVirtual: due(60) },
+        status: 'pending',
+        createdAt,
+        organizationalCourseId: 'asg_cycle',
+      },
+      {
+        id: 'wake_kept', reason: 'the one real next check',
+        condition: { type: 'time', dueAtVirtual: due(120) }, status: 'pending', createdAt,
+        organizationalCourseId: 'dec_kept_cycle',
+      },
+      {
+        id: 'wake_old_detection', reason: 'superseded cycle detection check',
+        condition: { type: 'time', dueAtVirtual: due(30) }, status: 'pending', createdAt,
+        organizationalCourseId: 'dec_old_cycle',
+      },
+      {
+        id: 'wake_old_safety_net', reason: 'superseded cycle safety net',
+        condition: { type: 'time', dueAtVirtual: due(60) }, status: 'pending', createdAt,
+        organizationalCourseId: 'asg_cycle',
+      },
+      {
+        id: 'wake_already_fired',
+        reason: 'historical fired wake',
+        condition: { type: 'time', dueAtVirtual: due(3) },
+        status: 'fired',
+        createdAt,
+        organizationalCourseId: 'asg_cycle',
+      },
+      {
+        id: 'wake_already_cancelled', reason: 'historical cancelled wake',
+        condition: { type: 'time', dueAtVirtual: due(4) }, status: 'cancelled', createdAt,
+        organizationalCourseId: 'asg_cycle',
+      },
+      {
+        id: 'wake_infrastructure', reason: 'provider recovery',
+        condition: { type: 'time', dueAtVirtual: infrastructure.retryAt },
+        status: 'pending', createdAt, infrastructure, organizationalCourseId: 'asg_cycle',
+      },
+      {
+        id: 'wake_execution_safety', reason: 'rolling execution guard',
+        condition: { type: 'time', dueAtVirtual: due(6) }, status: 'pending', createdAt,
+        executionSafety: { blockedUntil: due(6), observedStarts: 16, limit: 16, windowSeconds: 600 },
+        organizationalCourseId: 'asg_cycle',
+      },
+      {
+        id: 'wake_immediate', reason: 'arrival reconciliation',
+        condition: { type: 'immediate' }, status: 'pending', createdAt,
+        organizationalCourseId: 'asg_cycle',
+      },
+      {
+        id: 'wake_wall_time', reason: 'harness containment timer',
+        condition: { type: 'wall_time', dueAt: due(8) }, status: 'pending', createdAt,
+        organizationalCourseId: 'asg_cycle',
+      },
+      {
+        id: 'wake_overdue', reason: 'engine reconciliation is already due',
+        condition: { type: 'time', dueAtVirtual: due(-1) }, status: 'pending', createdAt,
+        organizationalCourseId: 'asg_cycle',
+      },
+    );
+  });
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const cancel = req.tools.find((definition) => definition.name === 'cancel_wake');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(cancel);
+      assert.ok(finish);
+      const cancellationBasis = new Map([
+        ['wake_obsolete', 'del_current_cycle'],
+        ['wake_old_detection', 'dec_current_cycle'],
+        ['wake_old_safety_net', 'del_current_cycle'],
+      ]);
+      for (const [wakeId, basisId] of cancellationBasis) {
+        const cancelled = await cancel.handler({
+          wake_id: wakeId,
+          reason: 'the adopted current-cycle result superseded this earlier cycle check',
+          basis_ids: [basisId],
+        }, {});
+        assert.equal(cancelled.isError, undefined);
+      }
+      for (const basisIds of [[], ['basis_missing'], ['dec_unrelated'], ['del_current_cycle'], ['del_unrelated']]) {
+        const refusedBasis = await cancel.handler({
+          wake_id: 'wake_kept', reason: 'invented prose is not evidence', basis_ids: basisIds,
+        }, {});
+        assert.equal(refusedBasis.isError, true, `basis ${basisIds.join(',') || '(empty)'} should be refused`);
+      }
+      for (const wakeId of [
+        'wake_already_fired',
+        'wake_already_cancelled',
+        'wake_infrastructure',
+        'wake_execution_safety',
+        'wake_immediate',
+        'wake_wall_time',
+        'wake_overdue',
+        'wake_missing',
+      ]) {
+        const refused = await cancel.handler({
+          wake_id: wakeId,
+          reason: 'must not rewrite or suppress a harness-owned wake',
+          basis_ids: ['del_current_cycle'],
+        }, {});
+        assert.equal(refused.isError, true, `${wakeId} should be refused`);
+      }
+      await finish.handler({ summary: 'Removed only the obsolete future wake.', acknowledged_steering: true }, {});
+      return { costUsd: 0, sessionId: 'cancel-obsolete-wake' };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const doc = await load('coordinator-capacity');
+  for (const wakeId of ['wake_obsolete', 'wake_old_detection', 'wake_old_safety_net']) {
+    assert.equal(doc.wakes.find((wake) => wake.id === wakeId)!.status, 'cancelled');
+  }
+  assert.equal(doc.wakes.find((wake) => wake.id === 'wake_already_fired')!.status, 'fired');
+  assert.equal(doc.wakes.find((wake) => wake.id === 'wake_already_cancelled')!.status, 'cancelled');
+  for (const wakeId of [
+    'wake_kept',
+    'wake_infrastructure',
+    'wake_execution_safety',
+    'wake_immediate',
+    'wake_wall_time',
+    'wake_overdue',
+  ]) {
+    assert.equal(doc.wakes.find((wake) => wake.id === wakeId)!.status, 'pending');
+  }
+  assert.equal(
+    doc.wakes.filter((wake) => wake.reason.startsWith('quiescence backstop')).length,
+    0,
+    'the retained real check prevents a replacement backstop',
+  );
+  assert.ok(doc.events.some((event) =>
+    event.type === 'wake.cancelled' &&
+    event.refs?.includes('wake_obsolete') &&
+    event.refs.includes('del_current_cycle')
+  ));
+  assert.deepEqual(
+    doc.wakes.find((wake) => wake.id === 'wake_obsolete')!.coordinatorCancellation,
+    {
+      kind: 'course-retired',
+      passId: doc.passes.at(-1)!.id,
+      reason: 'the adopted current-cycle result superseded this earlier cycle check',
+      basisIds: ['del_current_cycle'],
+    },
+  );
+  assert.deepEqual(
+    doc.wakes.filter((wake) => isCoordinatorCancellableWake(wake)).map((wake) => wake.id),
+    ['wake_kept'],
+    'three superseded organizational checks collapse to the one real next check',
+  );
+});
+
+test('a bounded typed tool pages every cancellable wake hidden beyond the projection head', async () => {
+  const now = virtualNow().getTime();
+  await arrive('coordinator-capacity', (doc) => {
+    doc.decisions.push({
+      id: 'dec_page_course', title: 'Inspect the pageable wake backlog',
+      rationale: 'Keep this exact course live during pagination.', madeBy: 'coordinator',
+      status: 'standing', decidedAtVirtual: new Date(now).toISOString(),
+    });
+    for (let index = 0; index < 60; index++) {
+      doc.wakes.push({
+        id: `wake_page_${String(index).padStart(2, '0')}`,
+        reason: `pageable organizational check ${index}`,
+        condition: { type: 'time', dueAtVirtual: new Date(now + (index + 60) * 60_000).toISOString() },
+        status: 'pending', createdAt: new Date().toISOString(),
+        organizationalCourseId: 'dec_page_course',
+      });
+    }
+  });
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      assert.match(req.prompt, /60 total/);
+      assert.ok(req.prompt.length < 20_000, `projection grew to ${req.prompt.length} characters`);
+      const list = req.tools.find((definition) => definition.name === 'list_cancellable_wakes');
+      const schedule = req.tools.find((definition) => definition.name === 'schedule_wake');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(list);
+      assert.ok(schedule);
+      assert.ok(finish);
+      const readPage = async (afterWakeId?: string): Promise<CancellableWakePage> => {
+        const result = await list.handler(afterWakeId ? { after_wake_id: afterWakeId } : {}, {});
+        assert.equal(result.isError, undefined);
+        return JSON.parse((result.content[0] as { text: string }).text) as CancellableWakePage;
+      };
+      const first = await readPage();
+      assert.equal(first.total, 60);
+      assert.equal(first.wakes.length, 25);
+      assert.equal(first.wakes[0]!.id, 'wake_page_00');
+      const second = await readPage(first.nextAfterWakeId);
+      assert.equal(second.wakes.length, 25);
+      assert.equal(second.wakes[0]!.id, 'wake_page_25');
+      const third = await readPage(second.nextAfterWakeId);
+      assert.equal(third.wakes.length, 10);
+      assert.equal(third.wakes.at(-1)!.id, 'wake_page_59');
+      assert.equal(third.nextAfterWakeId, undefined);
+      const badCursor = await list.handler({ after_wake_id: 'wake_missing_cursor' }, {});
+      assert.equal(badCursor.isError, true);
+      const unlinked = await schedule.handler({
+        reason: 'must not schedule without a real course', after: '4h', course_id: 'course_missing',
+      }, {});
+      assert.equal(unlinked.isError, true);
+      const linked = await schedule.handler({
+        reason: 'linked follow-up', after: '4h', course_id: 'dec_page_course',
+      }, {});
+      assert.equal(linked.isError, undefined);
+      await finish.handler({ summary: 'Read the bounded wake pages without mutation.', acknowledged_steering: true }, {});
+      return { costUsd: 0, sessionId: 'page-cancellable-wakes' };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  assert.equal(
+    (await load('coordinator-capacity')).wakes.filter((wake) => isCoordinatorCancellableWake(wake)).length,
+    61,
+  );
 });
 
 test('create_assignment persists typed requirements without choosing a model', async () => {

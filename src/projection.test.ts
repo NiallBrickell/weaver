@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 
 import { buildProjection } from './projection.js';
 import type { WorkstreamDoc, Decision, Deliverable, Assignment } from './types.js';
+import { virtualNow } from './clock.js';
 
 const NOW = '2026-08-10T00:00:00.000Z';
 const BIG_RATIONALE = 'x'.repeat(2000); // supporting prose that must not dominate
@@ -262,4 +263,103 @@ test('many standing decisions trigger the convergence nudge', () => {
   }
   const p = buildProjection(doc, []);
   assert.match(p, /standing decisions are commitments, not a cycle log/i);
+});
+
+test('projection exposes exact cancellable organizational wakes but no harness-owned or historical wakes', () => {
+  const doc = routineDoc(0);
+  const createdAt = new Date().toISOString();
+  const now = virtualNow().getTime();
+  const due = (minutes: number) =>
+    new Date(now + minutes * 60_000).toISOString();
+  const giantReason = `review the adopted cycle at the new cadence ${'x'.repeat(10_000)}`;
+  doc.decisions.push({
+    id: 'dec_wake_course', title: 'The exact scheduled routine course',
+    rationale: 'Typed provenance for every ordinary wake in this fixture.',
+    madeBy: 'coordinator', status: 'standing', decidedAtVirtual: createdAt,
+  });
+  const infrastructure = {
+    kind: 'rate_limit' as const,
+    recovery: 'automatic_retry' as const,
+    source: 'coordinator' as const,
+    sourceId: 'pass_capacity',
+    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+    detectedAt: createdAt, retryAt: due(15),
+  };
+  doc.wakes.push(
+    {
+      id: 'wake_visible', reason: giantReason,
+      condition: { type: 'time', dueAtVirtual: due(120) }, status: 'pending', createdAt,
+      organizationalCourseId: 'dec_wake_course',
+    },
+    {
+      id: 'wake_fired_hidden', reason: 'HISTORICAL_FIRED_MARKER',
+      condition: { type: 'time', dueAtVirtual: due(3) }, status: 'fired', createdAt,
+    },
+    {
+      id: 'wake_cancelled_hidden', reason: 'HISTORICAL_CANCELLED_MARKER',
+      condition: { type: 'time', dueAtVirtual: due(4) }, status: 'cancelled', createdAt,
+    },
+    {
+      id: 'wake_infrastructure_hidden', reason: 'INFRASTRUCTURE_MARKER',
+      condition: { type: 'time', dueAtVirtual: infrastructure.retryAt },
+      status: 'pending', createdAt, infrastructure,
+    },
+    {
+      id: 'wake_safety_hidden', reason: 'EXECUTION_SAFETY_MARKER',
+      condition: { type: 'time', dueAtVirtual: due(6) }, status: 'pending', createdAt,
+      executionSafety: { blockedUntil: due(6), observedStarts: 16, limit: 16, windowSeconds: 600 },
+    },
+    {
+      id: 'wake_immediate_hidden', reason: 'IMMEDIATE_MARKER',
+      condition: { type: 'immediate' }, status: 'pending', createdAt,
+    },
+    {
+      id: 'wake_wall_hidden', reason: 'WALL_TIME_MARKER',
+      condition: { type: 'wall_time', dueAt: due(8) }, status: 'pending', createdAt,
+    },
+    {
+      id: 'wake_overdue_hidden', reason: 'OVERDUE_MARKER',
+      condition: { type: 'time', dueAtVirtual: due(-1) }, status: 'pending', createdAt,
+    },
+  );
+  for (let index = 0; index < 1_000; index++) {
+    doc.wakes.push({
+      id: `wake_history_${index}`,
+      reason: `HISTORICAL_WAKE_${index}`,
+      condition: { type: 'time', dueAtVirtual: due(10) },
+      status: index % 2 === 0 ? 'fired' : 'cancelled',
+      createdAt,
+    });
+  }
+  for (let index = 0; index < 1_000; index++) {
+    doc.wakes.push({
+      id: `wake_pending_backlog_${index}`,
+      reason: `PENDING_BACKLOG_${index}`,
+      condition: { type: 'time', dueAtVirtual: due(index + 20) },
+      status: 'pending', createdAt, organizationalCourseId: 'dec_wake_course',
+    });
+  }
+
+  const projection = buildProjection(doc, []);
+  assert.match(
+    projection,
+    new RegExp(`wake_visible for dec_wake_course due ${due(120)}: review the adopted cycle at the new cadence`),
+  );
+  assert.match(projection, /1001 total/);
+  assert.match(projection, /call list_cancellable_wakes/);
+  assert.doesNotMatch(projection, /PENDING_BACKLOG_999/);
+  assert.doesNotMatch(projection, /x{1000}/);
+  for (const marker of [
+    'HISTORICAL_FIRED_MARKER',
+    'HISTORICAL_CANCELLED_MARKER',
+    'INFRASTRUCTURE_MARKER',
+    'EXECUTION_SAFETY_MARKER',
+    'IMMEDIATE_MARKER',
+    'WALL_TIME_MARKER',
+    'OVERDUE_MARKER',
+    'HISTORICAL_WAKE_',
+  ]) {
+    assert.doesNotMatch(projection, new RegExp(marker));
+  }
+  assert.ok(projection.length < 20_000, `projection grew to ${projection.length} characters`);
 });

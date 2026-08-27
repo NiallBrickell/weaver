@@ -357,6 +357,15 @@ export interface Wake {
   status: 'pending' | 'fired' | 'cancelled';
   createdAt: Iso;
   firedInPass?: Id;
+  /** Exact organizational commitment this ordinary scheduled check serves.
+   * Harness-owned and legacy wakes omit it and cannot be individually retired
+   * by a coordinator. Never infer it from `reason`. */
+  organizationalCourseId?: Id;
+  /** Typed coordinator-authored cancellation proof. Harness-owned
+   * cancellations do not manufacture this field. */
+  coordinatorCancellation?:
+    | { kind: 'course-retired'; passId: Id; reason: string; basisIds: Id[] }
+    | { kind: 'workstream-concluded'; passId: Id };
   /** Typed provider wait. Human-readable `reason` is presentation only and
    * must never be parsed to decide recovery behavior. */
   infrastructure?: InfrastructureWait;

@@ -24,5 +24,6 @@ Cycle 30 inherits the decisions and corrections from cycles 1–29, then continu
 ## Mechanics
 
 - Wakes are stored data, not sleeping processes — the resident runner discovers what's due. Kill the runner for a week; the routine picks up exactly where it stopped.
+- A superseded cycle does not leave its old organizational checks behind. Every new check names the exact decision or work item it serves; the coordinator can cancel it only when typed facts directly close or supersede that same course. The cancellation and basis remain in history, and large backlogs are read in bounded pages rather than dumped into every pass. Infrastructure recovery, execution-safety, immediate-arrival, wall-time, and fired wakes cannot be cancelled individually; validated workstream conclusion retires the remaining waits by pass reference.
 - The dashboard shows routines in their own `↻ ROUTINES` section with the next-run time.
 - `weaver pause <slug>` stops a routine with its state and scheduled wakes intact; `weaver resume <slug>` restarts it. Run `weaver pause` with no slug to pause every currently active workstream. [Pausing work](./pausing.md) explains the fleet boundary. `weaver tag <slug> add routine` converts an existing workstream.
