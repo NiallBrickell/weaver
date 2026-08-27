@@ -692,6 +692,14 @@ test('Clerk mode replaces the browser password and keeps identity, domain denial
   const signIn = await fetch(`${base}/sign-in?return_to=%2Fnew`);
   const signInHtml = await signIn.text();
   assert.match(signInHtml, /data-clerk-publishable-key="pk_test_browser-safe"/);
+  assert.match(signInHtml, /data-testid="clerk-sign-in-shell"/);
+  assert.match(signInHtml, /maxWidth: '24rem'/);
+  assert.match(signInHtml, /title: 'Sign in to Weaver'/);
+  assert.match(signInHtml, /subtitle: 'Use your company account to continue'/);
+  assert.doesNotMatch(signInHtml, /<h1[^>]*>Sign in<\/h1>/);
+  assert.doesNotMatch(signInHtml, /Use your company account to open the shared workspace/);
+  assert.match(signInHtml, /\.max-w-sm\{max-width:var\(--container-sm\)\}/);
+  assert.match(signInHtml, /\.p-6\{padding:calc\(var\(--spacing\) \* 6\)\}/);
   const csp = signIn.headers.get('content-security-policy') ?? '';
   assert.match(csp, /script-src[^;]*https:\/\/example\.clerk\.accounts\.dev/);
   assert.match(csp, /connect-src[^;]*https:\/\/example\.clerk\.accounts\.dev/);

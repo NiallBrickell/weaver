@@ -163,7 +163,19 @@ function clerkBootScript(kind: 'sign-in' | 'access-denied' | 'sign-out', returnT
 window.addEventListener('load', async () => {
   const status = document.querySelector('[data-clerk-status]');
   try {
-    await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
+    await window.Clerk.load({
+      ui: { ClerkUI: window.__internal_ClerkUICtor },
+      localization: {
+        signIn: {
+          start: {
+            title: 'Sign in to Weaver',
+            titleCombined: 'Sign in to Weaver',
+            subtitle: 'Use your company account to continue',
+            subtitleCombined: 'Use your company account to continue',
+          },
+        },
+      },
+    });
     if (${inlineJson(kind)} === 'sign-in') {
       if (window.Clerk.user) {
         window.location.replace(${destination});
@@ -172,6 +184,31 @@ window.addEventListener('load', async () => {
       window.Clerk.mountSignIn(document.getElementById('clerk-sign-in'), {
         routing: 'hash',
         forceRedirectUrl: ${destination},
+        appearance: {
+          options: { elevation: 'raised' },
+          variables: {
+            colorPrimary: '#a78bfa',
+            colorPrimaryForeground: '#09090b',
+            colorBackground: '#18181b',
+            colorForeground: '#fafafa',
+            colorMuted: '#27272a',
+            colorMutedForeground: '#a1a1aa',
+            colorInput: '#09090b',
+            colorInputForeground: '#fafafa',
+            colorBorder: '#3f3f46',
+            colorRing: '#a78bfa',
+            colorShadow: '#000000',
+            borderRadius: '0.75rem',
+            fontFamily: 'inherit',
+            fontSize: '0.875rem',
+            spacing: '0.875rem',
+          },
+          elements: {
+            rootBox: { width: '100%' },
+            cardBox: { width: '100%', maxWidth: '24rem' },
+            headerTitle: { fontSize: '1.25rem', fontWeight: 600 },
+          },
+        },
       });
       if (status) status.remove();
       return;
@@ -221,35 +258,36 @@ function ClerkAuthDocument({
         />
       </head>
       <body className="min-h-screen bg-zinc-950 text-zinc-100 antialiased">
-        <main className="mx-auto flex min-h-screen max-w-lg items-center justify-center px-5 py-12">
-          <section className="w-full rounded-2xl border border-zinc-800 bg-zinc-900/40 p-6 shadow-2xl shadow-black/30">
-            <p className="text-xs font-medium uppercase tracking-[0.14em] text-violet-300">Weaver</p>
-            {denied ? (
-              <>
-                <h1 className="mt-2 text-2xl font-semibold text-white">Access restricted</h1>
-                <p className="mt-3 text-sm leading-6 text-zinc-400">Your signed-in account does not have access to this workspace.</p>
-                <button
-                  type="button"
-                  data-clerk-sign-out=""
-                  className="mt-5 rounded-lg border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-600 hover:text-white disabled:opacity-50"
-                >
-                  Sign out and switch account
-                </button>
-              </>
-            ) : signingOut ? (
-              <>
-                <h1 className="mt-2 text-2xl font-semibold text-white">Signing out</h1>
-                <p className="mt-3 text-sm leading-6 text-zinc-400">Closing this workspace session…</p>
-              </>
-            ) : (
-              <>
-                <h1 className="mt-2 text-2xl font-semibold text-white">Sign in</h1>
-                <p className="mt-3 text-sm leading-6 text-zinc-400">Use your company account to open the shared workspace.</p>
-                <div id="clerk-sign-in" className="mt-6 flex justify-center" />
-              </>
-            )}
-            <p data-clerk-status="" className="mt-5 text-xs leading-5 text-zinc-500">Loading secure sign-in…</p>
-          </section>
+        <main className="flex min-h-screen items-center justify-center px-4 py-8">
+          {denied || signingOut ? (
+            <section className="w-full max-w-sm rounded-2xl border border-zinc-800 bg-zinc-900/40 p-6 shadow-2xl shadow-black/30">
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-violet-300">Weaver</p>
+              {denied ? (
+                <>
+                  <h1 className="mt-2 text-2xl font-semibold text-white">Access restricted</h1>
+                  <p className="mt-3 text-sm leading-6 text-zinc-400">Your signed-in account does not have access to this workspace.</p>
+                  <button
+                    type="button"
+                    data-clerk-sign-out=""
+                    className="mt-5 rounded-lg border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-600 hover:text-white disabled:opacity-50"
+                  >
+                    Sign out and switch account
+                  </button>
+                </>
+              ) : (
+                <>
+                  <h1 className="mt-2 text-2xl font-semibold text-white">Signing out</h1>
+                  <p className="mt-3 text-sm leading-6 text-zinc-400">Closing this workspace session…</p>
+                </>
+              )}
+              <p data-clerk-status="" className="mt-5 text-xs leading-5 text-zinc-500">Loading secure sign-in…</p>
+            </section>
+          ) : (
+            <div className="w-full max-w-sm" data-testid="clerk-sign-in-shell">
+              <div id="clerk-sign-in" className="flex w-full justify-center" />
+              <p data-clerk-status="" className="mt-4 text-center text-xs leading-5 text-zinc-500">Loading secure sign-in…</p>
+            </div>
+          )}
         </main>
         <script dangerouslySetInnerHTML={{ __html: clerkBootScript(kind, returnTo) }} />
       </body>

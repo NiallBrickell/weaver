@@ -133,7 +133,8 @@ Testing discipline (ported from the relay experiment): every durability/authorit
 
 1. `yarn typecheck` — clean.
 2. Run the smallest validation that proves the change; for anything touching the continuity contract, run the relevant pass-and-wake cycle end to end and confirm the fresh coordinator's projection.
-3. **When asked to fix tests/lint/build:** run the exact command, read every failure, fix them all, re-run, confirm zero failures. Never report success on a subset.
+3. **For UI markup or Tailwind-class changes:** run `yarn build:ui` and commit `src/ui/inspect/tailwind.generated.css`; the server reads that checked-in bundle and does not compile classes at runtime. See [docs/operator-workspace.md](./docs/operator-workspace.md).
+4. **When asked to fix tests/lint/build:** run the exact command, read every failure, fix them all, re-run, confirm zero failures. Never report success on a subset.
 
 ## Git practices
 
