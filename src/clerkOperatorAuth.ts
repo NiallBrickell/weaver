@@ -88,17 +88,31 @@ export function clerkOperatorAuthConfigFromEnv(
   const publishableKey = env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
   const secretKey = env.CLERK_SECRET_KEY?.trim();
   const allowedEmailDomains = env.WEAVER_UI_ALLOWED_EMAIL_DOMAINS?.trim();
-  const publicOrigin = env.WEAVER_UI_PUBLIC_ORIGIN?.trim();
-  if (!publishableKey && !secretKey && !allowedEmailDomains && !publicOrigin) return undefined;
+  const explicitPublicOrigin = env.WEAVER_UI_PUBLIC_ORIGIN?.trim();
+  if (!publishableKey && !secretKey && !allowedEmailDomains && !explicitPublicOrigin) return undefined;
   if (!publishableKey || !secretKey) {
     throw new Error('Clerk authentication requires both NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY');
   }
+  const railwayDomain = env.RAILWAY_PUBLIC_DOMAIN?.trim();
+  const publicOrigin = explicitPublicOrigin
+    ?? (railwayDomain ? parseRailwayPublicOrigin(railwayDomain) : undefined);
   return {
     publishableKey,
     secretKey,
     allowedEmailDomains: parseAllowedEmailDomains(allowedEmailDomains),
     publicOrigin: parsePublicOrigin(publicOrigin),
   };
+}
+
+function parseRailwayPublicOrigin(domain: string): string {
+  if (!/^[a-z0-9.-]+(?::\d+)?$/i.test(domain)) {
+    throw new Error('RAILWAY_PUBLIC_DOMAIN must be a bare hostname with an optional port');
+  }
+  const publicOrigin = parsePublicOrigin(`https://${domain}`);
+  if (new URL(publicOrigin).host.toLowerCase() !== domain.toLowerCase()) {
+    throw new Error('RAILWAY_PUBLIC_DOMAIN must identify exactly one canonical host');
+  }
+  return publicOrigin;
 }
 
 function parsePublicOrigin(raw: string | undefined): string {

@@ -168,12 +168,15 @@ WEAVER_STORE=${{Postgres.DATABASE_URL}}
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=<the Clerk publishable key>
 CLERK_SECRET_KEY=<the Clerk secret key>
 WEAVER_UI_ALLOWED_EMAIL_DOMAINS=<the exact company email domain>
-WEAVER_UI_PUBLIC_ORIGIN=https://<the Railway or custom UI domain>
+# Optional on Railway; set only when a custom UI domain is canonical.
+WEAVER_UI_PUBLIC_ORIGIN=https://<the custom UI domain>
 WEAVER_HOUSE_JSON={"repoMap":"Primary application: /absolute/path/on-the-runner","tags":["application"]}
 ```
 
-The four Clerk values are atomic: a partial configuration fails startup rather
-than falling back. `WEAVER_UI_PUBLIC_ORIGIN` is used as Clerk's
+The Clerk identity values are atomic: a partial configuration fails startup
+rather than falling back. By default Weaver derives the canonical HTTPS origin
+from Railway's provider-owned `RAILWAY_PUBLIC_DOMAIN`; an explicit
+`WEAVER_UI_PUBLIC_ORIGIN` overrides it for a custom domain and becomes Clerk's
 `authorizedParties` boundary and must match the URL teammates open. The secret
 key stays in Railway's server-side variables; only the publishable key is sent
 to the browser. Signed-in users are accepted only when Clerk reports a verified

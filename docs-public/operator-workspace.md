@@ -101,6 +101,10 @@ is present while another is missing, the UI refuses to start; it never falls
 back to a weaker mode. The secret key is server-only. The publishable key is
 the only key rendered into the sign-in page.
 
+On Railway, `WEAVER_UI_PUBLIC_ORIGIN` may be omitted: Weaver derives the exact
+HTTPS origin from Railway's provider-owned `RAILWAY_PUBLIC_DOMAIN`. An explicit
+origin remains available for custom domains and other hosts.
+
 For a private self-hosted listener where Clerk is intentionally absent,
 `WEAVER_UI_TOKEN` remains a fallback:
 

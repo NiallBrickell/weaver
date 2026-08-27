@@ -46,6 +46,12 @@ test('Clerk environment configuration is atomic and requires a canonical hosted 
   });
   assert.deepEqual(complete?.allowedEmailDomains, ['company.example', 'second.example']);
   assert.equal(complete?.publicOrigin, 'https://workspace.example');
+  assert.equal(clerkOperatorAuthConfigFromEnv({
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: publishableKey,
+    CLERK_SECRET_KEY: 'secret',
+    WEAVER_UI_ALLOWED_EMAIL_DOMAINS: 'company.example',
+    RAILWAY_PUBLIC_DOMAIN: 'ui-production.example.up.railway.app',
+  })?.publicOrigin, 'https://ui-production.example.up.railway.app');
 
   for (const partial of [
     { NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: publishableKey },
@@ -72,6 +78,15 @@ test('Clerk environment configuration is atomic and requires a canonical hosted 
     WEAVER_UI_ALLOWED_EMAIL_DOMAINS: 'company.example',
     WEAVER_UI_PUBLIC_ORIGIN: 'http://127.0.0.1:9724',
   })?.publicOrigin, 'http://127.0.0.1:9724');
+  assert.throws(() => clerkOperatorAuthConfigFromEnv({
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: publishableKey,
+    CLERK_SECRET_KEY: 'secret',
+    WEAVER_UI_ALLOWED_EMAIL_DOMAINS: 'company.example',
+    RAILWAY_PUBLIC_DOMAIN: 'workspace.example/attacker',
+  }), /bare hostname/);
+  assert.equal(clerkOperatorAuthConfigFromEnv({
+    RAILWAY_PUBLIC_DOMAIN: 'workspace.example',
+  }), undefined, 'Railway metadata alone does not enable Clerk mode');
   assert.throws(() => parseAllowedEmailDomains('company.example, bad/domain'), /valid comma-separated/);
 });
 
