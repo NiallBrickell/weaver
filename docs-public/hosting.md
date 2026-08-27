@@ -37,15 +37,24 @@ that executes work.
    `WEAVER_SERVE_TOKEN`; exposes only register-workstream, post-observation, and
    read-status. No steer, approve, or adopt — those stay with the human.
 4. **`weaver ui`** *(optional)* — the browser board/workspace for people to
-   create and inspect work. A non-loopback listener requires `WEAVER_UI_TOKEN`.
+   create and inspect work. A non-loopback listener requires Clerk or the
+   private-network Basic fallback.
 
 ## Environment every hosted process needs
 
 ```bash
 export WEAVER_STORE="postgres://user:pass@host:5432/weaver"   # the shared fleet
 export WEAVER_SERVE_TOKEN="<a-strong-secret>"                 # serve only — the bot bearer token
-export WEAVER_UI_TOKEN="<a-different-strong-secret>"           # ui only — the browser password
+export NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="<publishable-key>"  # ui only — safe browser key
+export CLERK_SECRET_KEY="<secret-key>"                         # ui only — server-side secret
+export WEAVER_UI_ALLOWED_EMAIL_DOMAINS="company.example"      # exact verified domains
+export WEAVER_UI_PUBLIC_ORIGIN="https://weaver.example.com"   # Clerk authorized party
 ```
+
+The UI treats those four Clerk settings as one configuration and fails closed
+if any is missing. A private self-hosted listener may instead set
+`WEAVER_UI_TOKEN`; a complete Clerk configuration always wins and ignores that
+fallback.
 
 On your laptop the SDK borrows your Claude Code login, so no credential is
 needed. A host has no login to borrow — but exporting `ANTHROPIC_API_KEY` in

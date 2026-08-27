@@ -17,6 +17,7 @@ import {
   startOperatorUi,
   type RunningOperatorUi,
 } from './operatorUi.js';
+import type { ClerkOperatorAuthenticator } from './clerkOperatorAuth.js';
 import { arrive, listWorkstreams, load, newId, writeArtifact } from './store.js';
 
 let home: string;
@@ -628,6 +629,142 @@ test('non-loopback binding requires Basic auth and attributes requests to its us
   }, { authorization }));
   const doc = await load(slugFrom(created));
   assert.equal(doc.observations[0]!.source, 'operator-ui:sales-alice');
+});
+
+test('Clerk mode replaces the browser password and keeps identity, domain denial, redirects, and writes server-enforced', async () => {
+  await running!.close();
+  let authCalls = 0;
+  const responseHeaders = () => {
+    const headers = new Headers();
+    headers.append('set-cookie', '__session=one; Path=/; Secure; HttpOnly');
+    headers.append('set-cookie', '__client=two; Path=/; Secure; HttpOnly');
+    return headers;
+  };
+  const clerk: ClerkOperatorAuthenticator = {
+    publicOrigin: 'https://workspace.example',
+    browser: {
+      publishableKey: 'pk_test_browser-safe',
+      frontendOrigin: 'https://example.clerk.accounts.dev',
+      scriptUrl: 'https://example.clerk.accounts.dev/npm/@clerk/clerk-js@6/dist/clerk.browser.js',
+      uiScriptUrl: 'https://example.clerk.accounts.dev/npm/@clerk/ui@1/dist/ui.browser.js',
+    },
+    async authenticate(req) {
+      authCalls += 1;
+      const mode = req.headers['x-test-clerk'];
+      if (mode === 'allowed') return { kind: 'authenticated', actor: 'sales@company.example', headers: responseHeaders() };
+      if (mode === 'forbidden') return { kind: 'forbidden', headers: new Headers() };
+      if (mode === 'unavailable') throw new Error('provider detail containing secret-value-must-not-escape');
+      if (mode === 'handshake') {
+        const headers = responseHeaders();
+        headers.set('location', 'https://example.clerk.accounts.dev/handshake');
+        headers.set('cache-control', 'private, no-store');
+        return { kind: 'redirect', location: headers.get('location')!, headers };
+      }
+      return { kind: 'signed-out', headers: new Headers() };
+    },
+  };
+  running = await startOperatorUi({ token: 'stale-basic-token', clerk });
+  base = `http://127.0.0.1:${running.port}`;
+
+  const health = await fetch(`${base}/healthz`);
+  assert.equal(health.status, 200);
+  assert.equal(authCalls, 0, 'the content-free health probe never invokes Clerk');
+  assert.doesNotMatch(health.headers.get('content-security-policy') ?? '', /clerk\.accounts/);
+
+  const signedOut = await fetch(`${base}/board`, { redirect: 'manual' });
+  assert.equal(signedOut.status, 303);
+  assert.equal(signedOut.headers.get('location'), '/sign-in?return_to=%2Fboard');
+  assert.equal((await fetch(`${base}/api/fleet-revision`)).status, 401, 'an API caller gets a status, not sign-in HTML');
+
+  for (const unsafe of [
+    'https://evil.example/steal',
+    '//evil.example/steal',
+    '/%5c%5cevil.example/steal',
+    '/sign-in/..//evil.example/steal',
+  ]) {
+    const page = await fetch(`${base}/sign-in?return_to=${encodeURIComponent(unsafe)}`);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.doesNotMatch(html, /evil\.example/);
+    assert.match(html, /forceRedirectUrl: "\/board"/);
+    assert.doesNotMatch(html, /secret-value-must-not-escape/);
+  }
+  const signIn = await fetch(`${base}/sign-in?return_to=%2Fnew`);
+  const signInHtml = await signIn.text();
+  assert.match(signInHtml, /data-clerk-publishable-key="pk_test_browser-safe"/);
+  const csp = signIn.headers.get('content-security-policy') ?? '';
+  assert.match(csp, /script-src[^;]*https:\/\/example\.clerk\.accounts\.dev/);
+  assert.match(csp, /connect-src[^;]*https:\/\/example\.clerk\.accounts\.dev/);
+  assert.match(csp, /worker-src 'self' blob:/);
+  assert.match(csp, /frame-ancestors 'none'/);
+
+  const deniedRedirect = await fetch(`${base}/board`, {
+    headers: { 'x-test-clerk': 'forbidden' }, redirect: 'manual',
+  });
+  assert.equal(deniedRedirect.status, 303);
+  assert.equal(deniedRedirect.headers.get('location'), '/access-denied');
+  const denied = await fetch(`${base}/access-denied`, { headers: { 'x-test-clerk': 'forbidden' } });
+  assert.equal(denied.status, 403);
+  const deniedHtml = await denied.text();
+  assert.match(deniedHtml, /Sign out and switch account/);
+  assert.doesNotMatch(deniedHtml, /company\.example/);
+
+  const unavailable = await fetch(`${base}/board`, { headers: { 'x-test-clerk': 'unavailable' } });
+  assert.equal(unavailable.status, 503);
+  assert.equal(await unavailable.text(), 'Authentication is temporarily unavailable. Please try again.');
+
+  const allowed = await fetch(`${base}/board`, { headers: { 'x-test-clerk': 'allowed' } });
+  assert.equal(allowed.status, 200, 'a stale Basic token cannot replace or bypass Clerk');
+  assert.doesNotMatch(allowed.headers.get('content-security-policy') ?? '', /clerk\.accounts/, 'ordinary pages do not admit Clerk scripts');
+  assert.deepEqual(allowed.headers.getSetCookie(), [
+    '__session=one; Path=/; Secure; HttpOnly',
+    '__client=two; Path=/; Secure; HttpOnly',
+  ]);
+  const allowedHtml = await allowed.text();
+  assert.match(allowedHtml, /sales@company\.example/);
+  assert.match(allowedHtml, /<form[^>]*action="\/sign-out"[^>]*method="post"|<form[^>]*method="post"[^>]*action="\/sign-out"/);
+  assert.equal((await fetch(`${base}/board`, {
+    headers: { authorization: `Basic ${Buffer.from('attacker:stale-basic-token').toString('base64')}` },
+    redirect: 'manual',
+  })).status, 303, 'Basic credentials are ignored entirely in Clerk mode');
+
+  const downgrade = await fetch(`${base}/workstreams`, form({
+    message: 'This plaintext-origin request must not mutate state.', request_id: 'clerk-http-downgrade',
+  }, { 'x-test-clerk': 'allowed', origin: 'http://workspace.example' }));
+  assert.equal(downgrade.status, 403);
+  assert.deepEqual(await listWorkstreams(), [], 'an HTTP same-host origin cannot use an HTTPS Clerk session');
+
+  const created = await fetch(`${base}/workstreams`, form({
+    message: 'Investigate this authenticated team request.', request_id: 'clerk-actor-request',
+  }, { 'x-test-clerk': 'allowed', origin: 'https://workspace.example' }));
+  assert.equal(created.status, 303);
+  assert.equal((await load(slugFrom(created))).observations[0]!.source, 'operator-ui:sales@company.example');
+
+  const crossSiteSignOut = await fetch(`${base}/sign-out`, form({}, {
+    'x-test-clerk': 'allowed', origin: 'https://attacker.example',
+  }));
+  assert.equal(crossSiteSignOut.status, 403, 'sign-out is not a cross-site GET side effect');
+  const signOut = await fetch(`${base}/sign-out`, form({}, {
+    'x-test-clerk': 'allowed', origin: 'https://workspace.example',
+  }));
+  assert.equal(signOut.status, 200);
+  assert.match(await signOut.text(), /window\.Clerk\.signOut/);
+
+  const handshake = await fetch(`${base}/board`, {
+    headers: { 'x-test-clerk': 'handshake' }, redirect: 'manual',
+  });
+  assert.equal(handshake.status, 307);
+  assert.equal(handshake.headers.get('location'), 'https://example.clerk.accounts.dev/handshake');
+  assert.deepEqual(handshake.headers.getSetCookie(), [
+    '__session=one; Path=/; Secure; HttpOnly',
+    '__client=two; Path=/; Secure; HttpOnly',
+  ]);
+
+  const alreadySignedIn = await fetch(`${base}/sign-in?return_to=%2Fnew`, {
+    headers: { 'x-test-clerk': 'allowed' }, redirect: 'manual',
+  });
+  assert.equal(alreadySignedIn.status, 303);
+  assert.equal(alreadySignedIn.headers.get('location'), '/new');
 });
 
 test('a shared-Postgres UI separates connected data from unobservable execution', async () => {

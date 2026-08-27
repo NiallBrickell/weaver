@@ -232,10 +232,12 @@ must never hand a bot the human's authority.
 8. leave printout delivery as the only acknowledged “since I last received a
    catch-up” checkpoint. Opening a page is not a read receipt.
 
-The initial deployment stays private behind infrastructure the operator
-already owns: a private tunnel, VPN or authenticating reverse proxy. Weaver
-does not grow user accounts, tenancy, organizations or an identity database.
-The proxy supplies a stable actor and capability set to `weaver ui`.
+The shared deployment uses Clerk through an adapter; Weaver does not grow user
+accounts, tenancy, organizations or an identity database. A signed Clerk
+session is necessary but insufficient: the adapter fetches the user, requires
+a verified exact-domain email, and supplies that email as the stable actor.
+The configured public origin is also the token's authorized party and is never
+derived from proxy headers. Partial hosted-auth configuration fails closed.
 
 Request-scoped actor identity is a prerequisite for writes. Today
 `humanActs.ts` reads process-global `WEAVER_ACTOR`, which cannot safely vary
@@ -365,8 +367,7 @@ time and immediately before every merge.
 
 ### 1. Live read-only workspace
 
-- add `weaver ui` with private binding and authentication delegated to the
-  hosting layer;
+- add `weaver ui` with private binding plus an adapter over external identity;
 - reuse the existing fleet and Workstream render models in the sidebar and
   single-centre shell;
 - add revision refresh, runner/capacity health and verified artifact download;

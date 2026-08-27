@@ -141,7 +141,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver printout [slug] [--text]            open an HTML catch-up page; --text writes the plain report instead
   weaver inspect [slug]                      visual work board → self-contained HTML: Workstreams, Assignments, evidence, and history
   weaver stats                               outcome scoreboard → self-contained HTML: interventions per adopted work product, approval split, policy evidence, per-workstream stats
-  weaver ui [--host H] [--port N]            browser operator workspace (default 127.0.0.1:9724); non-loopback requires WEAVER_UI_TOKEN
+  weaver ui [--host H] [--port N]            browser operator workspace (default 127.0.0.1:9724); non-loopback requires Clerk or WEAVER_UI_TOKEN
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
@@ -979,9 +979,17 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       const host = opt(rest, 'host') ?? '127.0.0.1';
       const port = Number(opt(rest, 'port') ?? '9724');
       const token = process.env.WEAVER_UI_TOKEN;
+      const {
+        clerkOperatorAuthConfigFromEnv,
+        createClerkOperatorAuthenticator,
+      } = await import('./clerkOperatorAuth.js');
+      const clerkConfig = clerkOperatorAuthConfigFromEnv();
+      const clerk = clerkConfig ? createClerkOperatorAuthenticator(clerkConfig) : undefined;
       const { startOperatorUi } = await import('./operatorUi.js');
-      const running = await startOperatorUi({ host, port, token });
-      const access = token
+      const running = await startOperatorUi({ host, port, token, clerk });
+      const access = clerk
+        ? 'Clerk authentication with verified email-domain access'
+        : token
         ? 'Basic auth (WEAVER_UI_TOKEN is the password; the username is recorded as the actor)'
         : 'loopback access';
       process.stdout.write(

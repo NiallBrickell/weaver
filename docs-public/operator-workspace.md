@@ -64,19 +64,57 @@ of applying an answer to a different request.
 These inputs can add evidence or context for the next fresh coordinator, but
 they cannot grant authority, complete work, adopt a submission, approve an
 action, or supersede standing direction by themselves. The shared browser
-password identifies a team session; it is not trusted individual authority.
+sign-in identifies a verified teammate for attribution; identity still does
+not turn their input into authority.
 
 Use the existing CLI for explicit human acts such as steering, adoption, attention resolution, or action approval. Keeping those acts separate prevents a convenient browser input from becoming an accidental authority channel.
 
 ## Access and identity
 
-The default loopback listener is available only on the local machine. For any non-loopback host, set `WEAVER_UI_TOKEN` before starting the server:
+The default loopback listener is available only on the local machine. A shared
+deployment should use Clerk. Four settings form one atomic, fail-closed
+configuration:
+
+```bash
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY='pk_…' \
+CLERK_SECRET_KEY='sk_…' \
+WEAVER_UI_ALLOWED_EMAIL_DOMAINS='company.example' \
+WEAVER_UI_PUBLIC_ORIGIN='https://weaver.example.com' \
+weaver ui --host 0.0.0.0
+```
+
+Every non-health request must then carry a valid Clerk session. Weaver fetches
+the signed-in Clerk user server-side and requires at least one **verified**
+email whose domain exactly matches `WEAVER_UI_ALLOWED_EMAIL_DOMAINS` (a
+comma-separated allowlist). `person@sub.company.example` does not match
+`company.example` unless the subdomain is listed separately. The normalized
+verified email is recorded as the actor on browser input.
+This authorization is revalidated on every request, so removing or unverifying
+the allowed-domain email revokes access without waiting for an application cache.
+
+`WEAVER_UI_PUBLIC_ORIGIN` is also the Clerk token's authorized party. Weaver
+does not derive it from request or proxy headers, so a forged host cannot turn
+a leaked subdomain cookie into a valid workspace session. Authenticated browser
+mutations must carry that same complete HTTPS origin; a plaintext same-host
+origin is not accepted. If any Clerk setting
+is present while another is missing, the UI refuses to start; it never falls
+back to a weaker mode. The secret key is server-only. The publishable key is
+the only key rendered into the sign-in page.
+
+On Railway, `WEAVER_UI_PUBLIC_ORIGIN` may be omitted: Weaver derives the exact
+HTTPS origin from Railway's provider-owned `RAILWAY_PUBLIC_DOMAIN`. An explicit
+origin remains available for custom domains and other hosts.
+
+For a private self-hosted listener where Clerk is intentionally absent,
+`WEAVER_UI_TOKEN` remains a fallback:
 
 ```bash
 WEAVER_UI_TOKEN='use-a-long-random-value' weaver ui --host 0.0.0.0
 ```
 
-Non-loopback access uses HTTP Basic authentication. Enter an operator label as the username and `WEAVER_UI_TOKEN` as the password. The label is recorded as the actor on input from that browser session, but it is supplied by the caller and does not prove an individual's identity or grant authority.
+That mode uses HTTP Basic authentication. The caller-supplied username is only
+a provenance label and does not prove an individual's identity. A complete
+Clerk configuration takes exclusive precedence over a stale Basic token.
 
 All browser changes also require a same-origin request. Weaver normally checks
 that the request's `Origin` matches the workspace host before reading the form
@@ -85,12 +123,17 @@ serialize `Origin` as `null` on an ordinary same-origin form navigation; only
 that case may use browser-controlled Fetch Metadata proving a same-origin
 document navigation. Missing both signals, malformed origins, and cross-site
 requests fail closed. This is the CSRF
-boundary that prevents a different site from replaying a browser's cached
-Basic-auth credentials to create work or add follow-up.
+boundary that prevents a different site from replaying a browser's Clerk
+session or cached Basic credentials to create work, add follow-up, or force a
+sign-out.
 
-When `WEAVER_UI_TOKEN` is set, Basic authentication applies on loopback too.
+When Clerk is absent and `WEAVER_UI_TOKEN` is set, Basic authentication applies
+on loopback too.
 
-Basic authentication must be carried over a trusted network or HTTPS reverse proxy because it does not encrypt traffic itself. Responses advertise a one-year HTTP Strict Transport Security policy to HTTPS clients. Do not expose this listener directly to the public internet.
+Basic authentication must be carried over a trusted network or HTTPS reverse
+proxy because it does not encrypt traffic itself. Responses advertise a
+one-year HTTP Strict Transport Security policy to HTTPS clients. Use Clerk,
+not the Basic fallback, for a public shared workspace.
 
 For a shared deployment, use the [Railway guide](./railway.md): the UI and
 Postgres are hosted together while the initially separate execution host reads
