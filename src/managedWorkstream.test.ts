@@ -259,6 +259,37 @@ test('notice delivery survives a crash between conclude and delivery', async () 
   assert.equal(notices[0]!.dedupKey, 'finished:pass_crash');
 });
 
+test('a later TICK of the concluded child repairs a stranded notice — no manual delivery call', async () => {
+  await makeWorkstream('crash-tick-mgr');
+  await makeManaged('crash-tick-mgr', 'crash-tick-child');
+  const child = await load('crash-tick-child');
+  await mutate('crash-tick-child', child.revision, (d, event) => {
+    d.workstream.status = 'done';
+    d.workstream.conclusion = {
+      passId: 'pass_crash2',
+      atVirtual: virtualNow().toISOString(),
+      summary: 'concluded, then the process died before delivery',
+      evidenceIds: [],
+    };
+    event('workstream.concluded', 'concluded before delivery');
+  });
+  assert.equal(((await load('crash-tick-mgr')).managerNotices ?? []).length, 0);
+
+  // The tick refuses to run passes on a done stream — as it must — but the
+  // refusal path itself repairs the stranded notice. Nothing in this test
+  // calls deliverManagerNotices.
+  const report = await tick('crash-tick-child');
+  assert.equal(report.skipped, 'workstream is done');
+  assert.equal(report.passes.length, 0);
+  const notices = (await load('crash-tick-mgr')).managerNotices ?? [];
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0]!.dedupKey, 'finished:pass_crash2');
+  assert.ok(
+    (await load('crash-tick-mgr')).wakes.some((w) => w.status === 'pending' && /notice\(s\) received/.test(w.reason)),
+    'the repair also wakes the manager',
+  );
+});
+
 test('direct_workstream never increments humanInterventions on either doc', async () => {
   await makeWorkstream('dir-mgr');
   await makeManaged('dir-mgr', 'dir-child');
