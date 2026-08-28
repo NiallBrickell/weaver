@@ -52,7 +52,12 @@ import { runnerExecutorCapabilities } from './modelRouting.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
 import { ensureActionApprovalAttention, isPilotUnavailableApprovalAttention } from './actionApproval.js';
 import { pilotFetch, readPilotVerdict } from './pilot.js';
-import { githubAppEnvironment, type GitHubAppAccess } from './githubApp.js';
+import {
+  actionUsesGitHub,
+  GitHubAppPreparationError,
+  githubAppEnvironment,
+  type GitHubAppAccess,
+} from './githubApp.js';
 
 /**
  * The shell a declared action's `run`/`verify` command is executed with.
@@ -83,14 +88,48 @@ async function actionExecutionSecrets(
   asg: Assignment,
   access: GitHubAppAccess,
 ): Promise<{ secrets: Record<string, string>; redactionSecrets: Record<string, string> }> {
-  const githubEnvironment = isRepoEgressAction(asg) && asg.exec
-    ? await githubAppEnvironment(asg.exec.cwd, access)
+  const githubAccess: GitHubAppAccess = access === 'write' && isRepoEgressAction(asg)
+    ? 'write'
+    : 'read';
+  const githubEnvironment = actionUsesGitHub(asg) && asg.exec
+    ? await githubAppEnvironment(asg.exec.cwd, githubAccess)
     : {};
   const secrets = { ...loadSecrets(slug), ...githubEnvironment };
   return {
     secrets,
     redactionSecrets: { ...loadRedactionSecrets(slug), ...secrets },
   };
+}
+
+/** A known credential/configuration failure before the one-shot claim cannot
+ * have changed the world. Settle it as failed with zero attempts, wake the
+ * coordinator once to repair the assignment, and keep it out of Needs You. */
+async function settleActionPreparationFailure(
+  slug: string,
+  assignmentId: string,
+  error: GitHubAppPreparationError,
+): Promise<boolean> {
+  const detail = redactSecrets(error.message, loadRedactionSecrets(slug)).slice(0, 500);
+  let settled = false;
+  await arrive(slug, (d, event) => {
+    const asg = d.assignments.find((candidate) => candidate.id === assignmentId);
+    if (!asg || asg.kind !== 'action' || asg.state !== 'queued' || asg.attempts.length > 0) return;
+    asg.state = 'failed';
+    d.wakes.push({
+      id: newId('wake'),
+      reason: `Action ${assignmentId} could not start because its credential or execution configuration failed before the one-shot claim (${detail}). It made zero execution attempts and no external effect. Reconcile the durable assignment from this known failure; do not retry this action in place.`,
+      condition: { type: 'immediate' },
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+    event(
+      'action.preparation_failed',
+      `${assignmentId} failed before its one-shot claim with zero attempts and no external effect: ${detail}`,
+      [assignmentId],
+    );
+    settled = true;
+  });
+  return settled;
 }
 
 /** A non-confirming action readback proves neither that the effect landed nor
@@ -658,7 +697,18 @@ export async function guardRepoEgress(
   // A settled PR on the push target is the one repo-egress fact that loses
   // work outright, so it is judged first and it blocks.
   const command = [asg.exec.run ?? '', asg.exec.verify ?? ''].join('\n');
-  const githubEnvironment = await githubAppEnvironment(asg.exec.cwd, 'read');
+  let githubEnvironment: Record<string, string>;
+  try {
+    githubEnvironment = await githubAppEnvironment(asg.exec.cwd, 'read');
+  } catch (error) {
+    // Authentication/cwd preparation is not a deconfliction verdict. Abstain
+    // here and let the action's own preflight durably settle the known failure
+    // before any one-shot attempt is recorded.
+    const message = error instanceof Error ? error.message : 'unknown GitHub authentication failure';
+    const detail = redactSecrets(message, loadRedactionSecrets(slug)).slice(0, 300);
+    process.stderr.write(`[tick] ${asg.id} repo-egress check abstained: ${detail} — action preflight will decide\n`);
+    return true;
+  }
   const stranded = await checkStrandedPush(asg.exec.cwd, command, strandedIO, githubEnvironment);
   if (stranded.verdict === 'unknown') {
     // Abstention, not a clean bill of health: the egress proceeds (a dead gh
@@ -737,14 +787,28 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
     if (current.workstream.status !== 'active') break;
     // Postcondition already true: confirm the existing effect, never re-run
     // the human-authored command against a world that has moved on.
-    if (await preflightApprovedAction(slug, asg.id)) {
-      executed++;
+    try {
+      if (await preflightApprovedAction(slug, asg.id)) {
+        executed++;
+        continue;
+      }
+    } catch (error) {
+      if (!(error instanceof GitHubAppPreparationError)) throw error;
+      if (await settleActionPreparationFailure(slug, asg.id, error)) executed++;
       continue;
     }
     // Mint before recording the one-shot attempt. Authentication is still
     // after approval and immediately before the CAS, but a failed mint cannot
     // manufacture a false may-have-egressed attempt that readback must hold.
-    const { secrets, redactionSecrets } = await actionExecutionSecrets(slug, asg, 'write');
+    let executionSecrets: Awaited<ReturnType<typeof actionExecutionSecrets>>;
+    try {
+      executionSecrets = await actionExecutionSecrets(slug, asg, 'write');
+    } catch (error) {
+      if (!(error instanceof GitHubAppPreparationError)) throw error;
+      if (await settleActionPreparationFailure(slug, asg.id, error)) executed++;
+      continue;
+    }
+    const { secrets, redactionSecrets } = executionSecrets;
     const runId = newId('run');
     try {
       await mutate(slug, current.revision, (d, event) => {
@@ -1207,12 +1271,21 @@ async function tickLocked(
       const runnableAsg = (await load(slug)).assignments.find((a) => a.id === id);
       if (runnableAsg && !(await guardRepoEgress(slug, runnableAsg))) continue;
       // Approved action whose postcondition already holds: confirm the
-      // existing effect instead of launching a worker to re-create it.
-      if (runnableAsg?.kind === 'action' && runnableAsg.attempts.length === 0
-        && await preflightApprovedAction(slug, id)) {
-        process.stderr.write(`[tick] action ${id} postcondition already holds — execution skipped\n`);
-        progressed = true;
-        continue;
+      // existing effect instead of launching a worker to re-create it. The
+      // same typed pre-claim configuration failure settlement applies here as
+      // in the deterministic engine lane; executor choice cannot change truth.
+      if (runnableAsg?.kind === 'action' && runnableAsg.attempts.length === 0) {
+        try {
+          if (await preflightApprovedAction(slug, id)) {
+            process.stderr.write(`[tick] action ${id} postcondition already holds — execution skipped\n`);
+            progressed = true;
+            continue;
+          }
+        } catch (error) {
+          if (!(error instanceof GitHubAppPreparationError)) throw error;
+          if (await settleActionPreparationFailure(slug, id, error)) progressed = true;
+          continue;
+        }
       }
       process.stderr.write(`[tick] running worker for ${id}…\n`);
       const started = await runWorker(slug, id, undefined, executorCapabilities);

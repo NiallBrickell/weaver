@@ -14,8 +14,16 @@ import { isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { loadExecutorSecrets } from './secrets.js';
+import type { Assignment } from './types.js';
 
 export type GitHubAppAccess = 'read' | 'write';
+
+/** A durable, operator-repairable failure proven before an action can claim
+ * execution. Transient network/provider failures and programming errors are
+ * deliberately not this type and must not be rewritten as durable truth. */
+export class GitHubAppPreparationError extends Error {
+  override name = 'GitHubAppPreparationError';
+}
 
 interface GitHubAppCredentials {
   appId: string;
@@ -40,25 +48,59 @@ let nowImpl = Date.now;
 let fetchImpl: typeof globalThis.fetch = globalThis.fetch;
 let execFileSyncImpl: typeof execFileSync = execFileSync;
 
+// A command is eligible for GitHub credentials only when gh or a Git remote
+// network operation is a literal shell command. Matching at command boundaries
+// avoids granting credentials merely because a briefing or echo mentions one.
+const SHELL_COMMAND_START = String.raw`(?:^|[\n;&|]\s*|\$\(\s*|\(\s*|\b(?:then|do|else)\s+)`;
+const SHELL_ENV_PREFIX = String.raw`(?:(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|()]+)\s+)*`;
+const SHELL_EXECUTABLE_PREFIX = String.raw`(?:command\s+)?(?:[^\s;&|()]+\/)?`;
+
+function hasGhCommand(command: string): boolean {
+  return new RegExp(`${SHELL_COMMAND_START}${SHELL_ENV_PREFIX}${SHELL_EXECUTABLE_PREFIX}gh\\b`, 'm')
+    .test(command);
+}
+
+function hasGitSubcommand(command: string, subcommands: string): boolean {
+  // -C and -c are the production shapes; the remaining documented global
+  // options keep the classifier honest without attempting to parse a shell.
+  const globalOptions = String.raw`(?:\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace)\s+[^\s;&|()]+|--(?:git-dir|work-tree|namespace)=[^\s;&|()]+|--(?:bare|no-replace-objects|literal-pathspecs|glob-pathspecs|noglob-pathspecs|icase-pathspecs)))*`;
+  return new RegExp(
+    `${SHELL_COMMAND_START}${SHELL_ENV_PREFIX}${SHELL_EXECUTABLE_PREFIX}git\\b${globalOptions}\\s+(?:${subcommands})\\b`,
+    'm',
+  ).test(command);
+}
+
+function hasGitRemoteNetworkCommand(command: string): boolean {
+  return hasGitSubcommand(command, 'clone|fetch|pull|push|ls-remote')
+    || hasGitSubcommand(command, 'remote\\s+(?:update|prune)');
+}
+
+/** True only when an action literally invokes GitHub's CLI or Git network. */
+export function actionUsesGitHub(asg: Assignment): boolean {
+  if (asg.kind !== 'action' || !asg.exec) return false;
+  return [asg.exec.run ?? '', asg.exec.verify ?? '']
+    .some((command) => hasGhCommand(command) || hasGitRemoteNetworkCommand(command));
+}
+
 function base64url(value: string | Buffer): string {
   return Buffer.from(value).toString('base64url');
 }
 
 function numericId(value: string | undefined, name: string): string {
   if (!value || !/^[1-9][0-9]*$/.test(value)) {
-    throw new Error(`${name} must be a positive numeric ID in the executor-only secret store`);
+    throw new GitHubAppPreparationError(`${name} must be a positive numeric ID in the executor-only secret store`);
   }
   return value;
 }
 
 function decodePrivateKey(encoded: string | undefined): KeyObject {
   if (!encoded || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
-    throw new Error(`${PRIVATE_KEY} must be a base64-encoded RSA private key PEM`);
+    throw new GitHubAppPreparationError(`${PRIVATE_KEY} must be a base64-encoded RSA private key PEM`);
   }
 
   const decoded = Buffer.from(encoded, 'base64');
   if (decoded.toString('base64') !== encoded || !decoded.toString('utf8').includes('PRIVATE KEY-----')) {
-    throw new Error(`${PRIVATE_KEY} must be a base64-encoded RSA private key PEM`);
+    throw new GitHubAppPreparationError(`${PRIVATE_KEY} must be a base64-encoded RSA private key PEM`);
   }
 
   try {
@@ -66,7 +108,7 @@ function decodePrivateKey(encoded: string | undefined): KeyObject {
     if (key.asymmetricKeyType !== 'rsa') throw new Error('not RSA');
     return key;
   } catch {
-    throw new Error(`${PRIVATE_KEY} must be a base64-encoded RSA private key PEM`);
+    throw new GitHubAppPreparationError(`${PRIVATE_KEY} must be a base64-encoded RSA private key PEM`);
   }
 }
 
@@ -79,7 +121,7 @@ function credentials(): GitHubAppCredentials | null {
   const values = [secrets[APP_ID], secrets[INSTALLATION_ID], secrets[PRIVATE_KEY]];
   if (values.every((value) => value === undefined)) return null;
   if (values.some((value) => value === undefined)) {
-    throw new Error('GitHub App credentials are incomplete in the executor-only secret store');
+    throw new GitHubAppPreparationError('GitHub App credentials are incomplete in the executor-only secret store');
   }
   return {
     appId: numericId(secrets[APP_ID], APP_ID),
@@ -169,7 +211,7 @@ export async function mintGitHubAppToken(
 
   const config = credentials();
   if (!config) {
-    throw new Error('GitHub App authentication is not configured');
+    throw new GitHubAppPreparationError('GitHub App authentication is not configured');
   }
 
   const cacheKey = `${access}\u0000${repository ?? ''}`;
@@ -193,7 +235,11 @@ export async function mintGitHubAppToken(
     'GitHub App token request',
   );
   if (response.status !== 201) {
-    throw new Error(`GitHub App token request failed (HTTP ${response.status})`);
+    const message = `GitHub App token request failed (HTTP ${response.status})`;
+    if ([401, 403, 404, 422].includes(response.status)) {
+      throw new GitHubAppPreparationError(message);
+    }
+    throw new Error(message);
   }
 
   let result: unknown;
@@ -222,7 +268,7 @@ export async function mintGitHubAppToken(
       && typeof (repositories[0] as { full_name?: unknown }).full_name === 'string'
       && (repositories[0] as { full_name: string }).full_name.toLowerCase() === repository.toLowerCase();
     if (!exactRepository) {
-      throw new Error('GitHub App token response did not confirm the exact requested repository');
+      throw new GitHubAppPreparationError('GitHub App token response did not confirm the exact requested repository');
     }
   }
 
@@ -275,6 +321,9 @@ export function parseGitHubRepositoryRemote(remote: string): string | null {
 
 /** Derive the exact github.com owner/name from cwd's origin, failing closed. */
 export function githubRepositoryFromCwd(cwd: string): string {
+  if (!isAbsolute(cwd) || !existsSync(cwd)) {
+    throw new GitHubAppPreparationError('GitHub App authentication could not resolve cwd origin');
+  }
   let remote: string;
   try {
     remote = execFileSyncImpl('git', ['remote', 'get-url', 'origin'], {
@@ -283,12 +332,18 @@ export function githubRepositoryFromCwd(cwd: string): string {
       timeout: 10_000,
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-  } catch {
-    throw new Error('GitHub App authentication could not resolve cwd origin');
+  } catch (error) {
+    // A real Git exit means the existing cwd is not a usable repository/origin
+    // and is operator-repairable configuration. A spawn/programming failure
+    // has no numeric exit status and must remain infrastructure, not truth.
+    if (typeof (error as { status?: unknown })?.status === 'number') {
+      throw new GitHubAppPreparationError('GitHub App authentication could not resolve cwd origin');
+    }
+    throw error;
   }
   const repository = parseGitHubRepositoryRemote(remote);
   if (!repository) {
-    throw new Error('GitHub App authentication requires cwd origin to be an exact github.com repository');
+    throw new GitHubAppPreparationError('GitHub App authentication requires cwd origin to be an exact github.com repository');
   }
   return repository;
 }
@@ -343,7 +398,24 @@ export async function githubAppEnvironment(
 ): Promise<Record<string, string>> {
   if (!githubAppConfigured()) return {};
   const repository = githubRepositoryFromCwd(cwd);
-  return { GH_TOKEN: await mintGitHubAppToken(repository, access) };
+  const token = await mintGitHubAppToken(repository, access);
+  return {
+    // gh reads the token directly. Git receives the same value only through a
+    // process-local credential helper configured below; no argv, repository
+    // config, credential store, or temporary file contains it.
+    GH_TOKEN: token,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_CONFIG_COUNT: '4',
+    // Clear inherited helpers before installing the exact github.com helper.
+    GIT_CONFIG_KEY_0: 'credential.helper',
+    GIT_CONFIG_VALUE_0: '',
+    GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
+    GIT_CONFIG_VALUE_1: '!f() { test "$1" != get || printf \'%s\\n\' \'username=x-access-token\' "password=$GH_TOKEN"; }; f',
+    GIT_CONFIG_KEY_2: 'credential.https://github.com.username',
+    GIT_CONFIG_VALUE_2: 'x-access-token',
+    GIT_CONFIG_KEY_3: 'credential.https://github.com.useHttpPath',
+    GIT_CONFIG_VALUE_3: 'true',
+  };
 }
 
 /** Prove the App JWT, installation, token, and read permission all work. */

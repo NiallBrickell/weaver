@@ -76,16 +76,27 @@ is written into its URL, Git configuration, credential store, or command line.
   sharing the controller Unix identity could otherwise read the App key, so
   hosted repo egress must be an exact `exec_run` command. After approval and
   Pilot evaluation, only that engine subprocess gets a fresh write token.
-- Preflight and deterministic readback get a separately minted read-only token
-  with an explicit permission map. Readback cannot push even if its shell
-  command is wrong. Write tokens also carry an explicit permission map rather
-  than inheriting every permission granted to the App.
+- Preflight, deterministic GitHub reads, and readback get a separately minted
+  read-only token with an explicit permission map. `gh` reads it from
+  `GH_TOKEN`; Git gets a process-local, `github.com`-scoped credential helper
+  that references that variable. The helper clears inherited credential
+  helpers and never writes the token into argv, Git configuration, a
+  credential store, or a temporary file. The installation token remains
+  narrowed to the one repository resolved from the assignment checkout.
+- A deterministic repo egress gets write scope only after approval and only
+  immediately before its literal `gh pr create`/`gh pr merge`/`git push`
+  command. Merely using `gh`, `git fetch`, or another Git remote read does not
+  receive write scope. Readback cannot push even if its shell command is wrong.
 - Tokens are cached only by repository and permission scope, and never beyond
   five minutes before GitHub's expiry. A fresh action run lasts at most forty
   awake minutes; deterministic hosted commands are bounded to two minutes and
   readback mints independently afterward.
-- Failure to mint never falls back to `GH_TOKEN`, `GITHUB_TOKEN`, a `gh` login,
-  or another App. The action stays unexecuted.
+- Failure never falls back to a static `GH_TOKEN`, `GITHUB_TOKEN`, a `gh`
+  login, or another App. A proven checkout, credential, or installation-scope
+  configuration failure durably fails the action before its one-shot claim
+  with zero execution attempts and wakes the coordinator once to repair the
+  work. Transient network/provider failures are not rewritten as configuration
+  truth and still escape through the runner's infrastructure path.
 
 The GCP launch preflight makes this deployment contract structural. An
 action-capable host must pass `github-auth-check`, and launch is refused if the
