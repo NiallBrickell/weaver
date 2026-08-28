@@ -923,6 +923,7 @@ test('external-store provisioning selects execution-only mode and never starts s
   assert.match(provisionArgs, /WEAVER_GCP_CONCURRENCY=4/);
   assert.match(call(root, count, 'stdin'), /systemctl disable --now weaver-run weaver-serve/);
   assert.match(call(root, count, 'stdin'), /run --interval 5 --concurrency \$WEAVER_GCP_CONCURRENCY/);
+  assert.match(call(root, count, 'stdin'), /WEAVER_RUNNER_ID=.*hostname/);
   assert.match(call(root, count, 'stdin'), /dockerd-rootless-setuptool\.sh install --force/);
   assert.match(call(root, count, 'stdin'), /DOCKER_HOST=unix:\/\/\/run\/user\/\$weaver_uid\/docker\.sock/);
   assert.match(call(root, count, 'stdin'), /WEAVER_OPENHANDS_HOST_GATEWAY_IP=\$openhands_host_gateway/);

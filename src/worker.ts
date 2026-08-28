@@ -60,6 +60,11 @@ import {
   FLEET_EVIDENCE_FILE,
   fleetAttentionEvidence,
 } from './fleetHealth.js';
+import {
+  assignmentMatchesRunner,
+  runnerClaimIdentity,
+  RunnerPlacementMismatchError,
+} from './runnerIdentity.js';
 
 export { workerModel } from './modelConfig.js';
 
@@ -378,6 +383,7 @@ export async function runWorker(
   executorCapabilities?: ReadonlySet<string>,
   timing?: { wallMs?: number; wallTickMs?: number },
 ): Promise<boolean> {
+  const runner = runnerClaimIdentity();
   const declaredExecutors = executorCapabilities ??
     (providedExecutor ? undefined : runnerExecutorCapabilities());
   const doc = await load(slug);
@@ -385,6 +391,7 @@ export async function runWorker(
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg) throw new Error(`no assignment ${assignmentId}`);
   if (asg.state !== 'queued') throw new Error(`${assignmentId} is ${asg.state}, not queued`);
+  if (!assignmentMatchesRunner(asg, runner)) return false;
   if (asg.kind === 'action' && deterministicActionsOnly()) {
     throw new Error(`${assignmentId} is a model-driven action, but this host permits exact engine actions only`);
   }
@@ -425,6 +432,7 @@ export async function runWorker(
   if (current.workstream.status !== 'active') return false;
   const currentAssignment = current.assignments.find((a) => a.id === assignmentId);
   if (currentAssignment?.state !== 'queued') return false;
+  if (!assignmentMatchesRunner(currentAssignment, runner)) return false;
   // An action approval authorizes one attempt, not an automatic replay. Old
   // persisted state may still contain queued actions parked by the former
   // infrastructure retry path, so reject those before any launch setup.
@@ -539,6 +547,9 @@ export async function runWorker(
       }
       assertExecutionStartAllowed(d, startedAt);
       const a = d.assignments.find((x) => x.id === assignmentId)!;
+      if (!assignmentMatchesRunner(a, runner)) {
+        throw new RunnerPlacementMismatchError(assignmentId, a.runnerId ?? '(explicit placement required)', runner.id);
+      }
       if (a.kind === 'action' && a.attempts.length > 0) {
         throw new Error(`${assignmentId} is an action with a prior attempt — provider/human reconciliation and a new approved action are required before retrying`);
       }
@@ -554,6 +565,7 @@ export async function runWorker(
         provider: capacityTarget.provider,
         model: capacityTarget.model,
         runnerPid: process.pid,
+        runnerId: runner.id,
         startedAt: startedAt.toISOString(),
       });
       event('worker.started', `${assignmentId} attempt ${runId}`, [assignmentId]);
@@ -564,6 +576,7 @@ export async function runWorker(
       return false;
     }
     if (error instanceof RevisionConflictError) return false;
+    if (error instanceof RunnerPlacementMismatchError) return false;
     throw error;
   }
 

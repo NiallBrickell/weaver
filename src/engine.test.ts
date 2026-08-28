@@ -96,11 +96,15 @@ beforeEach(() => {
   // an unreachable port means the gate fails closed (stays gated), which is
   // the baseline the non-pilot tests assume. Pilot tests stub their own URL.
   process.env.WEAVER_PILOT_URL = 'http://127.0.0.1:1';
+  delete process.env.WEAVER_RUNNER_ID;
+  delete process.env.WEAVER_RUNNER_PLACEMENT_ONLY;
   __resetGitHubAppForTests();
 });
 
 afterEach(() => {
   delete process.env.WEAVER_SEND_UNKNOWN;
+  delete process.env.WEAVER_RUNNER_ID;
+  delete process.env.WEAVER_RUNNER_PLACEMENT_ONLY;
   __resetGitHubAppForTests();
 });
 
@@ -687,6 +691,147 @@ async function makeActionWorkstream(slug: string, action: Partial<Assignment>): 
   });
 }
 
+test('engine-only tick executes one matching placed command and touches no other execution lane', async () => {
+  const slug = 'placed-engine-only';
+  const home = process.env.WEAVER_HOME!;
+  process.env.WEAVER_RUNNER_ID = 'gcp-runner';
+  await createWorkstream({
+    slug,
+    title: 'Placed machine action',
+    objective: 'run one machine-local exact action',
+    tags: [], successCriteria: [], constraints: [],
+    autonomy: { sendsRequireApproval: true },
+  });
+  await arrive(slug, (doc) => doc.assignments.push({
+    id: 'asg_mac_exact',
+    objective: 'touch the Mac-local daemon',
+    briefing: 'exact engine action',
+    kind: 'action',
+    runnerId: 'mac-runner',
+    exec: {
+      cwd: home,
+      run: 'printf done > placed-action.out',
+      verify: 'test "$(cat placed-action.out)" = done',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+    acceptanceCriteria: ['readback confirms the exact file'],
+    dependsOn: [],
+    state: 'queued',
+    attempts: [],
+    adoption: { state: 'none' },
+    createdAtVirtual: virtualNow().toISOString(),
+  }));
+
+  const gcp = await tick(slug, { maxPasses: 0 });
+  assert.deepEqual(gcp.workersRun, []);
+  assert.equal((await load(slug)).assignments[0]!.state, 'queued');
+  assert.equal(fs.existsSync(path.join(home, 'placed-action.out')), false);
+
+  process.env.WEAVER_RUNNER_ID = 'mac-runner';
+  process.env.WEAVER_RUNNER_PLACEMENT_ONLY = '1';
+  const { relPath, hash } = await writeArtifact(slug, 'queued-send.md', 'approved but not sent here');
+  await arrive(slug, (doc) => {
+    const deliverableId = 'del_engine_only_send';
+    doc.deliverables.push({
+      id: deliverableId,
+      title: 'queued send',
+      kind: 'communication_draft',
+      path: relPath,
+      contentHash: hash,
+      createdAtVirtual: virtualNow().toISOString(),
+    });
+    doc.interactions.push({
+      id: 'int_engine_only',
+      kind: 'email_send',
+      to: 'nobody@example.test',
+      subject: 'must stay queued',
+      deliverableId,
+      pinnedHash: hash,
+      status: 'approved',
+      approvedBy: 'human',
+      approvedAt: new Date().toISOString(),
+      replies: [],
+    });
+    doc.assignments.push(
+      {
+        id: 'asg_unplaced_exact',
+        objective: 'must remain for the general fleet',
+        briefing: 'unplaced exact action',
+        kind: 'action',
+        exec: {
+          cwd: home,
+          run: 'printf wrong > unplaced-action.out',
+          verify: 'test -f unplaced-action.out',
+          approval: { by: 'human', at: new Date().toISOString() },
+        },
+        acceptanceCriteria: ['not run here'], dependsOn: [], state: 'queued', attempts: [],
+        adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+      },
+      {
+        id: 'asg_placed_model_action',
+        objective: 'model action must not launch',
+        briefing: 'model-backed action',
+        kind: 'action',
+        runnerId: 'mac-runner',
+        exec: {
+          cwd: home,
+          verify: 'false',
+          approval: { by: 'human', at: new Date().toISOString() },
+        },
+        acceptanceCriteria: ['not run here'], dependsOn: [], state: 'queued', attempts: [],
+        adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+      },
+      ...(['asg_placed_work', 'asg_unplaced_work'] as const).map((id) => ({
+        id,
+        objective: 'model work must not launch',
+        briefing: 'model-backed work',
+        kind: 'work' as const,
+        ...(id === 'asg_placed_work' ? { runnerId: 'mac-runner' } : {}),
+        acceptanceCriteria: ['not run here'], dependsOn: [], state: 'queued' as const, attempts: [],
+        adoption: { state: 'none' as const }, createdAtVirtual: virtualNow().toISOString(),
+      })),
+    );
+  });
+
+  const report = await tick(slug, { engineOnly: true });
+  assert.deepEqual(report.workersRun, []);
+  assert.equal(report.passes.length, 0);
+  assert.equal(report.sendsExecuted, 0);
+  assert.equal(report.unknownsResolved, 0);
+  assert.equal(fs.readFileSync(path.join(home, 'placed-action.out'), 'utf8'), 'done');
+  assert.equal(fs.existsSync(path.join(home, 'unplaced-action.out')), false);
+  const doc = await load(slug);
+  const exact = doc.assignments.find((assignment) => assignment.id === 'asg_mac_exact')!;
+  assert.equal(exact.state, 'awaiting_review');
+  assert.equal(exact.attempts.length, 1);
+  assert.equal(exact.attempts[0]!.runnerId, 'mac-runner');
+  assert.equal(exact.exec!.verified!.ok, true);
+  for (const id of ['asg_unplaced_exact', 'asg_placed_model_action', 'asg_placed_work', 'asg_unplaced_work']) {
+    const untouched = doc.assignments.find((assignment) => assignment.id === id)!;
+    assert.equal(untouched.state, 'queued', id);
+    assert.equal(untouched.attempts.length, 0, id);
+  }
+  assert.equal(doc.interactions[0]!.status, 'approved');
+  assert.equal(fs.existsSync(outboxDir(slug)), false);
+
+  await tick(slug, { engineOnly: true });
+  assert.equal((await load(slug)).assignments.find((assignment) => assignment.id === 'asg_mac_exact')!.attempts.length, 1);
+});
+
+test('engine-only tick fails closed outside explicit placement-only runner config', async () => {
+  await createWorkstream({
+    slug: 'engine-only-config', title: 'config', objective: 'config', tags: [],
+    successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+  });
+  await assert.rejects(tick('engine-only-config', { engineOnly: true }), /requires WEAVER_RUNNER_PLACEMENT_ONLY=1/);
+  process.env.WEAVER_RUNNER_ID = 'mac-runner';
+  process.env.WEAVER_RUNNER_PLACEMENT_ONLY = '1';
+  await assert.rejects(
+    tick('engine-only-config', { maxPasses: 0 }),
+    /requires `weaver tick <slug> --engine-only`/,
+  );
+});
+
 test('a gated action never runs: tick launches no worker for it', async () => {
   await makeActionWorkstream('gated-ws', {});
   const report = await tick('gated-ws', { maxPasses: 0 });
@@ -1235,6 +1380,27 @@ test('an attempt whose driver process is dead is recovered immediately, no horiz
   const asg = (await load('deadpid-ws')).assignments.find((a) => a.id === 'asg_orphaned')!;
   assert.equal(asg.state, 'queued');
   assert.equal(asg.attempts[0]!.terminalReason, 'crashed');
+});
+
+test('a foreign runner PID is never probed as if it belonged to this host', async () => {
+  process.env.WEAVER_RUNNER_ID = 'gcp-runner';
+  await createWorkstream({
+    slug: 'foreign-runner-pid', title: 'Foreign runner pid', objective: 'do not invent an orphan',
+    tags: [], successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+  });
+  await arrive('foreign-runner-pid', (doc) => doc.assignments.push({
+    id: 'asg_foreign', objective: 'Mac-local live attempt', briefing: 'n/a', kind: 'work',
+    runnerId: 'mac-runner', acceptanceCriteria: [], dependsOn: [], state: 'running',
+    attempts: [{
+      runId: 'run_foreign', runnerId: 'mac-runner', runnerPid: 999999999,
+      startedAt: new Date().toISOString(),
+    }],
+    adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+  }));
+  await tick('foreign-runner-pid', { maxPasses: 0 });
+  const assignment = (await load('foreign-runner-pid')).assignments[0]!;
+  assert.equal(assignment.state, 'running');
+  assert.equal(assignment.attempts[0]!.endedAt, undefined);
 });
 
 // ---------------------------------------------------------------------------

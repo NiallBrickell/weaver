@@ -614,6 +614,7 @@ test('create_assignment persists typed requirements without choosing a model', a
         kind: 'work',
         execution_profile: 'bounded-code-repair',
         input_modalities: ['text'],
+        runner_id: 'mac-studio',
         acceptance_criteria: ['hidden selector tests pass'],
       }, {});
       assert.equal(created.isError, undefined);
@@ -630,6 +631,7 @@ test('create_assignment persists typed requirements without choosing a model', a
     modalities: ['text'],
     complexity: 'standard',
   });
+  assert.equal(assignment.runnerId, 'mac-studio');
   assert.equal(assignment.attempts.length, 0, 'durable requirements do not preselect a disposable target');
 });
 

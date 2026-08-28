@@ -990,6 +990,76 @@ function workerHome(): string {
   return dir;
 }
 
+test('model-backed claims honor exact runner placement and keep unplaced work backward-compatible', async () => {
+  const home = workerHome();
+  process.env.WEAVER_RUNNER_ID = 'mac-studio';
+  delete process.env.WEAVER_RUNNER_PLACEMENT_ONLY;
+  const invoked: string[] = [];
+  const executor: WorkerExecutor = {
+    id: 'local-sdk',
+    async execute(request) {
+      invoked.push(request.prompt);
+      await request.submit.submitResult({
+        summary: 'completed on the selected runner',
+        artifact: {
+          title: 'runner evidence',
+          kind: 'report',
+          file_name: 'runner-evidence.md',
+          content: 'runner placement execution evidence',
+        },
+      });
+      return { costUsd: 0 };
+    },
+  };
+  try {
+    await createWorkstream({
+      slug: 'worker-runner-placement',
+      title: 'worker-runner-placement',
+      objective: 'route exact host work',
+      tags: [], successCriteria: [], constraints: [],
+      autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-runner-placement', (doc) => {
+      for (const [id, runnerId] of [
+        ['asg_other', 'gcp-runner'],
+        ['asg_matching', 'mac-studio'],
+        ['asg_unplaced', undefined],
+      ] as const) {
+        doc.assignments.push({
+          id,
+          objective: id,
+          briefing: `brief ${id}`,
+          kind: 'work',
+          ...(runnerId ? { runnerId } : {}),
+          readDirs: [home],
+          acceptanceCriteria: ['submit evidence'],
+          dependsOn: [],
+          state: 'queued',
+          attempts: [],
+          adoption: { state: 'none' },
+          createdAtVirtual: virtualNow().toISOString(),
+        });
+      }
+    });
+
+    assert.equal(await runWorker('worker-runner-placement', 'asg_other', executor), false);
+    assert.equal(await runWorker('worker-runner-placement', 'asg_matching', executor), true);
+    assert.equal(await runWorker('worker-runner-placement', 'asg_unplaced', executor), true);
+
+    const assignments = (await load('worker-runner-placement')).assignments;
+    assert.equal(assignments.find((a) => a.id === 'asg_other')!.state, 'queued');
+    assert.equal(assignments.find((a) => a.id === 'asg_other')!.attempts.length, 0);
+    assert.equal(assignments.find((a) => a.id === 'asg_matching')!.attempts[0]!.runnerId, 'mac-studio');
+    assert.equal(assignments.find((a) => a.id === 'asg_unplaced')!.attempts[0]!.runnerId, 'mac-studio');
+    assert.equal(invoked.length, 2);
+  } finally {
+    delete process.env.WEAVER_RUNNER_ID;
+    delete process.env.WEAVER_RUNNER_PLACEMENT_ONLY;
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('a runner cannot claim an explicitly selected executor it did not declare', async () => {
   const home = workerHome();
   let executed = false;

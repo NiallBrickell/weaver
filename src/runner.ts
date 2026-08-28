@@ -32,6 +32,7 @@ import { readFleetCapacity, supersededByFleetRecovery } from './fleetCapacity.js
 import { targetOfWait, type CapacityTarget } from './modelConfig.js';
 import { runnerExecutorCapabilities } from './modelRouting.js';
 import { acquireProcessLock, liveProcessLockPid } from './processLock.js';
+import { runnerClaimIdentity } from './runnerIdentity.js';
 
 function lockDir(): string {
   return path.join(weaverHome(), '.runner.lock');
@@ -520,6 +521,10 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   const executorCapabilities = opts.executorCapabilities ?? runnerExecutorCapabilities();
   const tickFn = opts.tickFn ?? tick;
   const sourceStale = opts.sourceStale ?? runnerSourceStale;
+  const runner = runnerClaimIdentity();
+  if (runner.placementOnly) {
+    throw new Error('WEAVER_RUNNER_PLACEMENT_ONLY=1 is only for bounded `weaver tick <slug> --engine-only` invocations, not a resident runner');
+  }
   // Last announced slot cap, so a throttle/recovery is logged on transition
   // only — never silently, and never once per iteration.
   let lastCap = opts.concurrency;

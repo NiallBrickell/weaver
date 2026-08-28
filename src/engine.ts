@@ -58,6 +58,12 @@ import {
   githubAppEnvironment,
   type GitHubAppAccess,
 } from './githubApp.js';
+import {
+  assignmentMatchesRunner,
+  runnerClaimIdentity,
+  RunnerPlacementMismatchError,
+  type RunnerClaimIdentity,
+} from './runnerIdentity.js';
 
 /**
  * The shell a declared action's `run`/`verify` command is executed with.
@@ -764,7 +770,11 @@ export async function guardRepoEgress(
  * re-running). The result is submitted for coordinator review like any other
  * action, and only the verify readback can call the effect real.
  */
-async function executeHumanActions(slug: string, allowed?: Set<string>): Promise<number> {
+async function executeHumanActions(
+  slug: string,
+  runner: RunnerClaimIdentity,
+  allowed?: Set<string>,
+): Promise<number> {
   const doc = await load(slug);
   if (doc.workstream.status !== 'active') return 0;
   let executed = 0;
@@ -775,6 +785,7 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
       a.exec?.run &&
       a.attempts.length === 0 &&
       actionHasMatchingApproval(a) &&
+      assignmentMatchesRunner(a, runner) &&
       // Actions the repo-egress deconfliction gate held are excluded here so
       // this function's own re-derived due list cannot execute what the gate
       // blocked in tickLocked.
@@ -785,6 +796,8 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
     // boundary before execution, not trusted from the tick's initial load.
     const current = await load(slug);
     if (current.workstream.status !== 'active') break;
+    const currentAssignment = current.assignments.find((candidate) => candidate.id === asg.id);
+    if (!currentAssignment || !assignmentMatchesRunner(currentAssignment, runner)) continue;
     // Postcondition already true: confirm the existing effect, never re-run
     // the human-authored command against a world that has moved on.
     try {
@@ -816,12 +829,22 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
         if (!a2 || a2.state !== 'queued' || !a2.exec?.run || a2.attempts.length > 0 || !actionHasMatchingApproval(a2)) {
           throw new Error(`${asg.id} is no longer an approved queued engine action`);
         }
+        if (!assignmentMatchesRunner(a2, runner)) {
+          throw new RunnerPlacementMismatchError(asg.id, a2.runnerId ?? '(explicit placement required)', runner.id);
+        }
         a2.state = 'running';
-        a2.attempts.push({ runId, model: 'engine', runnerPid: process.pid, startedAt: new Date().toISOString() });
+        a2.attempts.push({
+          runId,
+          model: 'engine',
+          runnerPid: process.pid,
+          runnerId: runner.id,
+          startedAt: new Date().toISOString(),
+        });
         event('action.engine_started', `${asg.id} engine executing human-authored command`, [asg.id]);
       });
     } catch (error) {
       if (error instanceof RevisionConflictError) break;
+      if (error instanceof RunnerPlacementMismatchError) continue;
       throw error;
     }
     let ok = false;
@@ -907,19 +930,29 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
  * world, so it is never blindly re-queued. The verify readback runs instead,
  * and a coordinator (or human) decides from that evidence.
  */
-async function recoverCrashedAttempts(slug: string): Promise<number> {
+async function recoverCrashedAttempts(
+  slug: string,
+  runner: RunnerClaimIdentity,
+  actionsOnly = false,
+): Promise<number> {
   // Long research/synthesis workers legitimately run 20+ minutes; recovering
   // a live worker as "crashed" forks the work, so the horizon errs long.
   const staleMs = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
   const doc = await load(slug);
   let recovered = 0;
-  for (const asg of doc.assignments.filter((a) => a.state === 'running')) {
+  for (const asg of doc.assignments.filter(
+    (a) => a.state === 'running' && (!actionsOnly || (a.kind === 'action' && assignmentMatchesRunner(a, runner))),
+  )) {
     const attempt = asg.attempts[asg.attempts.length - 1];
     if (!attempt || attempt.endedAt) continue;
     // A dead driver process means the attempt is orphaned RIGHT NOW — no need
     // to wait out the horizon (the silent-fleet failure mode after restarts).
     let driverDead = false;
-    if (attempt.runnerPid && attempt.runnerPid !== process.pid) {
+    if (
+      attempt.runnerPid &&
+      attempt.runnerPid !== process.pid &&
+      (attempt.runnerId === undefined || attempt.runnerId === runner.id)
+    ) {
       driverDead = !pidIsLive(attempt.runnerPid);
     }
     const ageMs = Date.now() - new Date(attempt.startedAt).getTime();
@@ -983,15 +1016,17 @@ async function recoverCrashedAttempts(slug: string): Promise<number> {
  * policy. Dispatch filters refuse them, but leaving them queued would make the
  * workstream look runnable while it can never advance. Materialize the real
  * state once: the prior attempt's external result needs reconciliation. */
-async function holdLegacyQueuedActionRetries(slug: string): Promise<number> {
+async function holdLegacyQueuedActionRetries(slug: string, runner: RunnerClaimIdentity): Promise<number> {
   const doc = await load(slug);
   let held = 0;
   for (const asg of doc.assignments.filter(
-    (a) => a.kind === 'action' && a.state === 'queued' && a.attempts.length > 0,
+    (a) => a.kind === 'action' && a.state === 'queued' && a.attempts.length > 0 &&
+      assignmentMatchesRunner(a, runner),
   )) {
     await arrive(slug, (d, event) => {
       const current = d.assignments.find((a) => a.id === asg.id);
       if (!current || current.state !== 'queued' || current.attempts.length === 0) return;
+      if (!assignmentMatchesRunner(current, runner)) return;
       if (holdActionForUnknownReadback(d, asg.id, 'legacy queued state contains a prior action attempt')) {
         event(
           'action.legacy_retry_held',
@@ -1008,11 +1043,13 @@ async function holdLegacyQueuedActionRetries(slug: string): Promise<number> {
 export function runnableAssignments(
   doc: WorkstreamDoc,
   executorCapabilities?: ReadonlySet<string>,
+  runner: RunnerClaimIdentity = runnerClaimIdentity(),
 ): string[] {
   if (doc.workstream.status !== 'active') return [];
   const now = virtualNow().toISOString();
   return doc.assignments
     .filter((a) => a.state === 'queued')
+    .filter((a) => assignmentMatchesRunner(a, runner))
     // A persisted human-only gate cannot be satisfied by a stale/corrupt Pilot
     // approval. Re-check at scheduling, not only when the gate was cleared.
     .filter((a) => a.kind !== 'action' || actionHasMatchingApproval(a))
@@ -1115,10 +1152,62 @@ export interface TickReport {
   skipped?: string;
 }
 
+/**
+ * One deterministic-action lane shared by a normal reconciliation tick and
+ * the narrow machine-local engine-only tick. Candidate derivation, repo
+ * deconfliction, one-shot execution, and readback therefore cannot drift.
+ */
+async function executeDeterministicActionLane(
+  slug: string,
+  runner: RunnerClaimIdentity,
+): Promise<number> {
+  const candidates = (await load(slug)).assignments.filter(
+    (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.attempts.length === 0 &&
+      actionHasMatchingApproval(a) && assignmentMatchesRunner(a, runner),
+  );
+  const allowed: string[] = [];
+  for (const assignment of candidates) {
+    if (await guardRepoEgress(slug, assignment)) allowed.push(assignment.id);
+  }
+  if (allowed.length === 0) return 0;
+  const count = await executeHumanActions(slug, runner, new Set(allowed));
+  if (count === 0) return 0;
+
+  // Read back only actions with a recorded attempt. A preflight-satisfied
+  // action never ran and has no attempt for verifyAction to authorize.
+  const executed = (await load(slug)).assignments.filter(
+    (a) => allowed.includes(a.id) && a.attempts.length > 0 && !a.exec?.verified,
+  );
+  for (const assignment of executed) {
+    const ok = await verifyAction(slug, assignment.id);
+    process.stderr.write(`[tick] engine action ${assignment.id} readback: ${ok ? 'CONFIRMED' : 'UNKNOWN'}\n`);
+  }
+  return count;
+}
+
+async function tickEngineOnlyLocked(
+  slug: string,
+  runner: RunnerClaimIdentity,
+  report: TickReport,
+): Promise<TickReport> {
+  report.cycles = 1;
+  // These are the only compatibility transitions allowed in the narrow lane:
+  // reconcile a crashed/prior one-shot ACTION before considering a new exact
+  // command. Model work, sends, Pilot, manager delivery, and coordinator state
+  // are deliberately outside this function.
+  await recoverCrashedAttempts(slug, runner, true);
+  await holdLegacyQueuedActionRetries(slug, runner);
+  await executeDeterministicActionLane(slug, runner);
+  return report;
+}
+
 export async function tick(
   slug: string,
   opts: {
     maxPasses?: number;
+    /** Narrow machine-scheduler lane: matching placed deterministic actions
+     * and their readback only. Requires placement-only runner config. */
+    engineOnly?: boolean;
     executorCapabilities?: ReadonlySet<string>;
     /** Test seam: a stub coordinator executor (real tools, no model). The
      * production path picks the executor from the pinned target; passing one
@@ -1128,8 +1217,17 @@ export async function tick(
     coordinatorExecutor?: CoordinatorExecutor;
   } = {},
 ): Promise<TickReport> {
+  const runner = runnerClaimIdentity();
   const maxPasses = opts.maxPasses ?? 3;
-  const executorCapabilities = opts.executorCapabilities ?? runnerExecutorCapabilities();
+  if (opts.engineOnly && !runner.placementOnly) {
+    throw new Error('`weaver tick --engine-only` requires WEAVER_RUNNER_PLACEMENT_ONLY=1 and an explicit WEAVER_RUNNER_ID');
+  }
+  if (!opts.engineOnly && runner.placementOnly) {
+    throw new Error('WEAVER_RUNNER_PLACEMENT_ONLY=1 requires `weaver tick <slug> --engine-only`; a normal tick could enter sends, Pilot, or model lanes');
+  }
+  const executorCapabilities = opts.engineOnly
+    ? undefined
+    : (opts.executorCapabilities ?? runnerExecutorCapabilities());
   const coordinatorExecutor = opts.coordinatorExecutor;
   const report: TickReport = {
     cycles: 0,
@@ -1154,10 +1252,11 @@ export async function tick(
       // Candidates are re-derived from durable facts and deduped, so this is
       // a free, idempotent repair — and the paused state is left untouched
       // (pausing never concludes anything).
-      if (status === 'done') await deliverManagerNotices(slug);
+      if (status === 'done' && !opts.engineOnly) await deliverManagerNotices(slug);
       return { ...report, skipped: `workstream is ${status}` };
     }
-    return await tickLocked(slug, maxPasses, report, executorCapabilities, coordinatorExecutor);
+    if (opts.engineOnly) return await tickEngineOnlyLocked(slug, runner, report);
+    return await tickLocked(slug, maxPasses, report, executorCapabilities, runner, coordinatorExecutor);
   } finally {
     await releaseTick();
   }
@@ -1168,6 +1267,7 @@ async function tickLocked(
   maxPasses: number,
   report: TickReport,
   executorCapabilities?: ReadonlySet<string>,
+  runner: RunnerClaimIdentity = runnerClaimIdentity(),
   coordinatorExecutor?: CoordinatorExecutor,
 ): Promise<TickReport> {
 
@@ -1190,8 +1290,8 @@ async function tickLocked(
     report.cycles = cycle + 1;
     let progressed = false;
 
-    if ((await recoverCrashedAttempts(slug)) > 0) progressed = true;
-    if ((await holdLegacyQueuedActionRetries(slug)) > 0) progressed = true;
+    if ((await recoverCrashedAttempts(slug, runner)) > 0) progressed = true;
+    if ((await holdLegacyQueuedActionRetries(slug, runner)) > 0) progressed = true;
     // Compatibility repair happens before attention/manager delivery so an
     // old lifetime-dollar card cannot remain a false human blocker.
     if (await retireLegacyDollarBudgetCard(slug)) progressed = true;
@@ -1214,26 +1314,8 @@ async function tickLocked(
     // overlap with another open PR is recorded and ships, while a push target
     // whose own PR has already merged is held rather than stranding the commit
     // on a settled branch (invariant 8 across the seam).
-    const engineActCandidates = (await load(slug)).assignments.filter(
-      (a) => a.kind === 'action' && a.state === 'queued' && a.exec?.run && a.attempts.length === 0 && actionHasMatchingApproval(a),
-    );
-    const engineActs: string[] = [];
-    for (const a of engineActCandidates) {
-      if (await guardRepoEgress(slug, a)) engineActs.push(a.id);
-    }
-    const engineActCount = engineActs.length ? await executeHumanActions(slug, new Set(engineActs)) : 0;
+    const engineActCount = await executeDeterministicActionLane(slug, runner);
     if (engineActCount > 0) {
-      // Read back only the actions that actually executed this tick: a
-      // preflight-satisfied action never runs, has no attempt, and verifyAction
-      // correctly refuses it — the count-based slice used to assume execution
-      // order matched the gate list.
-      const executedNow = (await load(slug)).assignments.filter(
-        (a) => engineActs.includes(a.id) && a.attempts.length > 0 && !a.exec?.verified,
-      );
-      for (const a of executedNow) {
-        const ok = await verifyAction(slug, a.id);
-        process.stderr.write(`[tick] engine action ${a.id} readback: ${ok ? 'CONFIRMED' : 'UNKNOWN'}\n`);
-      }
       progressed = true;
     }
 
@@ -1248,7 +1330,7 @@ async function tickLocked(
     // it from re-raising, so it must not spin the cycle loop.
     await flagImpossibleDependencies(slug);
 
-    const runnable = runnableAssignments(await load(slug), executorCapabilities);
+    const runnable = runnableAssignments(await load(slug), executorCapabilities, runner);
     for (const id of runnable) {
       // Recheck before every model-backed assignment: each successful claim
       // changes the rolling position. Engine-authored deterministic actions
@@ -1262,7 +1344,7 @@ async function tickLocked(
       // The batch was computed before earlier workers ran. Re-evaluate this
       // assignment now so a new exact-target backoff suppresses only its
       // siblings while other routed pools can continue.
-      if (!runnableAssignments(beforeWorkerDoc, executorCapabilities).includes(id)) continue;
+      if (!runnableAssignments(beforeWorkerDoc, executorCapabilities, runner).includes(id)) continue;
       // Repo-egress deconfliction gate: hold an action worker whose egress
       // (push/PR-open) targets a branch whose own PR has already merged or
       // closed, rather than launching a worker to strand a commit no PR

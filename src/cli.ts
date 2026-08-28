@@ -145,6 +145,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
+  weaver tick <slug> --engine-only           placed exact actions/readback only (requires placement-only env)
   weaver run [--interval N]                  resident runner: tick every active workstream every N seconds (default 30)
   weaver serve [--host H] [--port N]         HTTP ingress for external bots (needs WEAVER_SERVE_TOKEN); create-or-get workstreams, post observations, read status
   weaver pause [slug]                        pause every active workstream, or one named workstream (state is kept)
@@ -1174,10 +1175,14 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
     case 'tick': {
       const slug = rest[0] ?? fail('slug required');
       const maxPasses = opt(rest, 'max-passes');
-      const { runnerExecutorCapabilities } = await import('./modelRouting.js');
+      const engineOnly = rest.includes('--engine-only');
+      const executorCapabilities = engineOnly
+        ? undefined
+        : (await import('./modelRouting.js')).runnerExecutorCapabilities();
       const report = await tick(slug, {
         ...(maxPasses ? { maxPasses: Number(maxPasses) } : {}),
-        executorCapabilities: runnerExecutorCapabilities(),
+        ...(engineOnly ? { engineOnly: true } : {}),
+        ...(executorCapabilities ? { executorCapabilities } : {}),
       });
       process.stdout.write(
         `tick done: ${report.cycles} cycle(s), ${report.sendsExecuted} send(s), ` +

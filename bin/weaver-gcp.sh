@@ -249,6 +249,10 @@ EOF
 chmod 755 /usr/local/bin/weaver
 grep -q '^WEAVER_HOME=' /etc/weaver/env || echo 'WEAVER_HOME=/home/weaver/state' >> /etc/weaver/env
 grep -q '^WEAVER_WORKSPACE_ROOT=' /etc/weaver/env || echo 'WEAVER_WORKSPACE_ROOT=/home/weaver/workspaces' >> /etc/weaver/env
+# Persist the VM's stable hostname as an explicit fleet runner identity. A
+# later push-env preserves host-local values, so laptop identity can never
+# overwrite this placement boundary.
+grep -q '^WEAVER_RUNNER_ID=' /etc/weaver/env || printf 'WEAVER_RUNNER_ID=%s\n' "$(hostname)" >> /etc/weaver/env
 mkdir -p /home/weaver/state /home/weaver/workspaces
 chown -R weaver:weaver /home/weaver/state /home/weaver/workspaces
 

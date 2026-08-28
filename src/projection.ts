@@ -217,11 +217,12 @@ export function buildProjection(
     const requirements = a.executionRequirements
       ? ` requirements:${a.executionRequirements.profile}/${a.executionRequirements.modalities.join('+')}${a.executionRequirements.complexity === 'high' ? '/high-complexity' : ''}`
       : a.kind === 'work' ? ' requirements:general/text' : '';
+    const placement = a.runnerId ? ` runner:${a.runnerId}` : '';
     const latest = a.attempts.at(-1);
     const target = latest?.executor && latest.provider && latest.model
       ? ` latest-target:${latest.executor}/${latest.provider}/${latest.model}`
       : latest?.model ? ` latest-model:${latest.model}` : '';
-    return `${a.id} [${a.state}/adoption:${a.adoption.state}] (${a.kind}) "${a.objective}"${dep}${requirements} attempts=${attempts}${target}${died}${sub}${act}`;
+    return `${a.id} [${a.state}/adoption:${a.adoption.state}] (${a.kind}) "${a.objective}"${dep}${requirements}${placement} attempts=${attempts}${target}${died}${sub}${act}`;
   });
   const s5 = [
     `## 5. Assignments`,
