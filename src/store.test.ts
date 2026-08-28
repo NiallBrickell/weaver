@@ -41,6 +41,7 @@ import {
   writeArtifact,
 } from './store.js';
 import { loadPolicies, type PolicyRecord } from './policies.js';
+import { setSecret } from './secrets.js';
 import { virtualNow } from './clock.js';
 
 const PG_URL = process.env.WEAVER_TEST_PG_URL;
@@ -179,6 +180,28 @@ function contractSuite(backend: Backend): void {
     const after = await load('test-ws');
     assert.equal(after.revision, before.revision + 1);
     assert.equal(after.events[after.events.length - 1]!.summary, 'hello');
+  });
+
+  test('ordinary-work credential names persist while credential values remain refused', async () => {
+    await makeWorkstream();
+    const value = 'store-refusal-credential-value-4817';
+    setSecret('READONLY_API_TOKEN', value, 'test-ws');
+    await arrive('test-ws', (doc) => doc.assignments.push({
+      id: 'asg_scoped_credential', objective: 'read a protected source',
+      briefing: 'Use $READONLY_API_TOKEN for the declared read.',
+      kind: 'work', credentialNames: ['READONLY_API_TOKEN'],
+      acceptanceCriteria: ['cite current evidence'], dependsOn: [], state: 'queued',
+      attempts: [], adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    }));
+    const stored = await load('test-ws');
+    assert.deepEqual(stored.assignments[0]!.credentialNames, ['READONLY_API_TOKEN']);
+    assert.doesNotMatch(JSON.stringify(stored), /store-refusal-credential-value-4817/);
+
+    await assert.rejects(
+      arrive('test-ws', (doc) => { doc.assignments[0]!.briefing = `Use ${value}`; }),
+      /embeds the VALUE of secret READONLY_API_TOKEN/,
+    );
+    assert.equal((await load('test-ws')).assignments[0]!.briefing, 'Use $READONLY_API_TOKEN for the declared read.');
   });
 
   test('valid JSON strings containing U+0000 survive create and mutation exactly', async () => {

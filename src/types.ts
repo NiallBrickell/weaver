@@ -116,6 +116,11 @@ export interface Assignment {
   /** Capability requirements survive replacement; the selected model does
    * not. Legacy/omitted requirements mean general text work. */
   executionRequirements?: AssignmentExecutionRequirements;
+  /** Credential names explicitly selected for an ordinary work attempt.
+   * Values never enter typed state; the worker resolves this exact subset
+   * from the applicable global/workstream secret store immediately before
+   * launch. Actions retain their existing all-applicable-secrets lifecycle. */
+  credentialNames?: string[];
   /** Project/source directories supplied as worker context. The first is the
    * cwd; the legacy field name is retained for stored-state compatibility. */
   readDirs?: string[];

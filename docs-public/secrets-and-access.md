@@ -1,6 +1,6 @@
 # Secrets & access
 
-*Models see names; shells get values; approved actions inherit the operator's MCP servers and CLIs*
+*Models see names; ordinary work gets only its declared values; actions retain their gated scope*
 
 ## Secrets
 
@@ -19,13 +19,39 @@ stdin remains supported for automation.
 
 The contract:
 
-- **Set once, everywhere.** Secrets are global by default — every workstream's action workers see the name and every exec shell gets the value; `--ws` scoping is the exception for a credential only one stream should hold.
+- **Set once, available everywhere.** Secrets are global by default; `--ws` scoping is the exception for a credential only one stream should hold. Availability is not injection: ordinary work gets none unless its Assignment explicitly selects the name, while gated actions retain their existing applicable-secret scope.
 - **Least privilege is a rule, not a preference.** Give workstreams the narrowest credential that does the job — a dedicated read-only database role, a scoped token — never an owner/admin credential that happens to be lying around on disk. The gates supervise commands; the credential itself is the real blast-radius ceiling.
-- **Models only ever see names.** The coordinator's projection lists which credentials exist so it can plan acts that use them; action briefings tell the worker "use `$SENTRY_AUTH_TOKEN`" — never the value.
-- **Shells get values.** The engine injects secrets as environment variables into approved action workers and into the deterministic `verify`/`run` commands.
+- **Models only ever see names.** The coordinator's projection lists which credentials exist. An ordinary-work Assignment persists only its exact `credentialNames` selection; a worker briefing tells the worker "use `$SENTRY_AUTH_TOKEN`" — never the value.
+- **Only the selected shell gets the value.** Ordinary work receives exactly its declared subset for one disposable attempt. Gated action workers and deterministic `verify`/`run` commands retain their existing applicable-secret environment.
 - **Nothing captured keeps a value.** Everything that flows back — command output, artifacts, submissions — is scrubbed (`«secret:NAME»`), and the store's single write path refuses any document write that embeds a known secret value. A pasted credential fails loudly with the fix (`reference it as $NAME`) instead of persisting forever.
 
 Values live in `0600` env files inside the gitignored state directory.
+
+### Credentials for ordinary work
+
+Read-only monitoring, evidence gathering, and reversible API bookkeeping stay
+ordinary `work`; they do not become irreversible `action` merely because they
+need authentication. The coordinator selects the smallest applicable subset
+on `create_assignment`:
+
+```text
+credential_names: [SENTRY_AUTH_TOKEN]
+```
+
+The durable Assignment stores `credentialNames: ["SENTRY_AUTH_TOKEN"]` and no
+value. Immediately before launch the execution host resolves that exact name
+from the global/workstream store, strips every unselected applicable secret
+name from the child environment (including an accidental ambient export), and
+injects the selected value for that attempt only. Executor/model identity
+credentials are a separate store and cannot be selected through this field.
+
+Unknown, malformed, duplicate, empty, or revoked selections fail closed. A
+launch-time failure records no Attempt and starts no model process; the
+Assignment settles failed with one blocker naming the credential to restore,
+so the runner cannot hot-loop the invalid contract. A supplied credential that
+returns 401/403 is reported as failure of that named access, not mistaken for
+an absent personal CLI login. Prompts, artifacts, submissions, tails, errors,
+service logs, and typed state all retain names at most and redact values.
 
 On the isolated GCP runner, provision an explicit least-privilege subset of
 the operator laptop's global store with:

@@ -5,10 +5,11 @@
  * Values live in env files under WEAVER_HOME (0600, inside the gitignored
  * state dir): `secrets.env` is global, `<slug>/secrets.env` overlays it per
  * workstream, and `executor-secrets.env` is private to executor adapters.
- * Only action-secret NAMES are ever surfaced to models — the engine injects
- * their values into action workers and exec.run / exec.verify shells. Executor
- * secrets are never named or injected there; adapters consume them directly.
- * Every value joins the redaction/store-refusal set.
+ * Only worker-secret NAMES are ever surfaced to models. Ordinary work receives
+ * exactly the names selected on its Assignment; actions and exec.run /
+ * exec.verify retain their existing applicable-secret scope. Executor secrets
+ * are never named or injected through either lifecycle; adapters consume them
+ * directly. Every value joins the redaction/store-refusal set.
  */
 
 import * as fs from 'node:fs';
@@ -83,7 +84,7 @@ function addRetainingCollision(
 }
 
 /**
- * Applicable action values plus executor-private values, solely for refusing
+ * Applicable worker values plus executor-private values, solely for refusing
  * or redacting captured data. This function must never feed a model or shell.
  */
 export function loadRedactionSecrets(slug?: string): Record<string, string> {
@@ -120,6 +121,32 @@ export function loadAllSecrets(): Record<string, string> {
 /** The only secret-related fact models ever see. */
 export function secretNames(slug?: string): string[] {
   return Object.keys(loadSecrets(slug)).sort();
+}
+
+/**
+ * Resolve an explicitly named subset from an already-bounded credential
+ * store. Callers pass `loadSecrets(slug)`, never the executor-only store.
+ * Validation is repeated at worker launch because names are durable while
+ * secret values are intentionally machine-local and independently mutable.
+ */
+export function selectNamedSecrets(
+  available: Record<string, string>,
+  names: string[],
+): Record<string, string> {
+  const selected: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (!NAME_RE.test(name)) {
+      throw new Error(`invalid credential name '${name}' — use UPPER_SNAKE_CASE`);
+    }
+    if (seen.has(name)) throw new Error(`duplicate credential name '${name}'`);
+    seen.add(name);
+    const value = available[name];
+    if (value === undefined) throw new Error(`credential '${name}' is not available to this workstream`);
+    if (value.length === 0) throw new Error(`credential '${name}' has an empty value`);
+    selected[name] = value;
+  }
+  return selected;
 }
 
 /**
@@ -223,8 +250,17 @@ export function stripClaudeCredentials(env: Record<string, string | undefined>):
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
 }
 
-export function sdkEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = { ...process.env, ...extra };
+export function sdkEnv(
+  extra: Record<string, string> = {},
+  stripAmbientNames: Iterable<string> = [],
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  // A service manager may happen to expose a worker credential in the
+  // controller's ambient environment. Ordinary work still receives only its
+  // declared subset: remove every applicable worker-secret name first, then
+  // add the exact selected values supplied by the caller.
+  for (const name of stripAmbientNames) delete env[name];
+  Object.assign(env, extra);
   stripClaudeCredentials(env);
   const registered = loadExecutorSecrets();
   if (registered.CLAUDE_CODE_OAUTH_TOKEN) {

@@ -99,6 +99,10 @@ export interface WorkerExecutionRequest {
    * SDK process arguments). Values in here must never reach durable state;
    * the harness holds the matching redaction set. */
   env: Record<string, string | undefined>;
+  /** Values the harness requires the adapter to scrub from run diagnostics
+   * and telemetry. Ephemeral only; never serialized or forwarded as model
+   * context. Executor-provider identity remains adapter-owned and separate. */
+  redactionSecrets?: Record<string, string>;
   /** The operator's SECURED MCP server configs for the dirs this run touches:
    * header credential values are already replaced with env expansions whose
    * values ride `env` above. */
