@@ -115,10 +115,33 @@ const action = (exec: Partial<NonNullable<Assignment['exec']>> | undefined): Ass
     ...(exec ? { exec: { cwd: '/tmp', verify: '', ...exec } } : {}),
   }) as Assignment;
 
-test('isRepoEgressAction matches gh pr create / merge and git push in run or verify', () => {
+test('isRepoEgressAction matches literal deterministic repo writes', () => {
   assert.equal(isRepoEgressAction(action({ run: 'gh pr create --fill' })), true);
   assert.equal(isRepoEgressAction(action({ run: 'gh pr merge 42 --merge' })), true);
   assert.equal(isRepoEgressAction(action({ run: 'git push origin HEAD' })), true);
+});
+
+test('isRepoEgressAction does not infer egress from deterministic read-only probes', () => {
+  assert.equal(
+    isRepoEgressAction(action({
+      run: 'gh pr view 42 --json state && gh api repos/acme/widgets/commits/main > /workspace/head.json',
+      verify: 'test -s /workspace/head.json && gh pr list --state open --json number',
+    })),
+    false,
+  );
+  assert.equal(
+    isRepoEgressAction(action({ run: 'gh api repos/acme/widgets/commits/main', verify: 'test -f /tmp/probe.done' })),
+    false,
+  );
+  // A deterministic run is authoritative even when its verify resembles the
+  // proxy used for a model-driven write.
+  assert.equal(
+    isRepoEgressAction(action({ run: 'gh pr view 42', verify: 'gh pr list --head fix/x --json url' })),
+    false,
+  );
+});
+
+test('isRepoEgressAction retains the readback proxy when no deterministic run exists', () => {
   assert.equal(isRepoEgressAction(action({ verify: 'git push --dry-run' })), true);
 });
 
