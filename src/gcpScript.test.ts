@@ -89,6 +89,12 @@ if [ "\${WEAVER_GCP_TEST_STALE_INSTALLER:-0}" = 1 ]; then
       exit 91
     }
   fi
+  if printf '%s\n' "$@" | grep -q 'weaver-install-env worker-secrets'; then
+    grep -q '^  worker-secrets)' "$WEAVER_GCP_TEST_REMOTE_INSTALLER" || {
+      echo 'remote installer does not support worker-secrets' >&2
+      exit 92
+    }
+  fi
 fi
 `,
     { mode: 0o755 },
@@ -346,9 +352,10 @@ function allCallArgs(root: string): string {
 
 function installEnv(
   envFile: string,
-  mode: 'merge' | 'store' | 'executor-secrets',
+  mode: 'merge' | 'store' | 'executor-secrets' | 'worker-secrets',
   input: string,
   executorSecretsFile?: string,
+  workerSecretsFile?: string,
 ): SpawnSyncReturns<string> {
   return spawnSync('bash', [installer, mode], {
     input,
@@ -360,6 +367,10 @@ function installEnv(
       ...(executorSecretsFile === undefined ? {} : {
         WEAVER_INSTALL_EXECUTOR_SECRETS_FILE: executorSecretsFile,
         WEAVER_INSTALL_EXECUTOR_SECRETS_OWNER: ':',
+      }),
+      ...(workerSecretsFile === undefined ? {} : {
+        WEAVER_INSTALL_WORKER_SECRETS_FILE: workerSecretsFile,
+        WEAVER_INSTALL_WORKER_SECRETS_OWNER: ':',
       }),
     },
   }) as SpawnSyncReturns<string>;
@@ -457,6 +468,57 @@ test('executor-secret installer exactly replaces the adapter store at mode 0600'
   assert.equal(fs.readFileSync(secretsFile, 'utf8'), rendered);
 });
 
+test('worker-secret installer exactly replaces the global store at mode 0600', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-gcp-worker-secrets-'));
+  roots.push(root);
+  const envFile = path.join(root, 'env');
+  const executorSecretsFile = path.join(root, 'state', 'executor-secrets.env');
+  const workerSecretsFile = path.join(root, 'state', 'secrets.env');
+  fs.writeFileSync(envFile, 'WEAVER_EXECUTOR=openhands\n');
+  fs.mkdirSync(path.dirname(workerSecretsFile));
+  fs.writeFileSync(executorSecretsFile, 'OPENROUTER_API_KEY=provider-value\n');
+  fs.writeFileSync(workerSecretsFile, 'REVOKED_TOKEN=old-value\n');
+
+  const rendered = 'READONLY_DB_URL=postgres://reader:secret@db/app\nSENTRY_AUTH_TOKEN=selected=value\n';
+  const result = installEnv(
+    envFile,
+    'worker-secrets',
+    rendered,
+    executorSecretsFile,
+    workerSecretsFile,
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(`${result.stdout}${result.stderr}`, '');
+  assert.equal(fs.readFileSync(workerSecretsFile, 'utf8'), rendered);
+  assert.equal(fs.statSync(workerSecretsFile).mode & 0o777, 0o600);
+  assert.equal(fs.readFileSync(executorSecretsFile, 'utf8'), 'OPENROUTER_API_KEY=provider-value\n');
+  assert.equal(fs.readFileSync(envFile, 'utf8'), 'WEAVER_EXECUTOR=openhands\n');
+});
+
+test('worker-secret installer refuses malformed, duplicate, and empty records atomically', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-gcp-worker-secrets-invalid-'));
+  roots.push(root);
+  const envFile = path.join(root, 'env');
+  const workerSecretsFile = path.join(root, 'state', 'secrets.env');
+  fs.writeFileSync(envFile, 'WEAVER_EXECUTOR=openhands\n');
+  fs.mkdirSync(path.dirname(workerSecretsFile));
+  fs.writeFileSync(workerSecretsFile, 'KEPT_TOKEN=kept-value\n', { mode: 0o600 });
+
+  for (const [input, error] of [
+    ['', /render is empty/],
+    ['MISSING_EQUALS\n', /malformed line/],
+    ['lower=value\n', /malformed key/],
+    ['EMPTY=\n', /empty value/],
+    ['TOKEN=one\nTOKEN=two\n', /duplicate key/],
+    ['TOKEN=value\r\n', /malformed value/],
+  ] as const) {
+    const result = installEnv(envFile, 'worker-secrets', input, undefined, workerSecretsFile);
+    assert.notEqual(result.status, 0, `input ${JSON.stringify(input)} was accepted`);
+    assert.match(result.stderr, error);
+    assert.equal(fs.readFileSync(workerSecretsFile, 'utf8'), 'KEPT_TOKEN=kept-value\n');
+  }
+});
+
 test('set-store carries the Postgres URL only on SSH stdin', () => {
   const url = 'postgresql://weaver:p4ss@db.example:5432/weaver?sslmode=require';
   const { result, root } = run(['set-store'], `${url}\n`);
@@ -535,6 +597,47 @@ test('push-env never copies personal Codex device authentication to the host', (
   assert.ok(!allCallArgs(f.root).includes('.codex'));
   assert.ok(!Array.from({ length: 3 }, (_, index) => call(f.root, index + 1, 'stdin')).join('\n').includes('device-login'));
   assert.ok(!`${result.stdout}${result.stderr}`.includes('auth.json'));
+});
+
+test('push-worker-secrets sends the exact selected global set only over SSH stdin', () => {
+  const rendered = [
+    'READONLY_DB_URL=postgres://reader:database-secret@db/app',
+    'SENTRY_AUTH_TOKEN=monitoring-secret',
+    '',
+  ].join('\n');
+  const { result, root } = run(
+    ['push-worker-secrets', 'SENTRY_AUTH_TOKEN', 'READONLY_DB_URL'],
+    undefined,
+    rendered,
+    true,
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(call(root, 1, 'stdin'), fs.readFileSync(installer, 'utf8'));
+  assert.match(call(root, 1, 'args'), /\/tmp\/weaver-install-env\.local/);
+  assert.equal(call(root, 2, 'stdin'), rendered);
+  assert.match(call(root, 2, 'args'), /weaver-install-env worker-secrets/);
+  assert.ok(!allCallArgs(root).includes('database-secret'));
+  assert.ok(!allCallArgs(root).includes('monitoring-secret'));
+  assert.ok(!`${result.stdout}${result.stderr}`.includes('database-secret'));
+  assert.ok(!`${result.stdout}${result.stderr}`.includes('monitoring-secret'));
+  assert.ok(!allCallArgs(root).includes('systemctl'));
+  assert.equal(fs.readFileSync(path.join(root, 'calls', 'count'), 'utf8').trim(), '2');
+  assert.match(fs.readFileSync(path.join(root, 'remote-installer'), 'utf8'), /^  worker-secrets\)/m);
+  assert.match(result.stdout, /2 selected worker secret\(s\) installed exactly/);
+  assert.match(result.stdout, /services were not restarted/);
+});
+
+test('push-worker-secrets rejects an empty, malformed, or duplicate selection before GCP', () => {
+  for (const [args, error] of [
+    [[], /usage: weaver-gcp push-worker-secrets NAME/],
+    [['lower_case'], /invalid worker secret name/],
+    [['TOKEN', 'TOKEN'], /duplicate worker secret name/],
+  ] as const) {
+    const { result, root } = run(['push-worker-secrets', ...args], undefined, 'TOKEN=value\n');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, error);
+    assert.equal(fs.existsSync(path.join(root, 'calls', 'count')), false);
+  }
 });
 
 test('restart remains an explicit push-env and update option', () => {

@@ -27,6 +27,22 @@ The contract:
 
 Values live in `0600` env files inside the gitignored state directory.
 
+On the isolated GCP runner, provision an explicit least-privilege subset of
+the operator laptop's global store with:
+
+```bash
+bin/weaver-gcp.sh push-worker-secrets SENTRY_AUTH_TOKEN READONLY_DB_URL
+```
+
+This is an exact replacement of the host's global `secrets.env`, not a merge:
+names omitted from the next invocation are revoked. Values cross SSH only on
+stdin and are never accepted as command arguments or printed. The helper
+refuses unknown, malformed, duplicate, and empty selections, installs the file
+as `weaver` with mode `0600`, and does not restart the runner because each
+attempt reloads applicable secrets. Executor-only identity remains a separate
+scope managed by `push-env`; personal device or CLI authentication is never a
+substitute for either store.
+
 Executor-only secrets are a stricter sibling scope. An adapter loads them
 directly; `secretNames`, projections, action environments, and deterministic
 shells do not. Their values still join the shared store-refusal and every

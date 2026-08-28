@@ -19,6 +19,7 @@ import {
   loadRedactionSecrets,
   loadSecrets,
   redactSecrets,
+  renderSelectedGlobalSecretLines,
   removeExecutorSecret,
   removeSecret,
   sdkEnv,
@@ -133,6 +134,31 @@ test('invalid names and empty values are refused', () => {
   assert.throws(() => setSecret('lower_case', 'x-value'));
   assert.throws(() => setSecret('GH TOKEN', 'x-value'));
   assert.throws(() => setSecret('OK_NAME', ''));
+});
+
+test('selected global secret rendering is exact, deterministic, and fail-closed', () => {
+  setSecret('SENTRY_AUTH_TOKEN', 'monitoring=credential');
+  setSecret('READONLY_DB_URL', 'postgres://reader:secret@db/app');
+  setSecret('NOT_SELECTED', 'must-stay-local');
+
+  assert.deepEqual(
+    renderSelectedGlobalSecretLines(['SENTRY_AUTH_TOKEN', 'READONLY_DB_URL']),
+    [
+      'READONLY_DB_URL=postgres://reader:secret@db/app',
+      'SENTRY_AUTH_TOKEN=monitoring=credential',
+    ],
+  );
+  assert.throws(() => renderSelectedGlobalSecretLines([]), /at least one/);
+  assert.throws(() => renderSelectedGlobalSecretLines(['lower_case']), /invalid secret name/);
+  assert.throws(
+    () => renderSelectedGlobalSecretLines(['SENTRY_AUTH_TOKEN', 'SENTRY_AUTH_TOKEN']),
+    /duplicate worker secret name/,
+  );
+  assert.throws(() => renderSelectedGlobalSecretLines(['UNKNOWN_TOKEN']), /unknown global worker secret/);
+
+  fs.appendFileSync(globalSecretsPath(), 'EMPTY_TOKEN=\nMULTILINE_TOKEN=line-one\rline-two\n');
+  assert.throws(() => renderSelectedGlobalSecretLines(['EMPTY_TOKEN']), /empty value/);
+  assert.throws(() => renderSelectedGlobalSecretLines(['MULTILINE_TOKEN']), /cannot be rendered/);
 });
 
 test('sdkEnv strips ambient API and OAuth credentials but preserves the operator-selected login', () => {

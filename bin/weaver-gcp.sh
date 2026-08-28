@@ -5,6 +5,7 @@
 #   weaver-gcp create [--external-store]  create + provision (does not start)
 #   weaver-gcp set-store          install an external Postgres URL from hidden stdin
 #   weaver-gcp push-env [--restart]  merge credentials/config (no restart by default)
+#   weaver-gcp push-worker-secrets NAME...  exactly sync selected global secrets
 #   weaver-gcp tunnel             forward Postgres + serve to localhost
 #   weaver-gcp join               print the exact commands a second machine runs
 #   weaver-gcp ssh [cmd…]         SSH into the VM (IAP tunnel)
@@ -356,6 +357,13 @@ cmd_set_store() {
   echo "✓ external Postgres installed in /etc/weaver/env; services were not restarted"
 }
 
+# Ship this checkout's public installer before asking the host to consume any
+# credential input. A host on an older Weaver revision may not know the mode;
+# helper code and secret values travel on separate SSH calls.
+push_remote_installer() {
+  "${GSSH[@]}" --command 'helper="/tmp/weaver-install-env.local.$$"; staged="/usr/local/sbin/.weaver-install-env.$$"; trap "rm -f -- $helper; sudo rm -f -- $staged" EXIT; umask 077; cat > "$helper"; sudo install -o root -g root -m 755 "$helper" "$staged"; sudo mv -f "$staged" /usr/local/sbin/weaver-install-env' < "$REPO/bin/weaver-install-env.sh"
+}
+
 # ── push-env ──────────────────────────────────────────────────────────────────
 # Renders the service env and the exact executor-only credential store from the
 # laptop, then ships both over SSH stdin. Values never appear in argv or VM
@@ -420,10 +428,7 @@ cmd_push_env() {
     $1 == "WEAVER_PILOT_TOKEN" ||
     $1 == "WEAVER_SERVE_TOKEN" { print }
   ' "$PUSH_EXECUTOR_SECRETS_RAW_TMP" > "$PUSH_EXECUTOR_SECRETS_TMP"
-  # Stream this checkout's installer before invoking it. The VM may still run
-  # an older checkout whose helper lacks the new mode; helper code is public
-  # and travels alone, while every credential remains on its later SSH stdin.
-  "${GSSH[@]}" --command 'helper="/tmp/weaver-install-env.local.$$"; staged="/usr/local/sbin/.weaver-install-env.$$"; trap "rm -f -- $helper; sudo rm -f -- $staged" EXIT; umask 077; cat > "$helper"; sudo install -o root -g root -m 755 "$helper" "$staged"; sudo mv -f "$staged" /usr/local/sbin/weaver-install-env' < "$REPO/bin/weaver-install-env.sh"
+  push_remote_installer
   "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env merge' < "$PUSH_ENV_TMP"
   "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env executor-secrets' < "$PUSH_EXECUTOR_SECRETS_TMP"
   if [ "$restart" -eq 1 ]; then
@@ -437,6 +442,48 @@ cmd_push_env() {
   PUSH_ENV_TMP=""
   PUSH_EXECUTOR_SECRETS_RAW_TMP=""
   PUSH_EXECUTOR_SECRETS_TMP=""
+  trap - EXIT
+}
+
+# ── push-worker-secrets ───────────────────────────────────────────────────────
+# Global worker credentials are a separate scope from executor identities. The
+# operator names the exact least-privilege set to install; the local CLI reads
+# their values from Weaver's global 0600 store and renders only to this private
+# temporary file. The host receives values solely on SSH stdin and atomically
+# replaces its whole global store, so omitted names are revoked.
+cmd_push_worker_secrets() {
+  [ "$#" -gt 0 ] || {
+    echo "❌ usage: weaver-gcp push-worker-secrets NAME..." >&2; exit 1;
+  }
+
+  local name
+  local seen_names="|"
+  for name in "$@"; do
+    [[ "$name" =~ ^[A-Z][A-Z0-9_]*$ ]] || {
+      echo "❌ invalid worker secret name '$name' — use UPPER_SNAKE_CASE" >&2; exit 1;
+    }
+    case "$seen_names" in
+      *"|$name|"*)
+        echo "❌ duplicate worker secret name '$name'" >&2; exit 1;
+        ;;
+    esac
+    seen_names="${seen_names}${name}|"
+  done
+
+  PUSH_WORKER_SECRETS_TMP="$(mktemp)"
+  trap 'rm -f -- "${PUSH_WORKER_SECRETS_TMP:-}"' EXIT
+  chmod 600 "$PUSH_WORKER_SECRETS_TMP"
+  "$REPO/bin/weaver.mjs" secret render-selected "$@" > "$PUSH_WORKER_SECRETS_TMP"
+  [ -s "$PUSH_WORKER_SECRETS_TMP" ] || {
+    echo "❌ selected worker secret render was empty" >&2; exit 1;
+  }
+
+  push_remote_installer
+  "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env worker-secrets' < "$PUSH_WORKER_SECRETS_TMP"
+  echo "✓ $# selected worker secret(s) installed exactly; services were not restarted"
+
+  rm -f -- "$PUSH_WORKER_SECRETS_TMP"
+  PUSH_WORKER_SECRETS_TMP=""
   trap - EXIT
 }
 
@@ -523,6 +570,7 @@ case "${1:-}" in
   create)   shift; cmd_create "$@";;
   set-store) shift; cmd_set_store "$@";;
   push-env) shift; cmd_push_env "$@";;
+  push-worker-secrets) shift; cmd_push_worker_secrets "$@";;
   tunnel)   shift; cmd_tunnel "$@";;
   join)     shift; cmd_join "$@";;
   ssh)      shift; cmd_ssh "$@";;

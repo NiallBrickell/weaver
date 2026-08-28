@@ -800,6 +800,7 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
         executorSecretNames,
         removeExecutorSecret,
         removeSecret,
+        renderSelectedGlobalSecretLines,
         secretNames,
         setExecutorSecret,
         setSecret,
@@ -834,6 +835,21 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
               ? `secret ${name} removed\n`
               : `no secret ${name}\n`,
           );
+          break;
+        }
+        case 'render-selected': {
+          if (ws || executor || f.some((value) => value.startsWith('--'))) {
+            fail('render-selected accepts only global secret NAMES');
+          }
+          if (process.stdout.isTTY) {
+            fail('render-selected emits secret VALUES — redirect it to a secure pipe, never a terminal');
+          }
+          try {
+            const lines = renderSelectedGlobalSecretLines(f);
+            process.stdout.write(lines.map((line) => `${line}\n`).join(''));
+          } catch (error) {
+            fail(error instanceof Error ? error.message : String(error));
+          }
           break;
         }
         default:

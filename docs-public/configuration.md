@@ -26,7 +26,8 @@ Two rules make it safe to rely on:
   the built-in defaults below.
 - **Resident processes snapshot it at launch.** Restart `weaver run` or
   `weaver watch` after changing model/executor settings. Executor-only provider
-  secrets are the exception: adapters reload those for every attempt.
+  secrets and applicable global/workstream secrets are the exceptions: workers
+  and adapters reload those for every attempt.
 
 `.env` is for *config*, not secrets. Per-workstream action secrets belong in the
 store via `weaver secret set <NAME> --ws <slug>`; model-provider keys use

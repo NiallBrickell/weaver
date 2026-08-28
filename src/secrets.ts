@@ -122,6 +122,36 @@ export function secretNames(slug?: string): string[] {
   return Object.keys(loadSecrets(slug)).sort();
 }
 
+/**
+ * Render an explicit subset of the global store for secure machine-to-machine
+ * delivery. This is deliberately global-only: workstream overlays remain
+ * scoped to their durable workstream, while a hosted fleet gets one explicit
+ * least-privilege baseline. Callers must refuse terminal output.
+ */
+export function renderSelectedGlobalSecretLines(names: string[]): string[] {
+  if (names.length === 0) throw new Error('at least one worker secret name is required');
+  const available = loadSecrets();
+  const seen = new Set<string>();
+  const selected: Array<[string, string]> = [];
+  for (const name of names) {
+    if (!NAME_RE.test(name)) {
+      throw new Error(`invalid secret name '${name}' — use UPPER_SNAKE_CASE`);
+    }
+    if (seen.has(name)) throw new Error(`duplicate worker secret name '${name}'`);
+    seen.add(name);
+    const value = available[name];
+    if (value === undefined) throw new Error(`unknown global worker secret '${name}'`);
+    if (value.length === 0) throw new Error(`global worker secret '${name}' has an empty value`);
+    if (/[\0\r\n]/.test(value)) {
+      throw new Error(`global worker secret '${name}' cannot be rendered as one env record`);
+    }
+    selected.push([name, value]);
+  }
+  return selected
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, value]) => `${name}=${value}`);
+}
+
 export function setSecret(name: string, value: string, slug?: string): void {
   setSecretAt(name, value, slug ? workstreamSecretsPath(slug) : globalSecretsPath());
 }
