@@ -15,6 +15,7 @@ import { execFileSync } from 'node:child_process';
 import {
   coordinatorBackoffActive,
   flagImpossibleDependencies,
+  guardRepoEgress,
   runnableAssignments,
   tick,
   preflightApprovedAction,
@@ -876,6 +877,171 @@ test('an engine action with an uncreatable cwd settles once and never escapes or
     await readArtifact('engine-cwd-fail-ws', doc.deliverables.find((d) => d.kind === 'execution_record')!.path),
     /ENOTDIR|not a directory/i,
   );
+});
+
+test('a read-only GitHub engine action receives read scope for gh and Git fetch', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-read-engine-'));
+  const fixedNow = Date.parse('2026-08-26T12:00:00.000Z');
+  const requests: Array<{ contents: string; repository: string[] }> = [];
+  execFileSync('git', ['init', '--quiet'], { cwd });
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/octo/repo.git'], { cwd });
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret(
+    'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64',
+    Buffer.from(githubTestPrivateKey).toString('base64'),
+  );
+  __setGitHubAppTestDependencies({
+    now: () => fixedNow,
+    fetch: (async (_input, init = {}) => {
+      const body = JSON.parse(String(init.body)) as {
+        permissions: { contents: string };
+        repositories: string[];
+      };
+      requests.push({ contents: body.permissions.contents, repository: body.repositories });
+      return Response.json({
+        token: 'read-installation-token',
+        expires_at: new Date(fixedNow + 60 * 60_000).toISOString(),
+        repositories: [{ full_name: 'octo/repo' }],
+      }, { status: 201 });
+    }) as typeof globalThis.fetch,
+  });
+
+  await makeActionWorkstream('github-read-engine-scope-ws', {
+    state: 'queued',
+    exec: {
+      cwd,
+      run: 'if false; then gh api repos/octo/repo; git fetch origin; fi; test "$GH_TOKEN" = read-installation-token && touch effect.txt',
+      verify: 'test "$GH_TOKEN" = read-installation-token && test -f effect.txt',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+  try {
+    await tick('github-read-engine-scope-ws', { maxPasses: 0 });
+    const action = (await load('github-read-engine-scope-ws')).assignments[0]!;
+    assert.equal(action.state, 'awaiting_review');
+    assert.equal(action.attempts.length, 1);
+    assert.equal(action.exec!.verified!.ok, true);
+    assert.deepEqual(requests, [{ contents: 'read', repository: ['repo'] }]);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a GitHub read action with a non-repository cwd settles before claim exactly once', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-invalid-cwd-'));
+  const marker = path.join(process.env.WEAVER_HOME!, 'must-not-run');
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret(
+    'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64',
+    Buffer.from(githubTestPrivateKey).toString('base64'),
+  );
+  __setGitHubAppTestDependencies({
+    fetch: (async () => {
+      throw new Error('token mint must not happen without an exact repository');
+    }) as typeof globalThis.fetch,
+  });
+  await makeActionWorkstream('github-invalid-cwd-ws', {
+    state: 'queued',
+    exec: {
+      cwd,
+      run: `if false; then gh api repos/octo/repo; fi; touch ${JSON.stringify(marker)}`,
+      verify: 'false',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+
+  const persisted = (await load('github-invalid-cwd-ws')).assignments[0]!;
+  const writeProbe = structuredClone(persisted);
+  writeProbe.exec!.run = 'gh pr create --fill';
+  assert.equal(
+    await guardRepoEgress('github-invalid-cwd-ws', writeProbe),
+    true,
+    'the deconfliction gate abstains so preflight can durably settle the cwd failure',
+  );
+
+  await tick('github-invalid-cwd-ws', { maxPasses: 0 });
+  await tick('github-invalid-cwd-ws', { maxPasses: 0 });
+  const doc = await load('github-invalid-cwd-ws');
+  const action = doc.assignments[0]!;
+  assert.equal(action.state, 'failed');
+  assert.equal(action.attempts.length, 0, 'failure before claim is known to have zero external attempts');
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(doc.deliverables.length, 0);
+  assert.equal(doc.attention.length, 0, 'configuration repair belongs to the coordinator, not Needs You');
+  assert.equal(doc.events.filter((event) => event.type === 'action.preparation_failed').length, 1);
+  const wakes = doc.wakes.filter((wake) => wake.reason.includes('failed before the one-shot claim'));
+  assert.equal(wakes.length, 1);
+  assert.equal(wakes[0]!.condition.type, 'immediate');
+  assert.equal(wakes[0]!.status, 'pending');
+});
+
+test('a transient GitHub mint failure cannot be mislabeled as a durable zero-effect preparation failure', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-transient-'));
+  execFileSync('git', ['init', '--quiet'], { cwd });
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/octo/repo.git'], { cwd });
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret(
+    'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64',
+    Buffer.from(githubTestPrivateKey).toString('base64'),
+  );
+  __setGitHubAppTestDependencies({
+    fetch: (async () => {
+      throw new Error('transient provider outage');
+    }) as typeof globalThis.fetch,
+  });
+  await makeActionWorkstream('github-transient-mint-ws', {
+    state: 'queued',
+    exec: {
+      cwd,
+      run: 'gh api repos/octo/repo',
+      verify: 'false',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      tick('github-transient-mint-ws', { maxPasses: 0 }),
+      /GitHub App token request could not reach GitHub/,
+    );
+    const doc = await load('github-transient-mint-ws');
+    const action = doc.assignments[0]!;
+    assert.equal(action.state, 'queued');
+    assert.equal(action.attempts.length, 0);
+    assert.equal(doc.events.some((event) => event.type === 'action.preparation_failed'), false);
+    assert.equal(doc.wakes.length, 0);
+    assert.equal(doc.attention.length, 0);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a model-backed action uses the same typed pre-claim GitHub failure settlement', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-worker-invalid-'));
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret(
+    'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64',
+    Buffer.from(githubTestPrivateKey).toString('base64'),
+  );
+  await makeActionWorkstream('github-worker-invalid-cwd-ws', {
+    state: 'queued',
+    exec: {
+      cwd,
+      verify: 'gh pr list --head fix/example --json url',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+
+  await tick('github-worker-invalid-cwd-ws', { maxPasses: 0 });
+  const doc = await load('github-worker-invalid-cwd-ws');
+  assert.equal(doc.assignments[0]!.state, 'failed');
+  assert.equal(doc.assignments[0]!.attempts.length, 0);
+  assert.equal(doc.events.filter((event) => event.type === 'action.preparation_failed').length, 1);
+  assert.deepEqual(doc.attention, []);
 });
 
 test('a repo engine action gets write scope only for execution and read scope for checks', async () => {

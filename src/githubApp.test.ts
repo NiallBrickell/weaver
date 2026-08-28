@@ -9,8 +9,10 @@ import { beforeEach, test } from 'node:test';
 import {
   __resetGitHubAppForTests,
   __setGitHubAppTestDependencies,
+  actionUsesGitHub,
   checkGitHubAppAuthentication,
   cloneGitHubRepository,
+  GitHubAppPreparationError,
   githubAppConfigured,
   githubAppEnvironment,
   githubRepositoryFromCwd,
@@ -18,6 +20,7 @@ import {
   parseGitHubRepositoryRemote,
 } from './githubApp.js';
 import { setExecutorSecret } from './secrets.js';
+import type { Assignment } from './types.js';
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
@@ -60,6 +63,22 @@ function gitRepo(remote: string): string {
   return cwd;
 }
 
+function action(run = '', verify = ''): Assignment {
+  return {
+    id: 'asg_github',
+    objective: 'exercise GitHub',
+    briefing: 'n/a',
+    kind: 'action',
+    exec: { cwd: '/tmp', run, verify },
+    acceptanceCriteria: [],
+    dependsOn: [],
+    state: 'queued',
+    attempts: [],
+    adoption: { state: 'none' },
+    createdAtVirtual: '2026-08-26T00:00:00.000Z',
+  };
+}
+
 beforeEach(() => {
   freshHome();
   __resetGitHubAppForTests();
@@ -84,7 +103,7 @@ test('partial credentials, non-numeric IDs, and invalid base64 PEM fail closed',
   setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
   await assert.rejects(
     githubAppEnvironment('/not/a/repo'),
-    /credentials are incomplete in the executor-only secret store/,
+    GitHubAppPreparationError,
   );
 
   freshHome();
@@ -229,7 +248,34 @@ test('origin parsing accepts exact github.com HTTPS and SSH repositories only', 
   );
 });
 
-test('configured environment fails closed on a non-GitHub origin and injects only GH_TOKEN on success', async () => {
+test('an unexpected cwd-origin probe error remains infrastructure, never typed action configuration', async () => {
+  configure();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-probe-programming-'));
+  __setGitHubAppTestDependencies({
+    execFileSync: (() => {
+      throw new TypeError('injected programming failure');
+    }) as typeof execFileSync,
+  });
+  await assert.rejects(
+    githubAppEnvironment(cwd),
+    (error: unknown) => error instanceof TypeError
+      && !(error instanceof GitHubAppPreparationError)
+      && error.message === 'injected programming failure',
+  );
+});
+
+test('action GitHub use is literal, includes gh and Git network commands, and keeps reads distinct from writes', () => {
+  assert.equal(actionUsesGitHub(action('gh api repos/octo/widget')), true);
+  assert.equal(actionUsesGitHub(action('if false; then /usr/bin/gh pr view 42; fi')), true);
+  assert.equal(actionUsesGitHub(action('test "$(gh pr list --json number)" = "[]"')), true);
+  assert.equal(actionUsesGitHub(action('git -C /workspace/widget fetch origin')), true);
+  assert.equal(actionUsesGitHub(action('command git ls-remote origin', 'git remote update')), true);
+  assert.equal(actionUsesGitHub(action('git -C /workspace/widget remote update')), true);
+  assert.equal(actionUsesGitHub(action('echo "gh api"; echo "git fetch"')), false);
+  assert.equal(actionUsesGitHub(action('git status', 'test -f result.json')), false);
+});
+
+test('configured environment fails closed on a non-GitHub origin and authenticates gh and Git without persisting the token', async () => {
   configure();
   let calls = 0;
   __setGitHubAppTestDependencies({
@@ -244,9 +290,36 @@ test('configured environment fails closed on a non-GitHub origin and injects onl
     /requires cwd origin to be an exact github.com repository/,
   );
   assert.equal(calls, 0);
-  assert.deepEqual(
-    await githubAppEnvironment(gitRepo('git@github.com:octo/widget.git'), 'write'),
-    { GH_TOKEN: 'repo-token' },
+  const environment = await githubAppEnvironment(gitRepo('https://github.com/octo/widget.git'), 'write');
+  assert.equal(environment.GH_TOKEN, 'repo-token');
+  assert.equal(environment.GIT_TERMINAL_PROMPT, '0');
+  assert.equal(environment.GIT_CONFIG_KEY_1, 'credential.https://github.com.helper');
+  assert.equal(environment.GIT_CONFIG_KEY_3, 'credential.https://github.com.useHttpPath');
+  for (const [name, value] of Object.entries(environment)) {
+    if (name === 'GH_TOKEN') continue;
+    assert.equal(value.includes('repo-token'), false, `${name} must reference GH_TOKEN, never contain the token`);
+  }
+
+  const credential = execFileSync('git', ['credential', 'fill'], {
+    input: 'protocol=https\nhost=github.com\npath=octo/widget.git\n\n',
+    encoding: 'utf8',
+    env: { ...process.env, ...environment },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  assert.match(credential, /^protocol=https$/m);
+  assert.match(credential, /^host=github\.com$/m);
+  assert.match(credential, /^username=x-access-token$/m);
+  assert.match(credential, /^password=repo-token$/m);
+
+  assert.throws(
+    () => execFileSync('git', ['credential', 'fill'], {
+      input: 'protocol=https\nhost=gitlab.com\npath=octo/widget.git\n\n',
+      encoding: 'utf8',
+      env: { ...process.env, ...environment },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }),
+    /Command failed/,
+    'the helper must not offer the GitHub token to another host',
   );
 });
 
