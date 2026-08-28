@@ -127,6 +127,33 @@ Reviewed automatic routes select models only within the configured worker
 substrate. Cross-executor preference waits for durable Workstream execution
 policy rather than trusting process-local environment agreement.
 
+Give every hosted execution process a stable `WEAVER_RUNNER_ID`; the OS
+hostname default is intended for normal local machines, not replaceable
+containers. Most assignments remain unplaced and may run on any capable host.
+When intended work names one exact runner — typically because the effect is
+machine-local — every other runner leaves it queued with no mutation, and the
+attempt records which runner actually claimed it.
+
+### A narrow machine-local action scheduler
+
+A workstation can join a shared fleet without becoming another general brain.
+Set a stable identity plus placement-only posture in the scheduler's
+environment and run one bounded command per target workstream:
+
+```bash
+WEAVER_RUNNER_ID=mac-studio \
+WEAVER_RUNNER_PLACEMENT_ONLY=1 \
+weaver tick machine-maintenance --engine-only
+```
+
+`--engine-only` requires that posture. It processes only already-approved,
+deterministic `exec.run` actions explicitly placed on `mac-studio`, plus the
+crash/legacy reconciliation needed to preserve the one-shot action rule and
+their readback. It does not send interactions, call Pilot, launch model-backed
+work/actions, or run a coordinator. Do not use placement-only mode with
+`weaver run`; the resident runner refuses it so unplaced fleet work cannot be
+silently stranded.
+
 ## Deploying the runner on a GCP VM
 
 [`bin/weaver-gcp.sh`](../bin/weaver-gcp.sh) provisions an isolated execution

@@ -94,6 +94,7 @@ function routineDoc(cycles: number): WorkstreamDoc {
     objective: 'LIVE queued work UNIQUE_LIVE_MARKER',
     briefing: 'b',
     kind: 'work',
+    runnerId: 'mac-studio',
     executionRequirements: { profile: 'bounded-code-repair', modalities: ['text'], complexity: 'high' },
     acceptanceCriteria: [],
     dependsOn: [],
@@ -103,6 +104,7 @@ function routineDoc(cycles: number): WorkstreamDoc {
       executor: 'codex-sdk',
       provider: 'openai',
       model: 'gpt-5.6-sol',
+      runnerId: 'mac-studio',
       startedAt: NOW,
     }],
     adoption: { state: 'proposed' },
@@ -169,6 +171,7 @@ test('bounded projection still carries live work and standing commitments', () =
   // must see it from the projection, never from a transcript.
   assert.match(p, /requirements:bounded-code-repair\/text\/high-complexity/);
   assert.match(p, /latest-target:codex-sdk\/openai\/gpt-5\.6-sol/);
+  assert.match(p, /runner:mac-studio/);
 });
 
 test('a legacy approval-service outage card is operational state, never a fresh-coordinator human ask', () => {

@@ -111,7 +111,7 @@ function attempts(assignment: Assignment): string {
   if (!assignment.attempts.length) return 'not run';
   return assignment.attempts.map((attempt) => {
     const end = attempt.endedAt ? `ended ${attempt.endedAt}` : 'still running';
-    return `${attempt.runId}: ${attempt.startedAt} → ${end}${attempt.terminalReason ? `, ${attempt.terminalReason}` : ''}`;
+    return `${attempt.runId}: ${attempt.startedAt} → ${end}${attempt.runnerId ? `, runner ${attempt.runnerId}` : ''}${attempt.terminalReason ? `, ${attempt.terminalReason}` : ''}`;
   }).join('; ');
 }
 

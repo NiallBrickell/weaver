@@ -119,6 +119,28 @@ to the next reviewed target or configured fallback. Status shows the local
 executor wait separately from provider capacity because it has no honest retry
 timestamp. Unknown or empty declarations fail at runner startup.
 
+An assignment may also carry one exact `runner_id` when its acceptance truly
+depends on a specific execution host — for example a daemon that exists only
+on a named workstation. `WEAVER_RUNNER_ID` names the current host (falling back
+to its OS hostname for ordinary local use). An unmatched runner leaves that
+assignment queued without an attempt or any state mutation; a matching attempt
+pins the runner ID beside executor/provider/model provenance. Omitted placement
+keeps the existing fleet-wide behavior.
+
+For a machine scheduler that must service only these explicitly placed exact
+actions, set both `WEAVER_RUNNER_ID=<stable-name>` and
+`WEAVER_RUNNER_PLACEMENT_ONLY=1`, then invoke:
+
+```bash
+weaver tick <workstream> --engine-only
+```
+
+That lane reconciles crashed/legacy one-shot actions, executes only already
+approved matching `exec.run` commands, and runs their deterministic readback.
+It never sends, asks Pilot for approval, starts a model worker, or runs a
+coordinator. Placement-only mode is deliberately refused by `weaver run`; it
+is not a partial resident runner.
+
 Passing model-quality gates is necessary but not sufficient for an automatic
 route. OpenHands now mounts every declared source directory and relays the
 serializable user/local MCP entries discoverable in `~/.claude.json` through

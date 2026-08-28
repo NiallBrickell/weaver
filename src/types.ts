@@ -94,6 +94,9 @@ export interface Attempt {
   /** OS pid of the harness process driving this attempt: a dead pid means the
    * attempt is orphaned NOW — recovery need not wait out the stale horizon. */
   runnerPid?: number;
+  /** Exact execution host that claimed this attempt. Optional on legacy
+   * records; unlike runnerPid it is meaningful across a shared fleet. */
+  runnerId?: string;
   /** Exact disposable target for this attempt. Optional on legacy records. */
   executor?: string;
   provider?: string;
@@ -116,6 +119,9 @@ export interface Assignment {
   /** Capability requirements survive replacement; the selected model does
    * not. Legacy/omitted requirements mean general text work. */
   executionRequirements?: AssignmentExecutionRequirements;
+  /** Optional exact execution-host placement. Intended work stays queued on
+   * every other runner; absence preserves the fleet-wide scheduling default. */
+  runnerId?: string;
   /** Credential names explicitly selected for an ordinary work attempt.
    * Values never enter typed state; the worker resolves this exact subset
    * from the applicable global/workstream secret store immediately before
