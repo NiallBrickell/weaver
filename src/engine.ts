@@ -1077,7 +1077,17 @@ export async function tick(
   if (!releaseTick) return { ...report, skipped: 'another process is ticking this workstream' };
   try {
     const status = (await load(slug)).workstream.status;
-    if (status !== 'active') return { ...report, skipped: `workstream is ${status}` };
+    if (status !== 'active') {
+      // A concluded stream is never ticked again by the runner, but its
+      // 'finished' notice must still be deliverable by any later tick: a
+      // crash between the conclude write and the same-tick delivery step
+      // otherwise strands the parent notice until a human resumes the child.
+      // Candidates are re-derived from durable facts and deduped, so this is
+      // a free, idempotent repair — and the paused state is left untouched
+      // (pausing never concludes anything).
+      if (status === 'done') await deliverManagerNotices(slug);
+      return { ...report, skipped: `workstream is ${status}` };
+    }
     return await tickLocked(slug, maxPasses, report, executorCapabilities, coordinatorExecutor);
   } finally {
     await releaseTick();
