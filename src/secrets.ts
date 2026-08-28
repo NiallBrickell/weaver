@@ -5,10 +5,11 @@
  * Values live in env files under WEAVER_HOME (0600, inside the gitignored
  * state dir): `secrets.env` is global, `<slug>/secrets.env` overlays it per
  * workstream, and `executor-secrets.env` is private to executor adapters.
- * Only action-secret NAMES are ever surfaced to models — the engine injects
- * their values into action workers and exec.run / exec.verify shells. Executor
- * secrets are never named or injected there; adapters consume them directly.
- * Every value joins the redaction/store-refusal set.
+ * Only worker-secret NAMES are ever surfaced to models. Ordinary work receives
+ * exactly the names selected on its Assignment; actions and exec.run /
+ * exec.verify retain their existing applicable-secret scope. Executor secrets
+ * are never named or injected through either lifecycle; adapters consume them
+ * directly. Every value joins the redaction/store-refusal set.
  */
 
 import * as fs from 'node:fs';
@@ -83,7 +84,7 @@ function addRetainingCollision(
 }
 
 /**
- * Applicable action values plus executor-private values, solely for refusing
+ * Applicable worker values plus executor-private values, solely for refusing
  * or redacting captured data. This function must never feed a model or shell.
  */
 export function loadRedactionSecrets(slug?: string): Record<string, string> {

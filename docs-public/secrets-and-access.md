@@ -1,6 +1,6 @@
 # Secrets & access
 
-*Models see names; shells get values; approved actions inherit the operator's MCP servers and CLIs*
+*Models see names; ordinary work gets only its declared values; actions retain their gated scope*
 
 ## Secrets
 
