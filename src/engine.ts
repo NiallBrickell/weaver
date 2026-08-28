@@ -760,10 +760,15 @@ async function executeHumanActions(slug: string, allowed?: Set<string>): Promise
       if (error instanceof RevisionConflictError) break;
       throw error;
     }
-    mkdirSync(asg.exec!.cwd, { recursive: true });
     let ok = false;
     let output = '';
     try {
+      // Working-directory preparation is part of the one-shot command
+      // execution. The attempt is already durably claimed above, so a mkdir
+      // failure must settle exactly like a spawn/exit failure; letting it
+      // escape would strand the action as running and invite crash recovery
+      // to treat a known pre-execution failure as an unknown external result.
+      mkdirSync(asg.exec!.cwd, { recursive: true });
       output = execSync(asg.exec!.run!, {
         cwd: asg.exec!.cwd,
         shell: actionShell(),
