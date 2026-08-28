@@ -23,7 +23,7 @@ import {
 import { runCoordinatorPass } from './coordinator.js';
 import { rejectSend } from './humanActs.js';
 import { providerSend, readLedger } from './world.js';
-import { arrive, createWorkstream, load, newId, writeArtifact } from './store.js';
+import { arrive, createWorkstream, load, newId, readArtifact, writeArtifact } from './store.js';
 import { runWorker } from './worker.js';
 import { setExecutorSecret } from './secrets.js';
 import { virtualNow } from './clock.js';
@@ -841,6 +841,41 @@ test('a human-authored exec.run action is executed by the ENGINE (no worker) and
   assert.equal(asg.attempts[0]!.terminalReason, 'executed');
   assert.equal(asg.exec!.verified!.ok, true);
   assert.ok(doc.deliverables.some((d) => d.kind === 'execution_record'));
+});
+
+test('an engine action with an uncreatable cwd settles once and never escapes or reruns', async () => {
+  const blocker = path.join(process.env.WEAVER_HOME!, 'cwd-blocker');
+  const cwd = path.join(blocker, 'cannot-be-a-directory');
+  const marker = path.join(process.env.WEAVER_HOME!, 'command-ran');
+  fs.writeFileSync(blocker, 'regular file');
+  await makeActionWorkstream('engine-cwd-fail-ws', {
+    state: 'queued',
+    exec: {
+      cwd,
+      run: `node -e 'require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")'`,
+      verify: 'false',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+
+  const first = await tick('engine-cwd-fail-ws', { maxPasses: 0 });
+  const second = await tick('engine-cwd-fail-ws', { maxPasses: 0 });
+  assert.deepEqual(first.workersRun, []);
+  assert.deepEqual(second.workersRun, []);
+
+  const doc = await load('engine-cwd-fail-ws');
+  const action = doc.assignments[0]!;
+  assert.equal(action.state, 'awaiting_review');
+  assert.equal(action.attempts.length, 1, 'a claimed action is one-shot even when cwd preparation fails');
+  assert.equal(action.attempts[0]!.terminalReason, 'command_failed');
+  assert.ok(action.attempts[0]!.endedAt);
+  assert.equal(action.exec!.verified!.ok, false, 'ordinary declared readback still runs');
+  assert.equal(fs.existsSync(marker), false, 'the command was never spawned');
+  assert.equal(doc.deliverables.filter((d) => d.kind === 'execution_record').length, 1);
+  assert.match(
+    await readArtifact('engine-cwd-fail-ws', doc.deliverables.find((d) => d.kind === 'execution_record')!.path),
+    /ENOTDIR|not a directory/i,
+  );
 });
 
 test('a repo engine action gets write scope only for execution and read scope for checks', async () => {
