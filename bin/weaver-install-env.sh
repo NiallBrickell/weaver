@@ -12,6 +12,8 @@ env_file="${WEAVER_INSTALL_ENV_FILE:-/etc/weaver/env}"
 owner="${WEAVER_INSTALL_ENV_OWNER:-weaver:weaver}"
 executor_secrets_file="${WEAVER_INSTALL_EXECUTOR_SECRETS_FILE:-/home/weaver/state/executor-secrets.env}"
 executor_secrets_owner="${WEAVER_INSTALL_EXECUTOR_SECRETS_OWNER:-weaver:weaver}"
+worker_secrets_file="${WEAVER_INSTALL_WORKER_SECRETS_FILE:-/home/weaver/state/secrets.env}"
+worker_secrets_owner="${WEAVER_INSTALL_WORKER_SECRETS_OWNER:-weaver:weaver}"
 env_dir="$(dirname "$env_file")"
 mkdir -p "$env_dir"
 touch "$env_file"
@@ -112,7 +114,48 @@ case "$mode" in
     executor_candidate=""
     exit 0
     ;;
-  *) echo 'usage: weaver-install-env [merge|store|executor-secrets]' >&2; exit 1 ;;
+  worker-secrets)
+    # The caller selected an exact least-privilege set from the local global
+    # store. Replacing instead of merging makes omission a deterministic
+    # revocation and keeps this scope independent from executor identities.
+    [ -s "$incoming" ] || {
+      echo 'remote worker secret render is empty' >&2; exit 1;
+    }
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in *=*) ;; *) echo 'remote worker secret render contained a malformed line' >&2; exit 1 ;; esac
+      key="${line%%=*}"
+      value="${line#*=}"
+      [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || {
+        echo 'remote worker secret render contained a malformed key' >&2; exit 1;
+      }
+      [ -n "$value" ] || {
+        echo "remote worker secret render contained an empty value for $key" >&2; exit 1;
+      }
+      case "$value" in *$'\r'*)
+        echo "remote worker secret render contained a malformed value for $key" >&2; exit 1 ;;
+      esac
+    done < "$incoming"
+    awk '
+      {
+        key = $0; sub(/=.*/, "", key)
+        if (seen[key]++) exit 1
+      }
+    ' "$incoming" || {
+      echo 'remote worker secret render contained a duplicate key' >&2; exit 1;
+    }
+    worker_secrets_dir="$(dirname "$worker_secrets_file")"
+    mkdir -p "$worker_secrets_dir"
+    worker_candidate="$(mktemp "$worker_secrets_dir/.worker-secrets-candidate.XXXXXX")"
+    trap 'rm -f "$incoming" "$candidate" "${worker_candidate:-}"' EXIT
+    chmod 600 "$worker_candidate"
+    cat "$incoming" > "$worker_candidate"
+    if [ "$worker_secrets_owner" != ':' ]; then chown "$worker_secrets_owner" "$worker_candidate"; fi
+    chmod 600 "$worker_candidate"
+    mv "$worker_candidate" "$worker_secrets_file"
+    worker_candidate=""
+    exit 0
+    ;;
+  *) echo 'usage: weaver-install-env [merge|store|executor-secrets|worker-secrets]' >&2; exit 1 ;;
 esac
 
 if [ "$owner" != ':' ]; then chown "$owner" "$candidate"; fi

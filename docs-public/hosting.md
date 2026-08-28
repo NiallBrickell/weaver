@@ -155,6 +155,10 @@ WEAVER_WORKSPACE_ROOT=/home/weaver/workspaces \
 WEAVER_PILOT_URL=http://127.0.0.1:9721 \
   bin/weaver-gcp.sh push-env               # install hosted profile + executor identities
 
+# Install only these organization-owned global worker credentials. This exact
+# selection replaces the previous hosted worker set; omitted names are revoked.
+bin/weaver-gcp.sh push-worker-secrets SENTRY_AUTH_TOKEN READONLY_DB_URL
+
 bin/weaver-gcp.sh update                   # pull/install only; still no restart
 bin/weaver-gcp.sh start                    # starts weaver-run: the explicit cutover
 bin/weaver-gcp.sh status                   # services + runner heartbeat
@@ -250,6 +254,18 @@ Personal CLI and device-login state is never copied to the host. In particular,
 `push-env` does not deliver `~/.codex/auth.json`, `gh` authentication, or
 `gcloud` authentication. A hosted executor must instead use a deliberately
 registered, organization-owned credential supported by that executor.
+
+Global worker credentials use a third, deliberately separate delivery path:
+`push-worker-secrets NAME...` reads exactly those names from the operator
+laptop's global Weaver secret store and atomically replaces
+`/home/weaver/state/secrets.env` with that selected set. Unknown, malformed,
+duplicate, or empty records fail before replacement. Values travel only on SSH
+stdin, never in gcloud arguments, VM metadata, or command output; the installed
+file is owned by `weaver` and mode `0600`. The command never copies a
+per-workstream overlay, executor identity, personal CLI/device login, or an
+ambient environment variable. Omission is revocation, so every invocation must
+name the complete hosted worker set. Workers reload the store for each attempt,
+therefore this command never restarts the resident services.
 
 ## Deploying with Docker Compose (any host)
 
