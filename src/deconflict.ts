@@ -193,9 +193,20 @@ export async function repoEgressCollisions(
 }
 
 /**
- * Recognise a repo egress from a declared command — either the WRITE itself
- * (`gh pr create`/`gh pr merge`, `git … push`) OR the READBACK that proves one
- * happened.
+ * Recognise a repo WRITE from the literal command the engine will execute.
+ * Read-only `gh pr view/list/api` probes are deliberately absent: when
+ * `exec.run` exists, Weaver knows the command and does not need to infer its
+ * consequence from a readback.
+ */
+function matchesRepoEgressWrite(cmd: string): boolean {
+  if (!cmd) return false;
+  if (/\bgh\s+pr\s+(create|merge)\b/.test(cmd)) return true;
+  // `git … push` — the branch/-C/config flags sit between `git` and `push`.
+  return /\bgit\b[^&|;\n]*\bpush\b/.test(cmd);
+}
+
+/**
+ * Recognise either a repo WRITE or the READBACK that proves one happened.
  *
  * The incident's real actions were WORKER-actions: `exec.run` is undefined and
  * the model runs `gh pr create`/`git push` internally, so the only durable
@@ -209,17 +220,17 @@ export async function repoEgressCollisions(
  * remote ref BACK after creating/pushing it, so a PR-inspecting or remote-ref
  * readback is a reliable proxy for the egress.
  *
- * FALSE-POSITIVE SAFETY: over-matching here cannot wrongly block work, because
- * `guardRepoEgress` only ever HOLDS when `git diff --name-only <base>...HEAD`
- * is non-empty (see repoEgressCollisions). A read-only action with no commits
- * ahead yields zero changed files and proceeds regardless of its verify string.
+ * This broader proxy is only sound when `exec.run` is absent. Applying it to a
+ * deterministic engine action would make an unrelated read-only PR probe ask
+ * for GitHub App egress credentials before execution; an intentionally neutral
+ * cwd can then fail authentication before the action reaches its own durable
+ * execution boundary.
  */
-function matchesRepoEgress(cmd: string): boolean {
+function matchesRepoEgressOrReadback(cmd: string): boolean {
   if (!cmd) return false;
-  // The write commands themselves, plus the two gh-based PR readbacks.
-  if (/\bgh\s+pr\s+(create|merge|list|view)\b/.test(cmd)) return true;
-  // `git … push` — the branch/-C flags sit between `git` and `push`.
-  if (/\bgit\b[^&|;\n]*\bpush\b/.test(cmd)) return true;
+  if (matchesRepoEgressWrite(cmd)) return true;
+  // The two gh-based PR readbacks used by model-driven action assignments.
+  if (/\bgh\s+pr\s+(list|view)\b/.test(cmd)) return true;
   // Remote-ref readbacks: you inspect a head-oid or ls-remote only after
   // pushing, and a `merge-base --is-ancestor … origin/…` verifies a pushed
   // branch landed on the remote.
@@ -230,15 +241,18 @@ function matchesRepoEgress(cmd: string): boolean {
 }
 
 /**
- * True when an action assignment's declared command is a repo egress — an
- * `exec.run` the engine executes, or an `exec.verify` readback — matching the
- * irreversible push/merge/PR-open surface (write OR its readback; see
- * matchesRepoEgress). Only `kind: 'action'` assignments carry `exec`; a plain
- * `work` assignment never reaches this gate.
+ * True when an action assignment represents repo egress. A deterministic
+ * engine action declares `exec.run`, so that literal command is authoritative
+ * and must contain a real write. A model-driven action has no `exec.run`; for
+ * that shape only, its durable `exec.verify` readback remains the proxy for the
+ * write performed inside the disposable model run. Only `kind: 'action'`
+ * assignments carry `exec`; a plain `work` assignment never reaches this gate.
  */
 export function isRepoEgressAction(asg: Assignment): boolean {
   if (asg.kind !== 'action' || !asg.exec) return false;
-  return matchesRepoEgress(asg.exec.run ?? '') || matchesRepoEgress(asg.exec.verify ?? '');
+  return asg.exec.run !== undefined
+    ? matchesRepoEgressWrite(asg.exec.run)
+    : matchesRepoEgressOrReadback(asg.exec.verify ?? '');
 }
 
 /**
