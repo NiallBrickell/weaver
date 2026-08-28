@@ -44,6 +44,11 @@ from the global/workstream store, strips every unselected applicable secret
 name from the child environment (including an accidental ambient export), and
 injects the selected value for that attempt only. Executor/model identity
 credentials are a separate store and cannot be selected through this field.
+For OpenHands, the selected subset crosses the container boundary through a
+per-run mode-`0600` Docker env file. Only its path appears in the `docker run`
+arguments; Weaver deletes the file and its private temporary directory as soon
+as Docker has consumed it, including when container creation fails or aborts.
+The host/SDK environment is never forwarded wholesale into the container.
 
 Unknown, malformed, duplicate, empty, or revoked selections fail closed. A
 launch-time failure records no Attempt and starts no model process; the

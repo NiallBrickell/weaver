@@ -200,6 +200,7 @@ test('ordinary work receives only its declared credentials and scrubs every capt
       request = req;
       assert.equal(req.env.READONLY_API_TOKEN, selectedValue);
       assert.equal(req.env.UNRELATED_API_TOKEN, undefined);
+      assert.deepEqual(req.workerVisibleEnv, { READONLY_API_TOKEN: selectedValue });
       const reply = await req.submit.submitResult({
         summary: `Selected ${selectedValue}; unrelated ${unselectedValue}.`,
         artifact: {

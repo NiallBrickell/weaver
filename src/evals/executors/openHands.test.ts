@@ -25,6 +25,11 @@ describe('OpenHands eval executor', () => {
   it('runs one fresh pinned Agent Server conversation and always tears it down', async () => {
     const commands: Array<{ command: string; args: string[] }> = [];
     const seenFetch: SeenFetch[] = [];
+    const selectedValue = 'selected-container-secret-4821';
+    const unrelatedHostValue = 'ambient-host-secret-7392';
+    let workerEnvFilePath = '';
+    let workerEnvFileContent = '';
+    let workerEnvFileMode = 0;
     let bridgeClosed = 0;
     let providerProxyClosed = 0;
     let operatorRelayClosed = 0;
@@ -40,6 +45,11 @@ describe('OpenHands eval executor', () => {
       }
       if (args[0] === 'port') {
         return { exitCode: 0, stdout: '127.0.0.1:49152\n', stderr: '' };
+      }
+      if (args[0] === 'run') {
+        workerEnvFilePath = valueAfter(args, '--env-file');
+        workerEnvFileContent = fs.readFileSync(workerEnvFilePath, 'utf8');
+        workerEnvFileMode = fs.statSync(workerEnvFilePath).mode & 0o777;
       }
       return { exitCode: 0, stdout: 'container-id\n', stderr: '' };
     };
@@ -129,6 +139,13 @@ describe('OpenHands eval executor', () => {
 
     const req = request();
     req.env.TRACKER_TOKEN = 'host-only-tracker-secret';
+    req.env.READONLY_API_TOKEN = selectedValue;
+    req.env.UNRELATED_AMBIENT_TOKEN = unrelatedHostValue;
+    req.workerVisibleEnv = { READONLY_API_TOKEN: selectedValue };
+    req.redactionSecrets = {
+      READONLY_API_TOKEN: selectedValue,
+      UNRELATED_AMBIENT_TOKEN: unrelatedHostValue,
+    };
     req.operatorMcpServers = {
       tracker: {
         type: 'http', url: 'https://tracker.example.invalid/mcp',
@@ -159,7 +176,16 @@ describe('OpenHands eval executor', () => {
     assert.ok(valuesAfter(dockerRun.args, '--env').includes('OH_CONVERSATIONS_PATH=/tmp/weaver-conversations'));
     assert.ok(valuesAfter(dockerRun.args, '--env').includes('OH_BASH_EVENTS_DIR=/tmp/weaver-bash-events'));
     assert.ok(valuesAfter(dockerRun.args, '--env').includes('OH_WORKSPACE_PATH=/tmp/weaver-agent-server-workspace'));
+    assert.equal(valueAfter(dockerRun.args, '--env-file'), workerEnvFilePath);
+    assert.equal(workerEnvFileMode, 0o600);
+    assert.equal(workerEnvFileContent, `READONLY_API_TOKEN=${selectedValue}\n`);
+    assert.equal(fs.existsSync(workerEnvFilePath), false);
+    assert.equal(fs.existsSync(path.dirname(workerEnvFilePath)), false);
     assert.equal(dockerRun.args.filter((arg) => arg.includes('provider-secret')).length, 0);
+    assert.ok(!JSON.stringify(commands).includes(selectedValue));
+    assert.ok(!JSON.stringify(commands).includes(unrelatedHostValue));
+    assert.ok(!workerEnvFileContent.includes(unrelatedHostValue));
+    assert.ok(!JSON.stringify({ outcome, telemetry: executor.lastTelemetry() }).includes(selectedValue));
 
     const dockerStop = commands.find(({ args }) => args[0] === 'stop');
     assert.ok(dockerStop);
@@ -223,7 +249,7 @@ describe('OpenHands eval executor', () => {
       modelRequested: 'anthropic/claude-sonnet-4-5-20250929',
       providerResolved: 'anthropic',
       modelResolved: 'anthropic/claude-sonnet-4-5-20250929',
-      harnessVersion: 'openhands-agent-server-1.41.0-weaver.4',
+      harnessVersion: 'openhands-agent-server-1.41.0-weaver.5',
       isolation: 'agent-server',
       startedAt: '1970-01-01T00:00:01.000Z',
       endedAt: '1970-01-01T00:00:01.004Z',
@@ -292,6 +318,36 @@ describe('OpenHands eval executor', () => {
     assert.equal(processStarts, 0);
     assert.match(outcome.error ?? '', /does not support action-worker supervision/);
     assert.equal(executor.lastTelemetry()?.terminalReason, 'unsupported');
+  });
+
+  it('rejects malformed worker-visible environment before any side effect', async () => {
+    let sideEffects = 0;
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
+      startSubmitBridge: async () => {
+        sideEffects += 1;
+        throw new Error('must not start');
+      },
+      runCommand: async () => {
+        sideEffects += 1;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+      now: () => 1_000,
+    });
+
+    for (const [env, expected] of [
+      [{ 'NOT-AN-ENV-NAME': 'value' }, /invalid name/],
+      [{ VALID_NAME: 'first\nsecond' }, /VALID_NAME contains a newline or NUL byte/],
+      [{ VALID_NAME: 'first\0second' }, /VALID_NAME contains a newline or NUL byte/],
+    ] as const) {
+      const req = request();
+      req.workerVisibleEnv = env;
+      const outcome = await executor.execute(req);
+      assert.match(outcome.error ?? '', expected);
+    }
+
+    assert.equal(sideEffects, 0);
   });
 
   it("reserves the 'weaver' MCP name for submission before any relay or process starts", async () => {
@@ -407,6 +463,7 @@ describe('OpenHands eval executor', () => {
   });
 
   it('scrubs durable and per-run credentials from every submission field and relay reply', async () => {
+    const selectedWorkerSecret = 'selected-worker-secret';
     let relayed: SubmitSurface | null = null;
     let submitted = '';
     let replySeenByAgent = '';
@@ -429,6 +486,7 @@ describe('OpenHands eval executor', () => {
             'provider-proxy-token',
             'bridge-secret',
             'operator-relay-token',
+            selectedWorkerSecret,
             session,
           ].join(' / ');
           replySeenByAgent = (await relayed.submitResult({
@@ -477,6 +535,9 @@ describe('OpenHands eval executor', () => {
       now: increasingClock(),
     });
     const req = request();
+    // The adapter must derive redaction from the values it exposes rather
+    // than relying on callers to duplicate them in redactionSecrets.
+    req.workerVisibleEnv = { READONLY_API_TOKEN: selectedWorkerSecret };
     req.operatorMcpServers = {
       tracker: { type: 'http', url: 'https://tracker.example.invalid/mcp' },
     };
@@ -490,6 +551,7 @@ describe('OpenHands eval executor', () => {
     assert.equal(outcome.error, undefined);
     for (const secret of [
       'provider-secret', 'provider-proxy-token', 'bridge-secret', 'operator-relay-token',
+      selectedWorkerSecret,
     ]) {
       assert.ok(!submitted.includes(secret));
       assert.ok(!replySeenByAgent.includes(secret));
@@ -696,6 +758,10 @@ describe('OpenHands eval executor', () => {
 
   it('best-effort stops the unique container name when docker run itself fails', async () => {
     const commands: string[][] = [];
+    const selectedValue = 'selected-docker-failure-secret-9182';
+    let workerEnvFilePath = '';
+    let workerEnvFileMode = 0;
+    let workerEnvFileContent = '';
     let bridgeClosed = 0;
     const executor = new OpenHandsEvalExecutor({
       apiKey: 'provider-secret',
@@ -703,7 +769,14 @@ describe('OpenHands eval executor', () => {
       runCommand: async (_command, args) => {
         commands.push([...args]);
         if (args[0] === 'run') {
-          return { exitCode: 125, stdout: '', stderr: 'daemon lost reply after create' };
+          workerEnvFilePath = valueAfter(args, '--env-file');
+          workerEnvFileMode = fs.statSync(workerEnvFilePath).mode & 0o777;
+          workerEnvFileContent = fs.readFileSync(workerEnvFilePath, 'utf8');
+          return {
+            exitCode: 125,
+            stdout: '',
+            stderr: `daemon lost reply after create: ${selectedValue}`,
+          };
         }
         return { exitCode: 0, stdout: '', stderr: '' };
       },
@@ -718,14 +791,24 @@ describe('OpenHands eval executor', () => {
       now: () => 1_000,
     });
 
-    const outcome = await executor.execute(request());
+    const req = request();
+    req.workerVisibleEnv = { READONLY_API_TOKEN: selectedValue };
+    req.redactionSecrets = { READONLY_API_TOKEN: selectedValue };
+    const outcome = await executor.execute(req);
 
-    assert.match(outcome.error ?? '', /docker run failed: daemon lost reply after create/);
+    assert.match(outcome.error ?? '', /docker run failed: daemon lost reply after create: «secret:READONLY_API_TOKEN»/);
+    assert.ok(!JSON.stringify(outcome).includes(selectedValue));
+    assert.ok(!JSON.stringify(executor.lastTelemetry()).includes(selectedValue));
     const run = commands.find((args) => args[0] === 'run');
     const stop = commands.find((args) => args[0] === 'stop');
     assert.ok(run);
     assert.ok(stop);
     assert.equal(stop.at(-1), valueAfter(run, '--name'));
+    assert.equal(workerEnvFileMode, 0o600);
+    assert.equal(workerEnvFileContent, `READONLY_API_TOKEN=${selectedValue}\n`);
+    assert.ok(!JSON.stringify(commands).includes(selectedValue));
+    assert.equal(fs.existsSync(workerEnvFilePath), false);
+    assert.equal(fs.existsSync(path.dirname(workerEnvFilePath)), false);
     assert.equal(bridgeClosed, 1);
   });
 
