@@ -17,7 +17,7 @@ import {
   selectExecutor,
   workerExceptionReason,
 } from './worker.js';
-import { setExecutorSecret } from './secrets.js';
+import { removeSecret, setExecutorSecret, setSecret } from './secrets.js';
 import { arrive, createWorkstream, load, readArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { InfrastructureWait } from './types.js';
@@ -176,6 +176,128 @@ test('a work assignment runs as a regular full-capability Code worker with ungat
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(readDir, { recursive: true, force: true });
+  }
+});
+
+test('ordinary work receives only its declared credentials and scrubs every captured value', async () => {
+  const home = workerHome();
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-scoped-credential-work-'));
+  const selectedValue = 'selected-worker-value-4821';
+  const unselectedValue = 'unselected-worker-value-7392';
+  const previousSelected = process.env.READONLY_API_TOKEN;
+  const previousUnselected = process.env.UNRELATED_API_TOKEN;
+  process.env.READONLY_API_TOKEN = 'ambient-selected-must-not-win';
+  process.env.UNRELATED_API_TOKEN = 'ambient-unselected-must-not-cross';
+  let request: WorkerExecutionRequest | undefined;
+  let stderr = '';
+  const originalWrite = process.stderr.write;
+  process.stderr.write = ((chunk: unknown) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      request = req;
+      assert.equal(req.env.READONLY_API_TOKEN, selectedValue);
+      assert.equal(req.env.UNRELATED_API_TOKEN, undefined);
+      const reply = await req.submit.submitResult({
+        summary: `Selected ${selectedValue}; unrelated ${unselectedValue}.`,
+        artifact: {
+          title: `Credential evidence ${selectedValue}`,
+          kind: 'report',
+          file_name: 'credential-evidence.md',
+          content: `# Evidence\n\nSelected ${selectedValue}; unrelated ${unselectedValue}.`,
+        },
+      });
+      assert.equal(reply.isError, undefined);
+      return { costUsd: 0, error: `provider rejected ${selectedValue}` };
+    },
+  };
+
+  try {
+    await createWorkstream({
+      slug: 'worker-scoped-credential', title: 'Scoped credential work',
+      objective: 'prove exact ordinary-work credential injection', tags: [],
+      successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    setSecret('READONLY_API_TOKEN', selectedValue, 'worker-scoped-credential');
+    setSecret('UNRELATED_API_TOKEN', unselectedValue, 'worker-scoped-credential');
+    await arrive('worker-scoped-credential', (doc) => doc.assignments.push({
+      id: 'asg_scoped', objective: 'read one protected source',
+      briefing: 'Use READONLY_API_TOKEN for the named reversible read.',
+      kind: 'work', credentialNames: ['READONLY_API_TOKEN'], readDirs: [workspace],
+      acceptanceCriteria: ['submit source-grounded evidence'], dependsOn: [],
+      state: 'queued', attempts: [], adoption: { state: 'none' },
+      createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    assert.equal(await runWorker('worker-scoped-credential', 'asg_scoped', executor), true);
+
+    assert.ok(request);
+    assert.match(request.prompt, /## Credentials/);
+    assert.match(request.prompt, /READONLY_API_TOKEN/);
+    assert.doesNotMatch(request.prompt, /UNRELATED_API_TOKEN|selected-worker-value|unselected-worker-value/);
+    assert.match(request.systemPrompt.append, /supplied NAME\/access failed/);
+    assert.doesNotMatch(stderr, /selected-worker-value-4821/);
+    assert.match(stderr, /«secret:READONLY_API_TOKEN»/);
+    const doc = await load('worker-scoped-credential');
+    assert.deepEqual(doc.assignments[0]!.credentialNames, ['READONLY_API_TOKEN']);
+    assert.doesNotMatch(JSON.stringify(doc), /selected-worker-value|unselected-worker-value|ambient-unselected/);
+    const artifact = await readArtifact('worker-scoped-credential', doc.deliverables[0]!.path);
+    assert.doesNotMatch(artifact, /selected-worker-value|unselected-worker-value/);
+    assert.match(artifact, /«secret:READONLY_API_TOKEN»/);
+    assert.match(artifact, /«secret:UNRELATED_API_TOKEN»/);
+  } finally {
+    process.stderr.write = originalWrite;
+    if (previousSelected === undefined) delete process.env.READONLY_API_TOKEN;
+    else process.env.READONLY_API_TOKEN = previousSelected;
+    if (previousUnselected === undefined) delete process.env.UNRELATED_API_TOKEN;
+    else process.env.UNRELATED_API_TOKEN = previousUnselected;
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('a missing declared work credential fails before launch and cannot hot-loop', async () => {
+  const home = workerHome();
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-missing-credential-work-'));
+  let launches = 0;
+  const executor: WorkerExecutor = {
+    async execute() {
+      launches += 1;
+      return { costUsd: 0 };
+    },
+  };
+  try {
+    await createWorkstream({
+      slug: 'worker-missing-credential', title: 'Missing credential work',
+      objective: 'fail closed before launch', tags: [], successCriteria: [],
+      constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    setSecret('READONLY_API_TOKEN', 'revoked-before-launch-9246', 'worker-missing-credential');
+    await arrive('worker-missing-credential', (doc) => doc.assignments.push({
+      id: 'asg_missing_credential', objective: 'read one protected source', briefing: 'Use the declared token.',
+      kind: 'work', credentialNames: ['READONLY_API_TOKEN'], readDirs: [workspace],
+      acceptanceCriteria: ['cite current evidence'], dependsOn: [], state: 'queued',
+      attempts: [], adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    }));
+    assert.equal(removeSecret('READONLY_API_TOKEN', 'worker-missing-credential'), true);
+
+    assert.equal(await runWorker('worker-missing-credential', 'asg_missing_credential', executor), false);
+    assert.equal(launches, 0);
+    const doc = await load('worker-missing-credential');
+    assert.equal(doc.assignments[0]!.state, 'failed');
+    assert.equal(doc.assignments[0]!.attempts.length, 0);
+    assert.equal(doc.attention.length, 1);
+    assert.equal(doc.attention[0]!.kind, 'blocker');
+    assert.equal(doc.attention[0]!.refId, 'asg_missing_credential');
+    assert.match(doc.attention[0]!.summary, /READONLY_API_TOKEN.*no model process or Attempt was started/i);
+    assert.doesNotMatch(JSON.stringify(doc), /revoked-before-launch-9246/);
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
 

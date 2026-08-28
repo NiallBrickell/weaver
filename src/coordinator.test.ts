@@ -14,6 +14,7 @@ import {
   runCoordinatorPass,
 } from './coordinator.js';
 import { arrive, createWorkstream, load, writeArtifact } from './store.js';
+import { setSecret } from './secrets.js';
 import { isCoordinatorCancellableWake, virtualNow, type CancellableWakePage } from './clock.js';
 import type { CapacityCategory, InfrastructureWait } from './types.js';
 import type { CoordinatorExecutor } from './executor/coordinator.js';
@@ -630,6 +631,59 @@ test('create_assignment persists typed requirements without choosing a model', a
     complexity: 'standard',
   });
   assert.equal(assignment.attempts.length, 0, 'durable requirements do not preselect a disposable target');
+});
+
+test('create_assignment stores only explicitly available work credential names', async () => {
+  setSecret('READONLY_API_TOKEN', 'coordinator-selected-secret-value', 'coordinator-capacity');
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const create = req.tools.find((definition) => definition.name === 'create_assignment');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(create && finish);
+      const created = await create.handler({
+        objective: 'inspect one read-only provider endpoint',
+        briefing: 'Use the supplied credential by name and report current evidence.',
+        kind: 'work',
+        credential_names: ['READONLY_API_TOKEN'],
+        acceptance_criteria: ['current provider evidence is cited'],
+      }, {});
+      assert.equal(created.isError, undefined);
+
+      const unknown = await create.handler({
+        objective: 'must not persist unknown access',
+        briefing: 'This assignment is invalid.',
+        kind: 'work',
+        credential_names: ['UNKNOWN_API_TOKEN'],
+        acceptance_criteria: ['never launched'],
+      }, {});
+      assert.equal(unknown.isError, true);
+      assert.match(JSON.stringify(unknown), /UNKNOWN_API_TOKEN.*not available/);
+
+      const action = await create.handler({
+        objective: 'must not widen an action secret scope',
+        briefing: 'This action declaration is invalid.',
+        kind: 'action',
+        credential_names: ['READONLY_API_TOKEN'],
+        acceptance_criteria: ['never launched'],
+        exec_cwd: home,
+        exec_verify: 'true',
+        approval_ask: 'Approve nothing; this invalid declaration must be refused.',
+      }, {});
+      assert.equal(action.isError, true);
+      assert.match(JSON.stringify(action), /credential_names is only valid on kind.*work/);
+
+      await finish.handler({ summary: 'Dispatched only the valid credential-scoped work.', acknowledged_steering: true }, {});
+      return { costUsd: 0, sessionId: 'scoped-credentials' };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const doc = await load('coordinator-capacity');
+  assert.equal(doc.assignments.length, 1);
+  assert.deepEqual(doc.assignments[0]!.credentialNames, ['READONLY_API_TOKEN']);
+  assert.doesNotMatch(JSON.stringify(doc), /coordinator-selected-secret-value/);
 });
 
 test('create_assignment persists declared high complexity without choosing a model', async () => {

@@ -33,7 +33,7 @@ test('Codex worker keeps the turn.failed provider diagnosis when the stream exit
               yield {
                 type: 'turn.failed',
                 error: {
-                  message: "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 21st, 2026 1:27 AM.",
+                  message: "You've hit your usage limit for credential selected-token-secret. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 21st, 2026 1:27 AM.",
                 },
               };
               throw new Error('Codex Exec exited with code 1: Reading prompt from stdin...');
@@ -59,6 +59,7 @@ test('Codex worker keeps the turn.failed provider diagnosis when the stream exit
     cwd: '/fixture/worktree',
     additionalDirectories: [],
     env: { PATH: '/usr/bin' },
+    redactionSecrets: { READONLY_API_TOKEN: 'selected-token-secret' },
     operatorMcpServers: {},
     submit: {
       async appendSection() { return { text: 'appended' }; },
@@ -71,6 +72,9 @@ test('Codex worker keeps the turn.failed provider diagnosis when the stream exit
 
   assert.match(outcome.error ?? '', /You've hit your usage limit/);
   assert.match(outcome.error ?? '', /stream exit: Codex Exec exited with code 1/);
+  assert.doesNotMatch(outcome.error ?? '', /selected-token-secret/);
+  assert.match(outcome.error ?? '', /«secret:READONLY_API_TOKEN»/);
+  assert.doesNotMatch(JSON.stringify(executor.lastTelemetry()), /selected-token-secret/);
 });
 
 test('Codex ordinary workers use the exact host-process thread boundary without dropping workspace paths', async () => {

@@ -17,7 +17,7 @@ import {
   type ThreadOptions,
 } from '@openai/codex-sdk';
 import { performance } from 'node:perf_hooks';
-import { stripClaudeCredentials } from '../secrets.js';
+import { redactSecrets, stripClaudeCredentials } from '../secrets.js';
 import { startSubmitBridge, type SubmitBridge } from './submitBridge.js';
 import type {
   ExecutorTelemetry,
@@ -253,6 +253,7 @@ export class CodexExecutor implements WorkerExecutor {
     }
 
     const endedMs = this.monotonicNow();
+    if (error) error = redactSecrets(error, req.redactionSecrets ?? {});
     this.telemetry = this.makeTelemetry({
       req,
       startedAt,

@@ -23,7 +23,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Does each outcome need you less often?](./stats.md) — recorded human interventions beside quality and authority signals
 - [Routines](./routines.md) — standing loops that wake with their decision log, constraints, and learned policies intact
 - [Pausing work](./pausing.md) — stop one workstream or the active fleet without losing its durable position
-- [Secrets & access](./secrets-and-access.md) — models see names, shells get values, approved actions inherit your MCP servers and CLIs
+- [Secrets & access](./secrets-and-access.md) — models see names, ordinary work receives only its declared credentials, and values never persist
 - [GitHub access on a hosted runner](./github-app.md) — a dedicated App mints short-lived, repo-scoped credentials without putting a person's login on the VM
 - [Configuration](./configuration.md) — machine-local settings (models, store, actions) in a `.env` file that only ever fills gaps
 - [Claude capacity & billing](./claude-capacity.md) — keeping durable work moving through Claude usage limits without changing billing or identity

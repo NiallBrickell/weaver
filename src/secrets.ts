@@ -123,6 +123,32 @@ export function secretNames(slug?: string): string[] {
 }
 
 /**
+ * Resolve an explicitly named subset from an already-bounded credential
+ * store. Callers pass `loadSecrets(slug)`, never the executor-only store.
+ * Validation is repeated at worker launch because names are durable while
+ * secret values are intentionally machine-local and independently mutable.
+ */
+export function selectNamedSecrets(
+  available: Record<string, string>,
+  names: string[],
+): Record<string, string> {
+  const selected: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (!NAME_RE.test(name)) {
+      throw new Error(`invalid credential name '${name}' — use UPPER_SNAKE_CASE`);
+    }
+    if (seen.has(name)) throw new Error(`duplicate credential name '${name}'`);
+    seen.add(name);
+    const value = available[name];
+    if (value === undefined) throw new Error(`credential '${name}' is not available to this workstream`);
+    if (value.length === 0) throw new Error(`credential '${name}' has an empty value`);
+    selected[name] = value;
+  }
+  return selected;
+}
+
+/**
  * Render an explicit subset of the global store for secure machine-to-machine
  * delivery. This is deliberately global-only: workstream overlays remain
  * scoped to their durable workstream, while a hosted fleet gets one explicit
@@ -223,8 +249,17 @@ export function stripClaudeCredentials(env: Record<string, string | undefined>):
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
 }
 
-export function sdkEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = { ...process.env, ...extra };
+export function sdkEnv(
+  extra: Record<string, string> = {},
+  stripAmbientNames: Iterable<string> = [],
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  // A service manager may happen to expose a worker credential in the
+  // controller's ambient environment. Ordinary work still receives only its
+  // declared subset: remove every applicable worker-secret name first, then
+  // add the exact selected values supplied by the caller.
+  for (const name of stripAmbientNames) delete env[name];
+  Object.assign(env, extra);
   stripClaudeCredentials(env);
   const registered = loadExecutorSecrets();
   if (registered.CLAUDE_CODE_OAUTH_TOKEN) {

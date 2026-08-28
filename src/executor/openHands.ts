@@ -492,6 +492,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
           providerProxy?.token,
           operatorRelays.map(({ relay }) => relay.token),
         );
+        error = redactSecrets(error, req.redactionSecrets ?? {});
       }
 
       const endedAtMs = this.now();

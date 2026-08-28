@@ -259,7 +259,10 @@ function scopedEnvironment(
   for (const name of ALL_PROVIDER_CREDENTIALS) {
     delete env[name];
   }
-  const redactionSecrets: Record<string, string> = { ...executorSecrets };
+  const redactionSecrets: Record<string, string> = {
+    ...executorSecrets,
+    ...(req.redactionSecrets ?? {}),
+  };
   for (const [name, value] of Object.entries(env)) {
     if (!name.startsWith('WEAVER_INTERNAL_MCP_')) continue;
     redactionSecrets[name] = value;

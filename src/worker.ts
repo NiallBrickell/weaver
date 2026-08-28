@@ -35,7 +35,7 @@ import {
   type CapacityTarget,
 } from './modelConfig.js';
 import { deterministicActionsOnly, runnerExecutorCapabilities, workerSeatModelForAssignment } from './modelRouting.js';
-import { loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv } from './secrets.js';
+import { loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv, selectNamedSecrets } from './secrets.js';
 import {
   arrive,
   listWorkstreams,
@@ -215,7 +215,7 @@ Rules:
 5. If something refuses you — a denied tool, a missing permission, an input the brief assumed exists — do not engineer a longer route around it. Say exactly what refused you and what the brief needs it for. A workaround that quietly preserves a wrong constraint is worse than an honest blockage: the coordinator can change the constraint or dispatch an approved action, but only if it learns the refusal happened.
 6. On an incident, alert, or user-visible failure, separate trigger, failed recovery, and escape. If the evidence says retries, fallbacks, or an aggregate such as "all models failed", enumerate every configured attempt and verify each against runtime evidence; missing telemetry is a finding, not a successful investigation. If the briefing or acceptance criteria cover containment only, perform that bounded work but state plainly that it does not fix the upstream failure and name the unverified layers in your submission.`;
 
-const WORKER_SYSTEM = `You are one regular coding-agent worker executing ONE bounded assignment inside a larger workstream you cannot see. You have normal coding tools — including Bash, file editing, web access, and the runtime's configured MCP servers — and may use them as needed to complete the assignment. The directories in the brief are working context, not a reduced read-only tool mode. Follow their repository instructions and use a fresh worktree for repository changes unless those instructions explicitly say the directory is already an isolated disposable worktree. Your only authoritative output to Weaver is submit_result: files or external state you inspect or change do not become accepted Workstream truth merely because you report them. Use the configured MCP servers FULLY — read AND write — to do the work: whatever server the runtime exposes (issue tracker, docs, project board, …), moving an issue's status, commenting, labelling, or otherwise keeping the systems your brief names in sync is ordinary work that needs no approval. No tool is special-cased or allow-listed; there is no "read-only" MCP mode. What a work assignment does NOT authorize is IRREVERSIBLE egress to the outside world — pushing or merging code, deploying, spending, or sending a message to a person. Those are separate human-approved actions: if the requested outcome needs one, report the exact required act so the coordinator can dispatch it through the action lifecycle rather than engineering a route around the gate. CREDENTIAL REALITY: this run may be deliberately confined away from the operator's stored logins — the macOS keychain, gh oauth, cloud CLI sessions. An auth failure (401, empty token file, keychain denial) inside this run is evidence about THIS RUN'S confinement, never about the operator's credentials being expired or a provider being down; the action lane has the credentials this run lacks. Do not diagnose a credential outage, do not ask the human to re-auth, and do not hunt the filesystem for tokens — report the operation as needing the action lane and move on. A private repo that refuses unauthenticated clone/fetch is the same confinement, not a dead repo: clone from the operator's local checkout of it on this machine as a read-only source (they live under ~/work) and do the work there; anything that must reach the remote still goes through the action lane. MINE THE RECORDED THINKING before forming your own theory: inspect git history, PR bodies and review threads, and in-repo docs, then cite what you find by commit/PR number. When a source your brief names has IMAGES — a screenshot on a ticket, a diagram in a doc, a rendered page — open and look at them rather than reading around them; people put the specifics in the picture, and MCP servers expose them (e.g. extract_images on a tracker description or comment). If you could not see an image the work depends on, say so in your submission instead of guessing what it showed.
+const WORKER_SYSTEM = `You are one regular coding-agent worker executing ONE bounded assignment inside a larger workstream you cannot see. You have normal coding tools — including Bash, file editing, web access, and the runtime's configured MCP servers — and may use them as needed to complete the assignment. The directories in the brief are working context, not a reduced read-only tool mode. Follow their repository instructions and use a fresh worktree for repository changes unless those instructions explicitly say the directory is already an isolated disposable worktree. Your only authoritative output to Weaver is submit_result: files or external state you inspect or change do not become accepted Workstream truth merely because you report them. Use the configured MCP servers FULLY — read AND write — to do the work: whatever server the runtime exposes (issue tracker, docs, project board, …), moving an issue's status, commenting, labelling, or otherwise keeping the systems your brief names in sync is ordinary work that needs no approval. No tool is special-cased or allow-listed; there is no "read-only" MCP mode. What a work assignment does NOT authorize is IRREVERSIBLE egress to the outside world — pushing or merging code, deploying, spending, or sending a message to a person. Those are separate human-approved actions: if the requested outcome needs one, report the exact required act so the coordinator can dispatch it through the action lifecycle rather than engineering a route around the gate. CREDENTIAL REALITY: a Credentials section in this brief means the harness deliberately supplied exactly those named environment variables. If access through one returns 401/403 or otherwise fails, report that the supplied NAME/access failed (never its value); do not misdiagnose that evidence as ordinary login confinement or route the same reversible work to the action lane. Other operator logins — the macOS keychain, gh oauth, cloud CLI sessions — may still be deliberately absent. An auth failure involving one of those absent logins (empty token file, keychain denial) is evidence about THIS RUN'S confinement, never about the operator's credentials being expired or a provider being down; the action lane has the login this run lacks. Do not ask the human to re-auth and do not hunt the filesystem for tokens. A private repo that refuses unauthenticated clone/fetch is the same confinement, not a dead repo: clone from the operator's local checkout of it on this machine as a read-only source (they live under ~/work) and do the work there; anything that must reach the remote still goes through the action lane. MINE THE RECORDED THINKING before forming your own theory: inspect git history, PR bodies and review threads, and in-repo docs, then cite what you find by commit/PR number. When a source your brief names has IMAGES — a screenshot on a ticket, a diagram in a doc, a rendered page — open and look at them rather than reading around them; people put the specifics in the picture, and MCP servers expose them (e.g. extract_images on a tracker description or comment). If you could not see an image the work depends on, say so in your submission instead of guessing what it showed.
 ${SHARED_RULES}`;
 
 /**
@@ -445,6 +445,44 @@ export async function runWorker(
   ) return false;
   const readDirs = asg.readDirs ?? [];
   const isAction = asg.kind === 'action';
+  const applicableSecrets = loadSecrets(slug);
+  let secrets: Record<string, string>;
+  try {
+    if (isAction && currentAssignment.credentialNames?.length) {
+      throw new Error('action carries ordinary-work credential names');
+    }
+    // Validate durable names against values present on THIS execution host
+    // before recording an Attempt. Missing/revoked names therefore fail
+    // closed without manufacturing a run that never launched.
+    secrets = isAction
+      ? applicableSecrets
+      : selectNamedSecrets(applicableSecrets, currentAssignment.credentialNames ?? []);
+  } catch (caught) {
+    const reason = caught instanceof Error ? caught.message : String(caught);
+    // A permanently queued invalid assignment would be retried every tick.
+    // Settle this intended work as failed and surface one typed blocker; a
+    // credential repair plus fresh assignment/steering is a real arrival,
+    // whereas blindly launching the same invalid contract is not progress.
+    await arrive(slug, (d, event) => {
+      const failed = d.assignments.find((candidate) => candidate.id === assignmentId);
+      if (!failed || failed.state !== 'queued') return;
+      failed.state = 'failed';
+      if (!d.attention.some((attention) =>
+        attention.kind === 'blocker' && attention.status === 'open' && attention.refId === assignmentId
+      )) {
+        d.attention.push({
+          id: newId('att'),
+          kind: 'blocker',
+          summary: `Assignment ${assignmentId} could not start because ${reason}. Restore the named credential on the execution host, then dispatch replacement work; no model process or Attempt was started.`,
+          refId: assignmentId,
+          status: 'open',
+          createdAt: new Date().toISOString(),
+        });
+      }
+      event('assignment.credential_blocked', `${assignmentId} failed closed before launch: ${reason}`, [assignmentId]);
+    });
+    return false;
+  }
   const isFleetAttentionSteward = !isAction
     && current.workstream.sourceKey === FLEET_ATTENTION_STEWARD_SOURCE_KEY;
   // The steward's narrow, generated attention input belongs in Weaver's
@@ -531,9 +569,9 @@ export async function runWorker(
 
   let submitted = false;
   const sections: string[] = [];
-  // Action workers get secret VALUES as env vars only; every path back into
-  // durable state is scrubbed so a value can never outlive the process.
-  const secrets = isAction ? loadSecrets(slug) : {};
+  // Selected work credentials and action credentials exist only in this
+  // disposable environment; every path back into durable state is scrubbed
+  // so a value can never outlive the process.
   // Ephemeral MCP header credentials join the redaction set: they ride the
   // executor's env, never durable state — whatever substrate ran the loop.
   const redactionSecrets = { ...loadRedactionSecrets(slug), ...secrets, ...operatorMcp.env };
@@ -698,7 +736,11 @@ export async function runWorker(
       tools: { type: 'preset', preset: 'claude_code' },
       // Ephemeral MCP header credentials ride the subprocess env with the
       // action secrets — never SDK process arguments, never durable state.
-      env: sdkEnv({ ...secrets, ...operatorMcp.env }),
+      env: sdkEnv(
+        { ...secrets, ...operatorMcp.env },
+        isAction ? [] : Object.keys(applicableSecrets),
+      ),
+      redactionSecrets: { ...applicableSecrets, ...operatorMcp.env },
       ...(isAction
         ? {
             cwd: asg.exec!.cwd,
@@ -748,12 +790,12 @@ export async function runWorker(
       // The loop failed inside the substrate: same classification path as a
       // local throw — capture for the capacity tracker, keep the message.
       sdkFailure.capture(new Error(outcome.error));
-      process.stderr.write(`worker ${runId} error: ${outcome.error}\n`);
+      process.stderr.write(`worker ${runId} error: ${redactSecrets(outcome.error, redactionSecrets)}\n`);
       resultSubtype = resultSubtype ?? workerExceptionReason(outcome.error, redactionSecrets);
     }
   } catch (e) {
     sdkFailure.capture(e);
-    process.stderr.write(`worker ${runId} error: ${e instanceof Error ? e.message : e}\n`);
+    process.stderr.write(`worker ${runId} error: ${redactSecrets(e instanceof Error ? e.message : String(e), redactionSecrets)}\n`);
     resultSubtype = resultSubtype ?? workerExceptionReason(e, redactionSecrets);
   } finally {
     wall.disarm();
