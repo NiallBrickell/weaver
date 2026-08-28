@@ -99,6 +99,10 @@ export interface WorkerExecutionRequest {
    * SDK process arguments). Values in here must never reach durable state;
    * the harness holds the matching redaction set. */
   env: Record<string, string | undefined>;
+  /** Exact harness-selected variables that an isolated worker runtime must
+   * receive inside its sandbox/container. This is deliberately separate from
+   * `env`: adapters must never forward the host/SDK environment wholesale. */
+  workerVisibleEnv?: Record<string, string>;
   /** Values the harness requires the adapter to scrub from run diagnostics
    * and telemetry. Ephemeral only; never serialized or forwarded as model
    * context. Executor-provider identity remains adapter-owned and separate. */

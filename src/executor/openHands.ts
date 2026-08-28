@@ -17,9 +17,10 @@
 
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { isIPv4 } from 'node:net';
-import { hostname } from 'node:os';
-import { resolve } from 'node:path';
+import { hostname, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { loadExecutorSecrets, redactSecrets } from '../secrets.js';
 import { startMcpRelay, type McpRelay } from './mcpRelay.js';
 import {
@@ -41,7 +42,7 @@ export const OPENHANDS_AGENT_SERVER_IMAGE =
   'ghcr.io/openhands/agent-server:1.41.0-python';
 
 const AGENT_SERVER_PORT = '8000/tcp';
-const HARNESS_VERSION = 'openhands-agent-server-1.41.0-weaver.4';
+const HARNESS_VERSION = 'openhands-agent-server-1.41.0-weaver.5';
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENHANDS_TOOL_MODULES = {
   terminal: 'openhands.tools.terminal.definition',
@@ -124,6 +125,11 @@ interface NamedMcpRelay {
   relay: McpRelay;
 }
 
+interface WorkerEnvFile {
+  directory: string;
+  path: string;
+}
+
 class UnsupportedOpenHandsRequest extends Error {}
 
 class OpenHandsConversationError extends Error {
@@ -195,9 +201,17 @@ export class OpenHandsExecutor implements WorkerExecutor {
     let containerAttempted = false;
     let agentServerUrl: string | null = null;
     let sessionApiKey: string | null = null;
+    let workerEnvFile: WorkerEnvFile | null = null;
     const cleanupFailures: string[] = [];
     const operatorRelays: NamedMcpRelay[] = [];
     const containerName = `weaver-openhands-${safeName(req.assignmentId)}-${randomBytes(6).toString('hex')}`;
+    // The adapter owns confinement of the exact values it makes visible. Do
+    // not rely on every caller duplicating them in the broader harness
+    // redaction set before diagnostics or bridge replies become safe.
+    const requestRedactionSecrets = {
+      ...(req.redactionSecrets ?? {}),
+      ...(req.workerVisibleEnv ?? {}),
+    };
 
     try {
       this.validateRequest(req);
@@ -225,7 +239,10 @@ export class OpenHandsExecutor implements WorkerExecutor {
           // optional server must not block every assignment. Degradation is
           // explicit — stderr note here, and the container prompt is told the
           // tools are absent so it cannot claim work that needed them.
-          const secrets: Record<string, string> = { ...this.executorSecretsLoader() };
+          const secrets: Record<string, string> = {
+            ...this.executorSecretsLoader(),
+            ...requestRedactionSecrets,
+          };
           for (const [envName, value] of Object.entries(req.env)) {
             if (envName.startsWith('WEAVER_INTERNAL_MCP_') && value !== undefined) secrets[envName] = value;
           }
@@ -260,6 +277,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
             bridge?.token,
             providerProxy?.token,
             operatorRelays.map(({ relay }) => relay.token),
+            requestRedactionSecrets,
           )),
           (text) => this.sanitizePrivate(
             text,
@@ -268,6 +286,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
             bridge?.token,
             providerProxy?.token,
             operatorRelays.map(({ relay }) => relay.token),
+            requestRedactionSecrets,
           ),
         ),
         submitResult: async (args) => {
@@ -278,6 +297,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
             bridge?.token,
             providerProxy?.token,
             operatorRelays.map(({ relay }) => relay.token),
+            requestRedactionSecrets,
           );
           const sanitized = {
             summary: sanitize(args.summary),
@@ -299,41 +319,53 @@ export class OpenHandsExecutor implements WorkerExecutor {
 
       sessionApiKey = randomBytes(32).toString('hex');
       await this.reapOrphanedContainers(req.abort.signal);
+      workerEnvFile = await createWorkerEnvFile(req.workerVisibleEnv ?? {});
       containerAttempted = true;
-      await this.checkedCommand(
-        [
-          'run',
-          '--rm',
-          '--detach',
-          '--name',
-          containerName,
-          '--label',
-          CONTAINER_LABEL,
-          '--label',
-          `weaver.owner_pid=${process.pid}`,
-          '--label',
-          `weaver.owner_host=${CONTAINER_OWNER_HOST}`,
-          '--publish',
-          `127.0.0.1::${AGENT_SERVER_PORT.split('/')[0]}`,
-          '--add-host',
-          `host.docker.internal:${this.hostGatewayIp ?? 'host-gateway'}`,
-          '--env',
-          `SESSION_API_KEY=${sessionApiKey}`,
-          '--env',
-          'OH_ENABLE_VNC=false',
-          '--env',
-          'OH_CONVERSATIONS_PATH=/tmp/weaver-conversations',
-          '--env',
-          'OH_BASH_EVENTS_DIR=/tmp/weaver-bash-events',
-          '--env',
-          'OH_WORKSPACE_PATH=/tmp/weaver-agent-server-workspace',
-          ...workspacePlan.dockerArgs,
-          OPENHANDS_AGENT_SERVER_IMAGE,
-          '--host',
-          '0.0.0.0',
-        ],
-        req.abort.signal,
-      );
+      try {
+        await this.checkedCommand(
+          [
+            'run',
+            '--rm',
+            '--detach',
+            '--name',
+            containerName,
+            '--label',
+            CONTAINER_LABEL,
+            '--label',
+            `weaver.owner_pid=${process.pid}`,
+            '--label',
+            `weaver.owner_host=${CONTAINER_OWNER_HOST}`,
+            '--publish',
+            `127.0.0.1::${AGENT_SERVER_PORT.split('/')[0]}`,
+            '--add-host',
+            `host.docker.internal:${this.hostGatewayIp ?? 'host-gateway'}`,
+            ...(workerEnvFile ? ['--env-file', workerEnvFile.path] : []),
+            '--env',
+            `SESSION_API_KEY=${sessionApiKey}`,
+            '--env',
+            'OH_ENABLE_VNC=false',
+            '--env',
+            'OH_CONVERSATIONS_PATH=/tmp/weaver-conversations',
+            '--env',
+            'OH_BASH_EVENTS_DIR=/tmp/weaver-bash-events',
+            '--env',
+            'OH_WORKSPACE_PATH=/tmp/weaver-agent-server-workspace',
+            ...workspacePlan.dockerArgs,
+            OPENHANDS_AGENT_SERVER_IMAGE,
+            '--host',
+            '0.0.0.0',
+          ],
+          req.abort.signal,
+        );
+      } finally {
+        // Docker has consumed --env-file when `docker run` returns, whether
+        // the daemon accepted or rejected the create. Remove durable values
+        // before polling or conversation work can begin.
+        if (workerEnvFile) {
+          await removeWorkerEnvFile(workerEnvFile);
+          workerEnvFile = null;
+        }
+      }
       containerStarted = true;
 
       const portResult = await this.checkedCommand(
@@ -414,6 +446,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
         bridge?.token,
         providerProxy?.token,
         operatorRelays.map(({ relay }) => relay.token),
+        requestRedactionSecrets,
       );
       if (isAbort(caught, req.abort.signal)) {
         terminalReason = 'aborted';
@@ -423,6 +456,16 @@ export class OpenHandsExecutor implements WorkerExecutor {
         terminalReason = 'error';
       }
     } finally {
+      // Covers aborts or filesystem/command failures before the inner cleanup
+      // completes. The path is a unique mkdtemp child, never a broad target.
+      if (workerEnvFile) {
+        try {
+          await removeWorkerEnvFile(workerEnvFile);
+          workerEnvFile = null;
+        } catch (caught) {
+          cleanupFailures.push(`worker env file: ${caught instanceof Error ? caught.message : String(caught)}`);
+        }
+      }
       if (
         containerStarted &&
         agentServerUrl !== null &&
@@ -491,8 +534,9 @@ export class OpenHandsExecutor implements WorkerExecutor {
           bridge?.token,
           providerProxy?.token,
           operatorRelays.map(({ relay }) => relay.token),
+          requestRedactionSecrets,
         );
-        error = redactSecrets(error, req.redactionSecrets ?? {});
+        error = redactSecrets(error, requestRedactionSecrets);
       }
 
       const endedAtMs = this.now();
@@ -542,6 +586,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
         "operator MCP server name 'weaver' is reserved for the submission surface",
       );
     }
+    validateWorkerVisibleEnv(req.workerVisibleEnv ?? {});
   }
 
   private providerConfiguration(model: string): ProviderConfiguration {
@@ -657,8 +702,9 @@ export class OpenHandsExecutor implements WorkerExecutor {
     submitToken?: string | null,
     providerProxyToken?: string | null,
     operatorRelayTokens: readonly string[] = [],
+    requestSecrets: Record<string, string> = {},
   ): string {
-    const secrets: Record<string, string> = {};
+    const secrets: Record<string, string> = { ...requestSecrets };
     if (provider) secrets[provider.apiKeyName] = provider.apiKey;
     if (sessionApiKey) secrets.OPENHANDS_SESSION_API_KEY = sessionApiKey;
     if (submitToken) secrets.OPENHANDS_SUBMIT_TOKEN = submitToken;
@@ -806,6 +852,45 @@ function parseDockerPort(output: string): string {
   const match = line?.match(/:(\d+)$/);
   if (!match) throw new Error(`could not parse Docker Agent Server port from ${JSON.stringify(output)}`);
   return `http://127.0.0.1:${match[1]}`;
+}
+
+function validateWorkerVisibleEnv(env: Record<string, string>): void {
+  for (const [name, value] of Object.entries(env)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new UnsupportedOpenHandsRequest(
+        `OpenHands worker-visible environment contains invalid name ${JSON.stringify(name)}`,
+      );
+    }
+    if (/[\r\n\0]/.test(value)) {
+      throw new UnsupportedOpenHandsRequest(
+        `OpenHands worker-visible environment value for ${name} contains a newline or NUL byte`,
+      );
+    }
+  }
+}
+
+async function createWorkerEnvFile(env: Record<string, string>): Promise<WorkerEnvFile | null> {
+  if (Object.keys(env).length === 0) return null;
+  const directory = await mkdtemp(join(tmpdir(), 'weaver-openhands-env-'));
+  const path = join(directory, 'worker.env');
+  try {
+    const content = Object.entries(env)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([name, value]) => `${name}=${value}\n`)
+      .join('');
+    await writeFile(path, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    // Keep the contract exact even under an unusual process umask or a future
+    // replacement implementation that creates the file before writing it.
+    await chmod(path, 0o600);
+    return { directory, path };
+  } catch (caught) {
+    await rm(directory, { recursive: true, force: true });
+    throw caught;
+  }
+}
+
+async function removeWorkerEnvFile(file: WorkerEnvFile): Promise<void> {
+  await rm(file.directory, { recursive: true, force: true });
 }
 
 function safeName(value: string): string {

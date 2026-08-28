@@ -740,6 +740,11 @@ export async function runWorker(
         { ...secrets, ...operatorMcp.env },
         isAction ? [] : Object.keys(applicableSecrets),
       ),
+      // Container/sandbox adapters cannot inherit the host SDK environment:
+      // doing so would cross ambient and executor-only identity into the
+      // worker. Ordinary work gets its exact resolved Assignment selection;
+      // actions remain on their separately supervised execution path.
+      ...(!isAction ? { workerVisibleEnv: { ...secrets } } : {}),
       redactionSecrets: { ...applicableSecrets, ...operatorMcp.env },
       ...(isAction
         ? {
