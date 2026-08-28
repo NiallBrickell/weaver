@@ -1382,25 +1382,50 @@ test('an attempt whose driver process is dead is recovered immediately, no horiz
   assert.equal(asg.attempts[0]!.terminalReason, 'crashed');
 });
 
-test('a foreign runner PID is never probed as if it belonged to this host', async () => {
+test('foreign runner work and actions remain untouched even beyond the stale threshold', async () => {
   process.env.WEAVER_RUNNER_ID = 'gcp-runner';
+  process.env.WEAVER_ATTEMPT_STALE_MS = '1';
   await createWorkstream({
     slug: 'foreign-runner-pid', title: 'Foreign runner pid', objective: 'do not invent an orphan',
     tags: [], successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
   });
-  await arrive('foreign-runner-pid', (doc) => doc.assignments.push({
-    id: 'asg_foreign', objective: 'Mac-local live attempt', briefing: 'n/a', kind: 'work',
-    runnerId: 'mac-runner', acceptanceCriteria: [], dependsOn: [], state: 'running',
-    attempts: [{
-      runId: 'run_foreign', runnerId: 'mac-runner', runnerPid: 999999999,
-      startedAt: new Date().toISOString(),
-    }],
-    adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
-  }));
-  await tick('foreign-runner-pid', { maxPasses: 0 });
-  const assignment = (await load('foreign-runner-pid')).assignments[0]!;
-  assert.equal(assignment.state, 'running');
-  assert.equal(assignment.attempts[0]!.endedAt, undefined);
+  const staleStartedAt = new Date(Date.now() - 60_000).toISOString();
+  await arrive('foreign-runner-pid', (doc) => doc.assignments.push(
+    {
+      id: 'asg_foreign_work', objective: 'Mac-local live work', briefing: 'n/a', kind: 'work',
+      runnerId: 'mac-runner', acceptanceCriteria: [], dependsOn: [], state: 'running',
+      attempts: [{
+        runId: 'run_foreign_work', runnerId: 'mac-runner', runnerPid: 999999999,
+        startedAt: staleStartedAt,
+      }],
+      adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    },
+    {
+      id: 'asg_foreign_action', objective: 'Mac-local live action', briefing: 'n/a', kind: 'action',
+      runnerId: 'mac-runner', acceptanceCriteria: [], dependsOn: [], state: 'running',
+      exec: {
+        cwd: process.env.WEAVER_HOME!, verify: 'false',
+        approval: { by: 'human', at: new Date().toISOString() },
+      },
+      attempts: [{
+        runId: 'run_foreign_action', runnerId: 'mac-runner', runnerPid: 999999999,
+        startedAt: staleStartedAt,
+      }],
+      adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    },
+  ));
+  try {
+    await tick('foreign-runner-pid', { maxPasses: 0 });
+  } finally {
+    delete process.env.WEAVER_ATTEMPT_STALE_MS;
+  }
+  const doc = await load('foreign-runner-pid');
+  for (const assignment of doc.assignments) {
+    assert.equal(assignment.state, 'running', assignment.id);
+    assert.equal(assignment.attempts[0]!.endedAt, undefined, assignment.id);
+    assert.equal(assignment.attempts[0]!.terminalReason, undefined, assignment.id);
+  }
+  assert.equal(doc.events.some((event) => event.type === 'worker.crash_recovered'), false);
 });
 
 // ---------------------------------------------------------------------------

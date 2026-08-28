@@ -945,13 +945,17 @@ async function recoverCrashedAttempts(
   )) {
     const attempt = asg.attempts[asg.attempts.length - 1];
     if (!attempt || attempt.endedAt) continue;
+    // A runner id is durable cross-host ownership. Another machine cannot
+    // infer whether that process is alive from its local PID namespace OR from
+    // elapsed wall time, so only the owning runner may reconcile this attempt.
+    // Legacy attempts have no runnerId and retain the former stale/PID repair.
+    if (attempt.runnerId !== undefined && attempt.runnerId !== runner.id) continue;
     // A dead driver process means the attempt is orphaned RIGHT NOW — no need
     // to wait out the horizon (the silent-fleet failure mode after restarts).
     let driverDead = false;
     if (
       attempt.runnerPid &&
-      attempt.runnerPid !== process.pid &&
-      (attempt.runnerId === undefined || attempt.runnerId === runner.id)
+      attempt.runnerPid !== process.pid
     ) {
       driverDead = !pidIsLive(attempt.runnerPid);
     }
