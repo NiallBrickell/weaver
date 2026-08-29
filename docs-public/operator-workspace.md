@@ -142,14 +142,15 @@ and writes the same durable fleet.
 The sidebar states which store the page is reading:
 
 - **Shared fleet** means the workspace reads the shared team Postgres. The Fleet
-  page reports **Worker heartbeat · Not visible here** when this web service has
-  no observable runner. That is unknown, never an invented topology or
-  running/offline claim.
+  page reads runner TTL heartbeats from that same store and names the currently
+  live execution hosts. No fresh heartbeat is reported as offline while every
+  stored job remains safe for later execution.
 - **Local fleet** means the page reads the local filesystem store and can
   measure the runner on the same machine.
 
-A shared UI cannot measure a heartbeat that is not published to its store. That
-is not evidence that an execution worker is running, separate, or offline.
+The shared heartbeat is a narrow liveness observation. It does not say which
+job a runner is executing, grant authority, or turn a worker result into an
+accepted deliverable.
 
 ## Fleet attention
 

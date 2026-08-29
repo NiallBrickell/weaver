@@ -19,7 +19,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { tick } from './engine.js';
 import { sweepPrConflicts } from './prConflicts.js';
 import { sdkEnv } from './secrets.js';
-import { arrive, listWorkstreams, load, weaverHome } from './store.js';
+import { arrive, heartbeatRunner, listWorkstreams, load, weaverHome } from './store.js';
 import { virtualNow } from './clock.js';
 import {
   capacityBackoffFor,
@@ -554,6 +554,10 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       continue;
     }
     try {
+      // Shared TTL presence is separate from Workstream truth and from the
+      // machine-local pid heartbeat. Publish before scanning so a preferred
+      // coordinator host is visible before any standby considers a claim.
+      await heartbeatRunner(runner.id);
       try {
         fs.writeFileSync(heartbeatPath(), String(Date.now()));
       } catch { /* lock dir may be mid-recreate */ }

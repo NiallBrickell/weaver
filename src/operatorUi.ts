@@ -22,6 +22,7 @@ import type {
   ClerkOperatorAuthenticator,
 } from './clerkOperatorAuth.js';
 import { virtualNow } from './clock.js';
+import { liveRunnerIds } from './coordinatorRunner.js';
 import { FLEET_ATTENTION_STEWARD_SOURCE_KEY, fleetIncidents } from './fleetHealth.js';
 import { createOrGetWorkstream, recordObservation } from './ingress.js';
 import { ManagedWorkstreamError } from './managedWorkstreams.js';
@@ -31,6 +32,7 @@ import { liveRunnerPid, runnerLoopHealthy, runnerSourceStale } from './runner.js
 import { loadAllSecrets, redactSecrets } from './secrets.js';
 import {
   listWorkstreams,
+  listRunnerPresence,
   load,
   readArtifact,
   sha256,
@@ -241,12 +243,13 @@ interface RunnerObservation {
   pid: number | null;
   stale: boolean;
   healthy: boolean;
+  sharedLiveRunnerIds: string[];
 }
 
-function observeRunner(): RunnerObservation {
+function observeRunner(sharedLiveRunnerIds: string[]): RunnerObservation {
   const pid = liveRunnerPid();
   const stale = pid !== null && runnerSourceStale();
-  return { pid, stale, healthy: pid !== null && runnerLoopHealthy() && !stale };
+  return { pid, stale, healthy: pid !== null && runnerLoopHealthy() && !stale, sharedLiveRunnerIds };
 }
 
 function fleetScope(): OperatorFleetView['scope'] {
@@ -264,10 +267,8 @@ function fleetScope(): OperatorFleetView['scope'] {
 
 function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: string[], runner: RunnerObservation): OperatorFleetView['health'] {
   const { pid, stale: staleRunner, healthy: healthyRunner } = runner;
-  // Runner locks and heartbeats are intentionally machine-local. A stateless
-  // A Postgres-backed UI cannot infer a runner from shared storage, so absence
-  // of a locally observable pid is unknown rather than offline.
-  const remoteRunnerUnobservable = pid === null && /^postgres(?:ql)?:\/\//.test(process.env.WEAVER_STORE ?? '');
+  const sharedRunnerHealthy = /^postgres(?:ql)?:\/\//.test(process.env.WEAVER_STORE ?? '') &&
+    runner.sharedLiveRunnerIds.length > 0;
   const stalledRunner = pid !== null && !healthyRunner;
   const incidents = fleetIncidents(docs);
   const pilotIncident = incidents.find((incident) => incident.key === 'approval-service-unavailable');
@@ -302,11 +303,11 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
       detail: `${details.join(' · ')}. Intended work remains durable; no gated external effect is assumed to have happened.`,
     };
   }
-  if (remoteRunnerUnobservable) {
+  if (sharedRunnerHealthy) {
     return {
       tone: 'healthy',
-      headline: 'Shared fleet is connected',
-      detail: `${details.join(' · ')}. The worker heartbeat is not visible to this web service.`,
+      headline: 'Weaver is running',
+      detail: `${details.join(' · ')}. Fresh shared runner heartbeat${runner.sharedLiveRunnerIds.length === 1 ? '' : 's'}: ${runner.sharedLiveRunnerIds.join(', ')}.`,
     };
   }
   if (!healthyRunner) {
@@ -338,9 +339,13 @@ function fleetStatus(docs: WorkstreamDoc[], board: FleetBoardView, runner: Runne
     },
     execution: shared && pid === null ? {
       label: 'Agent execution',
-      value: 'Worker heartbeat · Not visible here',
-      detail: 'This web service cannot read the worker heartbeat, so it cannot claim that execution is running or offline.',
-      tone: 'neutral',
+      value: runner.sharedLiveRunnerIds.length
+        ? `Running · ${runner.sharedLiveRunnerIds.join(', ')}`
+        : 'Offline · no fresh runner heartbeat',
+      detail: runner.sharedLiveRunnerIds.length
+        ? 'Shared TTL heartbeats prove which execution hosts are currently available.'
+        : 'Stored work is safe; no execution host has published a fresh shared heartbeat.',
+      tone: runner.sharedLiveRunnerIds.length ? 'healthy' : 'warning',
     } : {
       label: 'Agent execution',
       value: healthy ? 'Running' : pid === null ? 'Offline' : 'Stalled',
@@ -374,7 +379,7 @@ async function loadFleet(): Promise<LoadedFleet> {
   const stewardCard = stewardDoc
     ? Object.values(board.lanes).flat().find((card) => card.slug === stewardDoc.workstream.slug)
     : undefined;
-  const runner = observeRunner();
+  const runner = observeRunner(liveRunnerIds(await listRunnerPresence()));
   const revision = sha256(JSON.stringify(
     {
       docs: docs.map((doc) => [doc.workstream.slug, doc.revision]).sort(([a], [b]) => String(a).localeCompare(String(b))),

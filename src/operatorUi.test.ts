@@ -18,7 +18,7 @@ import {
   type RunningOperatorUi,
 } from './operatorUi.js';
 import type { ClerkOperatorAuthenticator } from './clerkOperatorAuth.js';
-import { arrive, listWorkstreams, load, newId, writeArtifact } from './store.js';
+import { arrive, heartbeatRunner, listWorkstreams, load, newId, writeArtifact } from './store.js';
 
 let home: string;
 let running: RunningOperatorUi | undefined;
@@ -775,11 +775,12 @@ test('Clerk mode replaces the browser password and keeps identity, domain denial
   assert.equal(alreadySignedIn.headers.get('location'), '/new');
 });
 
-test('a shared-Postgres UI separates connected data from unobservable execution', async () => {
+test('a shared-Postgres UI reports execution only from fresh shared runner presence', async () => {
   // Pin this test server to the already-selected temporary fs store, then
   // present the deployment shape to the view logic. Runner heartbeat is a
   // machine-local fact even though Workstream state is shared in Postgres.
   await listWorkstreams();
+  await heartbeatRunner('gcp-standby');
   const previous = process.env.WEAVER_STORE;
   process.env.WEAVER_STORE = 'postgres://shared.example.test/weaver';
   try {
@@ -787,13 +788,12 @@ test('a shared-Postgres UI separates connected data from unobservable execution'
     assert.equal(response.status, 200);
     const html = await response.text();
     assert.match(html, /Shared fleet/);
-    assert.match(html, /Shared fleet is connected/);
-    assert.match(html, /The worker heartbeat is not visible to this web service/);
+    assert.match(html, /Weaver is running/);
+    assert.match(html, /Fresh shared runner heartbeat: gcp-standby/);
     const fleet = await (await fetch(`${base}/fleet`)).text();
     assert.match(fleet, /Shared team database · Connected/);
-    assert.match(fleet, /Worker heartbeat · Not visible here/);
-    assert.match(fleet, /cannot claim that execution is running or offline/);
-    assert.doesNotMatch(fleet, /another host/);
+    assert.match(fleet, /Running · gcp-standby/);
+    assert.match(fleet, /Shared TTL heartbeats prove/);
     assert.doesNotMatch(html, /Runner is offline/);
   } finally {
     if (previous === undefined) delete process.env.WEAVER_STORE;

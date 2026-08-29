@@ -27,7 +27,7 @@ import { acquireProcessLock } from '../processLock.js';
 import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc, newId, sha256 } from './doc.js';
-import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore } from './types.js';
 
 export { newId, sha256 };
 
@@ -62,6 +62,10 @@ export function policyJournalDir(): string {
 
 function policiesPath(): string {
   return path.join(weaverHome(), 'policies.json');
+}
+
+function runnerPresencePath(): string {
+  return path.join(weaverHome(), '.runner-presence.json');
 }
 
 /** Serialize the actual read/check/write region across local processes. */
@@ -246,6 +250,37 @@ export class FsStore implements StateStore {
       return store;
     } finally {
       release();
+    }
+  }
+
+  async heartbeatRunner(presence: RunnerPresence): Promise<void> {
+    const home = weaverHome();
+    fs.mkdirSync(home, { recursive: true });
+    const release = acquireProcessLock(`${runnerPresencePath()}.lock`, { timeoutMs: 10_000, pollMs: 25 });
+    if (!release) throw new Error('runner presence lock timeout');
+    try {
+      let current: Record<string, RunnerPresence> = {};
+      try {
+        current = JSON.parse(fs.readFileSync(runnerPresencePath(), 'utf8')) as Record<string, RunnerPresence>;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      current[presence.runnerId] = presence;
+      const tmp = `${runnerPresencePath()}.tmp-${process.pid}`;
+      fs.writeFileSync(tmp, `${JSON.stringify(current, null, 2)}\n`);
+      fs.renameSync(tmp, runnerPresencePath());
+    } finally {
+      release();
+    }
+  }
+
+  async listRunnerPresence(): Promise<RunnerPresence[]> {
+    try {
+      const current = JSON.parse(fs.readFileSync(runnerPresencePath(), 'utf8')) as Record<string, RunnerPresence>;
+      return Object.values(current).sort((a, b) => a.runnerId.localeCompare(b.runnerId));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw new Error(`cannot read runner presence: ${error instanceof Error ? error.message : error}`);
     }
   }
 

@@ -148,6 +148,7 @@ export function buildProjection(
     ``,
     `Current execution availability:`,
     fmtList(capacityLines, 'no active configured-provider backoff or executor wait observed'),
+    `Coordinator runner policy: ${ws.executionPolicy?.coordinatorRunnerOrder.join(' → ') ?? 'fleet-wide (no preferred host)'}. This is physical pass placement only; it cannot grant authority or change assignment placement.`,
   ].join('\n');
 
   // 4. Standing decisions with lineage. Standing decisions are the live

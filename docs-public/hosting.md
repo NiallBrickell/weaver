@@ -124,8 +124,18 @@ the first capacity-available model target for a host declaring that substrate
 and rechecks the declaration in the attempt/lease claim, so an incapable host
 never wins a Postgres lock and silently substitutes a less-preferred model.
 Reviewed automatic routes select models only within the configured worker
-substrate. Cross-executor preference waits for durable Workstream execution
-policy rather than trusting process-local environment agreement.
+substrate. A durable coordinator host preference prevents process-local model
+configuration from becoming a Postgres lock race:
+
+```bash
+weaver coordinator-runners <workstream> mac-primary gcp-standby
+```
+
+Resident runners publish shared heartbeats. The standby becomes eligible for a
+fresh coordinator lease only after every earlier runner has been absent for
+120 seconds. This does not stop it from executing workers, sends, or exact
+machine-placed actions in the same tick; it governs only coordination. Pass
+and lease provenance record the host that actually took over.
 
 Give every hosted execution process a stable `WEAVER_RUNNER_ID`; the OS
 hostname default is intended for normal local machines, not replaceable

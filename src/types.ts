@@ -452,6 +452,8 @@ export interface PassRecord {
   executor?: string;
   provider?: string;
   model?: string;
+  /** Exact execution host that claimed this coordinator pass. */
+  runnerId?: string;
   sessionId?: string;
   costUsd?: number;
   /** What the coordinator says it did — informational; typed state is truth. */
@@ -583,6 +585,13 @@ export interface WorkstreamCore {
    * This is a durable resource constraint, not a model choice or authority
    * grant. The human placement act also reconciles safe pending work to it. */
   assignmentRunnerId?: string;
+  /** Human-owned physical execution preference for coordinator passes. The
+   * first runner with a fresh shared heartbeat owns reconciliation; later
+   * runners are warm standbys. Omitted preserves ordinary fleet-wide claims.
+   * Worker placement remains Assignment.runnerId and is independent. */
+  executionPolicy?: {
+    coordinatorRunnerOrder: string[];
+  };
   /** @deprecated Historical lifetime caps remain readable for state and
    * printout lineage, but are never consulted for execution eligibility. */
   budget?: {
@@ -667,4 +676,4 @@ export interface WorkstreamSpend {
     humanInterventions: number;
 }
 
-export type WorkstreamLease = { passId: Id; acquiredAt: Iso; expiresAt: Iso } | null;
+export type WorkstreamLease = { passId: Id; runnerId?: string; acquiredAt: Iso; expiresAt: Iso } | null;

@@ -32,11 +32,14 @@ import { FsStore, artifactsDir, newId, printoutJournalDir, sha256, weaverHome, w
 import { PgStore } from './store/pg.js';
 import { SqliteStore } from './store/sqlite.js';
 import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './store/types.js';
+import type { RunnerPresence } from './store/types.js';
 import type { WorkstreamCore, WorkstreamDoc } from './types.js';
+import { assertRunnerId } from './runnerIdentity.js';
 
 export { artifactsDir, newId, printoutJournalDir, sha256, weaverHome, workstreamDir };
 export { RevisionConflictError, SourceKeyConflictError };
 export type { StateStore };
+export type { RunnerPresence };
 
 let activeStore: StateStore | undefined;
 
@@ -72,6 +75,20 @@ export async function closeStore(): Promise<void> {
 
 export async function listWorkstreams(): Promise<string[]> {
   return getStore().listWorkstreams();
+}
+
+/** Publish operational liveness without touching Workstream revisions. */
+export async function heartbeatRunner(
+  runnerId: string,
+  heartbeatAt = new Date().toISOString(),
+): Promise<void> {
+  assertRunnerId(runnerId);
+  if (!Number.isFinite(Date.parse(heartbeatAt))) throw new Error(`invalid runner heartbeat timestamp '${heartbeatAt}'`);
+  await getStore().heartbeatRunner({ runnerId, heartbeatAt });
+}
+
+export async function listRunnerPresence(): Promise<RunnerPresence[]> {
+  return getStore().listRunnerPresence();
 }
 
 export async function load(slug: string): Promise<WorkstreamDoc> {

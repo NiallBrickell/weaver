@@ -44,7 +44,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore } from './types.js';
 
 /**
  * Idempotent, run on first use of every process. The `revision` COLUMN is the
@@ -75,6 +75,10 @@ const SCHEMA = `
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
     revision  integer NOT NULL,
     store     json    NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS runner_presence (
+    runner_id    text        PRIMARY KEY,
+    heartbeat_at timestamptz NOT NULL
   );
 
   -- Existing fleets used jsonb. Convert once, without decoding and rewriting
@@ -529,6 +533,27 @@ export class PgStore implements StateStore {
         client.release();
       }
     }
+  }
+
+  async heartbeatRunner(presence: RunnerPresence): Promise<void> {
+    await this.ensureReady();
+    await this.pool.query(
+      `INSERT INTO runner_presence (runner_id, heartbeat_at) VALUES ($1, $2::timestamptz)
+       ON CONFLICT (runner_id) DO UPDATE SET heartbeat_at = EXCLUDED.heartbeat_at`,
+      [presence.runnerId, presence.heartbeatAt],
+    );
+  }
+
+  async listRunnerPresence(): Promise<RunnerPresence[]> {
+    await this.ensureReady();
+    const result = await this.pool.query(
+      `SELECT runner_id, to_char(heartbeat_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS heartbeat_at
+       FROM runner_presence ORDER BY runner_id`,
+    );
+    return result.rows.map((row) => ({
+      runnerId: row.runner_id as string,
+      heartbeatAt: row.heartbeat_at as string,
+    }));
   }
 
   /**

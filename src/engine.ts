@@ -13,6 +13,7 @@
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import {
+  CoordinatorRunnerIneligibleError,
   pickCoordinatorTarget,
   pickCoordinatorTargetForExecutors,
   runCoordinatorPass,
@@ -28,7 +29,7 @@ import {
 import { loadRedactionSecrets, loadSecrets, redactSecrets } from './secrets.js';
 import { runWorker } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
-import { arrive, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
+import { arrive, listRunnerPresence, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import { pidIsLive } from './processLock.js';
 import {
@@ -64,6 +65,7 @@ import {
   RunnerPlacementMismatchError,
   type RunnerClaimIdentity,
 } from './runnerIdentity.js';
+import { coordinatorRunnerEligibility } from './coordinatorRunner.js';
 
 /**
  * The shell a declared action's `run`/`verify` command is executed with.
@@ -1511,6 +1513,8 @@ async function tickLocked(
     const coordinatorTarget = executorCapabilities
       ? pickCoordinatorTargetForExecutors(preDoc, virtualNow().toISOString(), executorCapabilities)
       : pickCoordinatorTarget(preDoc, virtualNow().toISOString());
+    const coordinatorRunnerEligible = !preDoc.workstream.executionPolicy?.coordinatorRunnerOrder ||
+      coordinatorRunnerEligibility(preDoc, runner.id, await listRunnerPresence()).eligible;
     // A live lease means no pass can start: leave the wakes PENDING for the
     // next tick rather than burning them against a pass that cannot run.
     const leaseLive = preDoc.lease && new Date(preDoc.lease.expiresAt).getTime() > Date.now();
@@ -1518,6 +1522,7 @@ async function tickLocked(
       preDoc.workstream.status === 'active' &&
       due.length > 0 &&
       coordinatorTarget !== null &&
+      coordinatorRunnerEligible &&
       !coordinatorBackoffActive(preDoc, executorCapabilities) &&
       !leaseLive &&
       report.passes.length < maxPasses
@@ -1562,6 +1567,7 @@ async function tickLocked(
         // engine's precheck. The atomic claim parked its typed recovery wake;
         // this tick is safely quiescent, not failed.
         if (e instanceof ExecutionSafetyLimitedError) break cycles;
+        if (e instanceof CoordinatorRunnerIneligibleError) break cycles;
         throw e;
       }
       progressed = true;

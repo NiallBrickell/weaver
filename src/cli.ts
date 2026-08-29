@@ -105,6 +105,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver steer <slug> revoke [steerId]       withdraw steering no pass has read yet (default: your last)
   weaver priority <slug> <high|normal|low>   rank a stream for the runner's slots when the fleet is saturated
   weaver placement <slug> <runner-id|any>    bind all future and safely pending assignments to one execution host; "any" restores fleet-wide placement
+  weaver coordinator-runners <slug> <runner-id>...   prefer coordinator hosts in durable primary→standby order; --clear restores fleet-wide claims
   weaver rename <slug> <new-slug>            move a workstream to a better name — history, artifacts, manager links, and policy attribution all follow; refused mid-tick
   weaver approve <slug> <interactionId>      approve a pending send
   weaver reject-send <slug> <interactionId>  reject a pending send
@@ -465,6 +466,24 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       process.stdout.write(
         `${slug}: assignments ${runnerId ? `bound to ${runnerId}` : 'restored to fleet-wide placement'}; ` +
           `${result.assignmentsUpdated.length} queued/gated assignment(s) updated\n`,
+      );
+      break;
+    }
+
+    case 'coordinator-runners': {
+      const slug = rest[0] ?? fail('usage: weaver coordinator-runners <slug> <runner-id>... | --clear');
+      const args = rest.slice(1);
+      const clear = args.length === 1 && args[0] === '--clear';
+      if (!clear && (args.length === 0 || args.some((arg) => arg.startsWith('--')))) {
+        fail('usage: weaver coordinator-runners <slug> <runner-id>... | --clear');
+      }
+      const { setCoordinatorRunnerOrder } = await import('./humanActs.js');
+      const result = await setCoordinatorRunnerOrder(slug, clear ? null : args);
+      const label = result.current?.join(' → ') ?? 'fleet-wide';
+      process.stdout.write(
+        result.changed
+          ? `${slug}: coordinator runners ${label}\n`
+          : `${slug}: coordinator runners already ${label}\n`,
       );
       break;
     }

@@ -119,6 +119,33 @@ to the next reviewed target or configured fallback. Status shows the local
 executor wait separately from provider capacity because it has no honest retry
 timestamp. Unknown or empty declarations fail at runner startup.
 
+### Primary and standby coordinator hosts
+
+Several hosts may share one Postgres fleet while intentionally using different
+coordinator identities. For example, a workstation can use its local Claude
+Code/Codex subscriptions while a hosted machine keeps an API-backed emergency
+seat. Store that physical preference on each Workstream instead of leaving it
+to whichever process wins the Postgres tick lock:
+
+```bash
+weaver coordinator-runners daily-engineering-update mac-primary gcp-standby
+```
+
+Resident runners publish shared TTL heartbeats. `mac-primary` claims
+coordinator passes while its heartbeat is fresh; `gcp-standby` takes over after
+the earlier heartbeat is older than 120 seconds. The order is rechecked in the
+revision-checked coordinator lease claim, and the lease/pass record pins the
+actual runner. Clear the preference with:
+
+```bash
+weaver coordinator-runners daily-engineering-update --clear
+```
+
+This affects coordinator passes only. Workers remain fleet-wide unless an
+Assignment carries exact `runner_id` placement, and deterministic actions on
+another named host remain runnable. A heartbeat proves temporary host
+presence; it never grants authority or completes work.
+
 An assignment may also carry one exact `runner_id` when its acceptance truly
 depends on a specific execution host — for example a daemon that exists only
 on a named workstation. `WEAVER_RUNNER_ID` names the current host (falling back
@@ -177,9 +204,9 @@ cooperative-work target until that complete ordinary worker surface crosses the
 remote seam; the router does not infer that a narrowly scoped brief needs fewer
 tools.
 
-Cross-executor automatic preference remains closed until Weaver stores that
-execution policy durably with the Workstream. An environment-only switch would
-let configuration skew turn model choice into a Postgres tick-lock race.
+Cross-executor model preference remains closed until Weaver stores that target
+policy durably with the Workstream. `coordinatorRunnerOrder` chooses the host;
+the eligible host's configured capacity chain still chooses its model target.
 
 ### Credential-bearing GCP hosts
 

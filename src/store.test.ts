@@ -28,6 +28,8 @@ import {
   closeStore,
   createWorkstream,
   findBySourceKey,
+  heartbeatRunner,
+  listRunnerPresence,
   listWorkstreams,
   load,
   mutate,
@@ -422,6 +424,19 @@ function contractSuite(backend: Backend): void {
     const again = await tryTickLock('test-ws');
     assert.ok(again, 'reacquire after release must succeed');
     await again!();
+  });
+
+  test('runner presence is shared operational state and never bumps a Workstream revision', async () => {
+    await makeWorkstream();
+    const revision = (await load('test-ws')).revision;
+    await heartbeatRunner('mac-primary', '2026-08-29T10:00:00.000Z');
+    await heartbeatRunner('gcp-standby', '2026-08-29T10:00:01.000Z');
+    await heartbeatRunner('mac-primary', '2026-08-29T10:00:02.000Z');
+    assert.deepEqual(await listRunnerPresence(), [
+      { runnerId: 'gcp-standby', heartbeatAt: '2026-08-29T10:00:01.000Z' },
+      { runnerId: 'mac-primary', heartbeatAt: '2026-08-29T10:00:02.000Z' },
+    ]);
+    assert.equal((await load('test-ws')).revision, revision);
   });
 
   test('a second workstream for the same source key is refused, naming the holder', async () => {

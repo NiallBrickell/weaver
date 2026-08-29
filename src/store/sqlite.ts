@@ -47,7 +47,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore } from './types.js';
 
 /**
  * Idempotent, run once per process at construction. TEXT for doc JSON (SQLite
@@ -79,6 +79,10 @@ const SCHEMA = `
     slug        TEXT    PRIMARY KEY,
     pid         INTEGER NOT NULL,
     acquired_at TEXT    NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS runner_presence (
+    runner_id    TEXT PRIMARY KEY,
+    heartbeat_at TEXT NOT NULL
   );
 `;
 
@@ -304,6 +308,21 @@ export class SqliteStore implements StateStore {
       } satisfies PolicyMutationReceipt);
       return store;
     });
+  }
+
+  async heartbeatRunner(presence: RunnerPresence): Promise<void> {
+    this.db.prepare(
+      `INSERT INTO runner_presence (runner_id, heartbeat_at) VALUES (?, ?)
+       ON CONFLICT (runner_id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at`,
+    ).run(presence.runnerId, presence.heartbeatAt);
+  }
+
+  async listRunnerPresence(): Promise<RunnerPresence[]> {
+    return this.db.prepare('SELECT runner_id, heartbeat_at FROM runner_presence ORDER BY runner_id').all()
+      .map((row) => ({
+        runnerId: (row as { runner_id: string }).runner_id,
+        heartbeatAt: (row as { heartbeat_at: string }).heartbeat_at,
+      }));
   }
 
   /**

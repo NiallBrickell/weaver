@@ -70,6 +70,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   if (ws.assignmentRunnerId) {
     out.push(`Assignment placement: ${ws.assignmentRunnerId} (exact runner; coordinator remains fleet-wide)`);
   }
+  out.push(`Coordinator runners: ${ws.executionPolicy?.coordinatorRunnerOrder.join(' → ') ?? 'fleet-wide'}`);
   if (ws.managedBy) {
     out.push(`Managed by: ${ws.managedBy.slug} (since ${ws.managedBy.sinceVirtual.slice(0, 16)})`);
   }
