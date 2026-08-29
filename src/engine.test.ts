@@ -228,6 +228,27 @@ test('preflight refuses a gated, unapproved action — same boundary as readback
   assert.equal(asg.state, 'gated', 'an unapproved action never runs its model-authored verifier');
 });
 
+test('always-execute returns before invoking the preflight verifier', async () => {
+  const marker = path.join(process.env.WEAVER_HOME!, 'preflight-verifier-ran');
+  await makeActionWorkstream('preflight-always-execute-ws', {
+    exec: {
+      cwd: process.env.WEAVER_HOME!,
+      run: 'printf "fresh observation\\n"',
+      verify: `node -e 'require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")'`,
+      preflightMode: 'always-execute',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+    state: 'queued',
+    attempts: [],
+  });
+
+  assert.equal(await preflightApprovedAction('preflight-always-execute-ws', 'asg_act'), false);
+  assert.equal(fs.existsSync(marker), false, 'always-execute must not call verify before the action claim');
+  const asg = (await load('preflight-always-execute-ws')).assignments[0]!;
+  assert.equal(asg.state, 'queued');
+  assert.equal(asg.attempts.length, 0);
+});
+
 test('an approved send executes once and records the provider ref', async () => {
   const intId = await makeApprovedSend();
   const report = await tick(SLUG, { maxPasses: 0 });
@@ -987,6 +1008,57 @@ test('a human-authored exec.run action is executed by the ENGINE (no worker) and
   assert.equal(asg.attempts[0]!.terminalReason, 'executed');
   assert.equal(asg.exec!.verified!.ok, true);
   assert.ok(doc.deliverables.some((d) => d.kind === 'execution_record'));
+});
+
+test('an always-execute observational action runs once even when its verifier already passes', async () => {
+  await makeActionWorkstream('engine-observation-ws', {
+    state: 'queued',
+    exec: {
+      cwd: process.env.WEAVER_HOME!,
+      run: 'printf "fresh-observation-from-run\\n"',
+      // This proves only that the observation source is readable. It already
+      // passes before the command and therefore cannot be a postcondition.
+      verify: 'true',
+      preflightMode: 'always-execute',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+
+  const first = await tick('engine-observation-ws', { maxPasses: 0 });
+  const second = await tick('engine-observation-ws', { maxPasses: 0 });
+  assert.deepEqual(first.workersRun, []);
+  assert.deepEqual(second.workersRun, []);
+  const doc = await load('engine-observation-ws');
+  const asg = doc.assignments[0]!;
+  assert.equal(asg.state, 'awaiting_review');
+  assert.equal(asg.attempts.length, 1, 'always-execute retains the ordinary one-shot claim');
+  assert.equal(asg.attempts[0]!.terminalReason, 'executed');
+  assert.equal(asg.exec!.verified!.ok, true, 'the same post-execution readback remains mandatory');
+  const record = doc.deliverables.find((deliverable) => deliverable.kind === 'execution_record');
+  assert.ok(record, 'the command stdout must survive as an inspectable execution record');
+  assert.match(await readArtifact('engine-observation-ws', record.path), /fresh-observation-from-run/);
+});
+
+test('the default postcondition mode still skips a deterministic action whose verifier already passes', async () => {
+  const marker = path.join(process.env.WEAVER_HOME!, 'default-preflight-command-ran');
+  await makeActionWorkstream('engine-default-preflight-ws', {
+    state: 'queued',
+    exec: {
+      cwd: process.env.WEAVER_HOME!,
+      run: `node -e 'require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")'`,
+      verify: 'true',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+
+  await tick('engine-default-preflight-ws', { maxPasses: 0 });
+  const doc = await load('engine-default-preflight-ws');
+  const asg = doc.assignments[0]!;
+  assert.equal(asg.state, 'awaiting_review');
+  assert.equal(asg.attempts.length, 0, 'legacy/absent mode remains a no-execution postcondition check');
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(doc.deliverables.filter((deliverable) => deliverable.kind === 'execution_record').length, 0);
+  assert.ok(doc.events.some((event) => event.type === 'action.already_satisfied'));
 });
 
 test('an engine action with an uncreatable cwd settles once and never escapes or reruns', async () => {

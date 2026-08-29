@@ -210,6 +210,9 @@ export function buildProjection(
               : ' AWAITING PILOT REVIEW'
           : ' readback:not-yet-run'
       : '';
+    const preflight = a.exec?.preflightMode === 'always-execute'
+      ? ' preflight:ALWAYS-EXECUTE (fresh command output is the result; approval/one-shot/readback unchanged)'
+      : '';
     // WHY the last attempt died is dispatch-shaping information:
     // error_max_turns means "split the brief", not "retry the same shape".
     const lastReason = a.attempts[a.attempts.length - 1]?.terminalReason;
@@ -222,7 +225,7 @@ export function buildProjection(
     const target = latest?.executor && latest.provider && latest.model
       ? ` latest-target:${latest.executor}/${latest.provider}/${latest.model}`
       : latest?.model ? ` latest-model:${latest.model}` : '';
-    return `${a.id} [${a.state}/adoption:${a.adoption.state}] (${a.kind}) "${a.objective}"${dep}${requirements}${placement} attempts=${attempts}${target}${died}${sub}${act}`;
+    return `${a.id} [${a.state}/adoption:${a.adoption.state}] (${a.kind}) "${a.objective}"${dep}${requirements}${placement} attempts=${attempts}${target}${died}${sub}${act}${preflight}`;
   });
   const s5 = [
     `## 5. Assignments`,

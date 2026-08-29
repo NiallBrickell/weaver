@@ -603,6 +603,12 @@ export async function preflightApprovedAction(slug: string, assignmentId: string
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg?.exec || asg.kind !== 'action') return false;
   if (asg.state !== 'queued' || asg.attempts.length > 0 || !actionHasMatchingApproval(asg)) return false;
+  // Observation-shaped deterministic commands need to run to produce their
+  // current result. Their verifier still judges the result AFTER the one-shot
+  // execution; it is simply not meaningful as an already-done check. Return
+  // before credential preparation and before executing the verifier so this
+  // opt-out cannot become a second observational shell call in disguise.
+  if (asg.exec.preflightMode === 'always-execute' && asg.exec.run?.trim()) return false;
   const { secrets, redactionSecrets } = await actionExecutionSecrets(slug, asg, 'read');
   const { ok, output } = await execActionVerifier(asg.exec.verify, asg.exec.cwd, secrets, redactionSecrets);
   // Not satisfied is the normal case — proceed to execution with no ceremony.

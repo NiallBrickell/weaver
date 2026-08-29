@@ -81,6 +81,14 @@ export type AssignmentInputModality = 'text' | 'image';
  * configured complex-tier model. Absent means standard. */
 export type AssignmentExecutionComplexity = 'standard' | 'high';
 
+/** Whether an approved action's verifier is also a pre-execution idempotency
+ * check. Most actions use the default `postcondition` mode: an already-true
+ * verifier proves the intended external effect exists, so execution is
+ * skipped. `always-execute` is only for deterministic engine commands whose
+ * current observation/output is itself the result; approval and the ordinary
+ * one-shot execution + readback lifecycle still apply unchanged. */
+export type ActionPreflightMode = 'postcondition' | 'always-execute';
+
 export interface AssignmentExecutionRequirements {
   profile: AssignmentExecutionProfile;
   modalities: AssignmentInputModality[];
@@ -137,6 +145,10 @@ export interface Assignment {
   exec?: {
     cwd: string;
     verify: string;
+    /** Absent/`postcondition` runs verify before execution and skips when it
+     * already succeeds. `always-execute` suppresses only that preflight read;
+     * it is valid solely with an exact deterministic `run` command. */
+    preflightMode?: ActionPreflightMode;
     /** Which durable authority may clear this action's gate. Legacy records
      * omit the field and retain the original pilot-or-human behavior. */
     approvalMode?: 'pilot-or-human' | 'human-only';

@@ -268,6 +268,33 @@ test('many standing decisions trigger the convergence nudge', () => {
   assert.match(p, /standing decisions are commitments, not a cycle log/i);
 });
 
+test('projection keeps the always-execute action preflight contract across a fresh pass', () => {
+  const doc = routineDoc(0);
+  doc.assignments.push({
+    id: 'asg_observation',
+    objective: 'Capture one fresh provider observation',
+    briefing: 'Run the exact command and retain its output.',
+    kind: 'action',
+    exec: {
+      cwd: '/repo',
+      run: 'provider status',
+      verify: 'provider auth-check',
+      preflightMode: 'always-execute',
+      approval: { by: 'pilot', at: NOW },
+    },
+    acceptanceCriteria: ['fresh output recorded'],
+    dependsOn: [],
+    state: 'queued',
+    attempts: [],
+    adoption: { state: 'none' },
+    createdAtVirtual: NOW,
+  });
+
+  const projection = buildProjection(doc, []);
+  assert.match(projection, /asg_observation.*preflight:ALWAYS-EXECUTE/);
+  assert.match(projection, /fresh command output is the result; approval\/one-shot\/readback unchanged/);
+});
+
 test('projection exposes exact cancellable organizational wakes but no harness-owned or historical wakes', () => {
   const doc = routineDoc(0);
   const createdAt = new Date().toISOString();

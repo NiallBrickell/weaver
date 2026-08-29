@@ -780,6 +780,63 @@ test('a routine PR action defaults to Pilot review without opening a human card'
   assert.equal(doc.attention.length, 0, 'Pilot-pending routine work is not a needs-you item');
 });
 
+test('create_assignment persists always-execute only for a deterministic action', async () => {
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const create = req.tools.find((definition) => definition.name === 'create_assignment');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(create && finish);
+
+      const created = await create.handler({
+        objective: 'capture a fresh provider observation',
+        briefing: 'Run the exact read command once and retain its current output.',
+        kind: 'action',
+        acceptance_criteria: ['the current observation is recorded and its read source verifies'],
+        exec_cwd: home,
+        exec_run: 'printf "current observation\\n"',
+        exec_verify: 'true',
+        exec_preflight_mode: 'always-execute',
+        approval_ask: 'Approve one exact observation command. It changes no declared external resource.',
+      }, {});
+      assert.equal(created.isError, undefined);
+
+      const modelAction = await create.handler({
+        objective: 'invalid model action mode',
+        briefing: 'This declaration must be refused.',
+        kind: 'action',
+        acceptance_criteria: ['never launched'],
+        exec_cwd: home,
+        exec_verify: 'true',
+        exec_preflight_mode: 'always-execute',
+        approval_ask: 'Approve nothing; this declaration is invalid.',
+      }, {});
+      assert.equal(modelAction.isError, true);
+      assert.match(JSON.stringify(modelAction), /only valid for deterministic kind.*action.*exec_run/);
+
+      const work = await create.handler({
+        objective: 'invalid work mode',
+        briefing: 'This declaration must be refused.',
+        kind: 'work',
+        acceptance_criteria: ['never launched'],
+        exec_preflight_mode: 'postcondition',
+      }, {});
+      assert.equal(work.isError, true);
+      assert.match(JSON.stringify(work), /only valid for deterministic kind.*action.*exec_run/);
+
+      await finish.handler({ summary: 'Recorded only the valid observational action.', acknowledged_steering: true }, {});
+      return { costUsd: 0, sessionId: 'always-execute-action' };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const doc = await load('coordinator-capacity');
+  assert.equal(doc.assignments.length, 1);
+  assert.equal(doc.assignments[0]!.exec?.preflightMode, 'always-execute');
+  assert.equal(doc.assignments[0]!.exec?.run, 'printf "current observation\\n"');
+});
+
 test('create_assignment refuses a dependency already settled without acceptance', async () => {
   await arrive('coordinator-capacity', (doc) => {
     doc.assignments.push({

@@ -29,6 +29,18 @@ retained only for a loopback Pilot used by existing local installations.
 
    The approved worker performs exactly the briefed act with the same normal Code surface as other workers, plus the workstream's action-only secrets and live Pilot supervision. The local MVP relies on its launching environment for containment rather than adding a second sandbox. When a human authored the exact command, the engine executes it verbatim instead — no model in the loop: models judge, humans decide, code executes.
 
+   Before an exact engine command runs, Weaver normally treats its verifier as
+   a **postcondition preflight**: if the intended effect already exists, the
+   verifier passes and Weaver submits that existing fact for review without
+   repeating the command. A deterministic observation is different when the
+   command's fresh stdout is itself the required result and the verifier merely
+   proves that the source remains readable. Such an action may explicitly use
+   `always-execute`; Weaver then omits only the pre-execution verifier call and
+   runs the approved command once. This mode is not a claim that the command is
+   side-effect-free and does not change its approval, one-shot execution claim,
+   post-execution readback, or unknown-result handling. It is valid only for an
+   exact deterministic engine command, never a model-driven action.
+
 3. **Read back**
 
    The assignment carries a `verify` command — a deterministic shell check the engine runs (`gh pr view --json state`, `test -f evidence.md`, ...). Exit 0 is the only thing that can call the effect real. A non-zero result, a missing verifier, or a verifier that cannot run is **unknown**, not proof that the effect is absent; the worker's own report of success settles nothing.
