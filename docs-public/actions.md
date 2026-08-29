@@ -41,6 +41,25 @@ retained only for a loopback Pilot used by existing local installations.
    post-execution readback, or unknown-result handling. It is valid only for an
    exact deterministic engine command, never a model-driven action.
 
+   An operator can author and pre-approve one of these exact actions directly:
+
+   ```bash
+   weaver assign-action <workstream> \
+     --objective "Read the nightly daemon status" \
+     --briefing "Run exactly the supplied observation command." \
+     --cwd /absolute/working/directory \
+     --run "daemon status --json" \
+     --verify "daemon status --check" \
+     --runner-id niall-mac-encore \
+     --preflight-mode always-execute
+   ```
+
+   `--runner-id` is an exact placement constraint: only a runner with the same
+   `WEAVER_RUNNER_ID` may claim the assignment. Omit it for ordinary
+   fleet-wide scheduling. `--preflight-mode` is accepted only with `--run`;
+   omit it for the normal `postcondition` behavior. These options change where
+   or how the already approved command executes, never who authorized it.
+
 3. **Read back**
 
    The assignment carries a `verify` command — a deterministic shell check the engine runs (`gh pr view --json state`, `test -f evidence.md`, ...). Exit 0 is the only thing that can call the effect real. A non-zero result, a missing verifier, or a verifier that cannot run is **unknown**, not proof that the effect is absent; the worker's own report of success settles nothing.
