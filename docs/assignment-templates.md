@@ -60,7 +60,8 @@ writes the instance around the current workstream's actual state.
 
 1. **Work-shaped only.** A template carries only the fields of a `work`
    assignment. It cannot carry `exec_cwd`/`exec_verify`/`approval_ask`/
-   `approval_mode`/`exec_run`, so no template can ever pre-compose an egress.
+   `approval_mode`/`exec_run`/`exec_preflight_mode`, so no template can ever
+   pre-compose an egress.
    Actions stay hand-composed per external effect, with their own gates —
    unchanged.
 2. **Copy at instantiation, never reference.** Using a template copies its

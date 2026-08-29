@@ -191,6 +191,7 @@ test('a gated action awaits approval while a verified action reports readback tr
   assert.deepEqual(byId.get('asg_gated_action')!.action, {
     awaitingApproval: true,
     approved: false,
+    preflightMode: 'postcondition',
     verify: 'gh pr view 42 --json mergedAt',
     readback: 'pending',
   });
@@ -199,6 +200,7 @@ test('a gated action awaits approval while a verified action reports readback tr
     approved: true,
     approvalBy: 'human',
     approvalAt: '2026-08-14T09:00:00.000Z',
+    preflightMode: 'postcondition',
     verify: 'gh pr view 42 --json mergedAt',
     readback: 'confirmed',
     readbackAt: '2026-08-14T09:10:01.000Z',
@@ -209,6 +211,7 @@ test('a gated action awaits approval while a verified action reports readback tr
     approved: true,
     approvalBy: 'pilot',
     approvalAt: '2026-08-14T09:00:00.000Z',
+    preflightMode: 'postcondition',
     verify: 'gh pr view 43 --json mergedAt',
     readback: 'failed',
     readbackAt: '2026-08-14T09:10:01.000Z',

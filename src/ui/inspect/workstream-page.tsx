@@ -107,6 +107,7 @@ function AssignmentCard({ card }: { card: AssignmentBoardCard }) {
               <div className="mt-2 space-y-2 border-l border-zinc-800 pl-3">
                 {card.action.ask ? <p><span className="font-medium text-zinc-400">Ask</span><br />{displayText(card.action.ask)}</p> : null}
                 {card.action.run ? <p><span className="font-medium text-zinc-400">Run</span><br /><span className="font-mono text-[11px]">{card.action.run}</span></p> : null}
+                <p><span className="font-medium text-zinc-400">Preflight</span><br />{card.action.preflightMode === 'always-execute' ? 'Always execute — this run’s fresh output is the result; verify runs afterwards' : 'Postcondition — skip execution when verify already passes'}</p>
                 <p><span className="font-medium text-zinc-400">Verify</span><br /><span className="font-mono text-[11px]">{card.action.verify}</span></p>
                 {card.action.readbackOutput ? <p><span className="font-medium text-zinc-400">Readback</span><br /><span className="whitespace-pre-wrap font-mono text-[11px]">{card.action.readbackOutput}</span></p> : null}
                 {card.action.rejection ? <p className="text-rose-300">Rejected by {card.action.rejection.actor} · {card.action.rejection.reason}<br /><span className="text-zinc-600">{card.action.rejection.at}</span></p> : null}

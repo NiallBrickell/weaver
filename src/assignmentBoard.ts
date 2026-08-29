@@ -8,6 +8,7 @@
  */
 
 import type {
+  ActionPreflightMode,
   Assignment,
   AssignmentExecutionRequirements,
   AssignmentKind,
@@ -50,6 +51,7 @@ export interface AssignmentBoardAction {
   approvalActor?: string;
   ask?: string;
   run?: string;
+  preflightMode: ActionPreflightMode;
   verify: string;
   rejection?: { actor: string; at: string; reason: string };
   readback: 'pending' | 'confirmed' | 'failed';
@@ -144,6 +146,7 @@ function actionFacts(assignment: Assignment): AssignmentBoardAction | undefined 
     ...(approval?.actor ? { approvalActor: approval.actor } : {}),
     ...(assignment.exec?.ask ? { ask: assignment.exec.ask } : {}),
     ...(assignment.exec?.run ? { run: assignment.exec.run } : {}),
+    preflightMode: assignment.exec?.preflightMode ?? 'postcondition',
     verify: assignment.exec?.verify ?? '',
     ...(assignment.exec?.rejection ? { rejection: { ...assignment.exec.rejection } } : {}),
     readback: verified ? (verified.ok ? 'confirmed' : 'failed') : 'pending',

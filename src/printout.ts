@@ -139,6 +139,13 @@ function renderAction(assignment: Assignment, revision?: number): string[] {
     `- Attempts: ${attempts(assignment)}`,
   ];
   if (exec?.run) lines.push(`- Engine command: \`${exec.run}\``);
+  if (exec) {
+    lines.push(
+      `- Preflight: ${exec.preflightMode === 'always-execute'
+        ? 'ALWAYS EXECUTE — fresh command output is the result; approval, one-shot claim, and post-execution readback still apply'
+        : 'POSTCONDITION — skip execution when the verifier already confirms the effect'}`,
+    );
+  }
   if (assignment.submission) lines.push(`- Submission: ${flat(assignment.submission.summary)} (a claim until accepted)`);
   lines.push(`- Adoption: ${adoptionLine(assignment)}`);
   if (exec) lines.push(`- Deterministic readback: \`${exec.verify}\``);
