@@ -579,6 +579,10 @@ export interface WorkstreamCore {
     windowSeconds: number;
     maxModelStarts: number;
   };
+  /** Exact execution host for every Assignment this Workstream creates.
+   * This is a durable resource constraint, not a model choice or authority
+   * grant. The human placement act also reconciles safe pending work to it. */
+  assignmentRunnerId?: string;
   /** @deprecated Historical lifetime caps remain readable for state and
    * printout lineage, but are never consulted for execution eligibility. */
   budget?: {

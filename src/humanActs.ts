@@ -10,6 +10,7 @@ import { virtualNow } from './clock.js';
 import { loadPolicies, type PolicyRecord } from './policies.js';
 import { arrive, listWorkstreams, load, mutate, mutatePolicies, newId, rename, RevisionConflictError } from './store.js';
 import type { WorkstreamCore } from './types.js';
+import { assertRunnerId } from './runnerIdentity.js';
 
 /**
  * Who is performing this human act. Defaults to the OS user (the human at
@@ -297,6 +298,79 @@ export async function setPriority(
     event('workstream.priority_set', `${actor()} set priority ${before} → ${priority}`);
   });
   return { slug, previous: before, priority, changed: true };
+}
+
+export interface SetAssignmentPlacementResult {
+  slug: string;
+  previous?: string;
+  assignmentRunnerId?: string;
+  assignmentsUpdated: string[];
+  changed: boolean;
+}
+
+/**
+ * Bind every future Assignment in one Workstream to an exact execution host,
+ * and reconcile only intended work that is still safe to move. The arrival's
+ * store transaction serializes against worker claims: either a claim lands
+ * first and this sees a running Assignment, or this placement lands first and
+ * the stale claim loses its revision check.
+ */
+export async function setAssignmentPlacement(
+  slug: string,
+  assignmentRunnerId?: string,
+): Promise<SetAssignmentPlacementResult> {
+  if (assignmentRunnerId !== undefined) {
+    assertRunnerId(assignmentRunnerId, 'assignment runner id');
+  }
+
+  const before = await load(slug);
+  const alreadyPlaced = before.workstream.assignmentRunnerId === assignmentRunnerId &&
+    before.assignments.every((assignment) => {
+      const safePending = (assignment.state === 'queued' || assignment.state === 'gated') &&
+        !assignment.attempts.some((attempt) => attempt.endedAt === undefined);
+      return !safePending || assignment.runnerId === assignmentRunnerId;
+    });
+  if (alreadyPlaced) {
+    return {
+      slug,
+      ...(assignmentRunnerId ? { previous: assignmentRunnerId, assignmentRunnerId } : {}),
+      assignmentsUpdated: [],
+      changed: false,
+    };
+  }
+
+  let result: SetAssignmentPlacementResult | undefined;
+  await arrive(slug, (d, event) => {
+    const previous = d.workstream.assignmentRunnerId;
+    if (assignmentRunnerId === undefined) delete d.workstream.assignmentRunnerId;
+    else d.workstream.assignmentRunnerId = assignmentRunnerId;
+
+    const assignmentsUpdated: string[] = [];
+    for (const assignment of d.assignments) {
+      const safePending = (assignment.state === 'queued' || assignment.state === 'gated') &&
+        !assignment.attempts.some((attempt) => attempt.endedAt === undefined);
+      if (!safePending || assignment.runnerId === assignmentRunnerId) continue;
+      if (assignmentRunnerId === undefined) delete assignment.runnerId;
+      else assignment.runnerId = assignmentRunnerId;
+      assignmentsUpdated.push(assignment.id);
+    }
+
+    const changed = previous !== assignmentRunnerId || assignmentsUpdated.length > 0;
+    if (changed) {
+      const target = assignmentRunnerId ?? 'any runner';
+      const summary = `${actor()} set assignment placement ${previous ?? 'any runner'} → ${target}; reconciled ${assignmentsUpdated.length} safe pending assignment(s)`;
+      d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+      event('workstream.assignment_placement_set', summary, assignmentsUpdated);
+    }
+    result = {
+      slug,
+      ...(previous ? { previous } : {}),
+      ...(assignmentRunnerId ? { assignmentRunnerId } : {}),
+      assignmentsUpdated,
+      changed,
+    };
+  });
+  return result!;
 }
 
 export async function setPaused(slug: string, paused: boolean): Promise<SetPausedResult> {

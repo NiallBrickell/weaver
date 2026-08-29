@@ -21,7 +21,7 @@ import {
   SourceKeyConflictError,
 } from './store.js';
 import { createWorkstreamUnderParent, ManagedWorkstreamError } from './managedWorkstreams.js';
-import { assertRunnerId } from './runnerIdentity.js';
+import { assertRunnerId, resolveAssignmentRunnerId } from './runnerIdentity.js';
 
 function args(): string[] {
   return process.argv.slice(2);
@@ -104,6 +104,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver steer <slug> <message>              durable human steering (wakes the workstream)
   weaver steer <slug> revoke [steerId]       withdraw steering no pass has read yet (default: your last)
   weaver priority <slug> <high|normal|low>   rank a stream for the runner's slots when the fleet is saturated
+  weaver placement <slug> <runner-id|any>    bind all future and safely pending assignments to one execution host; "any" restores fleet-wide placement
   weaver rename <slug> <new-slug>            move a workstream to a better name — history, artifacts, manager links, and policy attribution all follow; refused mid-tick
   weaver approve <slug> <interactionId>      approve a pending send
   weaver reject-send <slug> <interactionId>  reject a pending send
@@ -450,6 +451,24 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       break;
     }
 
+    case 'placement': {
+      const slug = rest[0] ?? fail('usage: weaver placement <slug> <runner-id|any>');
+      const target = rest[1] ?? fail('usage: weaver placement <slug> <runner-id|any>');
+      if (rest.length !== 2) fail('usage: weaver placement <slug> <runner-id|any>');
+      const runnerId = target === 'any' ? undefined : assertRunnerId(target, 'runner id');
+      const { setAssignmentPlacement } = await import('./humanActs.js');
+      const result = await setAssignmentPlacement(slug, runnerId);
+      if (!result.changed) {
+        process.stdout.write(`${slug}: assignment placement is already ${runnerId ?? 'fleet-wide'}\n`);
+        break;
+      }
+      process.stdout.write(
+        `${slug}: assignments ${runnerId ? `bound to ${runnerId}` : 'restored to fleet-wide placement'}; ` +
+          `${result.assignmentsUpdated.length} queued/gated assignment(s) updated\n`,
+      );
+      break;
+    }
+
     case 'rename': {
       const oldSlug = rest[0] ?? fail('usage: weaver rename <slug> <new-slug>');
       const newSlug = rest[1] ?? fail('usage: weaver rename <slug> <new-slug>');
@@ -512,12 +531,13 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       }
       const asgId = newId('asg');
       await arrive(slug, (d, event) => {
+        const assignmentRunnerId = resolveAssignmentRunnerId(d.workstream.assignmentRunnerId, runnerId);
         d.assignments.push({
           id: asgId,
           objective,
           briefing,
           kind: 'action',
-          ...(runnerId ? { runnerId } : {}),
+          ...(assignmentRunnerId ? { runnerId: assignmentRunnerId } : {}),
           exec: {
             cwd,
             verify,

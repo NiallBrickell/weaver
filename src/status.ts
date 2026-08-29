@@ -67,6 +67,9 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   out.push(`Diagnostics: ${doc.spend.coordinatorPasses} coordinator passes · ${doc.spend.humanInterventions ?? 0} human interventions`);
   const providerCapacity = providerCapacityHeadline(doc.providerCapacity ?? []);
   out.push(`Provider capacity: ${providerCapacity ?? 'unknown — no fresh provider-reported plan window'}`);
+  if (ws.assignmentRunnerId) {
+    out.push(`Assignment placement: ${ws.assignmentRunnerId} (exact runner; coordinator remains fleet-wide)`);
+  }
   if (ws.managedBy) {
     out.push(`Managed by: ${ws.managedBy.slug} (since ${ws.managedBy.sinceVirtual.slice(0, 16)})`);
   }

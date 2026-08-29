@@ -64,7 +64,7 @@ import {
   type CapacityTarget,
 } from './modelConfig.js';
 import { deterministicActionsOnly, runnerExecutorCapabilities } from './modelRouting.js';
-import { assertRunnerId } from './runnerIdentity.js';
+import { resolveAssignmentRunnerId } from './runnerIdentity.js';
 import {
   selectCoordinatorExecutor,
   type CoordinatorExecutor,
@@ -397,7 +397,7 @@ export async function runCoordinatorPass(
           execution_profile: z.enum(['general', 'bounded-code-repair', 'evidence-synthesis', 'ui-build']).optional().describe('Typed capability profile for kind "work". Use bounded-code-repair only for a small, well-specified code fix with deterministic verification; use evidence-synthesis for source-grounded analysis; use ui-build for implementation whose acceptance depends on rendered UI quality. Omit for general work. This declares requirements, never a provider or model.'),
           execution_complexity: z.enum(['standard', 'high']).optional().describe('How demanding the work is, for kind "work". Use high ONLY when acceptance depends on deep multi-file reasoning, design judgment, or hard debugging — the operator may seat such work on a stronger model. Standard (or omitted) covers bounded, well-specified work. This declares requirements, never a provider or model.'),
           input_modalities: z.array(z.enum(['text', 'image'])).min(1).optional().describe('Input forms the worker must understand. Omit for text-only work; include image only when the declared inputs contain an image the worker must inspect.'),
-          runner_id: z.string().optional().describe('Optional exact WEAVER_RUNNER_ID that may claim this assignment. Use only when the work truly depends on one execution host (for example a machine-local daemon); omit for normal fleet-wide work. This is placement, not authority or a model choice.'),
+          runner_id: z.string().optional().describe('Optional exact WEAVER_RUNNER_ID that may claim this assignment. Use only when the work truly depends on one execution host (for example a machine-local daemon); omit for normal fleet-wide work. A Workstream-level assignment binding is inherited automatically and a conflicting value is refused. This is placement, not authority or a model choice.'),
           credential_names: z.array(z.string()).optional().describe('For kind "work" only: exact names of applicable global/workstream credentials this assignment needs. Values remain outside typed state and are injected only into this disposable attempt. Omit for credential-free work; never request executor/model identity credentials.'),
           acceptance_criteria: z.array(z.string()).min(1),
           depends_on: z.array(z.string()).optional(),
@@ -439,7 +439,10 @@ export async function runCoordinatorPass(
             if (a.kind === 'action' && deterministicActionsOnly() && !a.exec_run?.trim()) {
               throw new Error('this host requires deterministic-only actions: provide exec_run so no model process enters the credential-bearing action lane');
             }
-            if (a.runner_id !== undefined) assertRunnerId(a.runner_id, 'runner_id');
+            const assignmentRunnerId = resolveAssignmentRunnerId(
+              d.workstream.assignmentRunnerId,
+              a.runner_id,
+            );
             if (a.exec_preflight_mode && (a.kind !== 'action' || !a.exec_run?.trim())) {
               throw new Error('exec_preflight_mode is only valid for deterministic kind "action" assignments with exec_run');
             }
@@ -467,7 +470,7 @@ export async function runCoordinatorPass(
                 },
                 ...(a.credential_names?.length ? { credentialNames: a.credential_names } : {}),
               } : {}),
-              ...(a.runner_id ? { runnerId: a.runner_id } : {}),
+              ...(assignmentRunnerId ? { runnerId: assignmentRunnerId } : {}),
               ...(a.read_dirs?.length ? { readDirs: a.read_dirs } : {}),
               ...(a.kind === 'action'
                 ? { exec: {

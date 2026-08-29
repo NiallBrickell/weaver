@@ -110,7 +110,10 @@ Runner IDs accept 1–128 ASCII letters, digits, dots, underscores, and hyphens,
 starting with a letter or digit. Invalid IDs and placement-only values other
 than `0`/`1` fail before a claim. The hostname fallback is conservative for a
 normal machine, but container hostnames are often recreated, so hosted runners
-should always set an explicit stable ID.
+should always set an explicit stable ID. Use `weaver placement <workstream>
+<runner-id>` to bind all future and safely pending Assignments in one Workstream
+to that host; `weaver placement <workstream> any` restores fleet-wide placement.
+The typed binding is described in [Where model loops run](./executors.md#where-workers-run).
 
 A hosted Pilot must use HTTPS and a bearer registered in Weaver's executor-only
 secret store, never `.env` or an action-secret scope:

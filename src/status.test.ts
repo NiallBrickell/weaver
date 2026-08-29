@@ -160,6 +160,15 @@ test('an unavailable approval service remains operational state, not a per-actio
   assert.doesNotMatch(paused, /Legacy timeout card/);
 });
 
+test('status exposes the durable assignment placement separately from coordinator execution', () => {
+  const current = doc([]);
+  current.workstream.assignmentRunnerId = 'niall-mac-primary';
+  assert.match(
+    renderStatus(current),
+    /Assignment placement: niall-mac-primary \(exact runner; coordinator remains fleet-wide\)/,
+  );
+});
+
 test('legacy credit state renders the current plan-usage recovery contract', () => {
   const credit = infrastructure(
     'sdk_credit_exhausted',
