@@ -162,17 +162,18 @@ general capability declaration above. A hosted runner carrying operator/model
 identities must use OpenHands for its ordinary worker and every worker fallback;
 host-process Pi, Codex, and local-login Claude workers are refused before
 systemd can start or restart the runner. Coordination uses the separate
-tool-restricted Claude SDK seam against OpenRouter's supported Anthropic API
-surface, with an organization API key from executor-only storage and a fresh
-empty Claude config directory for every pass. The resulting declaration is
+tool-restricted Claude SDK seam directly with a scoped Anthropic API key from
+executor-only storage and a fresh empty Claude config directory for every
+pass. OpenRouter remains only a fixed, low-cost fallback pool; moving `latest`
+aliases are forbidden in the checked-in profile. The resulting declaration is
 explicit:
 
 ```dotenv
 WEAVER_EXECUTOR=openhands
 WEAVER_WORKER_FALLBACKS=
-WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-latest
+WEAVER_COORDINATOR_MODEL=claude-fable-5
 WEAVER_COORDINATOR_EXECUTOR=local-sdk
-WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-sonnet-latest
+WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-haiku-4.5
 WEAVER_ACTION_EXECUTOR=local-sdk
 WEAVER_PILOT_URL=http://127.0.0.1:9721
 WEAVER_RUNNER_EXECUTORS=openhands,local-sdk
@@ -191,10 +192,10 @@ last check exercises the exact shared bearer client used by engine and worker
 actions; a parallel curl implementation cannot substitute for it.
 The helper also provisions a service-user-owned rootless Docker daemon and
 requires it in the same preflight, avoiding the root-equivalent Docker group.
-It refuses `~/.codex/auth.json` and never copies personal CLI/device state.
-The OpenRouter Agent SDK environment follows the provider's documented
-[Anthropic Agent SDK integration](https://openrouter.ai/docs/guides/community/anthropic-agent-sdk),
-but Weaver supplies it per pass rather than trusting ambient shell variables.
+It refuses `~/.codex/auth.json`, refuses `CLAUDE_CODE_OAUTH_TOKEN`, and never
+copies personal CLI/device state. Both the direct Anthropic identity and the
+OpenRouter fallback are supplied per pass rather than trusted from ambient
+shell variables.
 See [Hosting Weaver](./hosting.md#deploying-the-runner-on-a-gcp-vm).
 
 Prime Agent remains available only in the harness-eval vocabulary. Pi is a

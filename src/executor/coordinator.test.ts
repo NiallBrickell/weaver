@@ -45,6 +45,42 @@ function request(overrides: Partial<CoordinatorExecutionRequest> = {}): Coordina
 }
 
 describe('ClaudeCoordinatorExecutor', () => {
+  test('uses a registered direct Anthropic API key in a fresh config boundary', async () => {
+    let captured: any;
+    let cleaned = 0;
+    const executor = new ClaudeCoordinatorExecutor({
+      loadExecutorSecrets: () => ({ ANTHROPIC_API_KEY: 'registered-anthropic-key' }),
+      prepareApiHome: () => ({
+        path: '/tmp/fresh-direct-claude-home',
+        cleanup() { cleaned++; },
+      }),
+      runQuery: ((args: any) => {
+        captured = args;
+        return (async function* () {})();
+      }) as any,
+    });
+
+    const outcome = await executor.execute(request({
+      model: 'claude-fable-5',
+      env: {
+        PATH: '/usr/bin',
+        CLAUDE_CODE_OAUTH_TOKEN: 'ambient-device-login',
+        ANTHROPIC_API_KEY: 'ambient-api-key',
+        ANTHROPIC_BASE_URL: 'https://untrusted.example',
+        OPENROUTER_API_KEY: 'ambient-router-key',
+      },
+    }));
+
+    assert.deepEqual(outcome, { costUsd: 0 });
+    assert.equal(cleaned, 1);
+    assert.equal(captured.options.model, 'claude-fable-5');
+    assert.deepEqual(captured.options.env, {
+      PATH: '/usr/bin',
+      CLAUDE_CONFIG_DIR: '/tmp/fresh-direct-claude-home',
+      ANTHROPIC_API_KEY: 'registered-anthropic-key',
+    });
+  });
+
   test('uses a fresh OpenRouter API identity without ambient Claude or device-login state', async () => {
     let captured: any;
     let cleaned = 0;

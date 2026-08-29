@@ -22,9 +22,9 @@ const SAFE_GCP_EXECUTION_ENV = [
   'WEAVER_OPENHANDS_HOST_GATEWAY_IP=10.170.0.2',
   'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.2',
   'WEAVER_WORKER_FALLBACKS=',
-  'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-latest',
+  'WEAVER_COORDINATOR_MODEL=claude-fable-5',
   'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
-  'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-sonnet-latest',
+  'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-haiku-4.5',
   'WEAVER_ACTION_EXECUTOR=local-sdk',
   'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
   'WEAVER_PILOT_URL=http://127.0.0.1:9721',
@@ -224,6 +224,7 @@ esac
   fs.writeFileSync(preflightEnvFile, preflightEnv);
   const executorSecretsFile = path.join(root, 'executor-secrets.env');
   const executorSecrets = [
+    'ANTHROPIC_API_KEY=test-anthropic-key',
     'OPENROUTER_API_KEY=test-provider-key',
     ...(pilotTokenPresent ? ['WEAVER_PILOT_TOKEN=test-pilot-token'] : []),
     ...(githubCredentialsPresent ? [
@@ -540,7 +541,8 @@ test('set-store refuses a non-Postgres value before invoking gcloud', () => {
 test('push-env upgrades a stale remote installer before securely forwarding identities and config', () => {
   const rendered = [
     'OPENROUTER_API_KEY=registered-provider-secret',
-    'CLAUDE_CODE_OAUTH_TOKEN=personal-device-secret',
+    'ANTHROPIC_API_KEY=registered-anthropic-secret',
+    'CLAUDE_CODE_OAUTH_TOKEN=forbidden-device-secret',
     'ZHIPU_API_KEY=unused-provider-secret',
     'WEAVER_EXECUTOR=pi',
     'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5',
@@ -558,9 +560,13 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
   assert.ok(!call(root, 2, 'stdin').includes('OPENROUTER_API_KEY'));
   assert.ok(call(root, 2, 'stdin').includes('WEAVER_EXECUTOR=pi'));
   assert.match(call(root, 2, 'args'), /weaver-install-env merge/);
-  assert.equal(call(root, 3, 'stdin'), 'OPENROUTER_API_KEY=registered-provider-secret\n');
+  assert.equal(call(root, 3, 'stdin'), [
+    'OPENROUTER_API_KEY=registered-provider-secret',
+    'ANTHROPIC_API_KEY=registered-anthropic-secret',
+    '',
+  ].join('\n'));
   assert.match(call(root, 3, 'args'), /weaver-install-env executor-secrets/);
-  assert.ok(!call(root, 3, 'stdin').includes('personal-device-secret'));
+  assert.ok(!call(root, 3, 'stdin').includes('forbidden-device-secret'));
   assert.ok(!call(root, 3, 'stdin').includes('unused-provider-secret'));
   assert.ok(!allCallArgs(root).includes('systemctl'));
   assert.equal(fs.readFileSync(path.join(root, 'calls', 'count'), 'utf8').trim(), '3');
@@ -572,8 +578,8 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
     'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.2',
     'WEAVER_WORKER_FALLBACKS=',
     'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
-    'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-latest',
-    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-sonnet-latest',
+    'WEAVER_COORDINATOR_MODEL=claude-fable-5',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-haiku-4.5',
     'WEAVER_ACTION_EXECUTOR=local-sdk',
     'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
     'WEAVER_RUNNER_EXECUTORS=openhands,local-sdk',
@@ -704,14 +710,14 @@ test('GCP restart refuses a host-process worker fallback before systemctl', () =
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
 });
 
-test('GCP start refuses an unqualified or device-login coordinator', () => {
-  const unqualified = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-latest',
-    'WEAVER_COORDINATOR_MODEL=claude-opus-4-8',
+test('GCP start refuses an OpenRouter primary or device-login coordinator', () => {
+  const routedPrimary = SAFE_GCP_EXECUTION_ENV.replace(
+    'WEAVER_COORDINATOR_MODEL=claude-fable-5',
+    'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-5',
   );
-  const first = run(['start'], undefined, '', false, unqualified);
+  const first = run(['start'], undefined, '', false, routedPrimary);
   assert.notEqual(first.result.status, 0);
-  assert.match(first.result.stderr, /must be an openrouter\/ provider-qualified model/);
+  assert.match(first.result.stderr, /scoped direct Anthropic identity; OpenRouter is fallback-only/);
   assert.equal(fs.existsSync(path.join(first.root, 'calls', '1.systemctl-executed')), false);
 
   const deviceLogin = SAFE_GCP_EXECUTION_ENV.replace(
@@ -722,6 +728,25 @@ test('GCP start refuses an unqualified or device-login coordinator', () => {
   assert.notEqual(second.result.status, 0);
   assert.match(second.result.stderr, /must be local-sdk on this host/);
   assert.equal(fs.existsSync(path.join(second.root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses missing API identity and any Claude OAuth token', () => {
+  const missing = fixture();
+  const secretsPath = String(missing.env.WEAVER_GCP_TEST_EXECUTOR_SECRETS);
+  fs.writeFileSync(
+    secretsPath,
+    fs.readFileSync(secretsPath, 'utf8').replace('ANTHROPIC_API_KEY=test-anthropic-key\n', ''),
+  );
+  const first = startExistingFixture(missing);
+  assert.notEqual(first.status, 0);
+  assert.match(first.stderr, /requires exactly one scoped ANTHROPIC_API_KEY/);
+
+  const oauth = fixture();
+  const oauthPath = String(oauth.env.WEAVER_GCP_TEST_EXECUTOR_SECRETS);
+  fs.appendFileSync(oauthPath, 'CLAUDE_CODE_OAUTH_TOKEN=forbidden-device-token\n');
+  const second = startExistingFixture(oauth);
+  assert.notEqual(second.status, 0);
+  assert.match(second.stderr, /CLAUDE_CODE_OAUTH_TOKEN is forbidden on this host/);
 });
 
 test('GCP start refuses a failing installed shared-client probe before systemctl', () => {

@@ -214,13 +214,13 @@ values as shell.
 same fail-closed host preflight before systemd can launch the runner. This GCP
 helper is deliberately narrower than Weaver's general executor support:
 ordinary work and every worker fallback must use `openhands`, the coordinator
-uses the tool-restricted Claude SDK over OpenRouter with the registered
-organization API key, the capability declaration is explicit, and the service
-user's rootless Docker daemon must answer. The durable model target retains an
-`openrouter/` prefix so attempts and capacity state name the real billing pool;
-the adapter removes that prefix only for the upstream call. Pi, local-login
-Claude, and Codex remain valid on operator-controlled machines; they are
-refused as hosted worker/coordinator routes on this credential-bearing host.
+uses the tool-restricted Claude SDK directly with a registered scoped
+`ANTHROPIC_API_KEY`, the capability declaration is explicit, and the service
+user's rootless Docker daemon must answer. Its fixed OpenRouter Haiku fallback
+retains an `openrouter/` prefix so attempts and capacity state name the real
+billing pool; the adapter removes that prefix only for the upstream call. Pi,
+local-login Claude, and Codex remain valid on operator-controlled machines;
+personal OAuth/device identities are refused on this credential-bearing host.
 Rootless Docker is separate from the root-owned daemon used by the optional
 bundled Postgres, so disposable workers do not make the service account
 root-equivalent through the Docker group.
@@ -264,7 +264,7 @@ one. Use the [exact filesystem-to-Postgres copy](./hosted-state.md) first.
 `push-env` synchronizes two distinct host inputs before any optional restart:
 the helper's fixed hosted execution profile plus ingress configuration remains
 in `/etc/weaver/env`, while the hosted allowlist of registered credentials
-(OpenRouter, Pilot, serve, and the GitHub App identity) is installed at
+(scoped Anthropic API, OpenRouter, Pilot, serve, and the GitHub App identity) is installed at
 `/home/weaver/state/executor-secrets.env`. Both are mode `0600`; the second is
 the canonical adapter-only store read by Weaver executors. Removing a locally
 registered allowed credential and pushing again removes it from the host too.

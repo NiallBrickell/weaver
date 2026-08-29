@@ -110,6 +110,26 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
         // Claude Code treats an absent key differently from an explicitly
         // empty one on its supported OpenRouter route.
         env.ANTHROPIC_API_KEY = '';
+      } else {
+        const registered = this.executorSecretsLoader();
+        // A headless API-key principal is distinct from the operator's local
+        // Claude Code login. Give it the same fresh, empty config boundary as
+        // OpenRouter so a service account can never inherit hooks, settings,
+        // or device state from the hosting user. A registered OAuth token keeps
+        // the existing local-subscription precedence and path instead.
+        const key = registered.CLAUDE_CODE_OAUTH_TOKEN
+          ? undefined
+          : registered.ANTHROPIC_API_KEY;
+        if (key) {
+          redactions = { ANTHROPIC_API_KEY: key };
+          apiHome = this.prepareApiHome();
+          env = { ...req.env };
+          stripClaudeCredentials(env);
+          delete env.ANTHROPIC_BASE_URL;
+          delete env.OPENROUTER_API_KEY;
+          env.CLAUDE_CONFIG_DIR = apiHome.path;
+          env.ANTHROPIC_API_KEY = key;
+        }
       }
       for await (const message of this.runQuery({
         prompt: req.prompt,
