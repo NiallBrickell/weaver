@@ -21,6 +21,7 @@ import {
   SourceKeyConflictError,
 } from './store.js';
 import { createWorkstreamUnderParent, ManagedWorkstreamError } from './managedWorkstreams.js';
+import { assertRunnerId } from './runnerIdentity.js';
 
 function args(): string[] {
   return process.argv.slice(2);
@@ -108,7 +109,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver reject-send <slug> <interactionId>  reject a pending send
   weaver approve-action <slug> <asgId>       approve a gated real-world action (runs on next tick, confirmed by readback)
   weaver reject-action <slug> <asgId> [why]  reject a gated action
-  weaver assign-action <slug> --objective <o> --briefing <b> --cwd <dir> --verify <cmd> [--run <cmd>] [--depends-on id]...   author a real-world action yourself (pre-approved; --run = engine executes the exact command deterministically, no model)
+  weaver assign-action <slug> --objective <o> --briefing <b> --cwd <dir> --verify <cmd> [--run <cmd>] [--runner-id <id>] [--preflight-mode <postcondition|always-execute>] [--depends-on id]...   author a real-world action yourself (pre-approved; --run = engine executes the exact command deterministically, no model)
   weaver constraint <slug> add <text>        add a hard constraint (human-owned direction)
   weaver constraint <slug> remove <match>    remove the constraint containing <match>
   weaver reply <slug> --interaction <id> --from <who> --body <text> [--key <idempotency>]   simulate an inbound reply
@@ -486,6 +487,19 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       if (!(await import('node:path')).isAbsolute(cwd)) fail(`--cwd must be absolute, got '${cwd}'`);
       const verify = opt(rest, 'verify') ?? fail('--verify required');
       const run = opt(rest, 'run');
+      const runnerId = opt(rest, 'runner-id');
+      if (rest.includes('--runner-id') && runnerId === undefined) fail('--runner-id requires an id');
+      if (runnerId !== undefined) assertRunnerId(runnerId, '--runner-id');
+      const preflightMode = opt(rest, 'preflight-mode');
+      if (rest.includes('--preflight-mode') && preflightMode === undefined) {
+        fail('--preflight-mode requires postcondition or always-execute');
+      }
+      if (preflightMode !== undefined && preflightMode !== 'postcondition' && preflightMode !== 'always-execute') {
+        fail(`--preflight-mode must be postcondition or always-execute, got '${preflightMode}'`);
+      }
+      if (preflightMode !== undefined && !run?.trim()) {
+        fail('--preflight-mode requires --run');
+      }
       const deps = optAll(rest, 'depends-on');
       {
         // Commands are stored in typed state forever — a pasted secret VALUE
@@ -503,7 +517,14 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
           objective,
           briefing,
           kind: 'action',
-          exec: { cwd, verify, ...(run ? { run } : {}), approval: { by: 'human', at: new Date().toISOString() } },
+          ...(runnerId ? { runnerId } : {}),
+          exec: {
+            cwd,
+            verify,
+            ...(run ? { run } : {}),
+            ...(preflightMode ? { preflightMode } : {}),
+            approval: { by: 'human', at: new Date().toISOString() },
+          },
           acceptanceCriteria: ['Perform exactly the act in the briefing; report exact references; the harness verifies by readback'],
           dependsOn: deps,
           state: 'queued',
