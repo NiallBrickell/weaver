@@ -108,18 +108,17 @@ while IFS= read -r entry; do
   esac
 done < <(csv_entries "$worker_fallbacks")
 
-# The coordinator is a separate, tool-restricted process seam. On this hosted
-# profile it uses the Claude Agent SDK against OpenRouter's supported Anthropic
-# API surface: an organization API key, never a copied CLI/device login. The
-# provider prefix stays on the durable target so attempts name their real
-# billing pool; the adapter removes it only when calling the upstream model.
+# The coordinator is a separate, tool-restricted process seam. Its primary is
+# an explicitly registered scoped Anthropic API key in executor-only storage,
+# never ambient OAuth or copied CLI/device state. OpenRouter may appear only in
+# the fallback chain; its provider prefix preserves honest billing attribution.
 coordinator_executor="$(env_value WEAVER_COORDINATOR_EXECUTOR)"
 [ -n "$coordinator_executor" ] || coordinator_executor=local-sdk
 [ "$coordinator_executor" = local-sdk ] || fail 'WEAVER_COORDINATOR_EXECUTOR must be local-sdk on this host'
 coordinator_model="$(env_value WEAVER_COORDINATOR_MODEL)"
 case "$coordinator_model" in
-  openrouter/*) ;;
-  *) fail 'WEAVER_COORDINATOR_MODEL must be an openrouter/ provider-qualified model on this host' ;;
+  '') fail 'WEAVER_COORDINATOR_MODEL must name the direct Claude model on this host' ;;
+  openrouter/*) fail 'WEAVER_COORDINATOR_MODEL must use the scoped direct Anthropic identity; OpenRouter is fallback-only' ;;
 esac
 
 coordinator_executors=("$coordinator_executor")
@@ -130,10 +129,7 @@ if env_has WEAVER_COORDINATOR_FALLBACKS; then
     executor="$(parse_target_executor "$entry" WEAVER_COORDINATOR_FALLBACKS)"
     [ "$executor" = local-sdk ] || fail 'every WEAVER_COORDINATOR_FALLBACKS target must use local-sdk on this host'
     model="$(trim "${entry#*:}")"
-    case "$model" in
-      openrouter/*) ;;
-      *) fail 'every WEAVER_COORDINATOR_FALLBACKS model must use the openrouter/ provider prefix on this host' ;;
-    esac
+    [ -n "$model" ] || fail 'every WEAVER_COORDINATOR_FALLBACKS target must name a model'
     coordinator_executors+=("$executor")
   done < <(csv_entries "$coordinator_fallbacks")
 else
@@ -141,10 +137,7 @@ else
   [ -n "$coordinator_fallback_executor" ] || coordinator_fallback_executor="$coordinator_executor"
   [ "$coordinator_fallback_executor" = local-sdk ] || fail 'WEAVER_COORDINATOR_FALLBACK_EXECUTOR must be local-sdk on this host'
   coordinator_fallback_model="$(env_value WEAVER_COORDINATOR_FALLBACK_MODEL)"
-  case "$coordinator_fallback_model" in
-    openrouter/*) ;;
-    *) fail 'WEAVER_COORDINATOR_FALLBACK_MODEL must use the openrouter/ provider prefix on this host' ;;
-  esac
+  [ -n "$coordinator_fallback_model" ] || fail 'WEAVER_COORDINATOR_FALLBACK_MODEL must name a model'
   coordinator_executors+=("$coordinator_fallback_executor")
 fi
 
@@ -195,6 +188,18 @@ secure_openrouter_coordinator_boundary() {
 }
 
 secure_openrouter_coordinator_boundary
+
+secure_direct_anthropic_boundary() {
+  local key_count oauth_count
+  key_count="$(awk 'index($0, "ANTHROPIC_API_KEY=") == 1 { count++ } END { print count + 0 }' "$executor_secrets_file")"
+  oauth_count="$(awk 'index($0, "CLAUDE_CODE_OAUTH_TOKEN=") == 1 { count++ } END { print count + 0 }' "$executor_secrets_file")"
+  [ "$oauth_count" -eq 0 ] || fail 'personal/subscription CLAUDE_CODE_OAUTH_TOKEN is forbidden on this host; use a scoped ANTHROPIC_API_KEY'
+  [ "$key_count" -eq 1 ] || fail 'hosted direct Claude requires exactly one scoped ANTHROPIC_API_KEY'
+  [ -n "$(awk 'index($0, "ANTHROPIC_API_KEY=") == 1 { print substr($0, 19) }' "$executor_secrets_file")" ] || \
+    fail 'ANTHROPIC_API_KEY must be nonempty'
+}
+
+secure_direct_anthropic_boundary
 
 secure_pilot_boundary() {
   local pilot_url token_count pilot_token pilot_user pilot_pid pilot_listeners
