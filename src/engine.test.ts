@@ -24,7 +24,7 @@ import {
 import { runCoordinatorPass } from './coordinator.js';
 import { rejectSend } from './humanActs.js';
 import { providerSend, readLedger } from './world.js';
-import { arrive, createWorkstream, load, newId, readArtifact, writeArtifact } from './store.js';
+import { arrive, createWorkstream, heartbeatRunner, load, newId, readArtifact, writeArtifact } from './store.js';
 import { runWorker } from './worker.js';
 import { setExecutorSecret } from './secrets.js';
 import { virtualNow } from './clock.js';
@@ -369,6 +369,31 @@ test('a worker-only runner leaves coordinator wakes pending for a capable host',
   const doc = await load('worker-only-runner');
   assert.equal(report.passes.length, 0);
   assert.equal(doc.wakes.find((wake) => wake.id === 'wake_worker_only')!.status, 'pending');
+  assert.equal(doc.lease, null);
+  assert.equal(doc.passes.length, 0);
+});
+
+test('an ineligible standby leaves coordinator wakes pending without blocking other tick lanes', async () => {
+  process.env.WEAVER_RUNNER_ID = 'gcp-standby';
+  await createWorkstream({
+    slug: 'preferred-coordinator-runner', title: 'Preferred coordinator runner',
+    objective: 'keep reconciliation on the preferred host while it is live',
+    tags: [], successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    executionPolicy: { coordinatorRunnerOrder: ['mac-primary', 'gcp-standby'] },
+  });
+  await arrive('preferred-coordinator-runner', (doc) => doc.wakes.push({
+    id: 'wake_preferred', reason: 'coordinate now', condition: { type: 'immediate' },
+    status: 'pending', createdAt: new Date().toISOString(),
+  }));
+  await heartbeatRunner('mac-primary');
+  const report = await tick('preferred-coordinator-runner', {
+    coordinatorExecutor: {
+      id: 'local-sdk', async execute() { throw new Error('standby coordinator must not launch'); },
+    },
+  });
+  assert.equal(report.passes.length, 0);
+  const doc = await load('preferred-coordinator-runner');
+  assert.equal(doc.wakes.find((wake) => wake.id === 'wake_preferred')?.status, 'pending');
   assert.equal(doc.lease, null);
   assert.equal(doc.passes.length, 0);
 });

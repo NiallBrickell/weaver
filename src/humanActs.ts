@@ -11,6 +11,7 @@ import { loadPolicies, type PolicyRecord } from './policies.js';
 import { arrive, listWorkstreams, load, mutate, mutatePolicies, newId, rename, RevisionConflictError } from './store.js';
 import type { WorkstreamCore } from './types.js';
 import { assertRunnerId } from './runnerIdentity.js';
+import { validateCoordinatorRunnerOrder } from './coordinatorRunner.js';
 
 /**
  * Who is performing this human act. Defaults to the OS user (the human at
@@ -371,6 +372,32 @@ export async function setAssignmentPlacement(
     };
   });
   return result!;
+}
+
+/** Set the human-owned coordinator host preference. This changes physical
+ * placement, not organizational direction, so it records an event but does
+ * not wake a model or count as a course intervention. */
+export async function setCoordinatorRunnerOrder(
+  slug: string,
+  requested: readonly string[] | null,
+): Promise<{ previous: string[] | null; current: string[] | null; changed: boolean }> {
+  const currentDoc = await load(slug);
+  const previous = currentDoc.workstream.executionPolicy?.coordinatorRunnerOrder ?? null;
+  const current = requested === null ? null : validateCoordinatorRunnerOrder(requested);
+  if (JSON.stringify(previous) === JSON.stringify(current)) return { previous, current, changed: false };
+  await arrive(slug, (d, event) => {
+    if (current === null) {
+      delete d.workstream.executionPolicy;
+      event('workstream.coordinator_runner_order_cleared', `${actor()} restored fleet-wide coordinator claims`);
+    } else {
+      d.workstream.executionPolicy = { coordinatorRunnerOrder: [...current] };
+      event(
+        'workstream.coordinator_runner_order_set',
+        `${actor()} set coordinator runner order: ${current.join(' → ')}`,
+      );
+    }
+  });
+  return { previous, current, changed: true };
 }
 
 export async function setPaused(slug: string, paused: boolean): Promise<SetPausedResult> {

@@ -43,6 +43,13 @@
 import type { PolicyStore } from '../policies.js';
 import type { EventRecord, WorkstreamCore, WorkstreamDoc } from '../types.js';
 
+/** Ephemeral execution-host liveness shared through the StateStore. This is
+ * operational presence, not intended work or a persisted worker definition. */
+export interface RunnerPresence {
+  runnerId: string;
+  heartbeatAt: string;
+}
+
 export type EventHelper = (type: string, summary: string, refs?: string[]) => void;
 
 export type Mutator = (doc: WorkstreamDoc, event: EventHelper) => void;
@@ -97,6 +104,10 @@ export interface StateStore {
   /** Concurrency-safe read-modify-write of the global policy store; the
    * mutator may be re-run against fresh state after a conflicting write. */
   mutatePolicies(fn: (store: PolicyStore) => void): Promise<PolicyStore>;
+  /** Upsert one runner's TTL heartbeat without mutating any Workstream. */
+  heartbeatRunner(presence: RunnerPresence): Promise<void>;
+  /** Current and stale runner observations; callers apply the harness TTL. */
+  listRunnerPresence(): Promise<RunnerPresence[]>;
   /** Cross-process tick exclusion; null when another live process holds it. */
   tryTickLock(slug: string): Promise<(() => Promise<void>) | null>;
   /** Move one workstream's whole stored identity to a new slug: the doc's

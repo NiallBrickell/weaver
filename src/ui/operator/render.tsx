@@ -1347,6 +1347,7 @@ function JobDetails({ view, facts }: { view: WorkstreamPageView; facts: TypedFac
         <dl className="grid gap-3 text-sm sm:grid-cols-[9rem_minmax(0,1fr)]">
           <dt className="text-zinc-600">Workstream</dt><dd className="text-zinc-400">{view.doc.workstream.slug} · revision {view.doc.revision}</dd>
           <dt className="text-zinc-600">Objective</dt><dd className="text-zinc-400">{view.doc.workstream.objective}</dd>
+          <dt className="text-zinc-600">Coordinator runners</dt><dd className="text-zinc-400">{view.doc.workstream.executionPolicy?.coordinatorRunnerOrder.join(' → ') ?? 'Fleet-wide'}</dd>
           {standing ? <><dt className="text-zinc-600">Standing course</dt><dd className="text-zinc-400">{displayText(standing.decision.title)} — {displayText(standing.decision.rationale)}</dd></> : null}
         </dl>
         <details className="mt-5 border-t border-zinc-800 pt-4">

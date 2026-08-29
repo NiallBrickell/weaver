@@ -64,7 +64,8 @@ import {
   type CapacityTarget,
 } from './modelConfig.js';
 import { deterministicActionsOnly, runnerExecutorCapabilities } from './modelRouting.js';
-import { resolveAssignmentRunnerId } from './runnerIdentity.js';
+import { assertRunnerId, resolveAssignmentRunnerId, runnerClaimIdentity } from './runnerIdentity.js';
+import { coordinatorRunnerEligibility } from './coordinatorRunner.js';
 import {
   selectCoordinatorExecutor,
   type CoordinatorExecutor,
@@ -74,6 +75,7 @@ import {
   arrive,
   findBySourceKey,
   listManagedBy,
+  listRunnerPresence,
   load,
   mutate,
   newId,
@@ -83,6 +85,13 @@ import {
 import type { Assignment, InfrastructureWait, PassRecord, Wake, WorkstreamDoc } from './types.js';
 
 const LEASE_MS = 15 * 60_000;
+
+export class CoordinatorRunnerIneligibleError extends Error {
+  constructor(runnerId: string, reason: string) {
+    super(`runner '${runnerId}' cannot claim this coordinator pass: ${reason}`);
+    this.name = 'CoordinatorRunnerIneligibleError';
+  }
+}
 
 export { coordinatorFallbackModel, coordinatorModel } from './modelConfig.js';
 
@@ -205,6 +214,7 @@ export async function runCoordinatorPass(
   providedExecutor?: CoordinatorExecutor,
   executorCapabilities?: ReadonlySet<string>,
 ): Promise<PassOutcome> {
+  const runner = runnerClaimIdentity();
   const declaredExecutors = executorCapabilities ??
     (providedExecutor ? undefined : runnerExecutorCapabilities());
   let doc = await load(slug);
@@ -218,6 +228,12 @@ export async function runCoordinatorPass(
   // Single-flight lease.
   if (doc.lease && new Date(doc.lease.expiresAt).getTime() > Date.now()) {
     throw new Error(`another coordinator pass holds the lease (${doc.lease.passId})`);
+  }
+  if (doc.workstream.executionPolicy?.coordinatorRunnerOrder) {
+    const eligibility = coordinatorRunnerEligibility(doc, runner.id, await listRunnerPresence());
+    if (!eligibility.eligible) {
+      throw new CoordinatorRunnerIneligibleError(runner.id, eligibility.reason ?? 'not eligible');
+    }
   }
 
   const passId = newId('pass');
@@ -247,6 +263,13 @@ export async function runCoordinatorPass(
     );
   }
   const startedAt = new Date();
+  // Refresh presence immediately before the revision-checked claim. The same
+  // snapshot is re-evaluated against the Workstream revision the CAS sees, so
+  // a concurrent policy change cannot be crossed and a newly-live preferred
+  // runner blocks the standby before any lease/pass record exists.
+  const claimPresence = doc.workstream.executionPolicy?.coordinatorRunnerOrder
+    ? await listRunnerPresence()
+    : [];
   try {
     doc = await mutate(slug, doc.revision, (d, event) => {
       // The check and start record share one revision-checked claim. A direct
@@ -255,9 +278,14 @@ export async function runCoordinatorPass(
       if (declaredExecutors && !declaredExecutors.has(passTarget.executor)) {
         throw new Error(`runner does not declare coordinator executor '${passTarget.executor}'`);
       }
+      const eligibility = coordinatorRunnerEligibility(d, runner.id, claimPresence, startedAt.getTime());
+      if (!eligibility.eligible) {
+        throw new CoordinatorRunnerIneligibleError(runner.id, eligibility.reason ?? 'not eligible');
+      }
       assertExecutionStartAllowed(d, startedAt);
       d.lease = {
         passId,
+        runnerId: runner.id,
         acquiredAt: startedAt.toISOString(),
         expiresAt: new Date(startedAt.getTime() + LEASE_MS).toISOString(),
       };
@@ -269,6 +297,7 @@ export async function runCoordinatorPass(
         model: passModel,
         executor: passTarget.executor,
         provider: passTarget.provider,
+        runnerId: runner.id,
         changes: [],
         outcome: 'running',
       });

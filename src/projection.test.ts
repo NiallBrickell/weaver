@@ -16,6 +16,14 @@ import { buildProjection } from './projection.js';
 import type { WorkstreamDoc, Decision, Deliverable, Assignment } from './types.js';
 import { virtualNow } from './clock.js';
 
+test('the projection exposes durable coordinator host preference without changing worker placement', () => {
+  const doc = routineDoc(0);
+  doc.workstream.executionPolicy = { coordinatorRunnerOrder: ['mac-primary', 'gcp-standby'] };
+  const projection = buildProjection(doc, []);
+  assert.match(projection, /Coordinator runner policy: mac-primary → gcp-standby/);
+  assert.match(projection, /physical pass placement only/);
+});
+
 const NOW = '2026-08-10T00:00:00.000Z';
 const BIG_RATIONALE = 'x'.repeat(2000); // supporting prose that must not dominate
 

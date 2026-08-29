@@ -115,6 +115,15 @@ should always set an explicit stable ID. Use `weaver placement <workstream>
 to that host; `weaver placement <workstream> any` restores fleet-wide placement.
 The typed binding is described in [Where model loops run](./executors.md#where-workers-run).
 
+Runner identity is also used by the durable, per-Workstream coordinator host
+preference. Configure it with
+`weaver coordinator-runners <slug> <primary-id> <standby-id>...`; clear it with
+`--clear`. This is typed Workstream state, not
+an environment setting, so different hosts' local model configuration cannot
+turn shared Postgres lock acquisition into an accidental provider choice.
+Resident runners publish shared heartbeats every poll, and a standby becomes
+eligible after earlier entries have been absent for 120 seconds.
+
 A hosted Pilot must use HTTPS and a bearer registered in Weaver's executor-only
 secret store, never `.env` or an action-secret scope:
 

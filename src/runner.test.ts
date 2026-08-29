@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { advanceClock, virtualNow } from './clock.js';
 import { effectiveConcurrency, expediteBackoffWakes, infraBackoffSlugs, runLoop } from './runner.js';
-import { arrive, createWorkstream, load } from './store.js';
+import { arrive, createWorkstream, listRunnerPresence, load } from './store.js';
 import type { InfrastructureWait } from './types.js';
 
 let home: string;
@@ -17,6 +17,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.WEAVER_HOME;
+  delete process.env.WEAVER_RUNNER_ID;
   fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -275,6 +276,7 @@ test('a standby dashboard promotes to runner only once the held lock is freed', 
 });
 
 test('the loop heartbeat lives beside the lock dir, never inside it', async () => {
+  process.env.WEAVER_RUNNER_ID = 'mac-primary';
   const { runLoop } = await import('./runner.js');
   const abort = new AbortController();
   const loop = runLoop({ intervalMs: 10, concurrency: 1, signal: abort.signal, log: () => {}, logError: () => {} });
@@ -283,6 +285,7 @@ test('the loop heartbeat lives beside the lock dir, never inside it', async () =
   await loop;
   assert.ok(fs.existsSync(path.join(home, '.runner.heartbeat')));
   assert.ok(!fs.existsSync(path.join(home, '.runner.lock', 'heartbeat')));
+  assert.equal((await listRunnerPresence()).find((presence) => presence.runnerId === 'mac-primary')?.runnerId, 'mac-primary');
 });
 
 test('load-aware concurrency runs full width with headroom and throttles toward 1 when oversubscribed', () => {

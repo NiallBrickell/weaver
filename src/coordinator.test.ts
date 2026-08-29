@@ -13,7 +13,7 @@ import {
   recordCoordinatorCapacityBackoff,
   runCoordinatorPass,
 } from './coordinator.js';
-import { arrive, createWorkstream, load, writeArtifact } from './store.js';
+import { arrive, createWorkstream, heartbeatRunner, load, writeArtifact } from './store.js';
 import { setSecret } from './secrets.js';
 import { isCoordinatorCancellableWake, virtualNow, type CancellableWakePage } from './clock.js';
 import type { CapacityCategory, InfrastructureWait } from './types.js';
@@ -38,12 +38,14 @@ beforeEach(async () => {
     WEAVER_COORDINATOR_FALLBACK_EXECUTOR: process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR,
     WEAVER_COORDINATOR_FALLBACK_MODEL: process.env.WEAVER_COORDINATOR_FALLBACK_MODEL,
     WEAVER_COORDINATOR_FALLBACKS: process.env.WEAVER_COORDINATOR_FALLBACKS,
+    WEAVER_RUNNER_ID: process.env.WEAVER_RUNNER_ID,
   };
   delete process.env.WEAVER_COORDINATOR_EXECUTOR;
   delete process.env.WEAVER_COORDINATOR_MODEL;
   delete process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR;
   delete process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
   delete process.env.WEAVER_COORDINATOR_FALLBACKS;
+  delete process.env.WEAVER_RUNNER_ID;
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-coordinator-capacity-'));
   process.env.WEAVER_HOME = home;
   await createWorkstream({
@@ -299,6 +301,48 @@ test('a runner without the selected coordinator executor cannot claim a pass lea
   assert.equal(after.revision, before.revision);
   assert.equal(after.lease, null);
   assert.equal(after.passes.length, 0);
+});
+
+test('a fresh preferred runner blocks standby coordination, then stale presence permits a pinned failover pass', async () => {
+  process.env.WEAVER_RUNNER_ID = 'gcp-standby';
+  await arrive('coordinator-capacity', (doc) => {
+    doc.workstream.executionPolicy = { coordinatorRunnerOrder: ['mac-primary', 'gcp-standby'] };
+    doc.wakes.push({
+      id: 'wake_failover', reason: 'reconcile on the eligible host',
+      condition: { type: 'immediate' }, status: 'pending', createdAt: new Date().toISOString(),
+    });
+  });
+  await heartbeatRunner('mac-primary');
+  const before = await load('coordinator-capacity');
+  await assert.rejects(
+    runCoordinatorPass('coordinator-capacity', ['manual'], {
+      id: 'local-sdk', async execute() { throw new Error('standby executor must not launch'); },
+    }),
+    /preferred coordinator runner 'mac-primary'/,
+  );
+  const blocked = await load('coordinator-capacity');
+  assert.equal(blocked.revision, before.revision);
+  assert.equal(blocked.lease, null);
+  assert.equal(blocked.passes.length, 0);
+
+  await heartbeatRunner('mac-primary', new Date(Date.now() - 120_001).toISOString());
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const running = await load('coordinator-capacity');
+      assert.equal(running.lease?.runnerId, 'gcp-standby');
+      assert.equal(running.passes.at(-1)?.runnerId, 'gcp-standby');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(finish);
+      await finish.handler({ summary: 'Failover reconciliation completed.', acknowledged_steering: true }, {});
+      return { costUsd: 0, sessionId: 'runner-failover' };
+    },
+  };
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const completed = await load('coordinator-capacity');
+  assert.equal(completed.lease, null);
+  assert.equal(completed.passes.at(-1)?.runnerId, 'gcp-standby');
 });
 
 test('a pass pins executor, provider, and model while a fake Codex loop finishes through the real tool closure', async () => {
