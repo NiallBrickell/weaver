@@ -25,6 +25,8 @@ id "$service_user" >/dev/null 2>&1 || fail 'Weaver service user does not exist'
 [ -d "$service_home" ] || fail 'Weaver service home does not exist'
 [ ! -s "$service_home/.codex/auth.json" ] || \
   fail 'personal Codex device authentication is forbidden on this host'
+[ ! -s "$service_home/.claude/.credentials.json" ] || \
+  fail 'personal Claude device authentication is forbidden on this host; use a setup-token'
 
 # Read raw KEY=value records as data. Never source/eval the credential-bearing
 # file, and never print a value while reporting a configuration failure.
@@ -64,6 +66,7 @@ parse_target_executor() {
 
 csv_entries() {
   local raw="$1" entry
+  local -a entries=()
   IFS=',' read -r -a entries <<< "$raw"
   for entry in "${entries[@]}"; do
     entry="$(trim "$entry")"
@@ -109,17 +112,17 @@ while IFS= read -r entry; do
 done < <(csv_entries "$worker_fallbacks")
 
 # The coordinator is a separate, tool-restricted process seam. Its primary is
-# an explicitly registered scoped Anthropic API key in executor-only storage,
-# never ambient OAuth or copied CLI/device state. OpenRouter remains confined
-# to disposable OpenHands workers and is refused throughout the coordinator
-# chain on this credential-bearing host.
+# an explicitly registered `claude setup-token` subscription identity in
+# executor-only storage, never ambient credentials or copied CLI/device state.
+# OpenRouter remains confined to disposable OpenHands workers and is refused
+# throughout the coordinator chain on this credential-bearing host.
 coordinator_executor="$(env_value WEAVER_COORDINATOR_EXECUTOR)"
 [ -n "$coordinator_executor" ] || coordinator_executor=local-sdk
 [ "$coordinator_executor" = local-sdk ] || fail 'WEAVER_COORDINATOR_EXECUTOR must be local-sdk on this host'
 coordinator_model="$(env_value WEAVER_COORDINATOR_MODEL)"
 case "$coordinator_model" in
   '') fail 'WEAVER_COORDINATOR_MODEL must name the direct Claude model on this host' ;;
-  openrouter/*) fail 'WEAVER_COORDINATOR_MODEL must use the scoped direct Anthropic identity; OpenRouter coordination is forbidden on this host' ;;
+  openrouter/*) fail 'WEAVER_COORDINATOR_MODEL must use the registered Claude Code setup-token; OpenRouter coordination is forbidden on this host' ;;
 esac
 
 coordinator_executors=("$coordinator_executor")
@@ -184,7 +187,7 @@ for executor in "${coordinator_executors[@]}"; do
   capability_has "$executor" || fail 'WEAVER_RUNNER_EXECUTORS is missing a configured coordinator capability'
 done
 
-secure_openrouter_coordinator_boundary() {
+secure_openrouter_worker_boundary() {
   local count value
   [ -r "$executor_secrets_file" ] || fail 'executor secret store is missing or unreadable'
   count="$(awk 'index($0, "OPENROUTER_API_KEY=") == 1 { count++ } END { print count + 0 }' "$executor_secrets_file")"
@@ -194,19 +197,27 @@ secure_openrouter_coordinator_boundary() {
   unset value
 }
 
-secure_openrouter_coordinator_boundary
+secure_openrouter_worker_boundary
 
-secure_direct_anthropic_boundary() {
-  local key_count oauth_count
+secure_claude_code_subscription_boundary() {
+  local key_count oauth_count oauth_value
+  [ "$(env_count ANTHROPIC_API_KEY)" -eq 0 ] || \
+    fail 'ANTHROPIC_API_KEY is forbidden in the ambient host env'
+  [ "$(env_count CLAUDE_CODE_OAUTH_TOKEN)" -eq 0 ] || \
+    fail 'CLAUDE_CODE_OAUTH_TOKEN belongs only in the executor secret store'
   key_count="$(awk 'index($0, "ANTHROPIC_API_KEY=") == 1 { count++ } END { print count + 0 }' "$executor_secrets_file")"
   oauth_count="$(awk 'index($0, "CLAUDE_CODE_OAUTH_TOKEN=") == 1 { count++ } END { print count + 0 }' "$executor_secrets_file")"
-  [ "$oauth_count" -eq 0 ] || fail 'personal/subscription CLAUDE_CODE_OAUTH_TOKEN is forbidden on this host; use a scoped ANTHROPIC_API_KEY'
-  [ "$key_count" -eq 1 ] || fail 'hosted direct Claude requires exactly one scoped ANTHROPIC_API_KEY'
-  [ -n "$(awk 'index($0, "ANTHROPIC_API_KEY=") == 1 { print substr($0, 19) }' "$executor_secrets_file")" ] || \
-    fail 'ANTHROPIC_API_KEY must be nonempty'
+  [ "$key_count" -eq 0 ] || fail 'ANTHROPIC_API_KEY is forbidden on this host; hosted Claude must use a setup-token subscription'
+  [ "$oauth_count" -eq 1 ] || fail 'hosted Claude requires exactly one CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`'
+  oauth_value="$(awk 'index($0, "CLAUDE_CODE_OAUTH_TOKEN=") == 1 { print substr($0, 25) }' "$executor_secrets_file")"
+  [ -n "$oauth_value" ] || fail 'CLAUDE_CODE_OAUTH_TOKEN must be nonempty'
+  case "$oauth_value" in
+    *,*) fail 'hosted Claude requires one setup-token, not a comma-separated token list' ;;
+  esac
+  unset oauth_value
 }
 
-secure_direct_anthropic_boundary
+secure_claude_code_subscription_boundary
 
 secure_pilot_boundary() {
   local pilot_url token_count pilot_token pilot_user pilot_pid pilot_listeners

@@ -385,9 +385,9 @@ cmd_push_env() {
   hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-openrouter/z-ai/glm-5.2}"
   hosted_worker_complex_model="${WEAVER_GCP_WORKER_MODEL_COMPLEX:-$hosted_worker_model}"
   hosted_worker_fallbacks="${WEAVER_GCP_WORKER_FALLBACKS:-}"
-  # The always-on controller uses only an explicitly registered, scoped
-  # Anthropic API key. Keep the fallback chain explicitly empty: hosted
-  # OpenRouter credentials belong to disposable workers, not coordination.
+  # The always-on controller uses only an explicitly registered Claude Code
+  # setup-token. Keep the fallback chain explicitly empty: hosted OpenRouter
+  # credentials belong to disposable workers, not coordination.
   hosted_coordinator_model="${WEAVER_GCP_COORDINATOR_MODEL:-claude-fable-5}"
   hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-}"
 
@@ -428,7 +428,7 @@ cmd_push_env() {
   fi
   "$REPO/bin/weaver.mjs" login --render-remote-executor-secrets > "$PUSH_EXECUTOR_SECRETS_RAW_TMP"
   awk -F= '
-    $1 == "ANTHROPIC_API_KEY" ||
+    $1 == "CLAUDE_CODE_OAUTH_TOKEN" ||
     $1 == "OPENROUTER_API_KEY" ||
     $1 == "WEAVER_GITHUB_APP_ID" ||
     $1 == "WEAVER_GITHUB_APP_INSTALLATION_ID" ||

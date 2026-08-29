@@ -112,23 +112,27 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
         env.ANTHROPIC_API_KEY = '';
       } else {
         const registered = this.executorSecretsLoader();
-        // A headless API-key principal is distinct from the operator's local
-        // Claude Code login. Give it the same fresh, empty config boundary as
-        // OpenRouter so a service account can never inherit hooks, settings,
-        // or device state from the hosting user. A registered OAuth token keeps
-        // the existing local-subscription precedence and path instead.
-        const key = registered.CLAUDE_CODE_OAUTH_TOKEN
-          ? undefined
-          : registered.ANTHROPIC_API_KEY;
-        if (key) {
-          redactions = { ANTHROPIC_API_KEY: key };
+        // A registered headless identity is distinct from the operator's local
+        // Claude Code login. Give setup-tokens and API keys the same fresh,
+        // empty config boundary so a service process can never inherit hooks,
+        // settings, or device state from the hosting user. The setup-token
+        // remains preferred, matching sdkEnv's one-principal rule.
+        const setupToken = registered.CLAUDE_CODE_OAUTH_TOKEN;
+        const apiKey = setupToken ? undefined : registered.ANTHROPIC_API_KEY;
+        const identity = setupToken
+          ? { name: 'CLAUDE_CODE_OAUTH_TOKEN' as const, value: setupToken }
+          : apiKey
+            ? { name: 'ANTHROPIC_API_KEY' as const, value: apiKey }
+            : undefined;
+        if (identity) {
+          redactions = { [identity.name]: identity.value };
           apiHome = this.prepareApiHome();
           env = { ...req.env };
           stripClaudeCredentials(env);
           delete env.ANTHROPIC_BASE_URL;
           delete env.OPENROUTER_API_KEY;
           env.CLAUDE_CONFIG_DIR = apiHome.path;
-          env.ANTHROPIC_API_KEY = key;
+          env[identity.name] = identity.value;
         }
       }
       for await (const message of this.runQuery({

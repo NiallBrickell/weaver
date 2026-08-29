@@ -224,13 +224,14 @@ values as shell.
 same fail-closed host preflight before systemd can launch the runner. This GCP
 helper is deliberately narrower than Weaver's general executor support:
 ordinary work and every worker fallback must use `openhands`, the coordinator
-uses the tool-restricted Claude SDK directly with a registered scoped
-`ANTHROPIC_API_KEY`, the capability declaration is explicit, and the service
-user's rootless Docker daemon must answer. The hosted coordinator fallback
+uses the tool-restricted Claude SDK directly with a registered
+`CLAUDE_CODE_OAUTH_TOKEN` created by `claude setup-token`, the capability
+declaration is explicit, and the service user's rootless Docker daemon must
+answer. The hosted coordinator fallback
 chain is explicitly empty: OpenRouter is available only to the isolated
 OpenHands worker route. Pi, local-login Claude, and Codex remain valid on
-operator-controlled machines; personal OAuth/device identities are refused on
-this credential-bearing host.
+operator-controlled machines; copied device-login state and Anthropic API keys
+are refused on this credential-bearing host.
 Rootless Docker is separate from the root-owned daemon used by the optional
 bundled Postgres, so disposable workers do not make the service account
 root-equivalent through the Docker group.
@@ -274,7 +275,7 @@ one. Use the [exact filesystem-to-Postgres copy](./hosted-state.md) first.
 `push-env` synchronizes two distinct host inputs before any optional restart:
 the helper's fixed hosted execution profile plus ingress configuration remains
 in `/etc/weaver/env`, while the hosted allowlist of registered credentials
-(scoped Anthropic API for coordination; OpenRouter for isolated workers; Pilot,
+(Claude Code setup-token for coordination; OpenRouter for isolated workers; Pilot,
 serve, and the GitHub App identity) is installed at
 `/home/weaver/state/executor-secrets.env`. Both are mode `0600`; the second is
 the canonical adapter-only store read by Weaver executors. Removing a locally
@@ -289,9 +290,10 @@ host profile choice, not an automatic model route. `WEAVER_GCP_WORKER_MODEL`,
 `WEAVER_GCP_COORDINATOR_MODEL`, and `WEAVER_GCP_COORDINATOR_FALLBACKS` may
 override the profile's model seats without weakening its substrate checks.
 Personal CLI and device-login state is never copied to the host. In particular,
-`push-env` does not deliver `~/.codex/auth.json`, `gh` authentication, or
-`gcloud` authentication. A hosted executor must instead use a deliberately
-registered, organization-owned credential supported by that executor.
+`push-env` does not deliver Claude's credential file, `~/.codex/auth.json`, `gh`
+authentication, or `gcloud` authentication. It delivers only the deliberately
+registered setup-token value through SSH stdin into the mode-`0600` executor
+store.
 
 Global worker credentials use a third, deliberately separate delivery path:
 `push-worker-secrets NAME...` reads exactly those names from the operator
