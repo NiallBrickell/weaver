@@ -123,9 +123,9 @@ timestamp. Unknown or empty declarations fail at runner startup.
 
 Several hosts may share one Postgres fleet while intentionally using different
 coordinator identities. For example, a workstation can use its local Claude
-Code/Codex subscriptions while a hosted machine keeps an API-backed emergency
-seat. Store that physical preference on each Workstream instead of leaving it
-to whichever process wins the Postgres tick lock:
+Code/Codex subscriptions while a hosted machine keeps a headless Claude Code
+subscription seat. Store that physical preference on each Workstream instead
+of leaving it to whichever process wins the Postgres tick lock:
 
 ```bash
 weaver coordinator-runners daily-engineering-update mac-primary gcp-standby
@@ -215,11 +215,11 @@ general capability declaration above. A hosted runner carrying operator/model
 identities must use OpenHands for its ordinary worker and every worker fallback;
 host-process Pi, Codex, and local-login Claude workers are refused before
 systemd can start or restart the runner. Coordination uses the separate
-tool-restricted Claude SDK seam directly with a scoped Anthropic API key from
-executor-only storage and a fresh empty Claude config directory for every
-pass. Its fallback chain is explicitly empty. OpenRouter is confined to the
-disposable OpenHands worker route and never supplies hosted coordination. The
-resulting declaration is explicit:
+tool-restricted Claude SDK seam directly with a long-lived token created by
+`claude setup-token`, held in executor-only storage, and a fresh empty Claude
+config directory for every pass. Its fallback chain is explicitly empty.
+OpenRouter is confined to the disposable OpenHands worker route and never
+supplies hosted coordination. The resulting declaration is explicit:
 
 ```dotenv
 WEAVER_EXECUTOR=openhands
@@ -246,10 +246,11 @@ last check exercises the exact shared bearer client used by engine and worker
 actions; a parallel curl implementation cannot substitute for it.
 The helper also provisions a service-user-owned rootless Docker daemon and
 requires it in the same preflight, avoiding the root-equivalent Docker group.
-It refuses `~/.codex/auth.json`, refuses `CLAUDE_CODE_OAUTH_TOKEN`, and never
-copies personal CLI/device state. The direct Anthropic identity is supplied per
-pass rather than trusted from ambient shell variables. The OpenRouter identity
-is available only to the isolated worker provider proxy.
+It refuses `~/.codex/auth.json`, Claude's device credential file, and
+`ANTHROPIC_API_KEY`; it never copies personal CLI/device state. The registered
+setup-token is supplied per pass rather than trusted from ambient shell
+variables. The OpenRouter identity is available only to the isolated worker
+provider proxy.
 See [Hosting Weaver](./hosting.md#deploying-the-runner-on-a-gcp-vm).
 
 Prime Agent remains available only in the harness-eval vocabulary. Pi is a

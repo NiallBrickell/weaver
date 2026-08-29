@@ -156,12 +156,14 @@ for every attempt without restarting the runner. The older transient
 `WEAVER_MODEL_API_KEY` / `LLM_API_KEY` environment inputs remain compatible,
 but never belong in `.env`.
 
-For an always-on credential-bearing host, register a scoped Platform API key
-as `ANTHROPIC_API_KEY` in executor-only storage. Do not copy
-`CLAUDE_CODE_OAUTH_TOKEN`, Claude Code config, or Codex device state from a
-person's machine. The GCP profile enforces this boundary before systemd starts:
-direct Claude is the sole coordinator target by default and its fallback chain
-is explicitly empty. OpenRouter remains confined to isolated OpenHands workers.
+For an always-on credential-bearing host, create a long-lived subscription
+credential with `claude setup-token` and register it as
+`CLAUDE_CODE_OAUTH_TOKEN` in executor-only storage. Do not copy Claude Code
+credential/config files or Codex device state from a person's machine. The GCP
+profile enforces this boundary before systemd starts: it requires exactly one
+setup-token, refuses `ANTHROPIC_API_KEY`, keeps direct Claude as the sole
+coordinator target, and leaves the fallback chain empty. OpenRouter remains
+confined to isolated OpenHands workers.
 
 Pi targets are provider-qualified: for example
 `openrouter/moonshotai/kimi-k3`, `zai/glm-5.3`, or

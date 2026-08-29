@@ -224,7 +224,7 @@ esac
   fs.writeFileSync(preflightEnvFile, preflightEnv);
   const executorSecretsFile = path.join(root, 'executor-secrets.env');
   const executorSecrets = [
-    'ANTHROPIC_API_KEY=test-anthropic-key',
+    'CLAUDE_CODE_OAUTH_TOKEN=test-setup-token',
     'OPENROUTER_API_KEY=test-provider-key',
     ...(pilotTokenPresent ? ['WEAVER_PILOT_TOKEN=test-pilot-token'] : []),
     ...(githubCredentialsPresent ? [
@@ -541,8 +541,8 @@ test('set-store refuses a non-Postgres value before invoking gcloud', () => {
 test('push-env upgrades a stale remote installer before securely forwarding identities and config', () => {
   const rendered = [
     'OPENROUTER_API_KEY=registered-provider-secret',
-    'ANTHROPIC_API_KEY=registered-anthropic-secret',
-    'CLAUDE_CODE_OAUTH_TOKEN=forbidden-device-secret',
+    'ANTHROPIC_API_KEY=forbidden-api-secret',
+    'CLAUDE_CODE_OAUTH_TOKEN=registered-setup-token',
     'ZHIPU_API_KEY=unused-provider-secret',
     'WEAVER_EXECUTOR=pi',
     'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5',
@@ -562,11 +562,11 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
   assert.match(call(root, 2, 'args'), /weaver-install-env merge/);
   assert.equal(call(root, 3, 'stdin'), [
     'OPENROUTER_API_KEY=registered-provider-secret',
-    'ANTHROPIC_API_KEY=registered-anthropic-secret',
+    'CLAUDE_CODE_OAUTH_TOKEN=registered-setup-token',
     '',
   ].join('\n'));
   assert.match(call(root, 3, 'args'), /weaver-install-env executor-secrets/);
-  assert.ok(!call(root, 3, 'stdin').includes('forbidden-device-secret'));
+  assert.ok(!call(root, 3, 'stdin').includes('forbidden-api-secret'));
   assert.ok(!call(root, 3, 'stdin').includes('unused-provider-secret'));
   assert.ok(!allCallArgs(root).includes('systemctl'));
   assert.equal(fs.readFileSync(path.join(root, 'calls', 'count'), 'utf8').trim(), '3');
@@ -717,7 +717,7 @@ test('GCP start refuses an OpenRouter primary or device-login coordinator', () =
   );
   const first = run(['start'], undefined, '', false, routedPrimary);
   assert.notEqual(first.result.status, 0);
-  assert.match(first.result.stderr, /scoped direct Anthropic identity; OpenRouter coordination is forbidden/);
+  assert.match(first.result.stderr, /registered Claude Code setup-token; OpenRouter coordination is forbidden/);
   assert.equal(fs.existsSync(path.join(first.root, 'calls', '1.systemctl-executed')), false);
 
   const deviceLogin = SAFE_GCP_EXECUTION_ENV.replace(
@@ -750,23 +750,58 @@ test('GCP start refuses OpenRouter anywhere in the coordinator fallback chain', 
   assert.equal(fs.existsSync(path.join(second.root, 'calls', '1.systemctl-executed')), false);
 });
 
-test('GCP start refuses missing API identity and any Claude OAuth token', () => {
+test('GCP start requires a setup-token identity and refuses Anthropic API billing', () => {
   const missing = fixture();
   const secretsPath = String(missing.env.WEAVER_GCP_TEST_EXECUTOR_SECRETS);
   fs.writeFileSync(
     secretsPath,
-    fs.readFileSync(secretsPath, 'utf8').replace('ANTHROPIC_API_KEY=test-anthropic-key\n', ''),
+    fs.readFileSync(secretsPath, 'utf8').replace('CLAUDE_CODE_OAUTH_TOKEN=test-setup-token\n', ''),
   );
   const first = startExistingFixture(missing);
   assert.notEqual(first.status, 0);
-  assert.match(first.stderr, /requires exactly one scoped ANTHROPIC_API_KEY/);
+  assert.match(first.stderr, /requires exactly one CLAUDE_CODE_OAUTH_TOKEN/);
 
-  const oauth = fixture();
-  const oauthPath = String(oauth.env.WEAVER_GCP_TEST_EXECUTOR_SECRETS);
-  fs.appendFileSync(oauthPath, 'CLAUDE_CODE_OAUTH_TOKEN=forbidden-device-token\n');
-  const second = startExistingFixture(oauth);
+  const api = fixture();
+  const apiPath = String(api.env.WEAVER_GCP_TEST_EXECUTOR_SECRETS);
+  fs.appendFileSync(apiPath, 'ANTHROPIC_API_KEY=forbidden-api-key\n');
+  const second = startExistingFixture(api);
   assert.notEqual(second.status, 0);
-  assert.match(second.stderr, /CLAUDE_CODE_OAUTH_TOKEN is forbidden on this host/);
+  assert.match(second.stderr, /ANTHROPIC_API_KEY is forbidden on this host/);
+
+  const tokenList = fixture();
+  const tokenListPath = String(tokenList.env.WEAVER_GCP_TEST_EXECUTOR_SECRETS);
+  fs.writeFileSync(
+    tokenListPath,
+    fs.readFileSync(tokenListPath, 'utf8').replace(
+      'CLAUDE_CODE_OAUTH_TOKEN=test-setup-token',
+      'CLAUDE_CODE_OAUTH_TOKEN=first-setup-token,second-setup-token',
+    ),
+  );
+  const third = startExistingFixture(tokenList);
+  assert.notEqual(third.status, 0);
+  assert.match(third.stderr, /requires one setup-token, not a comma-separated token list/);
+});
+
+test('GCP start refuses Claude credentials in the ambient service env', () => {
+  const withToken = SAFE_GCP_EXECUTION_ENV + 'CLAUDE_CODE_OAUTH_TOKEN=ambient-token\n';
+  const first = run(['start'], undefined, '', false, withToken);
+  assert.notEqual(first.result.status, 0);
+  assert.match(first.result.stderr, /CLAUDE_CODE_OAUTH_TOKEN belongs only in the executor secret store/);
+
+  const withApiKey = SAFE_GCP_EXECUTION_ENV + 'ANTHROPIC_API_KEY=ambient-key\n';
+  const second = run(['start'], undefined, '', false, withApiKey);
+  assert.notEqual(second.result.status, 0);
+  assert.match(second.result.stderr, /ANTHROPIC_API_KEY is forbidden in the ambient host env/);
+});
+
+test('GCP start refuses copied Claude device credentials even with a setup-token', () => {
+  const f = fixture();
+  const serviceHome = String(f.env.WEAVER_GCP_TEST_SERVICE_HOME);
+  fs.mkdirSync(path.join(serviceHome, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(serviceHome, '.claude', '.credentials.json'), '{"copied":true}\n');
+  const result = startExistingFixture(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /personal Claude device authentication is forbidden/);
 });
 
 test('GCP start refuses a failing installed shared-client probe before systemctl', () => {
@@ -812,7 +847,7 @@ test('GCP start refuses a missing Pilot bearer before the client probe', () => {
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
 });
 
-test('GCP start refuses a missing hosted coordinator API identity', () => {
+test('GCP start refuses a missing hosted OpenRouter worker identity', () => {
   const f = fixture();
   const secretsFile = path.join(f.root, 'executor-secrets.env');
   fs.writeFileSync(

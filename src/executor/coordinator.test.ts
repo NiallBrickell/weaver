@@ -45,6 +45,45 @@ function request(overrides: Partial<CoordinatorExecutionRequest> = {}): Coordina
 }
 
 describe('ClaudeCoordinatorExecutor', () => {
+  test('uses a registered Claude Code setup-token in a fresh config boundary', async () => {
+    let captured: any;
+    let cleaned = 0;
+    const executor = new ClaudeCoordinatorExecutor({
+      loadExecutorSecrets: () => ({
+        CLAUDE_CODE_OAUTH_TOKEN: 'registered-setup-token',
+        ANTHROPIC_API_KEY: 'shadowed-registered-api-key',
+      }),
+      prepareApiHome: () => ({
+        path: '/tmp/fresh-setup-token-home',
+        cleanup() { cleaned++; },
+      }),
+      runQuery: ((args: any) => {
+        captured = args;
+        return (async function* () {})();
+      }) as any,
+    });
+
+    const outcome = await executor.execute(request({
+      model: 'claude-fable-5',
+      env: {
+        PATH: '/usr/bin',
+        CLAUDE_CODE_OAUTH_TOKEN: 'ambient-setup-token',
+        ANTHROPIC_API_KEY: 'ambient-api-key',
+        ANTHROPIC_BASE_URL: 'https://untrusted.example',
+        OPENROUTER_API_KEY: 'ambient-router-key',
+      },
+    }));
+
+    assert.deepEqual(outcome, { costUsd: 0 });
+    assert.equal(cleaned, 1);
+    assert.equal(captured.options.model, 'claude-fable-5');
+    assert.deepEqual(captured.options.env, {
+      PATH: '/usr/bin',
+      CLAUDE_CONFIG_DIR: '/tmp/fresh-setup-token-home',
+      CLAUDE_CODE_OAUTH_TOKEN: 'registered-setup-token',
+    });
+  });
+
   test('uses a registered direct Anthropic API key in a fresh config boundary', async () => {
     let captured: any;
     let cleaned = 0;
