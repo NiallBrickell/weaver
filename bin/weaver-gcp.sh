@@ -385,11 +385,11 @@ cmd_push_env() {
   hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-openrouter/z-ai/glm-5.2}"
   hosted_worker_complex_model="${WEAVER_GCP_WORKER_MODEL_COMPLEX:-$hosted_worker_model}"
   hosted_worker_fallbacks="${WEAVER_GCP_WORKER_FALLBACKS:-}"
-  # The always-on controller uses an explicitly registered, scoped Anthropic
-  # API key first. OpenRouter is a last-resort pool, pinned to a modest fixed
-  # model so a moving `latest` alias cannot silently become frontier spend.
+  # The always-on controller uses only an explicitly registered, scoped
+  # Anthropic API key. Keep the fallback chain explicitly empty: hosted
+  # OpenRouter credentials belong to disposable workers, not coordination.
   hosted_coordinator_model="${WEAVER_GCP_COORDINATOR_MODEL:-claude-fable-5}"
-  hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-local-sdk:openrouter/~anthropic/claude-haiku-4.5}"
+  hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-}"
 
   PUSH_ENV_RAW_TMP="$(mktemp)"
   PUSH_ENV_TMP="$(mktemp)"

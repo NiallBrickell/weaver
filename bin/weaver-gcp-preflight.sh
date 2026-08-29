@@ -110,15 +110,16 @@ done < <(csv_entries "$worker_fallbacks")
 
 # The coordinator is a separate, tool-restricted process seam. Its primary is
 # an explicitly registered scoped Anthropic API key in executor-only storage,
-# never ambient OAuth or copied CLI/device state. OpenRouter may appear only in
-# the fallback chain; its provider prefix preserves honest billing attribution.
+# never ambient OAuth or copied CLI/device state. OpenRouter remains confined
+# to disposable OpenHands workers and is refused throughout the coordinator
+# chain on this credential-bearing host.
 coordinator_executor="$(env_value WEAVER_COORDINATOR_EXECUTOR)"
 [ -n "$coordinator_executor" ] || coordinator_executor=local-sdk
 [ "$coordinator_executor" = local-sdk ] || fail 'WEAVER_COORDINATOR_EXECUTOR must be local-sdk on this host'
 coordinator_model="$(env_value WEAVER_COORDINATOR_MODEL)"
 case "$coordinator_model" in
   '') fail 'WEAVER_COORDINATOR_MODEL must name the direct Claude model on this host' ;;
-  openrouter/*) fail 'WEAVER_COORDINATOR_MODEL must use the scoped direct Anthropic identity; OpenRouter is fallback-only' ;;
+  openrouter/*) fail 'WEAVER_COORDINATOR_MODEL must use the scoped direct Anthropic identity; OpenRouter coordination is forbidden on this host' ;;
 esac
 
 coordinator_executors=("$coordinator_executor")
@@ -130,6 +131,9 @@ if env_has WEAVER_COORDINATOR_FALLBACKS; then
     [ "$executor" = local-sdk ] || fail 'every WEAVER_COORDINATOR_FALLBACKS target must use local-sdk on this host'
     model="$(trim "${entry#*:}")"
     [ -n "$model" ] || fail 'every WEAVER_COORDINATOR_FALLBACKS target must name a model'
+    case "$model" in
+      openrouter/*) fail 'OpenRouter coordinator fallbacks are forbidden on this host' ;;
+    esac
     coordinator_executors+=("$executor")
   done < <(csv_entries "$coordinator_fallbacks")
 else
@@ -138,6 +142,9 @@ else
   [ "$coordinator_fallback_executor" = local-sdk ] || fail 'WEAVER_COORDINATOR_FALLBACK_EXECUTOR must be local-sdk on this host'
   coordinator_fallback_model="$(env_value WEAVER_COORDINATOR_FALLBACK_MODEL)"
   [ -n "$coordinator_fallback_model" ] || fail 'WEAVER_COORDINATOR_FALLBACK_MODEL must name a model'
+  case "$coordinator_fallback_model" in
+    openrouter/*) fail 'the OpenRouter coordinator fallback is forbidden on this host' ;;
+  esac
   coordinator_executors+=("$coordinator_fallback_executor")
 fi
 

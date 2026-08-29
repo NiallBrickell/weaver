@@ -217,26 +217,27 @@ host-process Pi, Codex, and local-login Claude workers are refused before
 systemd can start or restart the runner. Coordination uses the separate
 tool-restricted Claude SDK seam directly with a scoped Anthropic API key from
 executor-only storage and a fresh empty Claude config directory for every
-pass. OpenRouter remains only a fixed, low-cost fallback pool; moving `latest`
-aliases are forbidden in the checked-in profile. The resulting declaration is
-explicit:
+pass. Its fallback chain is explicitly empty. OpenRouter is confined to the
+disposable OpenHands worker route and never supplies hosted coordination. The
+resulting declaration is explicit:
 
 ```dotenv
 WEAVER_EXECUTOR=openhands
 WEAVER_WORKER_FALLBACKS=
 WEAVER_COORDINATOR_MODEL=claude-fable-5
 WEAVER_COORDINATOR_EXECUTOR=local-sdk
-WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-haiku-4.5
+WEAVER_COORDINATOR_FALLBACKS=
 WEAVER_ACTION_EXECUTOR=local-sdk
 WEAVER_PILOT_URL=http://127.0.0.1:9721
 WEAVER_RUNNER_EXECUTORS=openhands,local-sdk
 ```
 
-The `local-sdk` capability is solely the supervised action seat; worker and
-worker-fallback validation above prevents it becoming ordinary work. The GCP
-helper claims it only after proving Pilot has authenticated ingress that an
-ordinary worker container cannot reach. A liveness probe alone is not an
-authority boundary. The gate requires a separate `weaver-pilot` service
+The `local-sdk` capability supplies restricted coordination and the supervised
+action seat; worker and worker-fallback validation prevents it becoming
+ordinary work. The GCP helper claims the action seat only after proving Pilot
+has authenticated ingress that an ordinary worker container cannot reach. A
+liveness probe alone is not an authority boundary. The gate requires a
+separate `weaver-pilot` service
 account, an active `weaver-pilot.service`, exactly one loopback listener owned
 by that unit, and an executor-only `WEAVER_PILOT_TOKEN`; an invalid bearer must
 receive 401 and the registered bearer 204. Finally, the installed
@@ -246,9 +247,9 @@ actions; a parallel curl implementation cannot substitute for it.
 The helper also provisions a service-user-owned rootless Docker daemon and
 requires it in the same preflight, avoiding the root-equivalent Docker group.
 It refuses `~/.codex/auth.json`, refuses `CLAUDE_CODE_OAUTH_TOKEN`, and never
-copies personal CLI/device state. Both the direct Anthropic identity and the
-OpenRouter fallback are supplied per pass rather than trusted from ambient
-shell variables.
+copies personal CLI/device state. The direct Anthropic identity is supplied per
+pass rather than trusted from ambient shell variables. The OpenRouter identity
+is available only to the isolated worker provider proxy.
 See [Hosting Weaver](./hosting.md#deploying-the-runner-on-a-gcp-vm).
 
 Prime Agent remains available only in the harness-eval vocabulary. Pi is a
