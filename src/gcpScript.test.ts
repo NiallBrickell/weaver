@@ -24,7 +24,7 @@ const SAFE_GCP_EXECUTION_ENV = [
   'WEAVER_WORKER_FALLBACKS=',
   'WEAVER_COORDINATOR_MODEL=claude-fable-5',
   'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
-  'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-haiku-4.5',
+  'WEAVER_COORDINATOR_FALLBACKS=',
   'WEAVER_ACTION_EXECUTOR=local-sdk',
   'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
   'WEAVER_PILOT_URL=http://127.0.0.1:9721',
@@ -579,7 +579,7 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
     'WEAVER_WORKER_FALLBACKS=',
     'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
     'WEAVER_COORDINATOR_MODEL=claude-fable-5',
-    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-haiku-4.5',
+    'WEAVER_COORDINATOR_FALLBACKS=',
     'WEAVER_ACTION_EXECUTOR=local-sdk',
     'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
     'WEAVER_RUNNER_EXECUTORS=openhands,local-sdk',
@@ -717,7 +717,7 @@ test('GCP start refuses an OpenRouter primary or device-login coordinator', () =
   );
   const first = run(['start'], undefined, '', false, routedPrimary);
   assert.notEqual(first.result.status, 0);
-  assert.match(first.result.stderr, /scoped direct Anthropic identity; OpenRouter is fallback-only/);
+  assert.match(first.result.stderr, /scoped direct Anthropic identity; OpenRouter coordination is forbidden/);
   assert.equal(fs.existsSync(path.join(first.root, 'calls', '1.systemctl-executed')), false);
 
   const deviceLogin = SAFE_GCP_EXECUTION_ENV.replace(
@@ -727,6 +727,26 @@ test('GCP start refuses an OpenRouter primary or device-login coordinator', () =
   const second = run(['start'], undefined, '', false, deviceLogin);
   assert.notEqual(second.result.status, 0);
   assert.match(second.result.stderr, /must be local-sdk on this host/);
+  assert.equal(fs.existsSync(path.join(second.root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses OpenRouter anywhere in the coordinator fallback chain', () => {
+  const chain = SAFE_GCP_EXECUTION_ENV.replace(
+    'WEAVER_COORDINATOR_FALLBACKS=',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-haiku-4.5',
+  );
+  const first = run(['start'], undefined, '', false, chain);
+  assert.notEqual(first.result.status, 0);
+  assert.match(first.result.stderr, /OpenRouter coordinator fallbacks are forbidden/);
+  assert.equal(fs.existsSync(path.join(first.root, 'calls', '1.systemctl-executed')), false);
+
+  const legacy = SAFE_GCP_EXECUTION_ENV.replace(
+    'WEAVER_COORDINATOR_FALLBACKS=\n',
+    'WEAVER_COORDINATOR_FALLBACK_MODEL=openrouter/~anthropic/claude-haiku-4.5\n',
+  );
+  const second = run(['start'], undefined, '', false, legacy);
+  assert.notEqual(second.result.status, 0);
+  assert.match(second.result.stderr, /OpenRouter coordinator fallback is forbidden/);
   assert.equal(fs.existsSync(path.join(second.root, 'calls', '1.systemctl-executed')), false);
 });
 
