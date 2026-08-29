@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   assignmentMatchesRunner,
+  resolveAssignmentRunnerId,
   runnerClaimIdentity,
   runnerIdentity,
 } from './runnerIdentity.js';
@@ -47,4 +48,19 @@ test('placement-only posture ignores unplaced work while the normal posture rema
   assert.equal(assignmentMatchesRunner(assignment('gcp'), normal), false);
   assert.equal(assignmentMatchesRunner(assignment(), narrow), false);
   assert.equal(assignmentMatchesRunner(assignment('mac'), narrow), true);
+});
+
+test('a Workstream assignment binding is inherited and cannot be overridden', () => {
+  assert.equal(resolveAssignmentRunnerId(undefined, undefined), undefined);
+  assert.equal(resolveAssignmentRunnerId(undefined, 'mac'), 'mac');
+  assert.equal(resolveAssignmentRunnerId('mac', undefined), 'mac');
+  assert.equal(resolveAssignmentRunnerId('mac', 'mac'), 'mac');
+  assert.throws(
+    () => resolveAssignmentRunnerId('mac', 'gcp'),
+    /runner_id 'gcp' conflicts with this Workstream's assignment runner 'mac'/,
+  );
+  assert.throws(
+    () => resolveAssignmentRunnerId('wrong runner', undefined),
+    /workstream assignmentRunnerId.*1-128/,
+  );
 });

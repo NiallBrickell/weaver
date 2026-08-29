@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { createWorkstream, load } from './store.js';
+import { arrive, createWorkstream, load } from './store.js';
 
 let home: string;
 
@@ -96,4 +96,19 @@ test('assign-action keeps fleet-wide placement and postcondition defaults when f
   assert.equal(assignment.runnerId, undefined);
   assert.equal(assignment.exec?.preflightMode, undefined);
   assert.equal(assignment.exec?.approval?.by, 'human');
+});
+
+test('assign-action inherits the Workstream runner binding and refuses a conflicting flag', async () => {
+  await arrive('placed-action', (d) => {
+    d.workstream.assignmentRunnerId = 'niall-mac-primary';
+  });
+
+  const inherited = weaver(...required, '--run', 'true');
+  assert.equal(inherited.status, 0, inherited.stderr);
+  assert.equal((await load('placed-action')).assignments[0]!.runnerId, 'niall-mac-primary');
+
+  const conflict = weaver(...required, '--run', 'true', '--runner-id', 'weaver-fleet');
+  assert.notEqual(conflict.status, 0);
+  assert.match(conflict.stderr, /conflicts with this Workstream's assignment runner 'niall-mac-primary'/);
+  assert.equal((await load('placed-action')).assignments.length, 1, 'conflicting action was never persisted');
 });

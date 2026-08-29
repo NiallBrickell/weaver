@@ -635,6 +635,46 @@ test('create_assignment persists typed requirements without choosing a model', a
   assert.equal(assignment.attempts.length, 0, 'durable requirements do not preselect a disposable target');
 });
 
+test('create_assignment inherits the Workstream runner binding and refuses an override', async () => {
+  await arrive('coordinator-capacity', (d) => {
+    d.workstream.assignmentRunnerId = 'niall-mac-primary';
+  });
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const create = req.tools.find((definition) => definition.name === 'create_assignment');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(create && finish);
+
+      const conflict = await create.handler({
+        objective: 'must not escape the Workstream runner binding',
+        briefing: 'This conflicting placement must be refused.',
+        kind: 'work',
+        runner_id: 'weaver-fleet',
+        acceptance_criteria: ['never launched'],
+      }, {});
+      assert.equal(conflict.isError, true);
+      assert.match((conflict.content[0] as { text: string }).text, /conflicts with this Workstream's assignment runner 'niall-mac-primary'/);
+
+      const inherited = await create.handler({
+        objective: 'inspect the machine-local checkout',
+        briefing: 'Read the checkout that exists only on the bound runner.',
+        kind: 'work',
+        acceptance_criteria: ['current checkout evidence recorded'],
+      }, {});
+      assert.equal(inherited.isError, undefined);
+      await finish.handler({ summary: 'Dispatched only bound work.', acknowledged_steering: true }, {});
+      return { costUsd: 0, sessionId: 'bound-assignment' };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const assignments = (await load('coordinator-capacity')).assignments;
+  assert.equal(assignments.length, 1, 'the conflicting assignment was never persisted');
+  assert.equal(assignments[0]!.runnerId, 'niall-mac-primary');
+});
+
 test('create_assignment stores only explicitly available work credential names', async () => {
   setSecret('READONLY_API_TOKEN', 'coordinator-selected-secret-value', 'coordinator-capacity');
   const executor: CoordinatorExecutor = {

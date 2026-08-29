@@ -127,6 +127,32 @@ assignment queued without an attempt or any state mutation; a matching attempt
 pins the runner ID beside executor/provider/model provenance. Omitted placement
 keeps the existing fleet-wide behavior.
 
+When every Assignment in one Workstream depends on the same host, make that
+resource constraint durable instead of relying on repeated briefing prose:
+
+```bash
+weaver placement <workstream> <runner-id>
+```
+
+The command binds every future worker and action Assignment to that runner and
+atomically updates existing `queued`/`gated` Assignments that have no live
+attempt. Running work, submissions awaiting review, and terminal history stay
+on their recorded host. A fresh coordinator inherits the binding automatically
+and cannot override it with a conflicting `runner_id`. Coordinator passes are
+not Assignments and remain fleet-wide, so another host may still reconcile and
+review the Workstream while only the bound host performs its intended work.
+
+Restore fleet-wide assignment placement with:
+
+```bash
+weaver placement <workstream> any
+```
+
+Setting or clearing the binding is serialized with worker claims in the shared
+store. If a worker claims first, the command sees running work and leaves it
+alone; if placement lands first, a stale claim loses its revision check. This
+changes execution location only — it grants no authority and chooses no model.
+
 For a machine scheduler that must service only these explicitly placed exact
 actions, set both `WEAVER_RUNNER_ID=<stable-name>` and
 `WEAVER_RUNNER_PLACEMENT_ONLY=1`, then invoke:

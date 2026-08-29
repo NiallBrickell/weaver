@@ -124,6 +124,7 @@ function routineDoc(cycles: number): WorkstreamDoc {
       successCriteria: [],
       constraints: [],
       autonomy: { sendsRequireApproval: true },
+      assignmentRunnerId: 'niall-mac-primary',
       budget: { maxCoordinatorPasses: 100000, maxCostUsd: 100000 },
       status: 'active',
       createdAt: NOW,
@@ -172,6 +173,8 @@ test('bounded projection still carries live work and standing commitments', () =
   assert.match(p, /requirements:bounded-code-repair\/text\/high-complexity/);
   assert.match(p, /latest-target:codex-sdk\/openai\/gpt-5\.6-sol/);
   assert.match(p, /runner:mac-studio/);
+  assert.match(p, /Every new worker\/action Assignment is bound to runner niall-mac-primary/);
+  assert.match(p, /Coordinator passes remain fleet-wide/);
 });
 
 test('a legacy approval-service outage card is operational state, never a fresh-coordinator human ask', () => {

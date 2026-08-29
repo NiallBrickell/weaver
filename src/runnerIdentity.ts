@@ -37,6 +37,25 @@ export interface RunnerClaimIdentity {
   placementOnly: boolean;
 }
 
+/** Resolve per-Assignment placement under an optional Workstream binding.
+ * The binding is a hard resource constraint: callers may restate it, but may
+ * not use an Assignment field to escape it. */
+export function resolveAssignmentRunnerId(
+  workstreamRunnerId: string | undefined,
+  requestedRunnerId: string | undefined,
+): string | undefined {
+  if (workstreamRunnerId !== undefined) {
+    assertRunnerId(workstreamRunnerId, 'workstream assignmentRunnerId');
+  }
+  if (requestedRunnerId !== undefined) assertRunnerId(requestedRunnerId, 'runner_id');
+  if (workstreamRunnerId && requestedRunnerId && workstreamRunnerId !== requestedRunnerId) {
+    throw new Error(
+      `runner_id '${requestedRunnerId}' conflicts with this Workstream's assignment runner '${workstreamRunnerId}'`,
+    );
+  }
+  return workstreamRunnerId ?? requestedRunnerId;
+}
+
 /** Parse the process claim posture once at an execution boundary. */
 export function runnerClaimIdentity(
   environment: NodeJS.ProcessEnv = process.env,
