@@ -191,7 +191,7 @@ export async function createTeamWorkstream(req: TeamIntakeRequest): Promise<Team
  * genuine judgment. The routine receives no approval authority: every external
  * effect still follows its original Workstream's action lifecycle.
  */
-export async function createFleetAttentionSteward(actor: string): Promise<TeamIntakeResult> {
+export async function createFleetAttentionSteward(actor: string, runnerId?: string): Promise<TeamIntakeResult> {
   const house = loadHouse();
   const result = await createOrGetWorkstream({
     sourceKey: FLEET_ATTENTION_STEWARD_SOURCE_KEY,
@@ -215,6 +215,7 @@ export async function createFleetAttentionSteward(actor: string): Promise<TeamIn
       'Worker output is a proposal, never permission. Read provider state back after an unknown result and never retry an external mutation blindly.',
       'Use typed fleet state as truth. A generated report may group evidence but cannot change another Workstream\'s decision, completion, attention, or authority.',
     ],
+    ...(runnerId ? { runnerId } : {}),
   });
   if (result.created) {
     await recordObservation(result.slug, {

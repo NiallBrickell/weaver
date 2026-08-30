@@ -140,6 +140,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver secret list [--ws slug | --executor]         list secret NAMES (values are never printed)
   weaver secret rm <NAME> [--ws slug | --executor]    remove a secret
   weaver watch                               interactive dashboard + embedded runner; keys: ↑↓, a/x/d/s, h execution host, p pause, P printout, q quit
+  weaver watch --on <runner-id>              start or move the durable fleet attention steward onto one exact execution host, then exit; the resident runner keeps it alive
   weaver watch --plain                       legacy read-only raw dashboard; q quits (use 'weaver printout [slug]' to catch up)
   weaver printout [slug] [--text]            open an HTML catch-up page; --text writes the plain report instead
   weaver inspect [slug]                      visual work board → self-contained HTML: Workstreams, Assignments, evidence, and history
@@ -1180,16 +1181,38 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
     }
 
     case 'watch': {
-      if (rest.includes('--plain')) {
+      const onIndex = rest.indexOf('--on');
+      if (onIndex >= 0) {
+        if (onIndex !== 0 || rest.length !== 2 || !rest[1] || rest[1]!.startsWith('--')) {
+          fail('usage: weaver watch --on <runner-id>');
+        }
+        const runnerId = assertRunnerId(rest[1]!, '--on');
+        const { runFleetAttentionSteward } = await import('./fleetAttentionSteward.js');
+        const result = await runFleetAttentionSteward(process.env.WEAVER_ACTOR ?? 'operator', runnerId);
+        const changes = [
+          result.created ? 'created' : undefined,
+          result.placement.changed ? 'worker placement updated' : undefined,
+          result.coordinatorPlacement.changed ? 'coordinator placement updated' : undefined,
+          result.activation.changed ? 'reactivated' : undefined,
+          result.wokeDormant ? 'woken' : undefined,
+        ].filter((value): value is string => value !== undefined);
+        process.stdout.write(
+          `${result.slug}: durable watch is ${result.runnerLive ? 'running on' : 'bound to'} ${runnerId}${changes.length ? ` (${changes.join(', ')})` : ''}\n` +
+          (result.runnerLive ? '' : `No fresh heartbeat exists for ${runnerId}; stored work will start when that runner is live.\n`) +
+          `This command has exited; the resident runner keeps the routine alive. Inspect with: weaver status ${result.slug}\n`,
+        );
+      } else if (rest.length === 1 && rest[0] === '--plain') {
         const { runWatch } = await import('./watch.js');
         await runWatch();
-      } else {
+      } else if (rest.length === 0) {
         const { runTui } = await import('./tui.js');
         await runTui();
         // A disposable SDK/command process may still be inside a non-abortable
         // call. The durable engine reconciles its typed state on the next run;
         // q must return terminal ownership immediately.
         process.exit(0);
+      } else {
+        fail('usage: weaver watch [--plain | --on <runner-id>]');
       }
       break;
     }
