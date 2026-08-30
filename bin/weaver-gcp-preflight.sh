@@ -114,8 +114,9 @@ done < <(csv_entries "$worker_fallbacks")
 # The coordinator is a separate, tool-restricted process seam. Its primary is
 # an explicitly registered `claude setup-token` subscription identity in
 # executor-only storage, never ambient credentials or copied CLI/device state.
-# OpenRouter remains confined to disposable OpenHands workers and is refused
-# throughout the coordinator chain on this credential-bearing host.
+# A non-Claude OpenRouter fallback may use the same zero-outside-tools,
+# fresh-config coordinator boundary. Claude through OpenRouter is forbidden:
+# every Claude seat on this host must use the registered setup-token.
 coordinator_executor="$(env_value WEAVER_COORDINATOR_EXECUTOR)"
 [ -n "$coordinator_executor" ] || coordinator_executor=local-sdk
 [ "$coordinator_executor" = local-sdk ] || fail 'WEAVER_COORDINATOR_EXECUTOR must be local-sdk on this host'
@@ -135,7 +136,10 @@ if env_has WEAVER_COORDINATOR_FALLBACKS; then
     model="$(trim "${entry#*:}")"
     [ -n "$model" ] || fail 'every WEAVER_COORDINATOR_FALLBACKS target must name a model'
     case "$model" in
-      openrouter/*) fail 'OpenRouter coordinator fallbacks are forbidden on this host' ;;
+      openrouter/~anthropic/*|openrouter/anthropic/*|openrouter/*claude*) \
+        fail 'Claude coordinator fallbacks must use the registered setup-token, never OpenRouter' ;;
+      openrouter/z-ai/glm-5.2) ;;
+      openrouter/*) fail 'hosted OpenRouter coordinator fallback must use the reviewed fixed model openrouter/z-ai/glm-5.2' ;;
     esac
     coordinator_executors+=("$executor")
   done < <(csv_entries "$coordinator_fallbacks")
@@ -146,7 +150,10 @@ else
   coordinator_fallback_model="$(env_value WEAVER_COORDINATOR_FALLBACK_MODEL)"
   [ -n "$coordinator_fallback_model" ] || fail 'WEAVER_COORDINATOR_FALLBACK_MODEL must name a model'
   case "$coordinator_fallback_model" in
-    openrouter/*) fail 'the OpenRouter coordinator fallback is forbidden on this host' ;;
+    openrouter/~anthropic/*|openrouter/anthropic/*|openrouter/*claude*) \
+      fail 'a Claude coordinator fallback must use the registered setup-token, never OpenRouter' ;;
+    openrouter/z-ai/glm-5.2) ;;
+    openrouter/*) fail 'hosted OpenRouter coordinator fallback must use the reviewed fixed model openrouter/z-ai/glm-5.2' ;;
   esac
   coordinator_executors+=("$coordinator_fallback_executor")
 fi
@@ -187,8 +194,10 @@ for executor in "${coordinator_executors[@]}"; do
   capability_has "$executor" || fail 'WEAVER_RUNNER_EXECUTORS is missing a configured coordinator capability'
 done
 
-secure_openrouter_worker_boundary() {
+secure_openrouter_boundary() {
   local count value
+  [ "$(env_count OPENROUTER_API_KEY)" -eq 0 ] || \
+    fail 'OPENROUTER_API_KEY belongs only in the executor secret store'
   [ -r "$executor_secrets_file" ] || fail 'executor secret store is missing or unreadable'
   count="$(awk 'index($0, "OPENROUTER_API_KEY=") == 1 { count++ } END { print count + 0 }' "$executor_secrets_file")"
   [ "$count" -eq 1 ] || fail 'executor secret store must contain exactly one OPENROUTER_API_KEY'
@@ -197,7 +206,7 @@ secure_openrouter_worker_boundary() {
   unset value
 }
 
-secure_openrouter_worker_boundary
+secure_openrouter_boundary
 
 secure_claude_code_subscription_boundary() {
   local key_count oauth_count oauth_value

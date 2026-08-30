@@ -95,6 +95,19 @@ each host that may claim the work. The coordinator has the same shape of chain
 via `WEAVER_COORDINATOR_FALLBACKS` — see
 [Configuration](./configuration.md).
 
+On an operator workstation the recommended coordinator order is Claude Code
+subscription, Codex subscription, then a fixed non-Claude OpenRouter model:
+
+```dotenv
+WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:openrouter/z-ai/glm-5.2
+```
+
+The hosted profile omits Codex because personal device authentication is never
+copied remotely, leaving Claude setup-token → non-Claude OpenRouter. The
+OpenRouter target still runs through the coordinator's zero-outside-tools
+boundary; its API key is reloaded from executor-only storage and never enters
+the model's typed projection.
+
 ## Runner capability declaration
 
 A runner claims only work it says it can execute. Without
@@ -195,7 +208,7 @@ coordinator. Placement-only mode is deliberately refused by `weaver run`; it
 is not a partial resident runner.
 
 Passing model-quality gates is necessary but not sufficient for an automatic
-route. OpenHands now mounts every declared source directory and relays the
+route. The container executor (`openhands` internally) now mounts every declared source directory and relays the
 serializable user/local MCP entries discoverable in `~/.claude.json` through
 authenticated host endpoints. It does not yet carry project `.mcp.json`,
 managed or plugin servers, `headersHelper`, or Claude.ai/OAuth connectors whose
@@ -212,21 +225,22 @@ the eligible host's configured capacity chain still chooses its model target.
 
 The repository's GCP helper applies a narrower deployment profile than the
 general capability declaration above. A hosted runner carrying operator/model
-identities must use OpenHands for its ordinary worker and every worker fallback;
+identities must use the isolated container executor for its OpenRouter worker and every worker fallback;
 host-process Pi, Codex, and local-login Claude workers are refused before
 systemd can start or restart the runner. Coordination uses the separate
 tool-restricted Claude SDK seam directly with a long-lived token created by
 `claude setup-token`, held in executor-only storage, and a fresh empty Claude
-config directory for every pass. Its fallback chain is explicitly empty.
-OpenRouter is confined to the disposable OpenHands worker route and never
-supplies hosted coordination. The resulting declaration is explicit:
+config directory for every pass. If that Claude seat is capacity-parked, the
+same hermetic coordinator seam uses the fixed non-Claude OpenRouter fallback;
+OpenRouter-backed Claude and moving model aliases are refused. The resulting
+technical declaration is explicit:
 
 ```dotenv
 WEAVER_EXECUTOR=openhands
 WEAVER_WORKER_FALLBACKS=
 WEAVER_COORDINATOR_MODEL=claude-fable-5
 WEAVER_COORDINATOR_EXECUTOR=local-sdk
-WEAVER_COORDINATOR_FALLBACKS=
+WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.2
 WEAVER_ACTION_EXECUTOR=local-sdk
 WEAVER_PILOT_URL=http://127.0.0.1:9721
 WEAVER_RUNNER_EXECUTORS=openhands,local-sdk

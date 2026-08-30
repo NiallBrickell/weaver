@@ -227,9 +227,10 @@ ordinary work and every worker fallback must use `openhands`, the coordinator
 uses the tool-restricted Claude SDK directly with a registered
 `CLAUDE_CODE_OAUTH_TOKEN` created by `claude setup-token`, the capability
 declaration is explicit, and the service user's rootless Docker daemon must
-answer. The hosted coordinator fallback
-chain is explicitly empty: OpenRouter is available only to the isolated
-OpenHands worker route. Pi, local-login Claude, and Codex remain valid on
+answer. The hosted coordinator chain is Claude through that setup-token, then
+non-Claude OpenRouter through a fresh isolated API home. OpenRouter-backed
+Claude is refused so every Claude run stays subscription-backed. Pi,
+local-login Claude, and Codex remain valid on
 operator-controlled machines; copied device-login state and Anthropic API keys
 are refused on this credential-bearing host.
 Rootless Docker is separate from the root-owned daemon used by the optional
@@ -275,13 +276,13 @@ one. Use the [exact filesystem-to-Postgres copy](./hosted-state.md) first.
 `push-env` synchronizes two distinct host inputs before any optional restart:
 the helper's fixed hosted execution profile plus ingress configuration remains
 in `/etc/weaver/env`, while the hosted allowlist of registered credentials
-(Claude Code setup-token for coordination; OpenRouter for isolated workers; Pilot,
+(Claude Code setup-token for primary coordination; OpenRouter for isolated workers and non-Claude coordinator fallback; Pilot,
 serve, and the GitHub App identity) is installed at
 `/home/weaver/state/executor-secrets.env`. Both are mode `0600`; the second is
 the canonical adapter-only store read by Weaver executors. Removing a locally
 registered allowed credential and pushing again removes it from the host too.
 Provider keys are filtered out of the ambient systemd environment and exist
-only in that executor store. The hosted OpenHands worker defaults to
+only in that executor store. The hosted OpenRouter worker defaults to
 `openrouter/z-ai/glm-5.2`: its checked-in cohort completed the submission
 boundary 10/10, while the earlier Kimi K3 cohort and production smoke both
 exited at least once without the required `submit_result`. This is an explicit

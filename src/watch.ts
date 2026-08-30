@@ -19,6 +19,7 @@ import { activitySummary } from './activity.js';
 import { isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
+import { storeDisplayLabel } from './link.js';
 import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 import { actionHasLivePilotOutage, actionNeedsHuman, humanAttention } from './actionApproval.js';
 
@@ -290,7 +291,7 @@ async function frame(): Promise<string> {
         .join('\n\n')
     : `${DIM} (no workstreams under ${weaverHome()} — weaver create ...)${R}`;
 
-  const foot = `${DIM} q quit · read-only · run shown commands in your own shell · state: ${weaverHome()}${R}`;
+  const foot = `${DIM} q quit · read-only · run shown commands in your own shell · ${storeDisplayLabel(process.env.WEAVER_STORE)}${R}`;
   return `${header}\n\n${body}\n\n${foot}\n`;
 }
 

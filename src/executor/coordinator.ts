@@ -266,6 +266,7 @@ export class CodexCoordinatorExecutor implements CoordinatorExecutor {
       const env = stringEnv(req.env);
       delete env.OPENAI_API_KEY;
       delete env.CODEX_API_KEY;
+      delete env.OPENROUTER_API_KEY;
       // Registered Claude identity (sdkEnv) must not enter an OpenAI-steered
       // process — cross-principal credentials stop at the executor boundary.
       stripClaudeCredentials(env);

@@ -139,7 +139,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver secret set <NAME> [--ws slug | --executor]   store from stdin; --executor is adapter-only and never exposed to workers
   weaver secret list [--ws slug | --executor]         list secret NAMES (values are never printed)
   weaver secret rm <NAME> [--ws slug | --executor]    remove a secret
-  weaver watch                               interactive dashboard + embedded runner; keys: ↑↓, a/x/d/s, p pause, P printout, q quit
+  weaver watch                               interactive dashboard + embedded runner; keys: ↑↓, a/x/d/s, h execution host, p pause, P printout, q quit
   weaver watch --plain                       legacy read-only raw dashboard; q quits (use 'weaver printout [slug]' to catch up)
   weaver printout [slug] [--text]            open an HTML catch-up page; --text writes the plain report instead
   weaver inspect [slug]                      visual work board → self-contained HTML: Workstreams, Assignments, evidence, and history

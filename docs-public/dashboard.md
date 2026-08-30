@@ -4,6 +4,20 @@
 
 `weaver watch` opens the interactive terminal dashboard. It shows whole outcomes rather than a collection of current agent sessions: what is moving, what changed, what is waiting, what needs you, and what has enough evidence to be called done. Weaver absorbs the routine transitions between research, implementation, review, verification, and retry; your turns are reserved for judgment.
 
+The header says which durable fleet the terminal is reading. **Shared fleet**
+means the same Postgres-backed jobs and knowledge used by every linked runner
+and the browser workspace; **Local files** or **Local SQLite** means this
+machine's separate store. Connection credentials are never printed.
+
+The next row names execution hosts precisely: **This Mac** plus its runner id,
+then every other host with a fresh shared heartbeat. Select a live Workstream
+and press `h` to choose **Any capable host**, **This Mac**, or one exact remote
+runner; arrows only browse the choices, enter records the placement, and esc
+cancels without a write. This moves future worker/action Assignments (and safe
+queued/gated ones) inside the same shared fleet. Coordinator passes remain
+fleet-wide unless their separate durable runner policy says otherwise, and
+running/history records never move.
+
 ## ⚡ NEEDS YOU
 
 The queue at the top holds exactly three kinds of item:
@@ -22,7 +36,7 @@ Pilot keeps routine tool decisions from interrupting a live agent run. Weaver ke
 
 Below the queue: every workstream has a state marker — red `NEEDS YOU`, cyan `WORKING`, bright-blue `QUEUED` (in line for the runner), blue `WAITING` (scheduled later), dim `IDLE`, and green reserved for `DONE ✓` alone. Rows show organizational state, not percentage complete. A working row carries honest activity age — for example `▶ sentry-sweep WORKING 12m in flight · decision 2h ago` — from the durable attempt/pass start and last decision timestamp. It is elapsed context, never an estimate of completion. A waiting row says when and what it is waiting for. A provider limit says `WAITING` only when it blocks the next configured coordinator or worker transition: a limited primary coordinator with a usable fallback is degraded, not waiting; an overdue retry or a record for a model no longer configured is history, not a live block. [Routines](./routines.md) render in their own `↻ ROUTINES` section with next-run times. Workstreams spawned by another workstream (`create_workstream` lineage) render nested under their manager with a `↳`, in the manager's section — a routine's fix-children sit visibly under the routine that opened them.
 
-When the active provider reports a fresh plan window, the fleet header adds real headroom such as `⚠ Claude 5h 18% left · resets in 2h` (the warning mark comes from the provider). Weaver keeps the latest observation for 30 minutes, then removes it rather than displaying stale certainty. This signal is deliberately asymmetric: the Claude subscription SDK reports plan-window utilization, while OpenHands/Kimi and other configured providers may not. Missing telemetry means **unknown**, never 100% available, and tokens or SDK dollar estimates are never substituted for quota.
+When the active provider reports a fresh plan window, the fleet header adds real headroom such as `⚠ Claude 5h 18% left · resets in 2h` (the warning mark comes from the provider). Weaver keeps the latest observation for 30 minutes, then removes it rather than displaying stale certainty. This signal is deliberately asymmetric: the Claude subscription SDK reports plan-window utilization, while OpenRouter and other configured providers may not. Missing telemetry means **unknown**, never 100% available, and tokens or SDK dollar estimates are never substituted for quota.
 
 Finished work earns 12 hours on the board (`WEAVER_DONE_LINGER_HOURS` overrides), then leaves it: a concluded workstream lingers long enough for you to see the outcome land, then drops off the list, replaced by one dim tally line. Nothing is deleted — the visual work board, printouts, and `weaver status` read the same typed state — and the header's done count keeps the full total.
 

@@ -49,18 +49,32 @@ test('a capacity chain splits each entry on the first colon so provider-qualifie
   );
 });
 
-test('a provider-qualified Claude SDK route records its actual API provider', () => {
+test('a provider-qualified Claude SDK route records its actual non-Claude API provider', () => {
   assert.deepEqual(
     parseCapacityTargetList(
-      'local-sdk:openrouter/~anthropic/claude-opus-latest',
+      'local-sdk:openrouter/z-ai/glm-5.2',
       'WEAVER_COORDINATOR_FALLBACKS',
     ),
     [{
       executor: 'local-sdk',
       provider: 'openrouter',
-      model: 'openrouter/~anthropic/claude-opus-latest',
+      model: 'openrouter/z-ai/glm-5.2',
     }],
   );
+});
+
+test('the local production chain is Claude subscription then Codex then non-Claude OpenRouter', () => {
+  withEnv({
+    WEAVER_COORDINATOR_MODEL: 'claude-fable-5',
+    WEAVER_COORDINATOR_EXECUTOR: 'local-sdk',
+    WEAVER_COORDINATOR_FALLBACKS: 'codex-sdk:gpt-5.6-sol,local-sdk:openrouter/z-ai/glm-5.2',
+  }, () => {
+    assert.deepEqual(coordinatorTargets(), [
+      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' },
+      { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
+      { executor: 'local-sdk', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.2' },
+    ]);
+  });
 });
 
 test('an unknown executor or a colonless entry in a chain fails hard, naming the variable', () => {
@@ -76,6 +90,15 @@ test('an unknown executor or a colonless entry in a chain fails hard, naming the
     () => parseCapacityTargetList('local-sdk:', 'WEAVER_COORDINATOR_FALLBACKS'),
     /must be '<executor>:<model>'/,
   );
+});
+
+test('worker-only substrates are refused from a coordinator chain at configuration time', () => {
+  withEnv({ WEAVER_COORDINATOR_FALLBACKS: 'openhands:openrouter/z-ai/glm-5.2' }, () => {
+    assert.throws(
+      () => coordinatorTargets(),
+      /unknown coordinator executor 'openhands' — supported: local-sdk, codex-sdk/,
+    );
+  });
 });
 
 test('an unset chain preserves the legacy single-fallback pair exactly', () => {
@@ -101,7 +124,7 @@ test('an unset chain preserves the legacy single-fallback pair exactly', () => {
 test('a set chain is ordered primary-first, deduped, and makes the legacy pair inert', () => {
   withEnv({
     WEAVER_COORDINATOR_FALLBACKS:
-      'codex-sdk:gpt-5.6-sol, local-sdk:claude-fable-5, codex-sdk:gpt-5.6-sol, pi:openrouter/moonshotai/kimi-k3',
+      'codex-sdk:gpt-5.6-sol, local-sdk:claude-fable-5, codex-sdk:gpt-5.6-sol, local-sdk:openrouter/z-ai/glm-5.2',
     WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-5',
     WEAVER_COORDINATOR_FALLBACK_EXECUTOR: 'local-sdk',
   }, () => {
@@ -111,7 +134,7 @@ test('a set chain is ordered primary-first, deduped, and makes the legacy pair i
     assert.deepEqual(coordinatorTargets(), [
       { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' },
       { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
-      { executor: 'pi', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3' },
+      { executor: 'local-sdk', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.2' },
     ]);
     assert.deepEqual(coordinatorFallbackCapacityTarget(), {
       executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol',

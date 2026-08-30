@@ -37,6 +37,7 @@ function request(overrides: Partial<CoordinatorExecutionRequest> = {}): Coordina
       PATH: '/usr/bin',
       OPENAI_API_KEY: 'must-not-switch-billing',
       CODEX_API_KEY: 'must-not-switch-principal',
+      OPENROUTER_API_KEY: 'must-not-cross-provider-boundary',
       OMIT_ME: undefined,
     },
     abort: new AbortController(),
@@ -120,7 +121,7 @@ describe('ClaudeCoordinatorExecutor', () => {
     });
   });
 
-  test('uses a fresh OpenRouter API identity without ambient Claude or device-login state', async () => {
+  test('uses a fresh non-Claude OpenRouter API identity without ambient Claude or device-login state', async () => {
     let captured: any;
     let cleaned = 0;
     const executor = new ClaudeCoordinatorExecutor({
@@ -136,7 +137,7 @@ describe('ClaudeCoordinatorExecutor', () => {
     });
 
     const outcome = await executor.execute(request({
-      model: 'openrouter/~anthropic/claude-opus-latest',
+      model: 'openrouter/z-ai/glm-5.2',
       env: {
         PATH: '/usr/bin',
         CLAUDE_CODE_OAUTH_TOKEN: 'personal-device-login',
@@ -147,7 +148,7 @@ describe('ClaudeCoordinatorExecutor', () => {
 
     assert.deepEqual(outcome, { costUsd: 0 });
     assert.equal(cleaned, 1);
-    assert.equal(captured.options.model, '~anthropic/claude-opus-latest');
+    assert.equal(captured.options.model, 'z-ai/glm-5.2');
     assert.deepEqual(captured.options.env, {
       PATH: '/usr/bin',
       CLAUDE_CONFIG_DIR: '/tmp/fresh-claude-api-home',

@@ -3,6 +3,7 @@ import type { PolicyRecord } from '../../policies.js';
 import type { Decision, Deliverable, EventRecord, Interaction, Observation } from '../../types.js';
 import { Badge, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, cn } from '../components/index.js';
 import { displayText, firstLine, formatTimestamp, type WorkstreamPageView } from './model.js';
+import { executionTargetLabel } from '../../executionPresentation.js';
 import { Empty, PolicyRow, RecordSection, Shell } from './shared.js';
 
 function AssignmentCard({ card }: { card: AssignmentBoardCard }) {
@@ -122,9 +123,7 @@ function AssignmentCard({ card }: { card: AssignmentBoardCard }) {
               {[...card.attempts].reverse().map((attempt) => (
                 <article key={attempt.runId} className="space-y-1 border-t border-zinc-800 py-2 first:border-t-0 first:pt-0">
                   <p>Attempt {card.attempts.indexOf(attempt) + 1}</p>
-                  <p>{attempt.executor && attempt.provider
-                    ? `${attempt.executor} / ${attempt.provider} / ${attempt.model ?? 'model unknown'}`
-                    : (attempt.model ?? 'model unknown')}</p>
+                  <p>{executionTargetLabel(attempt)}</p>
                   <p>{attempt.terminalReason ?? (attempt.endedAt ? 'ended' : 'in flight')}</p>
                   <time dateTime={attempt.startedAt}>{formatTimestamp(attempt.startedAt)}</time>
                 </article>
@@ -137,7 +136,9 @@ function AssignmentCard({ card }: { card: AssignmentBoardCard }) {
           <div className="mt-2 space-y-1 border-l border-zinc-800 pl-3 font-mono text-[11px]">
             <p>{card.id}</p>
             {card.adoption.passId ? <p>{card.adoption.passId}</p> : null}
-            {card.attempts.map((attempt) => <p key={attempt.runId}>{attempt.runId}</p>)}
+            {card.attempts.map((attempt) => (
+              <p key={attempt.runId}>{attempt.runId}{attempt.executor ? ` · sandbox ${attempt.executor}` : ''}</p>
+            ))}
           </div>
         </details>
       </CardContent>
