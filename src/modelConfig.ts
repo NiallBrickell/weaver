@@ -37,14 +37,17 @@ export function workerModelComplex(): string {
 }
 
 /** Model for harness-internal text passes (intake derivation, `weaver ask`)
- * that always run through the machine's LOCAL Claude SDK login. The worker
- * model is reused only when that SDK can run it: a provider-prefixed worker
- * model (`zai-coding-plan/…`, `openrouter/…`) belongs to another executor,
- * and handing it to the local SDK fails every pass — intake then silently
- * degrades to its deterministic word-mash fallback. */
+ * that always run through the machine's LOCAL Claude SDK login. An explicit
+ * ask model wins. Otherwise the worker model is reused only when the worker
+ * itself uses that SDK and names a Claude-family model; an unprefixed Codex
+ * model is no more Claude-runnable than a provider-prefixed OpenRouter one. */
 export function localTextModel(): string {
+  const configured = process.env.WEAVER_ASK_MODEL?.trim();
+  if (configured) return configured;
+  if (workerExecutorName() !== 'local-sdk') return 'sonnet';
   const w = workerModel();
-  return providerFromModel(w) === null ? w : 'sonnet';
+  const claudeFamily = /^(?:claude-|sonnet(?:$|-)|opus(?:$|-)|haiku(?:$|-))/i.test(w);
+  return providerFromModel(w) === null && claudeFamily ? w : 'sonnet';
 }
 
 export function workerExecutorName(): string {

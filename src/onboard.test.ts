@@ -49,16 +49,30 @@ test('parseDerivation: attachTo routes to an existing slug, never a hallucinated
   assert.equal(parseDerivation('{"attachTo":"made-up-stream"}', taken), null);
 });
 
-test('localTextModel: a provider-prefixed worker model never reaches the local SDK', () => {
+test('localTextModel: only a Claude-family local worker model reaches the local SDK', () => {
   const prev = process.env.WEAVER_WORKER_MODEL;
+  const prevExecutor = process.env.WEAVER_EXECUTOR;
+  const prevAsk = process.env.WEAVER_ASK_MODEL;
   try {
+    delete process.env.WEAVER_ASK_MODEL;
+    process.env.WEAVER_EXECUTOR = 'local-sdk';
     process.env.WEAVER_WORKER_MODEL = 'zai-coding-plan/glm-5.3';
     assert.equal(localTextModel(), 'sonnet');
     process.env.WEAVER_WORKER_MODEL = 'opus';
     assert.equal(localTextModel(), 'opus');
+    process.env.WEAVER_WORKER_MODEL = 'gpt-5.6-sol';
+    assert.equal(localTextModel(), 'sonnet');
+    process.env.WEAVER_EXECUTOR = 'codex-sdk';
+    assert.equal(localTextModel(), 'sonnet');
+    process.env.WEAVER_ASK_MODEL = 'haiku';
+    assert.equal(localTextModel(), 'haiku', 'the documented explicit ask seat wins');
   } finally {
     if (prev === undefined) delete process.env.WEAVER_WORKER_MODEL;
     else process.env.WEAVER_WORKER_MODEL = prev;
+    if (prevExecutor === undefined) delete process.env.WEAVER_EXECUTOR;
+    else process.env.WEAVER_EXECUTOR = prevExecutor;
+    if (prevAsk === undefined) delete process.env.WEAVER_ASK_MODEL;
+    else process.env.WEAVER_ASK_MODEL = prevAsk;
   }
 });
 
