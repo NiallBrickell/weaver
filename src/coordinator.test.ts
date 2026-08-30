@@ -206,8 +206,8 @@ test('a limited Anthropic primary can degrade to an exact Codex/OpenAI target', 
   );
 });
 
-test('a three-deep chain degrades seat by seat and returns the primary only when all are parked', async () => {
-  process.env.WEAVER_COORDINATOR_FALLBACKS = 'codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5';
+test('the production chain degrades Claude to Codex to non-Claude OpenRouter', async () => {
+  process.env.WEAVER_COORDINATOR_FALLBACKS = 'codex-sdk:gpt-5.6-sol,local-sdk:openrouter/z-ai/glm-5.2';
   const now = virtualNow().toISOString();
   const future = new Date(virtualNow().getTime() + 60 * 60_000).toISOString();
   const parked = (executor: string, provider: string, model: string) => ({
@@ -239,18 +239,18 @@ test('a three-deep chain degrades seat by seat and returns the primary only when
   // First two parked → the third seat.
   doc.capacity.byModel['codex-sdk:openai:gpt-5.6-sol'] = parked('codex-sdk', 'openai', 'gpt-5.6-sol');
   assert.deepEqual(pickCoordinatorTarget(doc, now), {
-    executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5',
+    executor: 'local-sdk', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.2',
   });
 
   // Every seat parked → the primary; the normal backoff machinery owns it.
-  doc.capacity.byModel['local-sdk:anthropic:claude-opus-5'] = parked('local-sdk', 'anthropic', 'claude-opus-5');
+  doc.capacity.byModel['local-sdk:openrouter:openrouter/z-ai/glm-5.2'] = parked('local-sdk', 'openrouter', 'openrouter/z-ai/glm-5.2');
   assert.deepEqual(pickCoordinatorTarget(doc, now), {
     executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
   });
 });
 
-test('a mid-chain capacity failure wakes immediately when a later seat is free', async () => {
-  process.env.WEAVER_COORDINATOR_FALLBACKS = 'codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5';
+test('a mid-chain capacity failure wakes immediately for non-Claude OpenRouter', async () => {
+  process.env.WEAVER_COORDINATOR_FALLBACKS = 'codex-sdk:gpt-5.6-sol,local-sdk:openrouter/z-ai/glm-5.2';
   // Park the primary so the pass selects the second seat.
   await arrive('coordinator-capacity', (doc) => {
     recordCoordinatorCapacityBackoff(doc, wait('rate_limit', 1), 'wake_primary');
@@ -283,11 +283,11 @@ test('a mid-chain capacity failure wakes immediately when a later seat is free',
   assert.ok(degradeWake, 'a free later seat must produce an immediate continuation wake');
   assert.match(
     degradeWake!.reason,
-    /continue on fallback local-sdk:claude-opus-5 while codex-sdk:gpt-5\.6-sol capacity recovers/,
+    /continue on fallback local-sdk:openrouter\/z-ai\/glm-5\.2 while codex-sdk:gpt-5\.6-sol capacity recovers/,
   );
   // The next selection indeed lands on that named seat.
   assert.deepEqual(pickCoordinatorTarget(doc, virtualNow().toISOString()), {
-    executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5',
+    executor: 'local-sdk', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.2',
   });
 });
 

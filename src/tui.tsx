@@ -32,6 +32,7 @@ import {
   rejectSend,
   resolveAttention,
   addSteering,
+  setAssignmentPlacement,
   setPaused,
 } from './humanActs.js';
 import { execFile } from 'node:child_process';
@@ -39,9 +40,12 @@ import { runInspect } from './inspect.js';
 import { requestedPrintoutScope } from './printoutControls.js';
 import { publishPrintoutHtml } from './printoutHtml.js';
 import { acquireRunnerLock, liveRunnerPid, promoteOnRunnerVacancy, runLoop, runnerLoopHealthy, runnerSourceStale } from './runner.js';
-import { listWorkstreams, load, weaverHome } from './store.js';
+import { listRunnerPresence, listWorkstreams, load, weaverHome } from './store.js';
 import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 import { actionAwaitingPilot, actionIsLivePilotWait, humanAttention } from './actionApproval.js';
+import { liveRunnerIds } from './coordinatorRunner.js';
+import { runnerClaimIdentity } from './runnerIdentity.js';
+import { storeDisplayLabel } from './link.js';
 
 const STALE_ATTEMPT_MS = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
 
@@ -123,6 +127,8 @@ interface StreamRow {
   concludedAtVirtual?: string;
   /** Manager stream slug (create_workstream lineage), when managed. */
   managedBy?: string;
+  /** Exact durable worker/action placement; absent means any capable runner. */
+  assignmentRunnerId?: string;
   /** Nesting depth under its manager in the rendered board (0 = root). */
   depth: number;
   error?: string;
@@ -162,9 +168,37 @@ export function nestUnderManagers(streams: StreamRow[]): StreamRow[] {
 interface Snapshot {
   items: NeedsYouItem[];
   streams: StreamRow[];
+  storeLabel: string;
+  liveRunnerIds: string[];
   capacityHeadline?: string;
   /** DONE streams past their linger window — off the board, still on record. */
   archivedDone: number;
+}
+
+export interface TuiExecutionHost {
+  runnerId?: string;
+  label: string;
+  live: boolean;
+}
+
+/** Host choices within one fleet. This is execution placement, never a store
+ * switch: every choice reads and writes the same durable Workstream state. */
+export function tuiExecutionHosts(
+  liveIds: readonly string[],
+  thisRunnerId: string,
+  selectedRunnerId?: string,
+): TuiExecutionHost[] {
+  const live = new Set(liveIds);
+  const ids = [thisRunnerId, ...liveIds.filter((id) => id !== thisRunnerId)];
+  if (selectedRunnerId && !ids.includes(selectedRunnerId)) ids.push(selectedRunnerId);
+  return [
+    { label: 'Any capable host', live: true },
+    ...ids.map((runnerId) => ({
+      runnerId,
+      label: runnerId === thisRunnerId ? `This Mac · ${runnerId}` : `Remote · ${runnerId}`,
+      live: live.has(runnerId),
+    })),
+  ];
 }
 
 /** How long a finished workstream stays on the board before leaving it.
@@ -265,7 +299,8 @@ async function snapshot(): Promise<Snapshot> {
   const items: NeedsYouItem[] = [];
   const streams: StreamRow[] = [];
   const providerCapacity: ProviderCapacityObservation[] = [];
-  for (const slug of await listWorkstreams()) {
+  const [slugs, presences] = await Promise.all([listWorkstreams(), listRunnerPresence()]);
+  for (const slug of slugs) {
     let doc: WorkstreamDoc;
     try {
       // Through the store so the dashboard reflects whichever backend
@@ -492,6 +527,7 @@ async function snapshot(): Promise<Snapshot> {
       queuedNow: dueNow > 0 || pendingSteers > 0,
       routine: ws.tags.includes('routine'),
       managedBy: ws.managedBy?.slug,
+      assignmentRunnerId: ws.assignmentRunnerId,
       depth: 0,
       nextRun,
       nextReason: displayedWake?.reason,
@@ -524,6 +560,8 @@ async function snapshot(): Promise<Snapshot> {
   return {
     items,
     streams: visible,
+    storeLabel: storeDisplayLabel(process.env.WEAVER_STORE),
+    liveRunnerIds: liveRunnerIds(presences),
     archivedDone: nested.length - visible.length,
     capacityHeadline: providerCapacityHeadline(providerCapacity),
   };
@@ -583,7 +621,9 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const { exit } = useApp();
   // The store is async, so the first snapshot arrives via the mount effect —
   // render paths never await; state loads in effects/callbacks only.
-  const [snap, setSnap] = useState<Snapshot>({ items: [], streams: [], archivedDone: 0 });
+  const [snap, setSnap] = useState<Snapshot>({
+    items: [], streams: [], storeLabel: storeDisplayLabel(process.env.WEAVER_STORE), liveRunnerIds: [], archivedDone: 0,
+  });
   const lastSnapJson = React.useRef('');
   const [runnerState, setRunnerState] = useState<'embedded' | 'external' | 'stalled' | 'none'>(
     embeddedRunner ? 'embedded' : liveRunnerPid() !== null ? 'external' : 'none',
@@ -597,10 +637,16 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const [scroll, setScroll] = useState(0);
   const [steering, setSteering] = useState<{ slug: string; text: string; answersAttentionId?: string } | null>(null);
   const [resolving, setResolving] = useState<{ slug: string; attId: string; note: string } | null>(null);
+  const [placing, setPlacing] = useState<{
+    slug: string;
+    options: TuiExecutionHost[];
+    cursor: number;
+  } | null>(null);
   const [toast, setToast] = useState('');
   const printoutAbort = React.useRef<AbortController | null>(null);
   const printoutOpening = React.useRef(false);
   const inspectOpening = React.useRef(false);
+  const thisRunnerId = useMemo(() => runnerClaimIdentity().id, []);
 
   useEffect(() => {
     let polling = false;
@@ -661,6 +707,26 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   const selSlug = sel ? (sel.type === 'item' ? sel.item.slug : sel.stream.slug) : undefined;
 
   useInput((input, key) => {
+    if (placing) {
+      if (key.escape) { setPlacing(null); return; }
+      if (key.upArrow || key.leftArrow || input === 'k') {
+        setPlacing({ ...placing, cursor: (placing.cursor + placing.options.length - 1) % placing.options.length });
+        return;
+      }
+      if (key.downArrow || key.rightArrow || input === 'j') {
+        setPlacing({ ...placing, cursor: (placing.cursor + 1) % placing.options.length });
+        return;
+      }
+      if (key.return) {
+        const selected = placing.options[placing.cursor]!;
+        setPlacing(null);
+        act(
+          () => setAssignmentPlacement(placing.slug, selected.runnerId),
+          `${placing.slug} workers/actions → ${selected.label}${selected.live ? '' : ' (host currently offline)'}`,
+        );
+      }
+      return;
+    }
     if (steering || resolving) {
       // TextInput owns the keyboard; esc backs out without acting.
       if (key.escape) { setSteering(null); setResolving(null); }
@@ -741,6 +807,11 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
     } else {
       const st = sel.stream;
       if (input === 's') setSteering({ slug: st.slug, text: '' });
+      else if (input === 'h' && st.bucket !== 5) {
+        const options = tuiExecutionHosts(snap.liveRunnerIds, thisRunnerId, st.assignmentRunnerId);
+        const selectedIndex = options.findIndex((host) => host.runnerId === st.assignmentRunnerId);
+        setPlacing({ slug: st.slug, options, cursor: Math.max(0, selectedIndex) });
+      }
       else if (input === 'p') {
         if (st.bucket === 5) setToast(`${st.slug} is done; status unchanged`);
         else act(() => setPaused(st.slug, !st.paused), `${st.slug} ${st.paused ? 'resumed' : 'paused'}`);
@@ -771,7 +842,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   // control of the scrollback and ghost frames stack up. Every body line
   // below is single-row (truncate-end), so line math is exact.
   const termRows = process.stdout.rows ?? 40;
-  const chrome = 7; // header (1) + section titles/margins (~5) + footer (1)
+  const chrome = 8; // fleet header + execution-host row + section chrome + footer
   const selDetailLines = 5; // selected stream: details (4) + key hint
   const streamCount = snap.streams.length + (snap.archivedDone ? 1 : 0); // +1: the archived-summary line
   const selPane = (() => {
@@ -802,7 +873,8 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
               every workstream, so "nothing selected" is a visible position
               in the same visual language as a selected row. */}
           <Text bold color="white" inverse={cursor === NO_SELECTION}> W E A V E R </Text>
-          <Text dimColor>· </Text>
+          <Text dimColor>· </Text><Text bold color={snap.storeLabel.startsWith('Shared') ? 'green' : 'yellow'}>{snap.storeLabel}</Text>
+          <Text dimColor> · </Text>
           {snap.items.length ? <Text bold color="red">{snap.items.length} need you</Text> : <Text dimColor>0 need you</Text>}
           <Text dimColor> · </Text><Text color="cyan">{counts[1]} working</Text>
           <Text dimColor> · </Text><Text color="blue">{counts[2]} waiting</Text>
@@ -820,6 +892,16 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
           <Text dimColor> · {drift ? `virtual ${vNow.toISOString().slice(0, 16)} ` : ''}{now.toTimeString().slice(0, 8)}</Text>
         </Text>
       </Box>
+
+      <Text wrap="truncate-end">
+        <Text dimColor> Execution hosts  </Text>
+        <Text color="cyan">This Mac · {thisRunnerId}</Text>
+        {snap.liveRunnerIds.filter((id) => id !== thisRunnerId).map((id) => (
+          <Text key={id}><Text dimColor>  ·  </Text><Text color="cyan">Remote · {id}</Text></Text>
+        ))}
+        {!snap.liveRunnerIds.length ? <Text color="yellow"> · no fresh shared heartbeat yet</Text> : null}
+        <Text dimColor>  ·  placement is Any unless a job says otherwise</Text>
+      </Text>
 
       {/* The fleet row's own hint, mirroring a selected stream's. Costs a line
           only in the state that has one spare: nothing selected means no
@@ -902,6 +984,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                 ) : (
                   <>
                     {st.paused ? <Text dimColor> [paused]</Text> : null}
+                    {st.assignmentRunnerId ? <Text color="magenta"> · host {st.assignmentRunnerId === thisRunnerId ? 'This Mac' : st.assignmentRunnerId}</Text> : null}
                     {st.activity ? <Text dimColor> {st.activity}</Text> : null}
                     {st.capacityBlock ? (
                       <Text color={d.color}> · {st.capacityBlock.summary}{st.capacityBlock.needsHuman ? ' — needs you' : ''}</Text>
@@ -935,7 +1018,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
                   {st.details.slice(0, 4).map((l, j) => (
                     <Text key={j} dimColor wrap="truncate-end">      {l}</Text>
                   ))}
-                  <Text color="cyan" wrap="truncate-end">      [enter] {expanded.has(st.slug) ? 'close card' : 'what is this stream?'}{st.bucket === 5 ? null : <>  [p] {st.paused ? 'resume' : 'pause'}</>}  [P] open printout  [s] steer  [i] full knowledge</Text>
+                  <Text color="cyan" wrap="truncate-end">      [enter] {expanded.has(st.slug) ? 'close card' : 'what is this stream?'}{st.bucket === 5 ? null : <>  [h] move host  [p] {st.paused ? 'resume' : 'pause'}</>}  [P] printout  [s] steer  [i] knowledge</Text>
                 </>
               )}
             </Box>
@@ -949,7 +1032,13 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         );
       })()}
 
-      {resolving ? (
+      {placing ? (
+        <Box marginTop={1}>
+          <Text color="cyan" wrap="truncate-end">
+            execution host for {placing.slug} ▸ {placing.options[placing.cursor]!.label}{placing.options[placing.cursor]!.live ? '' : ' · OFFLINE'}  ←→ choose · enter apply · esc cancel
+          </Text>
+        </Box>
+      ) : resolving ? (
         <Box marginTop={1}>
           {/* Kept short: a wrapped prompt line desyncs Ink like the footer would. */}
           <Text color="cyan">resolve {resolving.attId} — note? (enter dismiss · esc cancel) ▸ </Text>
@@ -989,7 +1078,7 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
         <Box marginTop={1}>
           {/* ONE line, always truncated — a wrapped footer desyncs Ink's repaint. */}
           <Text dimColor wrap="truncate-end">
-            ↑↓ · enter · [/] scroll · a approve · x reject · d resolve · s steer · p pause · P {selSlug ? 'open printout' : 'open fleet printout'} · i {selSlug ? 'knowledge' : 'fleet knowledge'} · q quit
+            ↑↓ · enter · [/] scroll · a approve · x reject · d resolve · s steer · h execution host · p pause · P {selSlug ? 'printout' : 'fleet printout'} · i {selSlug ? 'knowledge' : 'fleet knowledge'} · q quit
             {toast ? <Text color="green">   {toast}</Text> : null}
           </Text>
         </Box>

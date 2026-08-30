@@ -16,6 +16,7 @@ import {
   redactStoreUrl,
   removeEnvKey,
   scrubStoreSecrets,
+  storeDisplayLabel,
   validateStoreUrl,
 } from './link.js';
 import { updateEnvContent } from './login.js';
@@ -50,6 +51,14 @@ test('validateStoreUrl rejects everything else with the accepted forms named', (
     assert.match(err!, /postgres:\/\//);
     assert.match(err!, /sqlite:/);
   }
+});
+
+test('store display labels distinguish shared and local fleets without credentials', () => {
+  const shared = storeDisplayLabel('postgresql://private-user:private-pass@db.example.test:5432/weaver?sslmode=require');
+  assert.equal(shared, 'Shared fleet · db.example.test/weaver');
+  assert.doesNotMatch(shared, /private|5432|sslmode/);
+  assert.equal(storeDisplayLabel('sqlite:/tmp/my-fleet.db'), 'Local SQLite · my-fleet.db');
+  assert.equal(storeDisplayLabel(undefined), 'Local files');
 });
 
 // ── redaction ────────────────────────────────────────────────────────────────

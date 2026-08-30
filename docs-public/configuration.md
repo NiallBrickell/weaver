@@ -13,7 +13,7 @@ Copy [`.env.example`](../.env.example) to `.env` and uncomment what you need.
 `.env` is gitignored, so it stays local to your machine.
 
 ```dotenv
-WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,codex-sdk:gpt-5.6-sol
+WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:openrouter/z-ai/glm-5.2
 WEAVER_STORE=postgres://user:pass@host:5432/weaver
 ```
 
@@ -150,7 +150,7 @@ verifies, and stores all three through one browser-confirmed loopback flow;
 `weaver github-auth-check` proves the configured App path later.
 See [GitHub access on a hosted runner](./github-app.md).
 
-OpenHands provider credentials are values, not settings. Store OpenRouter's as
+Provider credentials are values, not settings. Store OpenRouter's as
 `OPENROUTER_API_KEY` with `weaver secret set ... --executor`; Weaver reloads it
 for every attempt without restarting the runner. The older transient
 `WEAVER_MODEL_API_KEY` / `LLM_API_KEY` environment inputs remain compatible,
@@ -161,9 +161,11 @@ credential with `claude setup-token` and register it as
 `CLAUDE_CODE_OAUTH_TOKEN` in executor-only storage. Do not copy Claude Code
 credential/config files or Codex device state from a person's machine. The GCP
 profile enforces this boundary before systemd starts: it requires exactly one
-setup-token, refuses `ANTHROPIC_API_KEY`, keeps direct Claude as the sole
-coordinator target, and leaves the fallback chain empty. OpenRouter remains
-confined to isolated OpenHands workers.
+setup-token, refuses `ANTHROPIC_API_KEY`, and permits only a non-Claude
+OpenRouter recovery seat after direct Claude. Codex remains local-only because
+personal device authentication is never copied to the host. OpenRouter's key
+stays in executor-only storage and the fallback coordinator still has only the
+revision-checked Weaver tools.
 
 Pi targets are provider-qualified: for example
 `openrouter/moonshotai/kimi-k3`, `zai/glm-5.3`, or

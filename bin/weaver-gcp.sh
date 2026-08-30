@@ -385,11 +385,12 @@ cmd_push_env() {
   hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-openrouter/z-ai/glm-5.2}"
   hosted_worker_complex_model="${WEAVER_GCP_WORKER_MODEL_COMPLEX:-$hosted_worker_model}"
   hosted_worker_fallbacks="${WEAVER_GCP_WORKER_FALLBACKS:-}"
-  # The always-on controller uses only an explicitly registered Claude Code
-  # setup-token. Keep the fallback chain explicitly empty: hosted OpenRouter
-  # credentials belong to disposable workers, not coordination.
+  # The always-on controller starts on an explicitly registered Claude Code
+  # setup-token. A non-Claude OpenRouter seat is the hosted recovery path;
+  # Codex remains local-only because personal device authentication is never
+  # copied to this credential-bearing host.
   hosted_coordinator_model="${WEAVER_GCP_COORDINATOR_MODEL:-claude-fable-5}"
-  hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-}"
+  hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-local-sdk:openrouter/z-ai/glm-5.2}"
 
   PUSH_ENV_RAW_TMP="$(mktemp)"
   PUSH_ENV_TMP="$(mktemp)"

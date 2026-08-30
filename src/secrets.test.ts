@@ -202,6 +202,19 @@ test('sdkEnv extras cannot reintroduce API or OAuth credentials', () => {
   assert.equal(env.SAFE_EXTRA, 'kept');
 });
 
+test('sdkEnv keeps every non-Claude executor identity out of model subprocesses', () => {
+  const previous = process.env.OPENROUTER_API_KEY;
+  try {
+    process.env.OPENROUTER_API_KEY = 'ambient-router-key';
+    setExecutorSecret('OPENROUTER_API_KEY', 'registered-router-key');
+    const env = sdkEnv({ OPENROUTER_API_KEY: 'caller-router-key' });
+    assert.ok(!('OPENROUTER_API_KEY' in env));
+  } finally {
+    if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = previous;
+  }
+});
+
 test('registered CLAUDE_CODE_OAUTH_TOKEN is injected while ambient credentials stay stripped', () => {
   const previous = process.env.ANTHROPIC_API_KEY;
   try {

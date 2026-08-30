@@ -1598,8 +1598,11 @@ test('a work assignment whose declared workspace does not exist yet is created b
 
 test('a worker with no declared directories keeps the default neutral per-stream workspace', () => {
   const previousRoot = process.env.WEAVER_WORKSPACE_ROOT;
+  const previousHome = process.env.HOME;
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-neutral-home-'));
   delete process.env.WEAVER_WORKSPACE_ROOT;
-  const expected = path.join(os.homedir(), '.weaver', 'workspaces', `cwd-test-stream-${process.pid}`);
+  process.env.HOME = fakeHome;
+  const expected = path.join(fakeHome, '.weaver', 'workspaces', `cwd-test-stream-${process.pid}`);
   try {
     const dir = neutralWorkspace(`cwd-test-stream-${process.pid}`);
     assert.equal(dir, expected);
@@ -1609,7 +1612,9 @@ test('a worker with no declared directories keeps the default neutral per-stream
   } finally {
     if (previousRoot === undefined) delete process.env.WEAVER_WORKSPACE_ROOT;
     else process.env.WEAVER_WORKSPACE_ROOT = previousRoot;
-    fs.rmSync(expected, { recursive: true, force: true });
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    fs.rmSync(fakeHome, { recursive: true, force: true });
   }
 });
 

@@ -67,6 +67,7 @@ export function providerForExecutor(executor: string, model: string): string {
 /** The executors a capacity chain may name. One list, shared with the runner
  * capability declaration, so a typo fails identically everywhere. */
 export const SUPPORTED_EXECUTORS: readonly string[] = ['local-sdk', 'codex-sdk', 'openhands', 'pi'];
+const SUPPORTED_COORDINATOR_EXECUTORS = new Set(['local-sdk', 'codex-sdk']);
 
 /**
  * Parse an ordered, comma-separated `executor:model` list (a capacity chain).
@@ -129,7 +130,15 @@ export function coordinatorFallbackTargets(): CapacityTarget[] {
 /** The full coordinator capacity chain: primary first, then the configured
  * fallbacks in order, deduped by executor+provider+model. */
 export function coordinatorTargets(): CapacityTarget[] {
-  return dedupeTargets([coordinatorCapacityTarget(), ...coordinatorFallbackTargets()]);
+  const targets = dedupeTargets([coordinatorCapacityTarget(), ...coordinatorFallbackTargets()]);
+  for (const target of targets) {
+    if (!SUPPORTED_COORDINATOR_EXECUTORS.has(target.executor)) {
+      throw new Error(
+        `unknown coordinator executor '${target.executor}' — supported: local-sdk, codex-sdk`,
+      );
+    }
+  }
+  return targets;
 }
 
 /** First fallback in the chain — retained for call sites that still need a

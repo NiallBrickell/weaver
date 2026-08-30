@@ -50,6 +50,23 @@ export function storeBackend(url: string | undefined): 'postgres' | 'sqlite' | '
   return 'fs';
 }
 
+/** Credential-safe identity for human status surfaces. Connection usernames,
+ * passwords, ports, and query parameters are deliberately omitted. */
+export function storeDisplayLabel(url: string | undefined): string {
+  const backend = storeBackend(url);
+  if (backend === 'postgres') {
+    try {
+      const parsed = new URL(url!);
+      const database = parsed.pathname.replace(/^\/+/, '') || 'database';
+      return `Shared fleet · ${parsed.hostname}/${database}`;
+    } catch {
+      return 'Shared fleet';
+    }
+  }
+  if (backend === 'sqlite') return `Local SQLite · ${path.basename(expandTilde(url!.slice('sqlite:'.length)))}`;
+  return 'Local files';
+}
+
 /**
  * A store URL safe to echo: the password in the userinfo becomes `***`.
  * URLs without userinfo (or with a bare username) and sqlite paths pass

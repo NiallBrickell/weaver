@@ -255,14 +255,20 @@ export function sdkEnv(
   stripAmbientNames: Iterable<string> = [],
 ): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
+  const registered = loadExecutorSecrets();
+  // Executor identities belong only to the adapter that explicitly selects
+  // them. Strip every registered name from ambient state and caller extras so
+  // an OpenRouter/App credential cannot ride into a Claude or Codex process
+  // merely because the service manager exported it.
+  for (const name of Object.keys(registered)) delete env[name];
   // A service manager may happen to expose a worker credential in the
   // controller's ambient environment. Ordinary work still receives only its
   // declared subset: remove every applicable worker-secret name first, then
   // add the exact selected values supplied by the caller.
   for (const name of stripAmbientNames) delete env[name];
   Object.assign(env, extra);
+  for (const name of Object.keys(registered)) delete env[name];
   stripClaudeCredentials(env);
-  const registered = loadExecutorSecrets();
   if (registered.CLAUDE_CODE_OAUTH_TOKEN) {
     env.CLAUDE_CODE_OAUTH_TOKEN = registered.CLAUDE_CODE_OAUTH_TOKEN;
   } else if (registered.ANTHROPIC_API_KEY) {
