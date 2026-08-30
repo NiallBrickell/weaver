@@ -398,6 +398,50 @@ test('the drain window is bounded — a hung tick cannot pin the exit forever', 
   assert.ok(errors.some((l) => l.includes('drain window elapsed')), 'the abandoned tick is reported, never silent');
 });
 
+test('source replacement leaves polling immediately and bounds the in-flight drain', async () => {
+  await make('source-stale-drain');
+  let stale = false;
+  let announceTickStarted!: () => void;
+  const tickStarted = new Promise<void>((resolve) => { announceTickStarted = resolve; });
+  let releaseTick!: () => void;
+  const heldTick = new Promise<void>((resolve) => { releaseTick = resolve; });
+  let tickSettled = false;
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const loop = runLoop({
+    intervalMs: 5,
+    concurrency: 1,
+    drainMs: 25,
+    sourceStale: () => stale,
+    tickFn: async () => {
+      stale = true;
+      announceTickStarted();
+      await heldTick;
+      tickSettled = true;
+      return { cycles: 0, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
+    },
+    log: (line) => logs.push(line),
+    logError: (line) => errors.push(line),
+  });
+
+  await tickStarted;
+  // A reverted source-stale branch would wait on heldTick forever. Release it
+  // after a generous backstop so the regression fails rather than wedging CI.
+  const failureBackstop = setTimeout(releaseTick, 2_000);
+  await loop;
+  clearTimeout(failureBackstop);
+
+  assert.equal(tickSettled, false, 'source-stale drain must not wait for the held tick');
+  assert.equal(
+    errors.filter((line) => line.includes('Weaver source changed since startup')).length,
+    1,
+    'source replacement is announced once',
+  );
+  assert.ok(logs.some((line) => line.includes('stopping — draining 1 in-flight tick')));
+  assert.ok(errors.some((line) => line.includes('drain window elapsed')));
+  releaseTick();
+});
+
 test('a runner whose checkout changed stops before heartbeat or dispatch', async () => {
   await make('stale-source');
   const errors: string[] = [];

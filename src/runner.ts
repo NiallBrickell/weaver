@@ -576,12 +576,13 @@ export interface RunnerOptions {
   tickFn?: typeof tick;
   /** Source-revision probe; injectable only for deterministic runner tests. */
   sourceStale?: () => boolean;
-  /** How long the loop waits for in-flight ticks after `signal` aborts before
-   * giving up. An abandoned tick can hold a mid-push ACTION whose orphan
-   * costs a human a manual provider reconciliation (three in one day when
-   * restarts killed the runner mid-action), so exit waits for the short ones.
-   * Default 3 minutes: covers action executions and coordinator passes while
-   * never pinning a restart behind a 40-minute worker wall. */
+  /** How long the loop waits for in-flight ticks after polling stops (owner
+   * abort or source replacement) before giving up. An abandoned tick can hold
+   * a mid-push ACTION whose orphan costs a human a manual provider
+   * reconciliation (three in one day when restarts killed the runner
+   * mid-action), so exit waits for the short ones. Default 3 minutes: covers
+   * action executions and coordinator passes while never pinning a restart
+   * behind a 40-minute worker wall. */
   drainMs?: number;
 }
 
@@ -706,18 +707,14 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   let prConflictSweepInFlight = false;
   let probing = false;
   let lastCredMtime = credentialsMtime();
-  let staleAnnounced = false;
   while (!opts.signal?.aborted) {
     if (sourceStale()) {
-      if (!staleAnnounced) {
-        logError('[run] Weaver source changed since startup — stopping before further dispatch; restart Weaver');
-        staleAnnounced = true;
-      }
-      // In-flight ticks already own crash-recoverable work. Start nothing new
-      // and let them settle before releasing the singleton runner lock.
-      if (inFlight.size === 0) return;
-      await waitForNextIteration(opts.intervalMs, opts.signal);
-      continue;
+      logError('[run] Weaver source changed since startup — stopping before further dispatch; restart Weaver');
+      // Start nothing else and leave polling now. In-flight ticks already own
+      // crash-recoverable work, and the shared bounded drain below is the one
+      // exit contract — waiting for them here would make source-stale restarts
+      // unbounded.
+      break;
     }
     try {
       // Shared TTL presence is separate from Workstream truth and from the
@@ -844,9 +841,10 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
     }
     await waitForNextIteration(opts.intervalMs, opts.signal);
   }
-  // Drain: the loop was told to stop, but in-flight ticks may hold live
-  // external acts. Give the short-lived ones a bounded window to settle so a
-  // routine restart stops orphaning mid-push actions.
+  // Drain: the loop was told to stop or its loaded source was replaced, but
+  // in-flight ticks may hold live external acts. Give the short-lived ones a
+  // bounded window to settle so a routine restart stops orphaning mid-push
+  // actions.
   if (inFlight.size) {
     log(`[run] stopping — draining ${inFlight.size} in-flight tick(s) (${[...inFlight].join(', ')})`);
     const deadline = Date.now() + (opts.drainMs ?? 180_000);
