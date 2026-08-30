@@ -50,6 +50,14 @@ export interface RunnerPresence {
   heartbeatAt: string;
 }
 
+/** Cheap identity of a Workstream's current durable head. Runners use this
+ * before loading documents so an unchanged shared fleet costs one narrow
+ * metadata query rather than retransmitting every document every poll. */
+export interface WorkstreamHead {
+  slug: string;
+  revision: number;
+}
+
 export type EventHelper = (type: string, summary: string, refs?: string[]) => void;
 
 export type Mutator = (doc: WorkstreamDoc, event: EventHelper) => void;
@@ -93,6 +101,9 @@ export class RevisionConflictError extends Error {
 
 export interface StateStore {
   listWorkstreams(): Promise<string[]>;
+  /** Current readable heads, ordered by slug. The revision is the same CAS
+   * revision carried by load(slug); no document bodies cross this seam. */
+  listWorkstreamHeads(): Promise<WorkstreamHead[]>;
   load(slug: string): Promise<WorkstreamDoc>;
   create(core: Omit<WorkstreamCore, 'id' | 'createdAt' | 'status'>): Promise<WorkstreamDoc>;
   /** undefined expectedRevision = serialized arrival (see contract above). */

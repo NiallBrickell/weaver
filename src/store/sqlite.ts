@@ -47,7 +47,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 /**
  * Idempotent, run once per process at construction. TEXT for doc JSON (SQLite
@@ -180,6 +180,15 @@ export class SqliteStore implements StateStore {
   async listWorkstreams(): Promise<string[]> {
     return this.db.prepare('SELECT slug FROM workstreams ORDER BY slug').all()
       .map((row) => (row as { slug: string }).slug);
+  }
+
+  async listWorkstreamHeads(): Promise<WorkstreamHead[]> {
+    return this.db.prepare(
+      'SELECT slug, revision FROM workstreams WHERE json_valid(doc) ORDER BY slug',
+    ).all().map((row) => {
+      const typed = row as { slug: string; revision: number };
+      return { slug: typed.slug, revision: typed.revision };
+    });
   }
 
   async load(slug: string): Promise<WorkstreamDoc> {

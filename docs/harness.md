@@ -8,6 +8,26 @@ The **durable layer** is a single typed document per workstream (`state/<slug>/w
 
 The durable layer has three interchangeable backends behind the `StateStore` interface ([`src/store/types.ts`](../src/store/types.ts)): the fs reference ([`src/store/fs.ts`](../src/store/fs.ts), layout above), single-file local SQLite ([`src/store/sqlite.ts`](../src/store/sqlite.ts), `WEAVER_STORE=sqlite:<path>`, Node's built-in `node:sqlite` — zero dependencies), and plain Postgres ([`src/store/pg.ts`](../src/store/pg.ts), `WEAVER_STORE=postgres://…`) for hosting the knowledge layer centrally. Postgres stores typed documents as validated `json`, not `jsonb`: `jsonb` decodes `\u0000` and rejects that valid JSON string because a Postgres text value cannot contain a zero byte, while `json` preserves the JSON representation for an exact JavaScript round trip. Its source-key index therefore uses a separate `JSON.stringify(sourceKey)` text column under the `C` collation; the encoding is injective for JavaScript strings, including U+0000, so uniqueness remains atomic without narrowing durable truth. Legacy source-key backfill is serialized with schema initialization, decoded in JavaScript, and tracked by an explicit initialized bit so a genuinely absent key is never repeatedly inspected; PostgreSQL JSON operators are forbidden on the document because asking for one field still parses an unrelated U+0000. Artifact bodies use `bytea`, because Postgres `text` cannot hold a raw U+0000; the store boundary converts strings to and from UTF-8 Buffers, matching filesystem artifact bytes exactly. Exact fleet readback is sorted in JavaScript before comparison because deployment-specific database collations can order the same slugs differently without changing durable content. The revision CAS runs inside a transaction on both database backends — sqlite runs the whole synchronous read→check→write region inside one `BEGIN IMMEDIATE` (FsStore's no-yield guarantee plus cross-process safety from the database write lock); pg re-checks with `UPDATE … WHERE revision = $expected`. Tick exclusion: fs and sqlite record a pid and probe liveness (same-machine by nature); pg uses a session-scoped advisory lock (holder death releases it — that's why only pg has no pid). Source-key uniqueness — two workstreams may never stand for the same external thing — is a store-write contract, not a caller pre-scan: each backend enforces it atomically inside `create` (fs a home-scoped create lock around a fail-loud scan that refuses rather than skip a corrupt sibling, sqlite the `BEGIN IMMEDIATE` write lock around a `json_extract` lookup, pg a partial UNIQUE index), surfacing a `SourceKeyConflictError`. The same contract-test suite in [`src/store.test.ts`](../src/store.test.ts) runs over all three (fs and sqlite unconditionally, pg via `WEAVER_TEST_PG_URL`), including cross-process races spawned as real OS processes — among them two different slugs racing one source key, where exactly one lands. Machine-local things deliberately stay on fs on every backend: printout receipt sidecars, secrets env files, the runner pid lock, the tail's jsonl feed, watch/TUI polling, and the simulated world's outbox.
 
+**Remote-store cost surprise (2026-08-29).** `runLoop` used to implement its
+three fleet decisions as independent `listWorkstreams()` plus full `load()`
+scans. The production runners poll every five seconds: 35,489,938 document
+bytes × two unconditional scans × 720 loops/hour = 51,105,510,720 bytes, or
+about 51.1 GB/hour, before useful work. Railway measured 51.87 GB/hour average
+database transmit over the active 76-hour window, confirming that predicted
+cost rather than a model or compute spike. Four-hour transmit buckets ranged
+from 99 GB to 337 GB, making public database egress the dominant infrastructure
+charge. The runner now calls `listWorkstreamHeads()` before each logical
+decision and keeps
+a disposable `(slug, revision) -> doc` cache: only new or changed heads load a
+body, absent/unreadable heads evict old bodies, and the post-recovery decision
+still performs a fresh head scan so a mutation made moments earlier is visible.
+Do not replace this with a time-based cache or merge the logical scans: exact
+revision validation and the post-mutation re-scan carry the freshness contract.
+The operator UI's `/api/fleet-revision` poll uses the same revision heads plus
+typed runner presence to reproduce the full render's hash shape without
+calling `loadFleet()`; full documents cross the store seam only for an actual
+page render after that cheap hash changes.
+
 **External poolers must preserve session identity.** The Postgres tick lock is
 session-scoped, so transaction-mode PgBouncer can hand the next statement a
 different backend and silently destroy the exclusion contract. Use a direct or

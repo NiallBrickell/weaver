@@ -27,7 +27,7 @@ import { acquireProcessLock } from '../processLock.js';
 import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc, newId, sha256 } from './doc.js';
-import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 export { newId, sha256 };
 
@@ -97,6 +97,20 @@ export class FsStore implements StateStore {
       .readdirSync(home)
       .filter((d) => fs.existsSync(docPath(d)))
       .sort();
+  }
+
+  async listWorkstreamHeads(): Promise<WorkstreamHead[]> {
+    const heads: WorkstreamHead[] = [];
+    for (const slug of await this.listWorkstreams()) {
+      try {
+        const revision = this.loadSync(slug).revision;
+        if (Number.isInteger(revision) && revision >= 0) heads.push({ slug, revision });
+      } catch {
+        // An unreadable document is not a usable head. Omitting it also makes
+        // a resident runner evict any formerly-readable cached copy.
+      }
+    }
+    return heads;
   }
 
   /** Synchronous read shared by load() and mutate() — mutate must not yield

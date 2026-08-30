@@ -341,7 +341,10 @@ API.
 
 - **The store contract is identical.** Revision-checked writes, artifact
   pinning, and the policy store behave the same hosted as local — one
-  contract-test suite runs over filesystem, SQLite, and Postgres.
+  contract-test suite runs over filesystem, SQLite, and Postgres. Resident
+  runners validate a local document cache against cheap revision heads before
+  each scan, so unchanged hosted documents are not repeatedly transferred;
+  the cache is disposable and never becomes durable truth.
 - **The authority firewall holds.** `serve` still exposes no steer / approve /
   adopt. A hosted fleet does not hand bots authority they don't have locally; a
   person (or the coordinator under its own ceilings) still decides what evidence

@@ -30,6 +30,7 @@ import {
   findBySourceKey,
   heartbeatRunner,
   listRunnerPresence,
+  listWorkstreamHeads,
   listWorkstreams,
   load,
   mutate,
@@ -160,6 +161,23 @@ const pgBackend: Backend = {
 /** The whole contract, identical for every backend. */
 function contractSuite(backend: Backend): void {
   beforeEach(() => backend.reset());
+
+  test('revision-head listing carries no bodies and advances exactly with durable heads', async () => {
+    const first = await makeWorkstream('a-head');
+    const second = await makeWorkstream('b-head');
+    assert.deepEqual(await listWorkstreamHeads(), [
+      { slug: 'a-head', revision: first.revision },
+      { slug: 'b-head', revision: second.revision },
+    ]);
+
+    const changed = await mutate('b-head', second.revision, (_doc, event) => {
+      event('test.head.changed', 'advance only this durable head');
+    });
+    assert.deepEqual(await listWorkstreamHeads(), [
+      { slug: 'a-head', revision: first.revision },
+      { slug: 'b-head', revision: changed.revision },
+    ]);
+  });
 
   test('a stale write is rejected with RevisionConflictError and mutates nothing', async () => {
     await makeWorkstream();
