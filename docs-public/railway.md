@@ -94,10 +94,16 @@ Weaver `DATABASE_PUBLIC_UNPOOLED_URL`, or configure the pooler in session mode.
 Production runners commonly use the documented five-second interval. They poll
 a narrow `(slug, revision)` head list before each logical fleet scan and retain
 a disposable, revision-validated document cache. A cold runner loads every
-current document once; later polls transfer only documents
-whose durable revision changed, while deletions and unreadable heads are
-evicted. This preserves the same fresh-head and revision-CAS semantics without
-retransmitting the full knowledge base every few seconds. Keep runners current:
+current document once; later polls transfer only documents whose durable
+revision changed, while deletions and unreadable heads are evicted. An active
+Workstream is reconciled once per observed revision—not once per poll—and is
+reselected when a stored time wake, recovery lease, worker-orphan check,
+approval-service retry, or coordinator-host failover becomes due. Missing
+manager notices are derived across the cached documents, including concluded
+children, and stop scheduling as soon as the manager stores their dedup keys.
+This preserves the same fresh-head, wake, recovery, and revision-CAS semantics
+without retransmitting or reprocessing the knowledge base every few seconds.
+Keep runners current:
 older builds that list and reload every document on every poll can turn a large
 fleet's public-database traffic into the dominant Railway cost.
 

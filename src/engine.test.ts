@@ -1716,6 +1716,7 @@ test('pilot unreachable → fails closed: gated, no verdict recorded, retried la
     assert.equal(asg.state, 'gated');
     assert.equal(asg.exec!.pilotVerdict, undefined);
     assert.ok(asg.exec!.pilotUnavailableSince);
+    assert.ok(asg.exec!.pilotRetryAt);
     assert.equal((await load('pilot-down-ws')).attention.length, 0, 'one transient failure is not a human task');
 
     await tick('pilot-down-ws', { maxPasses: 0 });
@@ -1724,12 +1725,18 @@ test('pilot unreachable → fails closed: gated, no verdict recorded, retried la
     delete process.env.WEAVER_PILOT_URL;
   }
 
+  await arrive('pilot-down-ws', (d) => {
+    const action = d.assignments.find((assignment) => assignment.id === 'asg_act')!;
+    action.exec!.pilotRetryAt = new Date(Date.now() - 1).toISOString();
+  });
+
   await withPilotStub(() => 'approve', async () => {
     await tick('pilot-down-ws', { maxPasses: 0 });
     const recovered = (await load('pilot-down-ws')).assignments.find((assignment) => assignment.id === 'asg_act')!;
     assert.equal(recovered.state, 'queued');
     assert.equal(recovered.exec!.approval!.by, 'pilot');
     assert.equal(recovered.exec!.pilotUnavailableSince, undefined);
+    assert.equal(recovered.exec!.pilotRetryAt, undefined);
     assert.equal((await load('pilot-down-ws')).attention.filter((attention) => attention.refId === recovered.id && attention.status === 'open').length, 0);
   });
 });
@@ -1750,6 +1757,8 @@ test('a recovered Pilot escalation replaces legacy outage noise with the actual 
   });
   await tick('pilot-outage-deny-ws', { maxPasses: 0 });
   await arrive('pilot-outage-deny-ws', (doc) => {
+    doc.assignments.find((assignment) => assignment.id === 'asg_act')!.exec!.pilotRetryAt =
+      new Date(Date.now() - 1).toISOString();
     doc.attention.push({
       id: 'att_legacy_outage',
       kind: 'approval',

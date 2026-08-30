@@ -19,9 +19,20 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { tick } from './engine.js';
+import { coordinatorRunnerEligibility } from './coordinatorRunner.js';
+import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
 import { sweepPrConflicts } from './prConflicts.js';
 import { sdkEnv } from './secrets.js';
-import { arrive, heartbeatRunner, listWorkstreamHeads, load, weaverHome, type WorkstreamHead } from './store.js';
+import {
+  arrive,
+  heartbeatRunner,
+  listRunnerPresence,
+  listWorkstreamHeads,
+  load,
+  weaverHome,
+  type RunnerPresence,
+  type WorkstreamHead,
+} from './store.js';
 import { virtualNow } from './clock.js';
 import {
   capacityBackoffFor,
@@ -33,8 +44,8 @@ import {
 import { readFleetCapacity, supersededByFleetRecovery } from './fleetCapacity.js';
 import { targetOfWait, type CapacityTarget } from './modelConfig.js';
 import { runnerExecutorCapabilities } from './modelRouting.js';
-import { acquireProcessLock, liveProcessLockPid } from './processLock.js';
-import { runnerClaimIdentity } from './runnerIdentity.js';
+import { acquireProcessLock, liveProcessLockPid, pidIsLive } from './processLock.js';
+import { runnerClaimIdentity, type RunnerClaimIdentity } from './runnerIdentity.js';
 import type { WorkstreamDoc } from './types.js';
 
 function lockDir(): string {
@@ -113,6 +124,122 @@ export class RunnerWorkstreamCache {
     }
     this.cached = next;
     return new Map(next);
+  }
+}
+
+/** Manager notices are cross-document durable facts. Derive the exact missing
+ * dedup keys from the same cached fleet snapshot so concluded children can be
+ * repaired without polling them forever after delivery. */
+export function pendingManagerNoticeKeys(
+  doc: WorkstreamDoc,
+  managerDoc: WorkstreamDoc | undefined,
+): string[] {
+  if (!doc.workstream.managedBy || !managerDoc) return [];
+  const existing = new Set((managerDoc.managerNotices ?? []).map((notice) => notice.dedupKey));
+  const candidates: string[] = [];
+  if (doc.workstream.conclusion) candidates.push(`finished:${doc.workstream.conclusion.passId}`);
+  for (const attention of doc.attention) {
+    if (
+      attention.status === 'open' &&
+      !isLegacyDollarBudgetAttention(attention) &&
+      (attention.kind === 'blocker' || attention.kind === 'budget')
+    ) {
+      candidates.push(`attention:${attention.id}`);
+    }
+  }
+  return candidates.filter((key) => !existing.has(key)).sort();
+}
+
+/**
+ * The durable facts which can make an unchanged workstream tickable.
+ *
+ * A document revision is the ordinary event signal. Time is the one planned
+ * exception: a stored wake or recovery lease can become due without a write.
+ * Runner failover is another stored seam outside the document, so the exact
+ * coordinator eligibility result joins the signature only while wakes are
+ * due. A running attempt whose owner later dies or crosses its recovery
+ * horizon is included for the same reason.
+ *
+ * Everything here is derived from typed state plus explicit clocks/liveness;
+ * no transcript or generated summary participates in scheduling.
+ */
+export function runnerDispatchSignature(
+  doc: WorkstreamDoc,
+  runner: RunnerClaimIdentity,
+  presences: readonly RunnerPresence[],
+  wallNow = new Date(),
+  virtual = virtualNow(),
+  managerDoc?: WorkstreamDoc,
+): string {
+  const dueWakeIds = doc.wakes
+    .filter((wake) => wake.status === 'pending' && isWakeDue(wake.condition, wallNow, virtual))
+    .map((wake) => wake.id)
+    .sort();
+  const leaseExpired = doc.lease && Date.parse(doc.lease.expiresAt) <= wallNow.getTime()
+    ? doc.lease.passId
+    : null;
+  const staleMs = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
+  const recoverableAttempts = doc.assignments
+    .filter((assignment) => assignment.state === 'running')
+    .flatMap((assignment) => {
+      const attempt = assignment.attempts.at(-1);
+      if (!attempt || attempt.endedAt) return [];
+      if (attempt.runnerId !== undefined && attempt.runnerId !== runner.id) return [];
+      const driverDead = !!attempt.runnerPid &&
+        attempt.runnerPid !== process.pid &&
+        !pidIsLive(attempt.runnerPid);
+      const ageMs = wallNow.getTime() - Date.parse(attempt.startedAt);
+      return driverDead || ageMs >= staleMs ? [attempt.runId] : [];
+    })
+    .sort();
+  const duePilotRetryIds = doc.assignments
+    .filter((assignment) =>
+      assignment.kind === 'action' &&
+      assignment.state === 'gated' &&
+      assignment.exec?.approvalMode !== 'human-only' &&
+      !assignment.exec?.approval &&
+      !assignment.exec?.pilotVerdict &&
+      !!assignment.exec?.pilotRetryAt &&
+      assignment.exec.pilotRetryAt <= wallNow.toISOString())
+    .map((assignment) => assignment.id)
+    .sort();
+  const coordinatorEligibility = dueWakeIds.length
+    ? coordinatorRunnerEligibility(doc, runner.id, presences, wallNow.getTime())
+    : null;
+  return JSON.stringify({
+    revision: doc.revision,
+    dueWakeIds,
+    leaseExpired,
+    recoverableAttempts,
+    duePilotRetryIds,
+    managerNoticeKeys: pendingManagerNoticeKeys(doc, managerDoc),
+    coordinatorRunner: coordinatorEligibility?.eligible
+      ? 'eligible'
+      : coordinatorEligibility?.preferredLiveRunner ?? coordinatorEligibility?.reason ?? null,
+  });
+}
+
+/** Disposable acknowledgement of scheduling observations. A runner restart
+ * intentionally forgets it and gives every active stream one recovery tick. */
+export class RunnerDispatchTracker {
+  private dispatched = new Map<string, string>();
+
+  shouldDispatch(slug: string, signature: string): boolean {
+    return this.dispatched.get(slug) !== signature;
+  }
+
+  markDispatched(slug: string, signature: string): void {
+    this.dispatched.set(slug, signature);
+  }
+
+  forget(slug: string): void {
+    this.dispatched.delete(slug);
+  }
+
+  retain(slugs: ReadonlySet<string>): void {
+    for (const slug of this.dispatched.keys()) {
+      if (!slugs.has(slug)) this.dispatched.delete(slug);
+    }
   }
 }
 
@@ -560,6 +687,7 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   const sourceStale = opts.sourceStale ?? runnerSourceStale;
   const runner = runnerClaimIdentity();
   const workstreams = new RunnerWorkstreamCache();
+  const dispatches = new RunnerDispatchTracker();
   if (runner.placementOnly) {
     throw new Error('WEAVER_RUNNER_PLACEMENT_ONLY=1 is only for bounded `weaver tick <slug> --engine-only` invocations, not a resident runner');
   }
@@ -636,11 +764,22 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       }
       const due: string[] = [];
       const priority = new Map<string, number>();
-      for (const [slug, doc] of await workstreams.scan()) {
+      const dispatchSignatures = new Map<string, string>();
+      const docs = await workstreams.scan();
+      dispatches.retain(new Set(docs.keys()));
+      const presences = await listRunnerPresence();
+      const wallNow = new Date();
+      const virtual = virtualNow();
+      for (const [slug, doc] of docs) {
         if (inFlight.has(slug)) continue;
         const ws = doc.workstream;
-        if (ws.status !== 'active') continue;
+        const managerDoc = ws.managedBy ? docs.get(ws.managedBy.slug) : undefined;
+        const missingManagerNotices = pendingManagerNoticeKeys(doc, managerDoc);
+        if (ws.status !== 'active' && !(ws.status === 'done' && missingManagerNotices.length)) continue;
+        const signature = runnerDispatchSignature(doc, runner, presences, wallNow, virtual, managerDoc);
+        if (!dispatches.shouldDispatch(slug, signature)) continue;
         due.push(slug);
+        dispatchSignatures.set(slug, signature);
         priority.set(slug, priorityRank(ws.priority));
       }
       due.sort(byPriorityThenFairness(priority, lastTickedAt));
@@ -664,6 +803,7 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       );
       for (const slug of allocateSlots(due, priority, cap, fairnessDue)) {
         if (inFlight.size >= cap) break;
+        const dispatchSignature = dispatchSignatures.get(slug)!;
         inFlight.add(slug);
         lastTickedAt.set(slug, Date.now());
         // A concurrency slot belongs to the tick until that exact promise
@@ -674,6 +814,13 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
         // while the first process and its cross-process lock were still live.
         void tickFn(slug, { executorCapabilities })
           .then((report) => {
+            if (report.skipped === 'another process is ticking this workstream') {
+              // A competing tick has not yet proved this observed revision
+              // quiescent. Retry after its shared lock is released.
+              dispatches.forget(slug);
+            } else {
+              dispatches.markDispatched(slug, dispatchSignature);
+            }
             if (report.workersRun.length || report.passes.length || report.sendsExecuted || report.unknownsResolved) {
               log(
                 `[${new Date().toTimeString().slice(0, 8)}] ${slug}: workers=[${report.workersRun.join(',')}] passes=${report.passes.length} sends=${report.sendsExecuted}`,
@@ -681,6 +828,9 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
             }
           })
           .catch((e) => {
+            // A transport/tooling failure did not prove this durable position
+            // quiescent. Forget the observation so the next loop retries it.
+            dispatches.forget(slug);
             logError(`[run] ${slug}: ${e instanceof Error ? e.message : e}`);
           })
           .finally(() => {

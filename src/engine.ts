@@ -391,13 +391,16 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
   const doc = await load(slug);
   if (doc.workstream.status !== 'active') return 0;
   let approved = 0;
+  const wallNow = new Date();
+  const wallNowIso = wallNow.toISOString();
   const gated = doc.assignments.filter(
     (a) => a.kind === 'action'
       && a.state === 'gated'
       && a.exec
       && a.exec.approvalMode !== 'human-only'
       && !a.exec.approval
-      && !a.exec.pilotVerdict,
+      && !a.exec.pilotVerdict
+      && (!a.exec.pilotRetryAt || a.exec.pilotRetryAt <= wallNowIso),
   );
   for (const asg of gated) {
     let verdict: { decision: string; reason: string } | null = null;
@@ -472,17 +475,24 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
     } catch {
       // An unavailable Pilot is one fleet dependency incident, never one human
       // decision per gated action. Persist the typed first-failure marker and
-      // keep retrying; the fleet projection groups every affected action while
-      // the authority firewall keeps each one safely gated with no verdict.
+      // a bounded physical retry rather than probing it every runner poll. The
+      // fleet projection groups every affected action while the authority
+      // firewall keeps each one safely gated with no verdict.
       const current = await load(slug);
-      const currentAction = current.assignments.find((candidate) => candidate.id === asg.id);
-      if (currentAction?.exec?.pilotUnavailableSince) continue;
+      const retryAt = new Date(wallNow.getTime() + 60_000).toISOString();
       try {
         await mutate(slug, current.revision, (d, event) => {
           const a2 = d.assignments.find((x) => x.id === asg.id);
           if (!a2?.exec || a2.state !== 'gated' || a2.exec.approval || a2.exec.pilotVerdict) return;
-          a2.exec.pilotUnavailableSince = new Date().toISOString();
-          event('action.pilot_unavailable', `${a2.id} remains safely gated — Pilot is unavailable`, [a2.id]);
+          if (a2.exec.pilotRetryAt && a2.exec.pilotRetryAt > wallNowIso) return;
+          const firstFailure = !a2.exec.pilotUnavailableSince;
+          a2.exec.pilotUnavailableSince ??= wallNowIso;
+          a2.exec.pilotRetryAt = retryAt;
+          event(
+            firstFailure ? 'action.pilot_unavailable' : 'action.pilot_retry_scheduled',
+            `${a2.id} remains safely gated — Pilot is unavailable; retry at ${retryAt}`,
+            [a2.id],
+          );
         });
       } catch (error) {
         if (!(error instanceof RevisionConflictError)) throw error;
@@ -503,6 +513,7 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
         );
         a2.exec.pilotVerdict = { ...verdict!, at: new Date().toISOString() };
         delete a2.exec.pilotUnavailableSince;
+        delete a2.exec.pilotRetryAt;
         if (verdict!.decision === 'approve') {
           a2.state = 'queued';
           a2.exec.approval = { by: 'pilot', at: new Date().toISOString(), note: verdict!.reason };

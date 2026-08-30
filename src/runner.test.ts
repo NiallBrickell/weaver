@@ -4,7 +4,16 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { advanceClock, virtualNow } from './clock.js';
-import { effectiveConcurrency, expediteBackoffWakes, infraBackoffSlugs, RunnerWorkstreamCache, runLoop } from './runner.js';
+import {
+  effectiveConcurrency,
+  expediteBackoffWakes,
+  infraBackoffSlugs,
+  pendingManagerNoticeKeys,
+  RunnerDispatchTracker,
+  runnerDispatchSignature,
+  RunnerWorkstreamCache,
+  runLoop,
+} from './runner.js';
 import { arrive, createWorkstream, listRunnerPresence, load } from './store.js';
 import type { InfrastructureWait } from './types.js';
 
@@ -142,6 +151,130 @@ test('a later logical scan observes a revision changed after the preceding scan'
 
   await arrive('fresh-between-decisions', (doc) => setCapacity(doc, [wait('pass_between_scans')]));
   assert.deepEqual(await infraBackoffSlugs(cache), ['fresh-between-decisions']);
+});
+
+test('unchanged quiescent workstreams dispatch once while revisions and due wakes retrigger', async () => {
+  await make('dispatch-signature');
+  const tracker = new RunnerDispatchTracker();
+  const runner = { id: 'mac-primary', placementOnly: false } as const;
+  const before = await load('dispatch-signature');
+  const wallNow = new Date('2026-08-30T12:00:00.000Z');
+  const virtual = new Date('2026-08-30T12:00:00.000Z');
+  const first = runnerDispatchSignature(before, runner, [], wallNow, virtual);
+  assert.equal(tracker.shouldDispatch('dispatch-signature', first), true);
+  tracker.markDispatched('dispatch-signature', first);
+  assert.equal(tracker.shouldDispatch('dispatch-signature', first), false,
+    'an unchanged idle document must not receive another five-second no-op tick');
+
+  const futureWake = structuredClone(before);
+  futureWake.wakes.push({
+    id: 'wake_later',
+    reason: 'planned check',
+    condition: { type: 'wall_time', dueAt: '2026-08-30T12:01:00.000Z' },
+    status: 'pending',
+    createdAt: wallNow.toISOString(),
+  });
+  futureWake.revision++;
+  const beforeDue = runnerDispatchSignature(futureWake, runner, [], wallNow, virtual);
+  assert.equal(tracker.shouldDispatch('dispatch-signature', beforeDue), true, 'a durable revision retriggers');
+  tracker.markDispatched('dispatch-signature', beforeDue);
+  assert.equal(tracker.shouldDispatch('dispatch-signature', beforeDue), false);
+  const afterDue = runnerDispatchSignature(
+    futureWake,
+    runner,
+    [],
+    new Date('2026-08-30T12:01:00.000Z'),
+    virtual,
+  );
+  assert.equal(tracker.shouldDispatch('dispatch-signature', afterDue), true,
+    'a stored wall wake becoming due retriggers without a document write');
+});
+
+test('runner dispatch signature observes coordinator failover and expired recovery leases', async () => {
+  await make('dispatch-failover');
+  const runner = { id: 'standby', placementOnly: false } as const;
+  const doc = await load('dispatch-failover');
+  doc.workstream.executionPolicy = { coordinatorRunnerOrder: ['primary', 'standby'] };
+  doc.wakes.push({
+    id: 'wake_now', reason: 'coordinate', condition: { type: 'immediate' }, status: 'pending',
+    createdAt: '2026-08-30T12:00:00.000Z',
+  });
+  doc.lease = {
+    passId: 'pass_running', runnerId: 'primary', acquiredAt: '2026-08-30T11:59:00.000Z',
+    expiresAt: '2026-08-30T12:02:00.000Z',
+  };
+  const freshPrimary = [{ runnerId: 'primary', heartbeatAt: '2026-08-30T12:00:00.000Z' }];
+  const before = runnerDispatchSignature(
+    doc, runner, freshPrimary, new Date('2026-08-30T12:01:00.000Z'), new Date('2026-08-30T12:01:00.000Z'),
+  );
+  const afterFailoverAndExpiry = runnerDispatchSignature(
+    doc, runner, freshPrimary, new Date('2026-08-30T12:03:00.000Z'), new Date('2026-08-30T12:03:00.000Z'),
+  );
+  assert.notEqual(afterFailoverAndExpiry, before,
+    'presence TTL and lease expiry must wake a standby even when the document revision is unchanged');
+});
+
+test('Pilot recovery and missing manager notices retrigger without polling settled state', async () => {
+  await make('dispatch-managed');
+  await make('dispatch-manager');
+  const runner = { id: 'mac-primary', placementOnly: false } as const;
+  const doc = await load('dispatch-managed');
+  const manager = await load('dispatch-manager');
+  doc.workstream.managedBy = { slug: 'dispatch-manager', sinceVirtual: virtualNow().toISOString() };
+  doc.workstream.status = 'done';
+  doc.workstream.conclusion = {
+    passId: 'pass_done', atVirtual: virtualNow().toISOString(), summary: 'done', evidenceIds: [],
+  };
+  doc.assignments.push({
+    id: 'asg_pilot', objective: 'approve safely', briefing: 'n/a', kind: 'action',
+    acceptanceCriteria: ['n/a'], dependsOn: [], state: 'gated', attempts: [],
+    adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    exec: {
+      cwd: home, verify: 'true', approvalMode: 'pilot-or-human',
+      pilotUnavailableSince: '2026-08-30T12:00:00.000Z',
+      pilotRetryAt: '2026-08-30T12:01:00.000Z',
+    },
+  });
+  assert.deepEqual(pendingManagerNoticeKeys(doc, manager), ['finished:pass_done']);
+  const before = runnerDispatchSignature(
+    doc, runner, [], new Date('2026-08-30T12:00:30.000Z'), new Date('2026-08-30T12:00:30.000Z'), manager,
+  );
+  const afterPilotDue = runnerDispatchSignature(
+    doc, runner, [], new Date('2026-08-30T12:01:00.000Z'), new Date('2026-08-30T12:01:00.000Z'), manager,
+  );
+  assert.notEqual(afterPilotDue, before, 'the stored Pilot retry becomes runnable at its physical boundary');
+
+  manager.managerNotices = [{
+    id: 'note_done', dedupKey: 'finished:pass_done', kind: 'finished',
+    fromWorkstreamSlug: 'dispatch-managed', summary: 'done', refId: 'pass_done',
+    receivedAtVirtual: virtualNow().toISOString(),
+  }];
+  assert.deepEqual(pendingManagerNoticeKeys(doc, manager), [], 'delivered notice keys do not poll again');
+});
+
+test('resident runner reconciles an unchanged revision once and wakes on the next revision', async () => {
+  await make('revision-driven-loop');
+  const abort = new AbortController();
+  let calls = 0;
+  const loop = runLoop({
+    intervalMs: 5,
+    concurrency: 1,
+    signal: abort.signal,
+    sourceStale: () => false,
+    tickFn: async () => {
+      calls++;
+      return { cycles: 1, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
+    },
+    log: () => {},
+    logError: () => {},
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(calls, 1, 'five-second polling must not mean five-second no-op ticks');
+  await arrive('revision-driven-loop', (doc) => { doc.workstream.title = 'changed'; });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  abort.abort();
+  await loop;
+  assert.equal(calls, 2, 'a new durable revision receives one fresh reconciliation');
 });
 
 test('Claude credential changes never probe a non-Claude executor wait', async () => {
