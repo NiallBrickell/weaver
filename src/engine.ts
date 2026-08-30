@@ -10,7 +10,7 @@
  *   3. If wakes are due, fire them (coalesced) into one coordinator pass.
  */
 
-import { execSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import {
   CoordinatorRunnerIneligibleError,
@@ -70,7 +70,7 @@ import { coordinatorRunnerEligibility } from './coordinatorRunner.js';
 /**
  * The shell a declared action's `run`/`verify` command is executed with.
  *
- * execSync defaults to /bin/sh, but a coordinator writes the shell everyone
+ * Node's shell execution defaults to /bin/sh, but a coordinator writes the shell everyone
  * writes — `diff <(a) <(b)`, `[[ ]]`, arrays — and under /bin/sh those die with
  * "syntax error near unexpected token `('". The command is then blamed for the
  * action: a NoBe page deploy that had actually succeeded was rejected because
@@ -81,6 +81,99 @@ import { coordinatorRunnerEligibility } from './coordinatorRunner.js';
  */
 function actionShell(): string | undefined {
   return existsSync('/bin/bash') ? '/bin/bash' : undefined;
+}
+
+const ACTION_COMMAND_OUTPUT_LIMIT = 1024 * 1024;
+
+/**
+ * Run one deterministic action shell in its own process group.
+ *
+ * Node's synchronous shell timeout kills only the immediate shell. A command
+ * substitution, pipeline, or background child can survive it and continue
+ * touching the outside world after Weaver has already recorded the action as
+ * timed out. A one-shot action cannot tolerate that split brain: the timeout
+ * owns the whole subprocess tree, while readback still decides whether any
+ * effect landed before termination.
+ */
+export async function runActionCommand(
+  command: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    const shell = actionShell() ?? (process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : '/bin/sh');
+    const args = process.platform === 'win32'
+      ? ['/d', '/s', '/c', command]
+      : ['-c', command];
+    let child;
+    try {
+      child = spawn(shell, args, {
+        cwd,
+        env,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      resolve({ ok: false, output: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let spawnError: Error | undefined;
+    let forceTimer: NodeJS.Timeout | undefined;
+
+    const append = (current: string, chunk: Buffer): string => {
+      if (current.length >= ACTION_COMMAND_OUTPUT_LIMIT) return current;
+      return current + chunk.toString('utf8').slice(0, ACTION_COMMAND_OUTPUT_LIMIT - current.length);
+    };
+    child.stdout.on('data', (chunk: Buffer) => { stdout = append(stdout, chunk); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr = append(stderr, chunk); });
+
+    const terminateTree = (signal: NodeJS.Signals): void => {
+      if (!child.pid) return;
+      try {
+        if (process.platform === 'win32') child.kill(signal);
+        else process.kill(-child.pid, signal);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminateTree('SIGTERM');
+      forceTimer = setTimeout(() => terminateTree('SIGKILL'), 1_000);
+      forceTimer.unref();
+    }, timeoutMs);
+    timer.unref();
+
+    child.once('error', (error) => { spawnError = error; });
+    child.once('close', (code, signal) => {
+      clearTimeout(timer);
+      if (forceTimer) clearTimeout(forceTimer);
+      // The group leader may exit before a descendant that inherited its
+      // pipes. Reassert the hard group kill at close so no child can outlive
+      // the result Weaver is about to persist.
+      if (timedOut) terminateTree('SIGKILL');
+      const detail = timedOut
+        ? `Command timed out after ${timeoutMs}ms; the subprocess tree was terminated.`
+        : spawnError
+          ? spawnError.message
+          : code === 0
+            ? ''
+            : signal
+              ? `Command terminated by ${signal}.`
+              : `Command exited with code ${code ?? 'unknown'}.`;
+      resolve({
+        ok: !timedOut && !spawnError && code === 0,
+        output: code === 0 && !timedOut && !spawnError
+          ? stdout
+          : [stdout, stderr, detail].filter(Boolean).join('\n'),
+      });
+    });
+  });
 }
 
 function actionHasMatchingApproval(asg: Assignment): boolean {
@@ -573,26 +666,13 @@ async function execActionVerifier(
   let ok = false;
   let output = '';
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      output = execSync(verify, {
-        cwd,
-        shell: actionShell(),
-        timeout: 60_000,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, ...secrets },
-      });
-      ok = true;
-      break;
-    } catch (e) {
-      const err = e as { stdout?: string; stderr?: string; message?: string };
-      output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
-      if (attempt < 3 && isTransientInfrastructureText(output)) {
-        await new Promise((resolve) => setTimeout(resolve, 10_000 * attempt));
-        continue;
-      }
-      break;
+    ({ ok, output } = await runActionCommand(verify, cwd, { ...process.env, ...secrets }, 60_000));
+    if (ok) break;
+    if (attempt < 3 && isTransientInfrastructureText(output)) {
+      await new Promise((resolve) => setTimeout(resolve, 10_000 * attempt));
+      continue;
     }
+    break;
   }
   return { ok, output: redactSecrets(output, redactionSecrets) };
 }
@@ -875,18 +955,14 @@ async function executeHumanActions(
       // escape would strand the action as running and invite crash recovery
       // to treat a known pre-execution failure as an unknown external result.
       mkdirSync(asg.exec!.cwd, { recursive: true });
-      output = execSync(asg.exec!.run!, {
-        cwd: asg.exec!.cwd,
-        shell: actionShell(),
-        timeout: 120_000,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, ...secrets },
-      });
-      ok = true;
+      ({ ok, output } = await runActionCommand(
+        asg.exec!.run!,
+        asg.exec!.cwd,
+        { ...process.env, ...secrets },
+        120_000,
+      ));
     } catch (e) {
-      const err = e as { stdout?: string; stderr?: string; message?: string };
-      output = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');
+      output = e instanceof Error ? e.message : String(e);
     }
     output = redactSecrets(output, redactionSecrets);
     const report = [

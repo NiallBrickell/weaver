@@ -74,6 +74,8 @@ A worker that dies or loses its model/provider mid-action is never blindly re-ru
 
 Actions are one-shot under their assignment and approval: persisted queued state with any prior attempt cannot run through either the model-worker or engine-command path. If reconciliation proves another attempt is needed, Weaver creates a new action with a fresh approval. Briefings still name stable external keys (a branch name, a file path, an external ID) as defense in depth; idempotency is not permission to auto-retry.
 
+Deterministic engine commands and their readbacks are bounded as complete process trees. If a timeout expires, Weaver terminates the shell and its descendants before recording the attempt result; a background subprocess cannot continue after the action has moved to readback and reconciliation.
+
 ## Repo deconfliction
 
 Weaver conflict-checks its own state on every write; the same discipline extends across the git-repo seam. Before an action does an irreversible repo egress (`gh pr create`, `gh pr merge`, `git push`), Weaver looks at the shared state the egress is about to write into, and it draws a line between two very different findings.

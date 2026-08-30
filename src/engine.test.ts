@@ -19,6 +19,7 @@ import {
   runnableAssignments,
   tick,
   preflightApprovedAction,
+  runActionCommand,
   verifyAction,
 } from './engine.js';
 import { runCoordinatorPass } from './coordinator.js';
@@ -1033,6 +1034,23 @@ test('a human-authored exec.run action is executed by the ENGINE (no worker) and
   assert.equal(asg.attempts[0]!.terminalReason, 'executed');
   assert.equal(asg.exec!.verified!.ok, true);
   assert.ok(doc.deliverables.some((d) => d.kind === 'execution_record'));
+});
+
+test('an action timeout terminates the whole subprocess tree', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const marker = path.join(process.env.WEAVER_HOME!, 'orphaned-child-ran');
+  const result = await runActionCommand(
+    `(sleep 0.4; printf orphaned > ${JSON.stringify(marker)}) & wait`,
+    process.env.WEAVER_HOME!,
+    process.env,
+    50,
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.output, /subprocess tree was terminated/);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(fs.existsSync(marker), false, 'a timed-out child must not survive its recorded result');
 });
 
 test('an always-execute observational action runs once even when its verifier already passes', async () => {
