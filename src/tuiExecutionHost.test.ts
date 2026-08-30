@@ -7,7 +7,7 @@ test('terminal placement choices distinguish this Mac, exact hosted runners, and
   assert.deepEqual(
     tuiExecutionHosts(['niall-mac-primary', 'weaver-fleet'], 'niall-mac-primary'),
     [
-      { label: 'Any capable host', live: true },
+      { label: 'Automatic (default) · any capable live host', live: true },
       { runnerId: 'niall-mac-primary', label: 'This Mac · niall-mac-primary', live: true },
       { runnerId: 'weaver-fleet', label: 'Remote · weaver-fleet', live: true },
     ],

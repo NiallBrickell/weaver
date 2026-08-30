@@ -11,7 +11,7 @@ machine's separate store. Connection credentials are never printed.
 
 The next row names execution hosts precisely: **This Mac** plus its runner id,
 then every other host with a fresh shared heartbeat. Select a live Workstream
-and press `h` to choose **Any capable host**, **This Mac**, or one exact remote
+and press `h` to choose **Automatic (default)**, **This Mac**, or one exact remote
 runner; arrows only browse the choices, enter records the placement, and esc
 cancels without a write. This moves future worker/action Assignments (and safe
 queued/gated ones) inside the same shared fleet. Coordinator passes remain

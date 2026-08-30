@@ -22,8 +22,14 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { sdkEnv } from './secrets.js';
 import { arrive, createWorkstream, listWorkstreams, load, newId } from './store.js';
 import { localTextModel } from './modelConfig.js';
-import { addSteering, setPaused } from './humanActs.js';
+import {
+  addSteering,
+  setAssignmentPlacement,
+  setCoordinatorRunnerOrder,
+  setPaused,
+} from './humanActs.js';
 import { newExecutionSafety } from './executionSafety.js';
+import { assertRunnerId } from './runnerIdentity.js';
 
 /** The machine's standing rules and repo knowledge, applied to every stream
  * this entry point creates. Overridden per machine by `house.json` under
@@ -283,12 +289,27 @@ export async function attachToExisting(slug: string, message: string, done?: str
 /** Create a workstream from one raw message (plus an optional explicit
  * statement of what done means) — or route the message to the existing
  * workstream it is really about. Returns what was decided. */
-export async function onboard(message: string, done?: string): Promise<OnboardResult> {
+export async function onboard(
+  message: string,
+  done?: string,
+  options: { runnerId?: string } = {},
+): Promise<OnboardResult> {
+  const runnerId = options.runnerId === undefined
+    ? undefined
+    : assertRunnerId(options.runnerId, 'runner id');
   const slugs = await listWorkstreams();
   const taken = new Set(slugs);
   const house = loadHouse();
   const { parsed, error } = await deriveWithModel(message, taken, house, await fleetCandidates(slugs), done);
-  if (parsed?.kind === 'attach') return attachToExisting(parsed.slug, message, done);
+  if (parsed?.kind === 'attach') {
+    // Placement lands before the new steering wake. Existing running attempts
+    // retain their recorded host; safe pending work and all future work move.
+    if (runnerId) {
+      await setAssignmentPlacement(parsed.slug, runnerId);
+      await setCoordinatorRunnerOrder(parsed.slug, [runnerId]);
+    }
+    return attachToExisting(parsed.slug, message, done);
+  }
   const d = parsed?.derived ?? deriveFallback(message, taken, done);
   await createWorkstream({
     slug: d.slug,
@@ -299,6 +320,10 @@ export async function onboard(message: string, done?: string): Promise<OnboardRe
     constraints: house.constraints,
     autonomy: { sendsRequireApproval: true },
     executionSafety: newExecutionSafety(),
+    ...(runnerId ? {
+      assignmentRunnerId: runnerId,
+      executionPolicy: { coordinatorRunnerOrder: [runnerId] },
+    } : {}),
   });
   await arrive(d.slug, (doc, event) => {
     doc.wakes.push({

@@ -49,7 +49,7 @@ These are two views over typed Workstream state. The workspace may look conversa
 
 ## Start new work
 
-Use **New job** to describe an outcome. Weaver creates a durable Workstream for it, then the separate runner picks it up. Creating a Workstream does not keep a browser request or model session alive; fresh coordinator and worker runs continue from stored state. The optional parent selector is under **Advanced** because most requests are standalone jobs.
+Use **New job** to describe an outcome. Weaver creates a durable Workstream for it, then the separate runner picks it up. Creating a Workstream does not keep a browser request or model session alive; fresh coordinator and worker runs continue from stored state. **Advanced** offers an execution-host selector: **Automatic (default)** lets any capable live host claim the job, while an exact host binds both coordinator passes and intended work before the first wake. This chooses the machine, not the model executor configured on it. The optional parent selector also lives there because most requests are standalone jobs.
 
 The UI server does not execute model runs. Keep `weaver run` running against the same `WEAVER_STORE` on this or another machine. Without that runner, the board remains usable and new work is safely stored, but no agent advances it.
 

@@ -21,6 +21,7 @@ import {
   type ExecutionSafetyConfig,
 } from './executionSafety.js';
 import { actionHasLivePilotOutage, humanAttention } from './actionApproval.js';
+import { assertRunnerId } from './runnerIdentity.js';
 
 export class ManagedWorkstreamError extends Error {}
 
@@ -36,6 +37,10 @@ export interface CreateManagedWorkstreamArgs {
   sendsRequireApproval?: boolean;
   /** Stable identity of the external thing the new workstream stands for. */
   sourceKey?: string;
+  /** Optional exact physical host for both coordinator passes and intended
+   * work. This is intake convenience over the two distinct durable placement
+   * fields; it does not change authority or model routing. */
+  runnerId?: string;
 }
 
 /**
@@ -49,6 +54,7 @@ export async function createManagedWorkstream(callingSlug: string, args: CreateM
   if (args.slug === callingSlug) {
     throw new ManagedWorkstreamError('a workstream cannot manage itself');
   }
+  if (args.runnerId !== undefined) assertRunnerId(args.runnerId, 'runner id');
   // Structural backstop for at-least-once intake: a coordinator that looks at
   // the same tracker on every pass must not be able to open the same work
   // twice, whatever it believes it has already done. Uniqueness on sourceKey
@@ -69,6 +75,10 @@ export async function createManagedWorkstream(callingSlug: string, args: CreateM
       ...(args.executionWindowSeconds !== undefined ? { windowSeconds: args.executionWindowSeconds } : {}),
       ...(args.maxModelStarts !== undefined ? { maxModelStarts: args.maxModelStarts } : {}),
     }),
+    ...(args.runnerId ? {
+      assignmentRunnerId: args.runnerId,
+      executionPolicy: { coordinatorRunnerOrder: [args.runnerId] },
+    } : {}),
     managedBy: { slug: callingSlug, sinceVirtual: virtualNow().toISOString() },
   };
   await createWorkstream(core);

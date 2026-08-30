@@ -21,6 +21,7 @@ import { createWorkstreamUnderParent } from './managedWorkstreams.js';
 import { sanitizeSlug } from './onboard.js';
 import { virtualNow } from './clock.js';
 import { newExecutionSafety } from './executionSafety.js';
+import { assertRunnerId } from './runnerIdentity.js';
 
 export interface CreateWorkstreamRequest {
   /** Stable identity of the external thing this workstream exists for, e.g.
@@ -35,6 +36,9 @@ export interface CreateWorkstreamRequest {
   constraints?: string[];
   executionWindowSeconds?: number;
   maxModelStarts?: number;
+  /** Start the whole Workstream on one exact physical host. This writes both
+   * coordinator and Assignment placement before the initial wake exists. */
+  runnerId?: string;
   /** Optional parent: create under an existing active Workstream through the
    * shared managed-creation path (single managedBy pointer, no inheritance,
    * source-key idempotency). A non-active or missing parent fails cleanly —
@@ -58,6 +62,7 @@ export interface CreateOrGetResult {
  * exists" is therefore a safe no-op on every retry.
  */
 export async function createOrGetWorkstream(req: CreateWorkstreamRequest): Promise<CreateOrGetResult> {
+  if (req.runnerId !== undefined) assertRunnerId(req.runnerId, 'runner id');
   const existingSlug = await findBySourceKey(req.sourceKey);
   if (existingSlug) {
     const doc = await load(existingSlug);
@@ -81,6 +86,7 @@ export async function createOrGetWorkstream(req: CreateWorkstreamRequest): Promi
         ...(req.sourceKey ? { sourceKey: req.sourceKey } : {}),
         ...(req.executionWindowSeconds !== undefined ? { executionWindowSeconds: req.executionWindowSeconds } : {}),
         ...(req.maxModelStarts !== undefined ? { maxModelStarts: req.maxModelStarts } : {}),
+        ...(req.runnerId ? { runnerId: req.runnerId } : {}),
       })
       : await createWorkstream({
       slug,
@@ -95,6 +101,10 @@ export async function createOrGetWorkstream(req: CreateWorkstreamRequest): Promi
         ...(req.executionWindowSeconds !== undefined ? { windowSeconds: req.executionWindowSeconds } : {}),
         ...(req.maxModelStarts !== undefined ? { maxModelStarts: req.maxModelStarts } : {}),
       }),
+      ...(req.runnerId ? {
+        assignmentRunnerId: req.runnerId,
+        executionPolicy: { coordinatorRunnerOrder: [req.runnerId] },
+      } : {}),
     });
     // Creation is the first wake: direction needs establishing. The resident
     // runner (`weaver run`) picks it up — this adapter never runs a model.

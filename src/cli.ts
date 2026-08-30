@@ -90,7 +90,7 @@ function fail(msg: string): never {
 
 const USAGE = `weaver — manages outcomes across agent runs (MVP)
 
-  weaver do ["<message>"] ["<done means>"]   start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied. Optional 2nd arg overrides the done-bar (e.g. "verified live on the web post-merge, read-only")
+  weaver do [--on <runner-id>] ["<message>"] ["<done means>"]   start work from one sentence — slug, brief, criteria, routine-ness all derived; house constraints applied. --on atomically starts coordinator + assignments on one exact host; omit for automatic fleet placement. Optional 2nd arg overrides the done-bar (e.g. "verified live on the web post-merge, read-only")
                                              NO ARGS = interactive: type/paste a multiline message, finish with Ctrl-D or a "." line — the safe path for long messages ($, quotes, newlines survive verbatim)
   weaver ask "<question>"                    interrogate the fleet's history: "did anything pick up X?", "what happened with Y?", "why wasn't Z done?" — answers cite decisions/events/deliverables from recorded state (read-only)
   weaver create --slug <s> --title <t> --objective <o> [--tag <t>]... [--success <c>]... [--constraint <c>]... [--source-key <k>] [--execution-window <duration>] [--max-model-starts N] [--under <parent-slug>]
@@ -165,7 +165,7 @@ async function slugExists(slug: string): Promise<boolean> {
   }
 }
 
-async function runIntake(message: string, done?: string): Promise<void> {
+async function runIntake(message: string, done?: string, runnerId?: string): Promise<void> {
   message = message.trim();
   if (!message) {
     // No message: interactive/piped capture — the recommended path for anything
@@ -190,7 +190,7 @@ async function runIntake(message: string, done?: string): Promise<void> {
   const stopProgress = progress('deriving the workstream from your message (one model pass)');
   let r;
   try {
-    r = await onboard(message, done?.trim());
+    r = await onboard(message, done?.trim(), { ...(runnerId ? { runnerId } : {}) });
   } finally {
     stopProgress();
   }
@@ -200,6 +200,7 @@ async function runIntake(message: string, done?: string): Promise<void> {
         `↪ ${r.slug}${r.reopened ? '  (reopened)' : ''} — ${r.title}`,
         ``,
         `An existing workstream already owns this — your message arrived there as steering${r.reopened ? ', and the workstream was reopened with its history intact' : ''}.`,
+        ...(runnerId ? [`Execution host: ${runnerId} (coordinator + future/safely pending assignments).`] : []),
         ``,
         `It's running. Watch: weaver watch · weaver status ${r.slug}`,
         ``,
@@ -219,6 +220,7 @@ async function runIntake(message: string, done?: string): Promise<void> {
       ``,
       d.objective,
       ...(d.successCriteria.length ? [``, `done when:`, ...d.successCriteria.map((c) => `  - ${c}`)] : []),
+      ...(runnerId ? [``, `execution host: ${runnerId} (coordinator + assignments)`] : []),
       ``,
       `It's running. Watch: weaver watch · redirect anytime: weaver steer ${d.slug} "<msg>"`,
       ``,
@@ -249,9 +251,17 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       if (routed) return runCommand(routed[0], routed[1]);
       // Exactly two args = message + explicit done-statement; anything else
       // joins into one message (so an unquoted sentence still just works).
-      const message = rest.length === 2 ? rest[0]! : rest.join(' ');
-      const done = rest.length === 2 ? rest[1]! : undefined;
-      await runIntake(message, done);
+      const onIndex = rest.indexOf('--on');
+      if (onIndex >= 0 && rest.indexOf('--on', onIndex + 1) >= 0) fail('--on may be supplied only once');
+      const rawRunnerId = onIndex >= 0 ? rest[onIndex + 1] : undefined;
+      if (onIndex >= 0 && (!rawRunnerId || rawRunnerId.startsWith('--'))) fail('--on requires a runner id');
+      const runnerId = rawRunnerId ? assertRunnerId(rawRunnerId, '--on') : undefined;
+      const intakeArgs = onIndex < 0
+        ? rest
+        : [...rest.slice(0, onIndex), ...rest.slice(onIndex + 2)];
+      const message = intakeArgs.length === 2 ? intakeArgs[0]! : intakeArgs.join(' ');
+      const done = intakeArgs.length === 2 ? intakeArgs[1]! : undefined;
+      await runIntake(message, done, runnerId);
       break;
     }
 
