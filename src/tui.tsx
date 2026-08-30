@@ -192,7 +192,7 @@ export function tuiExecutionHosts(
   const ids = [thisRunnerId, ...liveIds.filter((id) => id !== thisRunnerId)];
   if (selectedRunnerId && !ids.includes(selectedRunnerId)) ids.push(selectedRunnerId);
   return [
-    { label: 'Any capable host', live: true },
+    { label: 'Automatic (default) · any capable live host', live: true },
     ...ids.map((runnerId) => ({
       runnerId,
       label: runnerId === thisRunnerId ? `This Mac · ${runnerId}` : `Remote · ${runnerId}`,

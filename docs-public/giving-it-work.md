@@ -14,6 +14,20 @@ Most workstreams should start as a sentence, not a form:
 weaver do "The EDP nightly syncs keep silently stalling — figure out why and make failures loud."
 ```
 
+Omitting placement uses **Automatic (default)**: any eligible live fleet host
+may claim the work, and that host's configured executor chain chooses the
+model loop. When the whole job must start on one exact machine, place both its
+fresh coordinator passes and its future assignments before the first wake:
+
+```bash
+weaver do --on weaver-fleet "Scope what Studio should look like from the current product thesis."
+```
+
+That host choice is physical placement, not a model choice. For example, a GCP
+host may use a restricted Claude coordinator and an isolated container worker,
+while a Mac may have Codex available. The exact host, executor, provider, and
+model remain pinned separately on the resulting attempts.
+
 Everything a `create` invocation would ask for is derived from the message — slug, title, an expanded brief that preserves every concrete detail you gave, checkable done-criteria — and your standing house constraints are applied automatically. Phrasing that implies recurrence ("every week, clean up…") makes it a routine with a self-scheduling cadence. The sections below exist for when you want to hand-set any of that.
 
 The house pack is machine-local config, not source: put a `house.json` under `WEAVER_HOME` (default `./state`) to set the standing `constraints` every onboarded workstream carries, a free-text `repoMap` describing this machine's repos so a one-liner that only implies its repo still derives a brief that names it, and the default policy-scoping `tags`. A missing or malformed file falls back to conservative defaults and never blocks onboarding:

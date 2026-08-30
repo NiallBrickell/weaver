@@ -139,6 +139,35 @@ test('model-independent intake preserves the execution hosts repository map in i
   assert.equal(doc.observations[0]!.summary, message, 'the reporter observation remains exactly what they supplied');
 });
 
+test('intake host placement is durable before the initial wake can be claimed', async () => {
+  const created = await createTeamWorkstream({
+    message: 'Scope the product Studio from the current thesis.',
+    done: 'A concise evidenced scope is accepted.',
+    requestId: 'remote-scope-request',
+    actor: 'niall',
+    runnerId: 'weaver-fleet',
+  });
+
+  const doc = await load(created.slug);
+  assert.equal(doc.workstream.assignmentRunnerId, 'weaver-fleet');
+  assert.deepEqual(doc.workstream.executionPolicy?.coordinatorRunnerOrder, ['weaver-fleet']);
+  assert.ok(doc.wakes.some((wake) => wake.status === 'pending' && wake.condition.type === 'immediate'));
+  assert.equal(doc.assignments.length, 0, 'placement is part of creation, not a later assignment repair');
+});
+
+test('intake refuses an invalid host before creating durable state', async () => {
+  await assert.rejects(
+    () => createTeamWorkstream({
+      message: 'Do not create this.',
+      requestId: 'invalid-host-request',
+      actor: 'niall',
+      runnerId: 'not a host',
+    }),
+    /runner id must be 1-128 characters matching/,
+  );
+  assert.deepEqual(await listWorkstreams(), []);
+});
+
 test('a source URL owns one Workstream even when a browser generates a fresh request id', async () => {
   const message = 'Please handle the report at https://support.example.test/tickets/300 and explain the outcome.';
   const first = await createTeamWorkstream({ message, requestId: 'request-a', actor: 'alice' });
@@ -279,6 +308,8 @@ test('board, new-work, and workspace pages are live typed views with secure head
   const newHtml = await newWork.text();
   assert.match(newHtml, /What needs doing\?/);
   assert.match(newHtml, /name="request_id"/);
+  assert.match(newHtml, /Automatic \(default\) — any capable live host/);
+  assert.match(newHtml, /name="runner_id"/);
 
   const workspace = await fetch(`${base}/workstreams/${created.slug}`);
   assert.equal(workspace.status, 200);
@@ -824,6 +855,8 @@ test('a shared-Postgres UI reports execution only from fresh shared runner prese
     assert.match(fleet, /Running · gcp-standby/);
     assert.match(fleet, /Shared TTL heartbeats prove/);
     assert.doesNotMatch(html, /Runner is offline/);
+    const intake = await (await fetch(`${base}/new`)).text();
+    assert.match(intake, /<option value="gcp-standby">gcp-standby<\/option>/);
   } finally {
     if (previous === undefined) delete process.env.WEAVER_STORE;
     else process.env.WEAVER_STORE = previous;

@@ -42,6 +42,7 @@ import {
   type WorkstreamHead,
 } from './store.js';
 import type { WorkstreamDoc } from './types.js';
+import { assertRunnerId } from './runnerIdentity.js';
 import {
   fleetBoard,
   fleetNeeds,
@@ -84,6 +85,9 @@ export interface TeamIntakeRequest {
   actor: string;
   /** Optional parent slug: create under an existing active Workstream. */
   under?: string;
+  /** Exact physical host for the entire newly created Workstream. Omit for
+   * automatic fleet placement. */
+  runnerId?: string;
 }
 
 export interface TeamIntakeResult {
@@ -139,9 +143,11 @@ export async function createTeamWorkstream(req: TeamIntakeRequest): Promise<Team
   const message = req.message.trim();
   const done = req.done?.trim();
   const requestId = req.requestId.trim();
+  const runnerId = req.runnerId?.trim() || undefined;
   if (!message) throw new Error('What needs doing is required');
   if (message.length > MAX_MESSAGE_LENGTH) throw new Error(`What needs doing must be at most ${MAX_MESSAGE_LENGTH} characters`);
   if (!requestId || requestId.length > 200) throw new Error('request_id is required');
+  if (runnerId !== undefined) assertRunnerId(runnerId, 'runner id');
 
   const slugs = await listWorkstreams();
   const derived = deriveFallback(message, new Set(slugs), done);
@@ -165,6 +171,7 @@ export async function createTeamWorkstream(req: TeamIntakeRequest): Promise<Team
     successCriteria: derived.successCriteria,
     constraints: house.constraints,
     ...(under ? { under } : {}),
+    ...(runnerId ? { runnerId } : {}),
   });
 
   // The Workstream owns the requested outcome. This separately preserves who
@@ -430,6 +437,7 @@ async function loadFleet(): Promise<LoadedFleet> {
         .filter((doc) => doc.workstream.status === 'active')
         .map((doc) => ({ slug: doc.workstream.slug, title: doc.workstream.title }))
         .sort((a, b) => a.slug.localeCompare(b.slug)),
+      intakeRunnerIds: runner.sharedLiveRunnerIds,
       revision,
     },
   };
@@ -770,6 +778,7 @@ async function handle(
       requestId: form.get('request_id') ?? '',
       actor,
       under: form.get('under') ?? undefined,
+      runnerId: form.get('runner_id') ?? undefined,
     });
     return redirect(res, `/workstreams/${encodeURIComponent(result.slug)}?${result.created ? 'created' : 'existing'}=1`);
   }

@@ -62,6 +62,9 @@ export interface OperatorFleetView {
   /** Active Workstreams selectable as a parent at intake — the human
    * composition surface over the same create-under-parent primitive. */
   intakeParents: Array<{ slug: string; title: string }>;
+  /** Fresh physical execution hosts offered at intake. Empty still leaves the
+   * safe automatic fleet choice available. */
+  intakeRunnerIds: string[];
   revision: string;
 }
 
@@ -797,6 +800,20 @@ function NewWorkPage({ requestId, fleet }: { requestId: string; fleet: OperatorF
               </label>
               <details className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
                 <summary className="cursor-pointer text-sm font-medium text-zinc-400">Advanced</summary>
+                <label className="mt-4 block">
+                  <span className="text-sm font-medium text-zinc-300">Run on</span>
+                  <select
+                    data-testid="new-work-runner"
+                    name="runner_id"
+                    className="mt-2 w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-100 outline-none focus:border-violet-500/60"
+                  >
+                    <option value="">Automatic (default) — any capable live host</option>
+                    {fleet.intakeRunnerIds.map((runnerId) => (
+                      <option key={runnerId} value={runnerId}>{runnerId}</option>
+                    ))}
+                  </select>
+                  <span className="mt-2 block text-xs leading-5 text-zinc-500">A host is the machine that executes the job. Its configured executor chain chooses Claude, Codex, or the isolated container.</span>
+                </label>
                 <label className="mt-4 block">
                   <span className="text-sm font-medium text-zinc-300">Manage under another job <span className="text-zinc-500">(optional)</span></span>
                   <select
