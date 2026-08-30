@@ -85,6 +85,7 @@ bin/weaver-up.sh          # one-command fleet bring-up: ensures a resident runne
 weaver pause [slug]       # pause one stream, or every stream active right now
 weaver resume <slug>      # resume one paused stream
 weaver watch              # interactive dashboard: the needs-you queue + fleet at a glance
+weaver watch --on <runner-id>  # durable attention steward on one exact host; the command exits
 weaver ui                 # browser workspace: create work, inspect a Workstream, and add follow-up
 weaver inspect [slug]     # visual Workstream board, or one outcome's Assignment board
 weaver stats              # see whether comparable work is needing less of you

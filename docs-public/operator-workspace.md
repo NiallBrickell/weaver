@@ -178,6 +178,22 @@ is still only a proposal until adopted. This read-and-submit role is also capped
 at 16 model turns and a ten-minute wall: it cannot turn a small approval queue
 into an open-ended coding-agent investigation.
 
+The same steward can live on an exact remote execution host without keeping a
+dashboard, terminal, or model session open:
+
+```bash
+weaver watch --on <runner-id>
+```
+
+This command creates or reuses the same source-keyed routine, binds both its
+coordinator passes and future or safely pending Assignments to that host, wakes
+a dormant routine, and exits. The resident `weaver run` service on the selected
+host keeps it alive across fresh Claude, Pi, OpenHands, or other configured
+executor runs. `--on` selects the physical runner, not a model; the runner's
+reviewed executor configuration still chooses each disposable model seat.
+Running the command again is idempotent. Plain `weaver watch` remains the local
+interactive dashboard with its embedded local runner.
+
 ## Authority limits
 
 The operator workspace deliberately exposes intake, inspection, and untrusted follow-up. It does not turn browser access into permission to send messages, spend money, merge or deploy code, approve actions, or claim an external effect occurred. Those consequences remain behind Weaver's existing typed authority, approval, and deterministic readback boundaries.

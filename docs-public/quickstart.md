@@ -38,6 +38,7 @@ Steering is durable human input: it wakes the workstream, the coordinator must a
 ```bash
 weaver run     # resident runner: ticks all active workstreams, 10 in parallel
 weaver watch   # interactive dashboard in a second terminal
+weaver watch --on <runner-id>  # durable attention steward on an always-on remote runner; command exits
 weaver stats   # outcome scoreboard: human interventions, quality signals, authority use
 ```
 
