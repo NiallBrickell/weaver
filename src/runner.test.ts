@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { advanceClock, virtualNow } from './clock.js';
-import { effectiveConcurrency, expediteBackoffWakes, infraBackoffSlugs, runLoop } from './runner.js';
+import { effectiveConcurrency, expediteBackoffWakes, infraBackoffSlugs, RunnerWorkstreamCache, runLoop } from './runner.js';
 import { arrive, createWorkstream, listRunnerPresence, load } from './store.js';
 import type { InfrastructureWait } from './types.js';
 
@@ -89,6 +89,59 @@ test('runner discovers only pending typed infrastructure waits, never magic pros
     setCapacity(d, [infrastructure]);
   });
   assert.deepEqual(await infraBackoffSlugs(), ['typed']);
+});
+
+test('runner cache reloads only changed heads and evicts deleted or unreadable documents', async () => {
+  await make('alpha');
+  await make('beta');
+  const docs = new Map([
+    ['alpha', await load('alpha')],
+    ['beta', await load('beta')],
+  ]);
+  let heads = [...docs].map(([slug, doc]) => ({ slug, revision: doc.revision }));
+  const loads: string[] = [];
+  const unreadable = new Set<string>();
+  const cache = new RunnerWorkstreamCache(
+    async () => heads,
+    async (slug) => {
+      loads.push(slug);
+      if (unreadable.has(slug)) throw new Error('simulated unreadable document');
+      const doc = docs.get(slug);
+      if (!doc) throw new Error('simulated deletion');
+      return structuredClone(doc);
+    },
+  );
+
+  assert.deepEqual([...await cache.scan()].map(([slug]) => slug), ['alpha', 'beta']);
+  assert.deepEqual(loads, ['alpha', 'beta']);
+  await cache.scan();
+  assert.deepEqual(loads, ['alpha', 'beta'], 'unchanged heads must not retransmit their documents');
+
+  const changed = structuredClone(docs.get('alpha')!);
+  changed.revision++;
+  changed.workstream.title = 'fresh alpha';
+  docs.set('alpha', changed);
+  heads = heads.map((head) => head.slug === 'alpha' ? { ...head, revision: changed.revision } : head);
+  const afterChange = await cache.scan();
+  assert.equal(afterChange.get('alpha')?.workstream.title, 'fresh alpha');
+  assert.deepEqual(loads, ['alpha', 'beta', 'alpha'], 'only the changed revision is reloaded');
+
+  heads = heads.filter((head) => head.slug !== 'beta');
+  assert.deepEqual([...await cache.scan()].map(([slug]) => slug), ['alpha'], 'deleted heads are evicted');
+
+  unreadable.add('alpha');
+  heads = heads.map((head) => ({ ...head, revision: head.revision + 1 }));
+  assert.deepEqual([...await cache.scan()], [], 'a failed changed read evicts the formerly cached body');
+  assert.deepEqual(loads, ['alpha', 'beta', 'alpha', 'alpha']);
+});
+
+test('a later logical scan observes a revision changed after the preceding scan', async () => {
+  await make('fresh-between-decisions');
+  const cache = new RunnerWorkstreamCache();
+  assert.deepEqual(await infraBackoffSlugs(cache), []);
+
+  await arrive('fresh-between-decisions', (doc) => setCapacity(doc, [wait('pass_between_scans')]));
+  assert.deepEqual(await infraBackoffSlugs(cache), ['fresh-between-decisions']);
 });
 
 test('Claude credential changes never probe a non-Claude executor wait', async () => {

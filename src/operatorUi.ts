@@ -32,11 +32,14 @@ import { liveRunnerPid, runnerLoopHealthy, runnerSourceStale } from './runner.js
 import { loadAllSecrets, redactSecrets } from './secrets.js';
 import {
   listWorkstreams,
+  listWorkstreamHeads,
   listRunnerPresence,
   load,
   readArtifact,
   sha256,
   verifyArtifact,
+  type RunnerPresence,
+  type WorkstreamHead,
 } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 import {
@@ -252,6 +255,24 @@ function observeRunner(sharedLiveRunnerIds: string[]): RunnerObservation {
   return { pid, stale, healthy: pid !== null && runnerLoopHealthy() && !stale, sharedLiveRunnerIds };
 }
 
+function fleetRevision(heads: WorkstreamHead[], runner: RunnerObservation): string {
+  return sha256(JSON.stringify({
+    docs: heads.map((head) => [head.slug, head.revision]).sort(([a], [b]) => String(a).localeCompare(String(b))),
+    runner,
+  })).slice(0, 20);
+}
+
+/** Cheap frequent-poll path: the board asks every few seconds whether a full
+ * render is stale, so this must never load document bodies. The returned hash
+ * intentionally has the identical `{ docs: [[slug, revision]], runner }`
+ * shape used by loadFleet(). */
+export async function currentFleetRevision(
+  heads: () => Promise<WorkstreamHead[]> = listWorkstreamHeads,
+  presences: () => Promise<RunnerPresence[]> = listRunnerPresence,
+): Promise<string> {
+  return fleetRevision(await heads(), observeRunner(liveRunnerIds(await presences())));
+}
+
 function fleetScope(): OperatorFleetView['scope'] {
   if (/^postgres(?:ql)?:\/\//.test(process.env.WEAVER_STORE ?? '')) {
     return {
@@ -380,12 +401,10 @@ async function loadFleet(): Promise<LoadedFleet> {
     ? Object.values(board.lanes).flat().find((card) => card.slug === stewardDoc.workstream.slug)
     : undefined;
   const runner = observeRunner(liveRunnerIds(await listRunnerPresence()));
-  const revision = sha256(JSON.stringify(
-    {
-      docs: docs.map((doc) => [doc.workstream.slug, doc.revision]).sort(([a], [b]) => String(a).localeCompare(String(b))),
-      runner,
-    },
-  )).slice(0, 20);
+  const revision = fleetRevision(
+    docs.map((doc) => ({ slug: doc.workstream.slug, revision: doc.revision })),
+    runner,
+  );
   return {
     docs,
     unreadable,
@@ -695,8 +714,7 @@ async function handle(
   if (method === 'GET' && url.pathname === '/') return redirect(res, '/board');
 
   if (method === 'GET' && url.pathname === '/api/fleet-revision') {
-    const fleet = await loadFleet();
-    return sendJson(res, 200, { revision: fleet.view.revision });
+    return sendJson(res, 200, { revision: await currentFleetRevision() });
   }
 
   if (method === 'GET' && parts.length === 4 && parts[0] === 'api' && parts[1] === 'workstreams' && parts[3] === 'revision') {

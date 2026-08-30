@@ -44,7 +44,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 /**
  * Idempotent, run on first use of every process. The `revision` COLUMN is the
@@ -345,6 +345,12 @@ export class PgStore implements StateStore {
     await this.ensureReady();
     const r = await this.pool.query('SELECT slug FROM workstreams ORDER BY slug');
     return r.rows.map((row) => row.slug as string);
+  }
+
+  async listWorkstreamHeads(): Promise<WorkstreamHead[]> {
+    await this.ensureReady();
+    const r = await this.pool.query('SELECT slug, revision FROM workstreams ORDER BY slug');
+    return r.rows.map((row) => ({ slug: row.slug as string, revision: row.revision as number }));
   }
 
   async load(slug: string): Promise<WorkstreamDoc> {

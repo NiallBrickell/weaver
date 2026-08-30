@@ -13,6 +13,7 @@ import * as path from 'node:path';
 
 import {
   createTeamWorkstream,
+  currentFleetRevision,
   FLEET_ATTENTION_STEWARD_SOURCE_KEY,
   startOperatorUi,
   type RunningOperatorUi,
@@ -507,6 +508,8 @@ test('fleet page groups one unavailable approval service and can start a constra
 
 test('fleet polling revision changes when observable runner state changes without a Workstream write', async () => {
   const before = await (await fetch(`${base}/api/fleet-revision`)).json() as { revision: string };
+  const initialBoard = await (await fetch(`${base}/board`)).text();
+  assert.match(initialBoard, new RegExp(`data-revision="${before.revision}"`), 'cheap and full paths use the identical hash shape');
   const lock = path.join(home, '.runner.lock');
   fs.mkdirSync(lock);
   fs.writeFileSync(path.join(lock, 'pid'), String(process.pid));
@@ -516,6 +519,32 @@ test('fleet polling revision changes when observable runner state changes withou
   assert.notEqual(after.revision, before.revision);
   const html = await (await fetch(`${base}/fleet`)).text();
   assert.match(html, /Agent execution[\s\S]*Running/);
+});
+
+test('fleet polling revision is computed from cheap heads without a document-load dependency', async () => {
+  let headReads = 0;
+  let presenceReads = 0;
+  const heads = [
+    { slug: 'beta', revision: 8 },
+    { slug: 'alpha', revision: 3 },
+  ];
+  const first = await currentFleetRevision(
+    async () => { headReads++; return heads; },
+    async () => { presenceReads++; return []; },
+  );
+  const reordered = await currentFleetRevision(
+    async () => [...heads].reverse(),
+    async () => [],
+  );
+  const changed = await currentFleetRevision(
+    async () => heads.map((head) => head.slug === 'alpha' ? { ...head, revision: 4 } : head),
+    async () => [],
+  );
+
+  assert.equal(first, reordered, 'head ordering does not create a false board refresh');
+  assert.notEqual(first, changed, 'a durable revision change invalidates the poll hash');
+  assert.equal(headReads, 1);
+  assert.equal(presenceReads, 1);
 });
 
 test('decision responses accept an option with a condition or a custom answer without granting authority', async () => {

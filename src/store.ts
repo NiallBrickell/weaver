@@ -32,7 +32,7 @@ import { FsStore, artifactsDir, newId, printoutJournalDir, sha256, weaverHome, w
 import { PgStore } from './store/pg.js';
 import { SqliteStore } from './store/sqlite.js';
 import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './store/types.js';
-import type { RunnerPresence } from './store/types.js';
+import type { RunnerPresence, WorkstreamHead } from './store/types.js';
 import type { WorkstreamCore, WorkstreamDoc } from './types.js';
 import { assertRunnerId } from './runnerIdentity.js';
 
@@ -40,6 +40,7 @@ export { artifactsDir, newId, printoutJournalDir, sha256, weaverHome, workstream
 export { RevisionConflictError, SourceKeyConflictError };
 export type { StateStore };
 export type { RunnerPresence };
+export type { WorkstreamHead };
 
 let activeStore: StateStore | undefined;
 
@@ -75,6 +76,10 @@ export async function closeStore(): Promise<void> {
 
 export async function listWorkstreams(): Promise<string[]> {
   return getStore().listWorkstreams();
+}
+
+export async function listWorkstreamHeads(): Promise<WorkstreamHead[]> {
+  return getStore().listWorkstreamHeads();
 }
 
 /** Publish operational liveness without touching Workstream revisions. */

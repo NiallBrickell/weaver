@@ -4,10 +4,12 @@
  * live per WEAVER_HOME — a pid lockfile enforces it, so opening the dashboard
  * while a headless runner exists just attaches as a viewer.
  *
- * The runner holds no state: it polls active workstreams and ticks them
- * (concurrently), and every guarantee lives in the tick itself (per-stream
- * cross-process locks, rolling execution guard, readback discipline). Kill and
- * restart freely.
+ * The runner holds no durable truth: it polls active workstreams and ticks
+ * them (concurrently), and every guarantee lives in the tick itself
+ * (per-stream cross-process locks, rolling execution guard, readback
+ * discipline). Its revision-keyed document cache is disposable and validated
+ * against current store heads before every logical scan. Kill and restart
+ * freely.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -19,7 +21,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { tick } from './engine.js';
 import { sweepPrConflicts } from './prConflicts.js';
 import { sdkEnv } from './secrets.js';
-import { arrive, heartbeatRunner, listWorkstreams, load, weaverHome } from './store.js';
+import { arrive, heartbeatRunner, listWorkstreamHeads, load, weaverHome, type WorkstreamHead } from './store.js';
 import { virtualNow } from './clock.js';
 import {
   capacityBackoffFor,
@@ -33,6 +35,7 @@ import { targetOfWait, type CapacityTarget } from './modelConfig.js';
 import { runnerExecutorCapabilities } from './modelRouting.js';
 import { acquireProcessLock, liveProcessLockPid } from './processLock.js';
 import { runnerClaimIdentity } from './runnerIdentity.js';
+import type { WorkstreamDoc } from './types.js';
 
 function lockDir(): string {
   return path.join(weaverHome(), '.runner.lock');
@@ -74,6 +77,46 @@ export function acquireRunnerLock(): (() => void) | null {
 }
 
 /**
+ * Disposable runner-local document cache. A scan never trusts elapsed time or
+ * a prior read: it first asks durable state for every current `(slug,
+ * revision)` head, then reuses a body only while that exact revision stands.
+ * Changed heads are reloaded, absent heads are evicted, and a failed changed
+ * read removes the stale body. A concurrent arrival may make load() return a
+ * document newer than the head just read; keeping the document's own revision
+ * is safe because the next scan validates it against a fresh head list.
+ */
+export class RunnerWorkstreamCache {
+  private cached = new Map<string, WorkstreamDoc>();
+
+  constructor(
+    private readonly listHeads: () => Promise<WorkstreamHead[]> = listWorkstreamHeads,
+    private readonly loadDoc: (slug: string) => Promise<WorkstreamDoc> = load,
+  ) {}
+
+  async scan(): Promise<ReadonlyMap<string, WorkstreamDoc>> {
+    const heads = await this.listHeads();
+    const next = new Map<string, WorkstreamDoc>();
+    for (const head of heads) {
+      const cached = this.cached.get(head.slug);
+      if (cached?.revision === head.revision) {
+        next.set(head.slug, cached);
+        continue;
+      }
+      try {
+        const doc = await this.loadDoc(head.slug);
+        if (doc.workstream.slug !== head.slug || !Number.isInteger(doc.revision) || doc.revision < head.revision) continue;
+        next.set(head.slug, doc);
+      } catch {
+        // Deleted between head read and load, or currently unreadable. Never
+        // retain an old body merely because its replacement could not load.
+      }
+    }
+    this.cached = next;
+    return new Map(next);
+  }
+}
+
+/**
  * Viewer→runner promotion for a standby dashboard. A `weaver watch` opened while
  * another runner held the lock is a pure viewer with no tick loop. When that
  * runner dies and frees the lock, SOMETHING must take over or the fleet silently
@@ -107,19 +150,16 @@ export function promoteOnRunnerVacancy(
  * ordinary retry, and `weaver capacity retry` is the explicit path after a
  * provider-side billing change. Success expedites only that model's waits.
  */
-export async function infraBackoffSlugs(): Promise<string[]> {
+export async function infraBackoffSlugs(cache = new RunnerWorkstreamCache()): Promise<string[]> {
   const out: string[] = [];
   const now = virtualNow().toISOString();
-  for (const slug of await listWorkstreams()) {
-    try {
-      const d = await load(slug);
-      if (d.workstream.status !== 'active') continue;
-      if (Object.values(d.capacity?.byModel ?? {}).some(
-        (entry) => isClaudeSdkWait(entry.wait) && entry.wait.retryAt > now,
-      )) {
-        out.push(slug);
-      }
-    } catch { /* unreadable stream — its own tick reports it */ }
+  for (const [slug, d] of await cache.scan()) {
+    if (d.workstream.status !== 'active') continue;
+    if (Object.values(d.capacity?.byModel ?? {}).some(
+      (entry) => isClaudeSdkWait(entry.wait) && entry.wait.retryAt > now,
+    )) {
+      out.push(slug);
+    }
   }
   return out;
 }
@@ -133,24 +173,21 @@ export async function infraBackoffSlugs(): Promise<string[]> {
  * (not its retry time) is what makes the release safe: a limit recorded after
  * the recovery is a new one, and holds.
  */
-export async function fleetRecoveredSlugs(): Promise<Map<string, CapacityTarget[]>> {
+export async function fleetRecoveredSlugs(cache = new RunnerWorkstreamCache()): Promise<Map<string, CapacityTarget[]>> {
   const ledger = readFleetCapacity();
   const out = new Map<string, CapacityTarget[]>();
   if (!Object.keys(ledger.recovered).length) return out;
   const now = virtualNow().toISOString();
-  for (const slug of await listWorkstreams()) {
-    try {
-      const d = await load(slug);
-      if (d.workstream.status !== 'active') continue;
-      const targets: CapacityTarget[] = [];
-      for (const entry of Object.values(d.capacity?.byModel ?? {})) {
-        if (entry.wait.retryAt <= now) continue; // already due — its own tick retries
-        const target = targetOfWait(entry.wait);
-        if (!target) continue; // ambiguous legacy wait: never guess a pool
-        if (supersededByFleetRecovery(ledger, target, entry.wait.detectedAt)) targets.push(target);
-      }
-      if (targets.length) out.set(slug, targets);
-    } catch { /* unreadable stream — its own tick reports it */ }
+  for (const [slug, d] of await cache.scan()) {
+    if (d.workstream.status !== 'active') continue;
+    const targets: CapacityTarget[] = [];
+    for (const entry of Object.values(d.capacity?.byModel ?? {})) {
+      if (entry.wait.retryAt <= now) continue; // already due — its own tick retries
+      const target = targetOfWait(entry.wait);
+      if (!target) continue; // ambiguous legacy wait: never guess a pool
+      if (supersededByFleetRecovery(ledger, target, entry.wait.detectedAt)) targets.push(target);
+    }
+    if (targets.length) out.set(slug, targets);
   }
   return out;
 }
@@ -522,6 +559,7 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   const tickFn = opts.tickFn ?? tick;
   const sourceStale = opts.sourceStale ?? runnerSourceStale;
   const runner = runnerClaimIdentity();
+  const workstreams = new RunnerWorkstreamCache();
   if (runner.placementOnly) {
     throw new Error('WEAVER_RUNNER_PLACEMENT_ONLY=1 is only for bounded `weaver tick <slug> --engine-only` invocations, not a resident runner');
   }
@@ -566,7 +604,7 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       // explicit `weaver capacity retry`; blind probes only consume capacity.
       // Free recovery first: any stream still parked on a pool another stream
       // has since used successfully is released without spending a call.
-      const fleetRecovered = await fleetRecoveredSlugs();
+      const fleetRecovered = await fleetRecoveredSlugs(workstreams);
       if (fleetRecovered.size) await releaseFleetRecovered(fleetRecovered, log);
       // Open-PR conflict watch: probes are gh calls, so they run off the loop
       // (never blocking an iteration) and at most one sweep is in flight.
@@ -576,7 +614,7 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
           .catch((e) => logError(`[run] PR conflict sweep failed: ${e instanceof Error ? e.message : e}`))
           .finally(() => { prConflictSweepInFlight = false; });
       }
-      const backedOff = probing ? [] : await infraBackoffSlugs();
+      const backedOff = probing ? [] : await infraBackoffSlugs(workstreams);
       if (backedOff.length) {
         const credMtime = credentialsMtime();
         const credChanged = credMtime !== lastCredMtime;
@@ -598,16 +636,12 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       }
       const due: string[] = [];
       const priority = new Map<string, number>();
-      for (const slug of await listWorkstreams()) {
+      for (const [slug, doc] of await workstreams.scan()) {
         if (inFlight.has(slug)) continue;
-        try {
-          const ws = (await load(slug)).workstream;
-          if (ws.status !== 'active') continue;
-          due.push(slug);
-          priority.set(slug, priorityRank(ws.priority));
-        } catch {
-          /* unreadable stream — its own tick reports it */
-        }
+        const ws = doc.workstream;
+        if (ws.status !== 'active') continue;
+        due.push(slug);
+        priority.set(slug, priorityRank(ws.priority));
       }
       due.sort(byPriorityThenFairness(priority, lastTickedAt));
       // Load-aware cap: when the machine is oversubscribed, grant fewer slots

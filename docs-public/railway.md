@@ -91,6 +91,22 @@ Do not place it behind transaction-mode PgBouncer. A standard Railway Postgres
 public URL is direct; if Railway connection pooling is enabled later, give
 Weaver `DATABASE_PUBLIC_UNPOOLED_URL`, or configure the pooler in session mode.
 
+Production runners commonly use the documented five-second interval. They poll
+a narrow `(slug, revision)` head list before each logical fleet scan and retain
+a disposable, revision-validated document cache. A cold runner loads every
+current document once; later polls transfer only documents
+whose durable revision changed, while deletions and unreadable heads are
+evicted. This preserves the same fresh-head and revision-CAS semantics without
+retransmitting the full knowledge base every few seconds. Keep runners current:
+older builds that list and reload every document on every poll can turn a large
+fleet's public-database traffic into the dominant Railway cost.
+
+The browser's four-second change detector uses that same head list plus current
+runner presence. It does not render or transfer Workstream documents until the
+revision changes and the browser requests a real board/workspace page. Thus a
+board left open in a tab costs a narrow metadata poll, not one full fleet
+download every four seconds.
+
 Enable scheduled database backups before cutover. For a production fleet,
 enable point-in-time recovery and periodically prove a logical restore outside
 the project as well.
