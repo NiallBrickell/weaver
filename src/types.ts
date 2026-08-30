@@ -176,6 +176,9 @@ export interface Assignment {
     /** First failed Pilot contact for this gate. A sustained outage eventually
      * opens a human card; a transient outage remains internal retry state. */
     pilotUnavailableSince?: Iso;
+    /** Physical-time retry boundary for the unavailable approval service.
+     * Keeps recovery automatic without polling every gated action each tick. */
+    pilotRetryAt?: Iso;
     verified?: { ok: boolean; output: string; at: Iso };
   };
   acceptanceCriteria: string[];
