@@ -204,13 +204,24 @@ export async function createTeamWorkstream(req: TeamIntakeRequest): Promise<Team
  */
 export async function createFleetAttentionSteward(actor: string, runnerId?: string): Promise<TeamIntakeResult> {
   const house = loadHouse();
+  const evidenceObjective = 'Own a recurring fleet-wide operational triage loop. Each cycle, inspect the harness-provided typed fleet-health evidence — never transcripts — for open human asks, approval-service incidents, active capacity backoff, overdue wakes, dormant routines, and results awaiting review.';
+  const cadenceObjective = 'The fleet is quiet only when no actionable operational cause is unowned and no stale ask remains untriaged. Unchanged counts are not evidence of health. When genuinely quiet, schedule the next check about two hours out; while actionable operational work remains, re-check in about fifteen minutes. Report deltas only.';
+  const repositoryContext = house.repoMap.trim()
+    ? [`Repository context for this execution host:\n${house.repoMap.trim()}`]
+    : [];
+  const priorBuiltInObjective = [
+    evidenceObjective,
+    'Group symptoms by root cause. For every actionable group, identify an existing live owner or create one source-keyed bounded managed repair Workstream; verify apparently stale asks so their owning Workstreams can reconcile them. Surface one concise request only when a specific judgment, credential, spend, or external-effect authority genuinely requires a person.',
+    cadenceObjective,
+    ...repositoryContext,
+  ].join('\n\n');
   const definition = {
     title: 'Fleet attention steward',
     objective: [
-      'Own a recurring fleet-wide operational triage loop. Each cycle, inspect the harness-provided typed fleet-health evidence — never transcripts — for open human asks, approval-service incidents, active capacity backoff, overdue wakes, dormant routines, and results awaiting review.',
+      evidenceObjective,
       'Group symptoms by root cause. For every actionable group, identify an existing live owner or create one source-keyed bounded managed repair Workstream; verify apparently stale asks so their owning Workstreams can reconcile them. An open card never proves an externally changeable premise is still true: verify current provider/system state before repeating a credential, spend, service-availability, or repository-state ask. Surface one concise request only when fresh readback proves that a specific judgment, credential, spend, or external-effect authority genuinely requires a person.',
-      'The fleet is quiet only when no actionable operational cause is unowned and no stale ask remains untriaged. Unchanged counts are not evidence of health. When genuinely quiet, schedule the next check about two hours out; while actionable operational work remains, re-check in about fifteen minutes. Report deltas only.',
-      ...(house.repoMap.trim() ? [`Repository context for this execution host:\n${house.repoMap.trim()}`] : []),
+      cadenceObjective,
+      ...repositoryContext,
     ].join('\n\n'),
     tags: [...new Set([...house.tags, 'routine', 'fleet-operations'])],
     successCriteria: [
@@ -234,7 +245,7 @@ export async function createFleetAttentionSteward(actor: string, runnerId?: stri
   const result = await createOrGetFleetAttentionStewardWorkstream(definition);
   if (!result.created) {
     const current = await load(result.slug);
-    const knownBuiltInObjective = [
+    const knownBuiltInObjective = current.workstream.objective === priorBuiltInObjective || [
       'Own a recurring fleet-wide attention triage loop. Each cycle, inspect the harness-provided typed attention evidence',
       'Own a recurring fleet-wide operational triage loop. Each cycle, inspect the shared fleet\'s typed Workstream state',
     ].some((prefix) => current.workstream.objective.startsWith(prefix));

@@ -540,8 +540,9 @@ test('fleet page groups one unavailable approval service and can start a constra
 
 test('starting an existing built-in steward refreshes known legacy doctrine without overwriting later operator edits', async () => {
   const legacyObjective = [
-    'Own a recurring fleet-wide operational triage loop. Each cycle, inspect the shared fleet\'s typed Workstream state — never transcripts — for approval-service incidents, capacity backoff, overdue wakes, dormant routines, missed deliverables, and results awaiting review.',
-    'Group symptoms that share one dependency.',
+    'Own a recurring fleet-wide operational triage loop. Each cycle, inspect the harness-provided typed fleet-health evidence — never transcripts — for open human asks, approval-service incidents, active capacity backoff, overdue wakes, dormant routines, and results awaiting review.',
+    'Group symptoms by root cause. For every actionable group, identify an existing live owner or create one source-keyed bounded managed repair Workstream; verify apparently stale asks so their owning Workstreams can reconcile them. Surface one concise request only when a specific judgment, credential, spend, or external-effect authority genuinely requires a person.',
+    'The fleet is quiet only when no actionable operational cause is unowned and no stale ask remains untriaged. Unchanged counts are not evidence of health. When genuinely quiet, schedule the next check about two hours out; while actionable operational work remains, re-check in about fifteen minutes. Report deltas only.',
   ].join('\n\n');
   await createWorkstream({
     slug: 'fleet-attention-steward', title: 'Fleet attention steward', objective: legacyObjective,
