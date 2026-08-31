@@ -554,8 +554,11 @@ test('starting an existing built-in steward refreshes known legacy doctrine with
   assert.equal(refreshed.created, false);
   const migrated = await load(refreshed.slug);
   assert.match(migrated.workstream.objective, /Unchanged counts are not evidence of health/);
+  assert.match(migrated.workstream.objective, /open card never proves an externally changeable premise is still true/);
   assert.ok(migrated.workstream.successCriteria.some((criterion) => /explicitly deferred/.test(criterion)));
+  assert.ok(migrated.workstream.successCriteria.some((criterion) => /managed read-only verification/.test(criterion)));
   assert.ok(migrated.workstream.constraints.some((constraint) => /non-deferred operational item/.test(constraint)));
+  assert.ok(migrated.workstream.constraints.some((constraint) => /newer source revision prove only missing reconciliation/.test(constraint)));
 
   await arrive(refreshed.slug, (doc) => { doc.workstream.objective = 'Operator-authored custom steward direction.'; });
   await createFleetAttentionSteward('test');
