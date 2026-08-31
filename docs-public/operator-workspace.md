@@ -216,6 +216,11 @@ clauses. The replacement does not recap what closed, and an operational
 retry, resume, or repair cannot hitchhike beside a genuine human-only ask. It
 never preserves false text merely to keep the same card id.
 
+The steward also does not duplicate a precise current card already owned by one
+active source job. It creates a grouped steward card only when at least two
+active source asks share one cause, or when the decision is genuinely
+fleet-level. Paused jobs are deferred and do not count toward that threshold.
+
 The same steward can live on an exact remote execution host without keeping a
 dashboard, terminal, or model session open:
 
