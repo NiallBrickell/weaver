@@ -421,7 +421,10 @@ time and immediately before every merge.
   and PR/check state) require current managed readback before the steward may
   repeat a human ask: an open card or later source revision proves missing
   reconciliation, not continued failure, and an operator report of recovery
-  wakes verification instead of re-paging the stale ask. Its read-and-submit worker is capped at 16 model turns and ten awake
+  wakes verification instead of re-paging the stale ask. The steward's own
+  grouped attention stays textually current: a settled clause withdraws the
+  old card and, if needed, raises one replacement containing only freshly
+  verified remaining clauses; card-id churn never justifies false text. Its read-and-submit worker is capped at 16 model turns and ten awake
   minutes; the general 200-turn repo-work allowance is explicitly wrong for
   this role;
 - preserve the operator-side delegate skill as a mechanism and doctrine source,

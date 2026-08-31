@@ -210,6 +210,9 @@ without a Weaver write. Before the steward repeats one of those asks, it creates
 or reuses a bounded read-only verification job. Recovery evidence is handed to
 the source owner for reconciliation; only a freshly verified remaining need for
 spend, a credential, judgment, or authority reaches **Needs you**.
+If one clause in a grouped decision card later clears, the steward closes that
+card and creates a concise replacement containing only the still-verified
+clauses. It never preserves false text merely to keep the same card id.
 
 The same steward can live on an exact remote execution host without keeping a
 dashboard, terminal, or model session open:
