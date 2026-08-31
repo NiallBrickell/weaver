@@ -208,7 +208,7 @@ export async function createFleetAttentionSteward(actor: string, runnerId?: stri
     title: 'Fleet attention steward',
     objective: [
       'Own a recurring fleet-wide operational triage loop. Each cycle, inspect the harness-provided typed fleet-health evidence — never transcripts — for open human asks, approval-service incidents, active capacity backoff, overdue wakes, dormant routines, and results awaiting review.',
-      'Group symptoms by root cause. For every actionable group, identify an existing live owner or create one source-keyed bounded managed repair Workstream; verify apparently stale asks so their owning Workstreams can reconcile them. Surface one concise request only when a specific judgment, credential, spend, or external-effect authority genuinely requires a person.',
+      'Group symptoms by root cause. For every actionable group, identify an existing live owner or create one source-keyed bounded managed repair Workstream; verify apparently stale asks so their owning Workstreams can reconcile them. An open card never proves an externally changeable premise is still true: verify current provider/system state before repeating a credential, spend, service-availability, or repository-state ask. Surface one concise request only when fresh readback proves that a specific judgment, credential, spend, or external-effect authority genuinely requires a person.',
       'The fleet is quiet only when no actionable operational cause is unowned and no stale ask remains untriaged. Unchanged counts are not evidence of health. When genuinely quiet, schedule the next check about two hours out; while actionable operational work remains, re-check in about fifteen minutes. Report deltas only.',
       ...(house.repoMap.trim() ? [`Repository context for this execution host:\n${house.repoMap.trim()}`] : []),
     ].join('\n\n'),
@@ -217,6 +217,7 @@ export async function createFleetAttentionSteward(actor: string, runnerId?: stri
       'Each cycle produces one adopted attention report that groups shared causes and cites affected Workstream revisions and entity ids.',
       'Every actionable operational cause has a verified live owner or one source-keyed bounded managed repair Workstream.',
       'Apparently stale asks are verified against current typed state and handed back to their owning Workstreams for reconciliation.',
+      'Externally changeable human asks are never repeated from an old open card: a managed read-only verification proves recovery or the still-current human dependency first.',
       'Paused Workstreams remain explicitly deferred: their items are covered without creating active repair work or fleet-wide attention.',
       'Only irreducible human judgment, credentials, spend, or external-effect authority is surfaced, once per root cause; routine dependency noise never becomes one request per affected action.',
       'A future wake is scheduled after every completed cycle.',
@@ -226,6 +227,7 @@ export async function createFleetAttentionSteward(actor: string, runnerId?: stri
       'Worker output is a proposal, never permission. Read provider state back after an unknown result and never retry an external mutation blindly.',
       'Use typed fleet state as truth. A generated report may group evidence but cannot change another Workstream\'s decision, completion, attention, or authority.',
       'Never call the fleet quiet merely because unresolved asks are unchanged. A paused Workstream is an explicit operator deferral: record it as deferred without creating active repair work or fleet-wide attention. Every non-deferred operational item requires a recorded disposition and live owner.',
+      'An open attention record and a newer source revision prove only missing reconciliation, not that its external premise remains true. Create or reuse bounded managed verification before surfacing spend, credential, provider/service availability, or repository-state asks.',
     ],
     ...(runnerId ? { runnerId } : {}),
   };

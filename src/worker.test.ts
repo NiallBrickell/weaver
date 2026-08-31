@@ -373,6 +373,11 @@ test('the fleet steward receives only fresh narrow attention evidence in its neu
     assert.match(request.prompt, /grouped human judgment\/credential\/spend ask/);
     assert.match(request.prompt, /recommend the producer-level root cause to investigate or fix/);
     assert.match(request.prompt, /make bounded investigation the owned next move instead of guessing/);
+    assert.match(request.prompt, /externally changeable premise as unverified unless this evidence contains current typed readback/);
+    assert.match(request.prompt, /open card and a newer Workstream revision prove only that the owner has not reconciled it/);
+    assert.match(request.prompt, /humanNeeds summary is historical at its createdAt/);
+    assert.match(request.prompt, /propose a source-keyed managed verification repair — never repeat the old human ask/);
+    assert.match(request.prompt, /only a freshly proven remaining spend, credential, judgment, or authority dependency may be surfaced/);
     assert.match(request.prompt, /FLEET QUIET is invalid while any actionable item is unowned/);
     assert.match(request.prompt, /hard-aborted after 10 awake minutes/);
     assert.match(request.prompt, /cannot approve, resolve, withdraw, adopt, conclude, send, merge, deploy, push, or spend/);

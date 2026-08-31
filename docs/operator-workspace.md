@@ -417,7 +417,11 @@ time and immediately before every merge.
   without opening replacement work or attention. A verified repair may return only an idempotent,
   untrusted Observation to the originating owner, which reconciles its own
   state; the steward cannot resolve or approve another Workstream's external
-  effect. Its read-and-submit worker is capped at 16 model turns and ten awake
+  effect. Externally changeable premises (credit, credential, provider/service,
+  and PR/check state) require current managed readback before the steward may
+  repeat a human ask: an open card or later source revision proves missing
+  reconciliation, not continued failure, and an operator report of recovery
+  wakes verification instead of re-paging the stale ask. Its read-and-submit worker is capped at 16 model turns and ten awake
   minutes; the general 200-turn repo-work allowance is explicitly wrong for
   this role;
 - preserve the operator-side delegate skill as a mechanism and doctrine source,

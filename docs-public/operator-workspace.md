@@ -204,6 +204,13 @@ Observation to the owning job. That wakes the owner to reconcile its own card;
 the steward still cannot resolve, steer, approve, or otherwise mutate the
 owner's authority or course.
 
+An old open card is not current provider evidence. Credits can be topped up,
+tokens can be replaced, services can recover, and repository checks can move
+without a Weaver write. Before the steward repeats one of those asks, it creates
+or reuses a bounded read-only verification job. Recovery evidence is handed to
+the source owner for reconciliation; only a freshly verified remaining need for
+spend, a credential, judgment, or authority reaches **Needs you**.
+
 The same steward can live on an exact remote execution host without keeping a
 dashboard, terminal, or model session open:
 
