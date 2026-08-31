@@ -49,6 +49,8 @@ test('the fleet steward contract requires durable root-cause ownership without c
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /operator report that they already acted is a trigger for immediate verification/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /OWN open attention text exactly current/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /withdraw that whole old card and raise one concise replacement/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /must say NOTHING about a settled clause, not even a parenthetical/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /executable retry\/resume.*may not hitchhike beside a genuine credential\/judgment ask/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /Avoiding queue churn.*never a reason to retain a false or moot sentence/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /PAUSED\/DEFERRED/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /preserve the operator's pause, create NO active repair, global steward attention, or owner Observation/);
