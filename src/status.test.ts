@@ -165,7 +165,7 @@ test('status exposes the durable assignment placement separately from coordinato
   current.workstream.assignmentRunnerId = 'niall-mac-primary';
   assert.match(
     renderStatus(current),
-    /Assignment placement: niall-mac-primary \(exact runner; coordinator remains fleet-wide\)/,
+    /Assignment placement: niall-mac-primary \(exact runner\)/,
   );
 });
 

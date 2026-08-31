@@ -21,6 +21,7 @@ import {
   SourceKeyConflictError,
 } from './store.js';
 import { createWorkstreamUnderParent, ManagedWorkstreamError } from './managedWorkstreams.js';
+import { assertPublicWorkstreamSourceKey } from './ingress.js';
 import { assertRunnerId, resolveAssignmentRunnerId } from './runnerIdentity.js';
 
 function args(): string[] {
@@ -298,6 +299,7 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       if (rest.includes('--execution-window') && !executionWindow) fail('--execution-window requires a duration');
       if (rest.includes('--max-model-starts') && !maxModelStarts) fail('--max-model-starts requires a positive integer');
       const sourceKey = opt(rest, 'source-key');
+      if (sourceKey) assertPublicWorkstreamSourceKey(sourceKey);
       const under = opt(rest, 'under');
       if (under === slug) fail(`--under cannot name the new workstream itself`);
       // Human composition path (#128 step 2): `--under` routes through the

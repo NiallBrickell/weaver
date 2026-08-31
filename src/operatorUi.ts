@@ -23,14 +23,24 @@ import type {
 } from './clerkOperatorAuth.js';
 import { virtualNow } from './clock.js';
 import { liveRunnerIds } from './coordinatorRunner.js';
-import { FLEET_ATTENTION_STEWARD_SOURCE_KEY, fleetIncidents } from './fleetHealth.js';
-import { createOrGetWorkstream, recordObservation } from './ingress.js';
+import {
+  FLEET_ATTENTION_STEWARD_SOURCE_KEY,
+  fleetAttentionEvidence,
+  fleetIncidents,
+  isFleetAttentionSteward,
+} from './fleetHealth.js';
+import {
+  createOrGetFleetAttentionStewardWorkstream,
+  createOrGetWorkstream,
+  recordObservation,
+} from './ingress.js';
 import { ManagedWorkstreamError } from './managedWorkstreams.js';
 import { deriveFallback, loadHouse } from './onboard.js';
 import { loadPolicies } from './policies.js';
 import { liveRunnerPid, runnerLoopHealthy, runnerSourceStale } from './runner.js';
 import { loadAllSecrets, redactSecrets } from './secrets.js';
 import {
+  arrive,
   listWorkstreams,
   listWorkstreamHeads,
   listRunnerPresence,
@@ -47,6 +57,7 @@ import {
   fleetBoard,
   fleetNeeds,
   presentNeed,
+  workstreamNeeds,
   workstreamPage,
   type FleetBoardView,
   type FleetNeed,
@@ -193,30 +204,48 @@ export async function createTeamWorkstream(req: TeamIntakeRequest): Promise<Team
  */
 export async function createFleetAttentionSteward(actor: string, runnerId?: string): Promise<TeamIntakeResult> {
   const house = loadHouse();
-  const result = await createOrGetWorkstream({
-    sourceKey: FLEET_ATTENTION_STEWARD_SOURCE_KEY,
-    slug: 'fleet-attention-steward',
+  const definition = {
     title: 'Fleet attention steward',
     objective: [
-      'Own a recurring fleet-wide attention triage loop. Each cycle, inspect the harness-provided typed attention evidence — never transcripts — for open human asks and approval-service incidents.',
-      'Group symptoms that share one dependency, challenge requests that do not genuinely require founder judgment, and create a bounded managed repair Workstream when a reversible root cause has its own outcome. Surface one concise question only when a specific judgment genuinely requires a person.',
-      'When the fleet is quiet, schedule the next check about two hours out. While an operational incident is active, re-check in about fifteen minutes. Report deltas only.',
+      'Own a recurring fleet-wide operational triage loop. Each cycle, inspect the harness-provided typed fleet-health evidence — never transcripts — for open human asks, approval-service incidents, active capacity backoff, overdue wakes, dormant routines, and results awaiting review.',
+      'Group symptoms by root cause. For every actionable group, identify an existing live owner or create one source-keyed bounded managed repair Workstream; verify apparently stale asks so their owning Workstreams can reconcile them. Surface one concise request only when a specific judgment, credential, spend, or external-effect authority genuinely requires a person.',
+      'The fleet is quiet only when no actionable operational cause is unowned and no stale ask remains untriaged. Unchanged counts are not evidence of health. When genuinely quiet, schedule the next check about two hours out; while actionable operational work remains, re-check in about fifteen minutes. Report deltas only.',
       ...(house.repoMap.trim() ? [`Repository context for this execution host:\n${house.repoMap.trim()}`] : []),
     ].join('\n\n'),
     tags: [...new Set([...house.tags, 'routine', 'fleet-operations'])],
     successCriteria: [
       'Each cycle produces one adopted attention report that groups shared causes and cites affected Workstream revisions and entity ids.',
-      'Reversible operational causes are repaired or delegated to a bounded managed Workstream with verification.',
-      'Only unresolved human judgment is surfaced; routine dependency noise never becomes one request per affected action.',
+      'Every actionable operational cause has a verified live owner or one source-keyed bounded managed repair Workstream.',
+      'Apparently stale asks are verified against current typed state and handed back to their owning Workstreams for reconciliation.',
+      'Paused Workstreams remain explicitly deferred: their items are covered without creating active repair work or fleet-wide attention.',
+      'Only irreducible human judgment, credentials, spend, or external-effect authority is surfaced, once per root cause; routine dependency noise never becomes one request per affected action.',
       'A future wake is scheduled after every completed cycle.',
     ],
     constraints: [...house.constraints,
       'Never approve or resolve a human-only action, send, merge, deploy, push, spend, or other external effect; preserve the originating Workstream authority gate.',
       'Worker output is a proposal, never permission. Read provider state back after an unknown result and never retry an external mutation blindly.',
       'Use typed fleet state as truth. A generated report may group evidence but cannot change another Workstream\'s decision, completion, attention, or authority.',
+      'Never call the fleet quiet merely because unresolved asks are unchanged. A paused Workstream is an explicit operator deferral: record it as deferred without creating active repair work or fleet-wide attention. Every non-deferred operational item requires a recorded disposition and live owner.',
     ],
     ...(runnerId ? { runnerId } : {}),
-  });
+  };
+  const result = await createOrGetFleetAttentionStewardWorkstream(definition);
+  if (!result.created) {
+    const current = await load(result.slug);
+    const knownBuiltInObjective = [
+      'Own a recurring fleet-wide attention triage loop. Each cycle, inspect the harness-provided typed attention evidence',
+      'Own a recurring fleet-wide operational triage loop. Each cycle, inspect the shared fleet\'s typed Workstream state',
+    ].some((prefix) => current.workstream.objective.startsWith(prefix));
+    if (knownBuiltInObjective) {
+      await arrive(result.slug, (doc, event) => {
+        doc.workstream.objective = definition.objective;
+        doc.workstream.tags = definition.tags;
+        doc.workstream.successCriteria = definition.successCriteria;
+        doc.workstream.constraints = definition.constraints;
+        event('workstream.updated', 'refreshed the built-in fleet steward contract to the current harness version');
+      });
+    }
+  }
   if (result.created) {
     await recordObservation(result.slug, {
       source: `operator-ui:${safeActor(actor)}`,
@@ -310,12 +339,20 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
     const position = capacityPresentation(doc, now);
     return !position.blocking && !position.executorUnavailable && position.details.length > 0;
   });
+  const unhealthyRoutines = fleetAttentionEvidence(docs, unreadable).workstreams.filter(({ routineHealth }) =>
+    !!routineHealth && (
+      routineHealth.dormant ||
+      routineHealth.overdueWakes.length > 0 ||
+      routineHealth.awaitingReviewAssignmentIds.length > 0
+    ),
+  );
 
   const details: string[] = [];
   if (unreadable.length) details.push(`${unreadable.length} unreadable Workstream${unreadable.length === 1 ? '' : 's'}`);
   if (pilotIncident) details.push(`approval service affects ${pilotIncident.affectedWorkstreams.length} outcome${pilotIncident.affectedWorkstreams.length === 1 ? '' : 's'}`);
   if (capacityBlocked.length) details.push(`execution capacity blocks ${capacityBlocked.length} outcome${capacityBlocked.length === 1 ? '' : 's'}`);
   if (degraded.length) details.push(`${degraded.length} outcome${degraded.length === 1 ? '' : 's'} using fallbacks`);
+  if (unhealthyRoutines.length) details.push(`routine health gaps affect ${unhealthyRoutines.length} outcome${unhealthyRoutines.length === 1 ? '' : 's'}`);
   details.push(`${Object.values(board.lanes).flat().length} live · ${board.done.length} done`);
 
   if (unreadable.length || stalledRunner) {
@@ -325,10 +362,14 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
       detail: `${details.join(' · ')}. Stored work is retained; execution needs operator attention.`,
     };
   }
-  if (pilotIncident || capacityBlocked.length || degraded.length) {
+  if (pilotIncident || capacityBlocked.length || degraded.length || unhealthyRoutines.length) {
     return {
       tone: 'warning',
-      headline: pilotIncident || capacityBlocked.length ? 'Fleet has blocked dependencies' : 'Fleet is using fallback capacity',
+      headline: pilotIncident || capacityBlocked.length
+        ? 'Fleet has blocked dependencies'
+        : unhealthyRoutines.length
+          ? 'Fleet has stalled routines'
+          : 'Fleet is using fallback capacity',
       detail: `${details.join(' · ')}. Intended work remains durable; no gated external effect is assumed to have happened.`,
     };
   }
@@ -404,7 +445,7 @@ async function loadFleet(): Promise<LoadedFleet> {
   const policies = (await loadPolicies()).policies;
   const board = fleetBoard(docs, policies, managed, unreadable);
   const incidents = fleetIncidents(docs);
-  const stewardDoc = docs.find((doc) => doc.workstream.sourceKey === FLEET_ATTENTION_STEWARD_SOURCE_KEY);
+  const stewardDoc = docs.find(isFleetAttentionSteward);
   const stewardCard = stewardDoc
     ? Object.values(board.lanes).flat().find((card) => card.slug === stewardDoc.workstream.slug)
     : undefined;
@@ -809,7 +850,7 @@ async function handle(
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(responseId)) {
       throw new OperatorUiHttpError(400, 'The response id is malformed');
     }
-    const need = fleetNeeds([doc]).find((candidate) =>
+    const need = workstreamNeeds(doc).find((candidate) =>
       candidate.source.type === sourceType && candidate.source.id === sourceId,
     );
     if (!need || needVersion(need) !== submittedVersion) {

@@ -407,13 +407,19 @@ time and immediately before every merge.
   attention, followed by grouped shared-dependency incidents;
 - provision the optional attention steward as an ordinary source-keyed routine
   Workstream. Each worker gets a fresh model-free input scoped to open human
-  asks, approval-service waits, grouped incidents, counts, and source revisions;
-  unrelated objectives, decisions, artifacts, event history, and database
-  credentials stay outside the worker boundary. It repairs reversible causes
-  and may create bounded repair Workstreams, but it cannot resolve or approve
-  another Workstream's external effect. Its read-and-submit worker is capped at
-  16 model turns and ten awake minutes; the general 200-turn repo-work allowance
-  is explicitly wrong for this role;
+  asks plus referenced entity state, approval-service waits, active capacity
+  backoffs, unhealthy routine signals, grouped incidents, counts, and source
+  revisions; unrelated objectives, decisions, artifacts, event prose, wake
+  reasons, and database credentials stay outside the worker boundary. It must
+  account for every input, group by root cause, recommend a producer-level
+  remedy, and attach every actionable group to an existing or source-keyed
+  bounded managed repair. A paused source is recorded as explicitly deferred
+  without opening replacement work or attention. A verified repair may return only an idempotent,
+  untrusted Observation to the originating owner, which reconciles its own
+  state; the steward cannot resolve or approve another Workstream's external
+  effect. Its read-and-submit worker is capped at 16 model turns and ten awake
+  minutes; the general 200-turn repo-work allowance is explicitly wrong for
+  this role;
 - preserve the operator-side delegate skill as a mechanism and doctrine source,
   never as transferable authority. Worker output remains a proposal.
 

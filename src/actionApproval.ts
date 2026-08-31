@@ -54,6 +54,17 @@ export function humanAttention(doc: WorkstreamDoc): AttentionItem[] {
   );
 }
 
+/**
+ * Pausing is the operator's explicit deferral of one Workstream. Its open
+ * attention remains durable and visible inside that Workstream, but it must
+ * not keep interrupting the fleet-wide Needs-you queue until the Workstream
+ * is resumed. Done Workstreams are different: an unresolved consequence can
+ * still require a person after the underlying implementation concluded.
+ */
+export function humanAttentionCanInterrupt(doc: WorkstreamDoc): boolean {
+  return doc.workstream.status !== 'paused';
+}
+
 /** Idempotently materialise the durable needs-you item for an action. */
 export function ensureActionApprovalAttention(
   doc: WorkstreamDoc,

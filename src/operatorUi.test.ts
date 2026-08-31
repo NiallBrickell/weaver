@@ -13,13 +13,14 @@ import * as path from 'node:path';
 
 import {
   createTeamWorkstream,
+  createFleetAttentionSteward,
   currentFleetRevision,
   FLEET_ATTENTION_STEWARD_SOURCE_KEY,
   startOperatorUi,
   type RunningOperatorUi,
 } from './operatorUi.js';
 import type { ClerkOperatorAuthenticator } from './clerkOperatorAuth.js';
-import { arrive, heartbeatRunner, listWorkstreams, load, newId, writeArtifact } from './store.js';
+import { arrive, createWorkstream, heartbeatRunner, listWorkstreams, load, newId, writeArtifact } from './store.js';
 
 let home: string;
 let running: RunningOperatorUi | undefined;
@@ -535,6 +536,41 @@ test('fleet page groups one unavailable approval service and can start a constra
   assert.equal(retry.headers.get('location'), '/fleet?steward=existing');
   assert.equal((await Promise.all((await listWorkstreams()).map((slug) => load(slug))))
     .filter((doc) => doc.workstream.sourceKey === FLEET_ATTENTION_STEWARD_SOURCE_KEY).length, 1);
+});
+
+test('starting an existing built-in steward refreshes known legacy doctrine without overwriting later operator edits', async () => {
+  const legacyObjective = [
+    'Own a recurring fleet-wide operational triage loop. Each cycle, inspect the shared fleet\'s typed Workstream state — never transcripts — for approval-service incidents, capacity backoff, overdue wakes, dormant routines, missed deliverables, and results awaiting review.',
+    'Group symptoms that share one dependency.',
+  ].join('\n\n');
+  await createWorkstream({
+    slug: 'fleet-attention-steward', title: 'Fleet attention steward', objective: legacyObjective,
+    sourceKey: FLEET_ATTENTION_STEWARD_SOURCE_KEY, tags: ['routine'],
+    successCriteria: ['legacy criterion'], constraints: ['legacy constraint'],
+    autonomy: { sendsRequireApproval: true },
+  });
+
+  const refreshed = await createFleetAttentionSteward('test');
+  assert.equal(refreshed.created, false);
+  const migrated = await load(refreshed.slug);
+  assert.match(migrated.workstream.objective, /Unchanged counts are not evidence of health/);
+  assert.ok(migrated.workstream.successCriteria.some((criterion) => /explicitly deferred/.test(criterion)));
+  assert.ok(migrated.workstream.constraints.some((constraint) => /non-deferred operational item/.test(constraint)));
+
+  await arrive(refreshed.slug, (doc) => { doc.workstream.objective = 'Operator-authored custom steward direction.'; });
+  await createFleetAttentionSteward('test');
+  assert.equal((await load(refreshed.slug)).workstream.objective, 'Operator-authored custom steward direction.');
+});
+
+test('fleet health reports dormant routines without waiting for a model-generated card', async () => {
+  await createWorkstream({
+    slug: 'dormant-routine', title: 'Dormant routine', objective: 'Run on a durable cadence.',
+    tags: ['routine'], successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+  });
+
+  const html = await (await fetch(`${base}/board`)).text();
+  assert.match(html, /Fleet has stalled routines/);
+  assert.match(html, /routine health gaps affect 1 outcome/);
 });
 
 test('fleet polling revision changes when observable runner state changes without a Workstream write', async () => {

@@ -47,6 +47,10 @@ pausing: there is nothing to undo. Ranking is a human act — `weaver priority
 
 Pause changes the workstream's durable lifecycle state. It does not cancel or discard its assignments, submissions, decisions, waits, due wakes, or needs-you items. On resume, the runner reads that typed position and continues from it with fresh coordinator and worker runs. No model context, Agent SDK session, or sleeping process is retained to bridge the pause.
 
+An open needs-you item on a paused job remains visible inside that job, but it
+does not stay in the fleet-wide **Needs you** queue. Pausing is an explicit
+deferral; resuming the job makes any still-open decision interruptible again.
+
 The fleet command applies that same revision-checked transition to each workstream that was active at invocation. It is deliberately not one cross-fleet transaction or a flag outside the workstreams: each outcome remains independently durable and inspectable. The command names every changed and unchanged stream; if one record is unreadable, healthy streams still pause and the command exits non-zero with the failed slug instead of silently omitting it.
 
 ## The in-flight boundary

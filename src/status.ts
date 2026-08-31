@@ -68,7 +68,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   const providerCapacity = providerCapacityHeadline(doc.providerCapacity ?? []);
   out.push(`Provider capacity: ${providerCapacity ?? 'unknown — no fresh provider-reported plan window'}`);
   if (ws.assignmentRunnerId) {
-    out.push(`Assignment placement: ${ws.assignmentRunnerId} (exact runner; coordinator remains fleet-wide)`);
+    out.push(`Assignment placement: ${ws.assignmentRunnerId} (exact runner)`);
   }
   out.push(`Coordinator runners: ${ws.executionPolicy?.coordinatorRunnerOrder.join(' → ') ?? 'fleet-wide'}`);
   if (ws.managedBy) {

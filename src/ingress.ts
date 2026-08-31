@@ -22,6 +22,10 @@ import { sanitizeSlug } from './onboard.js';
 import { virtualNow } from './clock.js';
 import { newExecutionSafety } from './executionSafety.js';
 import { assertRunnerId } from './runnerIdentity.js';
+import {
+  FLEET_ATTENTION_STEWARD_SLUG,
+  FLEET_ATTENTION_STEWARD_SOURCE_KEY,
+} from './fleetHealth.js';
 
 export interface CreateWorkstreamRequest {
   /** Stable identity of the external thing this workstream exists for, e.g.
@@ -54,6 +58,23 @@ export interface CreateOrGetResult {
   created: boolean;
 }
 
+export class ReservedSourceKeyError extends Error {
+  constructor(sourceKey: string) {
+    super(`source key '${sourceKey}' is reserved for Weaver's built-in fleet attention steward`);
+    this.name = 'ReservedSourceKeyError';
+  }
+}
+
+/** Public intake and coordinator/CLI composition may choose their own stable
+ * source identities, but cannot mint the identity that unlocks the built-in
+ * steward's cross-Workstream Observation seam. Keep this check reusable by
+ * public adapters which create through a lower-level store path. */
+export function assertPublicWorkstreamSourceKey(sourceKey: string): void {
+  if (sourceKey === FLEET_ATTENTION_STEWARD_SOURCE_KEY) {
+    throw new ReservedSourceKeyError(sourceKey);
+  }
+}
+
 /**
  * Idempotent on sourceKey: create the workstream, or return the existing one
  * that already holds this key. Uniqueness is enforced atomically at the store
@@ -62,6 +83,30 @@ export interface CreateOrGetResult {
  * exists" is therefore a safe no-op on every retry.
  */
 export async function createOrGetWorkstream(req: CreateWorkstreamRequest): Promise<CreateOrGetResult> {
+  assertPublicWorkstreamSourceKey(req.sourceKey);
+  return createOrGetWorkstreamInternal(req);
+}
+
+/** Exact internal creation authority for the one built-in fleet steward. It
+ * does not accept a caller-selected source key or parent and therefore cannot
+ * be reused to bless an arbitrary Workstream with steward identity. */
+export async function createOrGetFleetAttentionStewardWorkstream(
+  req: Omit<CreateWorkstreamRequest, 'sourceKey' | 'under' | 'slug'>,
+): Promise<CreateOrGetResult> {
+  const result = await createOrGetWorkstreamInternal({
+    ...req,
+    slug: FLEET_ATTENTION_STEWARD_SLUG,
+    sourceKey: FLEET_ATTENTION_STEWARD_SOURCE_KEY,
+  });
+  if (result.slug !== FLEET_ATTENTION_STEWARD_SLUG) {
+    throw new Error(
+      `reserved fleet steward identity is held by unexpected Workstream '${result.slug}'; refusing to activate it`,
+    );
+  }
+  return result;
+}
+
+async function createOrGetWorkstreamInternal(req: CreateWorkstreamRequest): Promise<CreateOrGetResult> {
   if (req.runnerId !== undefined) assertRunnerId(req.runnerId, 'runner id');
   const existingSlug = await findBySourceKey(req.sourceKey);
   if (existingSlug) {

@@ -8,7 +8,7 @@
 #   weaver-gcp push-worker-secrets NAME...  exactly sync selected global secrets
 #   weaver-gcp tunnel             forward Postgres + serve to localhost
 #   weaver-gcp join               print the exact commands a second machine runs
-#   weaver-gcp ssh [cmd…]         SSH into the VM (IAP tunnel)
+#   weaver-gcp ssh [--command cmd] SSH into the VM (IAP tunnel)
 #   weaver-gcp status             VM + services + runner heartbeat
 #   weaver-gcp logs [unit]        tail a unit's journal (default weaver-run)
 #   weaver-gcp start              start the execution runner
