@@ -41,9 +41,14 @@ so scrolling is never the way you navigate between unrelated parts of a job:
 - **Details** retains revisions and the standing course, with all Assignments
   and the full typed chronology in separate disclosures.
 
-The active tab is part of the URL, so a link, reload, or live revision refresh
-returns to the same view. On narrow screens the tab row scrolls horizontally
-rather than turning into another tall section list.
+The active tab is part of the URL, so a link or live revision refresh returns
+to the same view. The server sends one-way revision events and the browser
+replaces the page's coherent server-rendered snapshot in place, including the
+job list and fleet state; no manual reload is needed. A bounded revision poll
+repairs a dropped event stream. Unsaved form input is never discarded: if an
+update arrives while you are writing, Weaver holds it behind a small refresh
+notice until you choose to replace the draft. On narrow screens the tab row
+scrolls horizontally rather than turning into another tall section list.
 
 These are two views over typed Workstream state. The workspace may look conversational, but a conversation is never the durable container and its prose cannot silently change authoritative state.
 

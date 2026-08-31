@@ -10,6 +10,7 @@ import * as fs from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { runInNewContext } from 'node:vm';
 
 import {
   createTeamWorkstream,
@@ -21,6 +22,7 @@ import {
 } from './operatorUi.js';
 import type { ClerkOperatorAuthenticator } from './clerkOperatorAuth.js';
 import { arrive, createWorkstream, heartbeatRunner, listWorkstreams, load, newId, writeArtifact } from './store.js';
+import { OPERATOR_SCRIPT } from './ui/operator/render.js';
 
 let home: string;
 let running: RunningOperatorUi | undefined;
@@ -85,6 +87,102 @@ function rawFormPost(url: string, fields: Record<string, string>, headers: Recor
     req.end(body);
   });
 }
+
+interface SseTestReader {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  buffer: string;
+}
+
+async function nextSseRevision(stream: SseTestReader): Promise<string> {
+  while (true) {
+    const boundary = stream.buffer.indexOf('\n\n');
+    if (boundary >= 0) {
+      const event = stream.buffer.slice(0, boundary);
+      stream.buffer = stream.buffer.slice(boundary + 2);
+      const data = event.split('\n').find((line) => line.startsWith('data: '));
+      if (!data) continue;
+      const parsed = JSON.parse(data.slice('data: '.length)) as { revision?: unknown };
+      assert.equal(typeof parsed.revision, 'string');
+      return parsed.revision as string;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = await Promise.race([
+      stream.reader.read(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timed out waiting for a live revision event')), 5_000);
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+    assert.equal(read.done, false, 'the live revision stream remains open');
+    stream.buffer += new TextDecoder().decode(read.value, { stream: true });
+  }
+}
+
+test('the client swaps a fresh coherent snapshot in place when a live revision arrives', async () => {
+  class FakeElement {
+    dataset: Record<string, string> = {};
+    hidden = true;
+    scrollTop = 0;
+    replacedWith: FakeElement | undefined;
+
+    querySelectorAll(): FakeElement[] { return []; }
+    querySelector(): FakeElement | null { return null; }
+    addEventListener(): void {}
+    replaceWith(next: FakeElement): void { this.replacedWith = next; }
+  }
+
+  class FakeEventSource {
+    static instance: FakeEventSource | undefined;
+    readonly listeners = new Map<string, (event: { data: string }) => void>();
+
+    constructor(readonly url: string) { FakeEventSource.instance = this; }
+    addEventListener(type: string, listener: (event: { data: string }) => void): void {
+      this.listeners.set(type, listener);
+    }
+  }
+
+  const currentRoot = new FakeElement();
+  currentRoot.dataset = {
+    revision: 'revision-before',
+    revisionEndpoint: '/api/fleet-revision',
+    revisionEventsEndpoint: '/api/fleet-events',
+  };
+  const nextRoot = new FakeElement();
+  nextRoot.dataset = { ...currentRoot.dataset, revision: 'revision-after' };
+  const fakeDocument = {
+    title: 'Before',
+    hidden: false,
+    activeElement: { matches: () => true },
+    querySelector: () => currentRoot,
+  };
+  const fakeWindow = {
+    EventSource: FakeEventSource,
+    location: { href: 'http://workspace.test/board' },
+    setTimeout,
+    clearTimeout,
+  };
+  runInNewContext(OPERATOR_SCRIPT, {
+    window: fakeWindow,
+    document: fakeDocument,
+    EventSource: FakeEventSource,
+    HTMLElement: FakeElement,
+    DOMParser: class {
+      parseFromString(): { title: string; querySelector(): FakeElement } {
+        return { title: 'After', querySelector: () => nextRoot };
+      }
+    },
+    fetch: async () => ({ ok: true, text: async () => '<html></html>' }),
+    AbortController,
+    JSON,
+  });
+
+  assert.equal(FakeEventSource.instance?.url, '/api/fleet-events');
+  FakeEventSource.instance?.listeners.get('message')?.({ data: JSON.stringify({ revision: 'revision-after' }) });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(currentRoot.replacedWith, nextRoot);
+  assert.equal(fakeDocument.title, 'After');
+});
 
 test('New work stores a durable request immediately and an exact retry is idempotent', async () => {
   const message = 'The customer-facing carousel is blank; diagnose it and get the mixed video and images rendering together.';
@@ -323,6 +421,11 @@ test('board, new-work, and workspace pages are live typed views with secure head
   assert.doesNotMatch(html, /Work and deliverables|workspace-inspector|five-question-position/);
   assert.doesNotMatch(html, /WEAVER_SERVE_TOKEN|WEAVER_UI_TOKEN/);
   assert.doesNotMatch(html, /DISPOSABLE_PASS_SUMMARY|DISPOSABLE_SESSION/);
+  assert.match(html, /data-revision-endpoint="\/api\/fleet-revision"/);
+  assert.match(html, /data-revision-events-endpoint="\/api\/fleet-events"/);
+  assert.match(html, /new EventSource\(root\.dataset\.revisionEventsEndpoint\)/);
+  assert.match(html, /root\.replaceWith\(nextRoot\)/);
+  assert.doesNotMatch(html, /window\.location\.reload/);
 
   const activityHtml = await (await fetch(`${base}/workstreams/${created.slug}?tab=activity`)).text();
   assert.match(activityHtml, /data-testid="workspace-tab-activity"[^>]*aria-current="page"/);
@@ -592,6 +695,49 @@ test('fleet polling revision changes when observable runner state changes withou
   assert.match(html, /Agent execution[\s\S]*Running/);
 });
 
+test('the live revision stream fans durable fleet changes out without a browser poll', async () => {
+  const controller = new AbortController();
+  const joiningController = new AbortController();
+  let joiningStream: SseTestReader | undefined;
+  const response = await fetch(`${base}/api/fleet-events`, {
+    headers: { Accept: 'text/event-stream' },
+    signal: controller.signal,
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type') ?? '', /^text\/event-stream/);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.ok(response.body);
+  const stream: SseTestReader = { reader: response.body.getReader(), buffer: '' };
+  try {
+    const before = await nextSseRevision(stream);
+    await createTeamWorkstream({
+      message: 'Make this new job appear in every open workspace.',
+      requestId: 'live-event-request',
+      actor: 'alice',
+    });
+    const joiningResponse = await fetch(`${base}/api/fleet-events`, {
+      headers: { Accept: 'text/event-stream' },
+      signal: joiningController.signal,
+    });
+    assert.ok(joiningResponse.body);
+    joiningStream = { reader: joiningResponse.body.getReader(), buffer: '' };
+    const [after, joiningRevision] = await Promise.all([
+      nextSseRevision(stream),
+      nextSseRevision(joiningStream),
+    ]);
+    assert.notEqual(after, before);
+    assert.equal(joiningRevision, after, 'a joining tab cannot consume a new revision without notifying existing tabs');
+    const board = await (await fetch(`${base}/board`)).text();
+    assert.match(board, new RegExp(`data-revision="${after}"`));
+    assert.match(board, /Make this new job appear in every open workspace/);
+  } finally {
+    controller.abort();
+    joiningController.abort();
+    await stream.reader.cancel().catch(() => undefined);
+    await joiningStream?.reader.cancel().catch(() => undefined);
+  }
+});
+
 test('fleet polling revision is computed from cheap heads without a document-load dependency', async () => {
   let headReads = 0;
   let presenceReads = 0;
@@ -616,6 +762,24 @@ test('fleet polling revision is computed from cheap heads without a document-loa
   assert.notEqual(first, changed, 'a durable revision change invalidates the poll hash');
   assert.equal(headReads, 1);
   assert.equal(presenceReads, 1);
+});
+
+test('fleet revision advances on the bounded presentation clock without a durable write', async () => {
+  const heads = async () => [{ slug: 'alpha', revision: 3 }];
+  const presences = async () => [];
+  const before = await currentFleetRevision(
+    heads,
+    presences,
+    new Date('2026-08-31T12:00:30.000Z'),
+    new Date('2026-08-31T12:00:30.000Z'),
+  );
+  const after = await currentFleetRevision(
+    heads,
+    presences,
+    new Date('2026-08-31T12:01:00.000Z'),
+    new Date('2026-08-31T12:01:00.000Z'),
+  );
+  assert.notEqual(after, before, 'due labels, lease expiry, and routine readiness cannot remain stale forever');
 });
 
 test('decision responses accept an option with a condition or a custom answer without granting authority', async () => {
@@ -775,6 +939,7 @@ test('Clerk mode replaces the browser password and keeps identity, domain denial
   assert.equal(signedOut.status, 303);
   assert.equal(signedOut.headers.get('location'), '/sign-in?return_to=%2Fboard');
   assert.equal((await fetch(`${base}/api/fleet-revision`)).status, 401, 'an API caller gets a status, not sign-in HTML');
+  assert.equal((await fetch(`${base}/api/fleet-events`)).status, 401, 'the live stream has the same authentication boundary');
 
   for (const unsafe of [
     'https://evil.example/steal',
