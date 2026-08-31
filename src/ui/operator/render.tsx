@@ -108,38 +108,108 @@ interface TypedFact {
   tone?: 'neutral' | 'success' | 'warning' | 'attention';
 }
 
-const OPERATOR_SCRIPT = `
+export const OPERATOR_SCRIPT = `
 (() => {
-  const root = document.querySelector('[data-operator-root]');
-  for (const input of document.querySelectorAll('[data-testid="decision-custom"]')) {
-    input.addEventListener('focus', () => {
-      const custom = input.closest('form')?.querySelector('input[name="choice"][value="custom"]');
-      if (custom instanceof HTMLInputElement) custom.checked = true;
-    });
-  }
+  let root = document.querySelector('[data-operator-root]');
+  let refreshInFlight = false;
+  let dirty = false;
+  let pendingRevision = '';
   let pollInFlight = false;
+  let pollTimer = 0;
+  let streamOpen = false;
+
+  const bindControls = () => {
+    if (!root) return;
+    for (const input of root.querySelectorAll('[data-testid="decision-custom"]')) {
+      input.addEventListener('focus', () => {
+        const custom = input.closest('form')?.querySelector('input[name="choice"][value="custom"]');
+        if (custom instanceof HTMLInputElement) custom.checked = true;
+      });
+    }
+    for (const form of root.querySelectorAll('form')) {
+      form.addEventListener('input', () => { dirty = true; });
+      form.addEventListener('change', () => { dirty = true; });
+      form.addEventListener('submit', () => { dirty = false; });
+    }
+    const refreshButton = root.querySelector('[data-live-refresh]');
+    refreshButton?.addEventListener('click', () => {
+      dirty = false;
+      void refresh(pendingRevision);
+    });
+  };
+
+  const showPending = () => {
+    const status = root?.querySelector('[data-live-update-status]');
+    if (status instanceof HTMLElement) status.hidden = false;
+  };
+
+  const refresh = async (revision) => {
+    if (!root || !revision || revision === root.dataset.revision || refreshInFlight) return;
+    pendingRevision = revision;
+    if (dirty) {
+      showPending();
+      return;
+    }
+    refreshInFlight = true;
+    try {
+      const response = await fetch(window.location.href, {
+        cache: 'no-store',
+        headers: { Accept: 'text/html' },
+      });
+      if (!response.ok) return;
+      const nextDocument = new DOMParser().parseFromString(await response.text(), 'text/html');
+      const nextRoot = nextDocument.querySelector('[data-operator-root]');
+      if (!(nextRoot instanceof HTMLElement)) return;
+      const oldMain = root.querySelector('[data-operator-scroll]');
+      const oldSidebar = root.querySelector('[data-operator-sidebar-scroll]');
+      const mainScroll = oldMain instanceof HTMLElement ? oldMain.scrollTop : 0;
+      const sidebarScroll = oldSidebar instanceof HTMLElement ? oldSidebar.scrollTop : 0;
+      root.replaceWith(nextRoot);
+      root = nextRoot;
+      const nextMain = root.querySelector('[data-operator-scroll]');
+      const nextSidebar = root.querySelector('[data-operator-sidebar-scroll]');
+      if (nextMain instanceof HTMLElement) nextMain.scrollTop = mainScroll;
+      if (nextSidebar instanceof HTMLElement) nextSidebar.scrollTop = sidebarScroll;
+      document.title = nextDocument.title;
+      pendingRevision = '';
+      dirty = false;
+      bindControls();
+    } catch (_) {
+      // The event stream or bounded fallback poll will retry from durable state.
+    } finally {
+      refreshInFlight = false;
+    }
+  };
+
+  const schedulePoll = (delay = 15000) => {
+    if (streamOpen || pollTimer) return;
+    pollTimer = window.setTimeout(() => {
+      pollTimer = 0;
+      void poll();
+    }, delay);
+  };
+
   const poll = async () => {
     if (!root || pollInFlight || document.hidden) {
-      window.setTimeout(poll, 4000);
+      schedulePoll();
       return;
     }
     pollInFlight = true;
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 3500);
+    const timeout = window.setTimeout(() => controller.abort(), 5000);
     try {
       const response = await fetch(root.dataset.revisionEndpoint, {
         cache: 'no-store',
         headers: { Accept: 'application/json' },
         signal: controller.signal,
       });
+      if (response.status === 401 || response.status === 403) {
+        window.location.assign(window.location.href);
+        return;
+      }
       if (response.ok) {
         const body = await response.json();
-        const focused = document.activeElement;
-        const editing = focused && focused.matches('input, textarea, select');
-        if (typeof body.revision === 'string' && body.revision !== root.dataset.revision && !editing) {
-          window.location.reload();
-          return;
-        }
+        if (typeof body.revision === 'string') await refresh(body.revision);
       }
     } catch (_) {
       // The next bounded read repairs a transient missed poll.
@@ -147,9 +217,32 @@ const OPERATOR_SCRIPT = `
       window.clearTimeout(timeout);
       pollInFlight = false;
     }
-    window.setTimeout(poll, 4000);
+    schedulePoll();
   };
-  window.setTimeout(poll, 4000);
+
+  bindControls();
+  if ('EventSource' in window && root?.dataset.revisionEventsEndpoint) {
+    const events = new EventSource(root.dataset.revisionEventsEndpoint);
+    events.addEventListener('message', (event) => {
+      try {
+        const body = JSON.parse(event.data);
+        if (typeof body.revision === 'string') void refresh(body.revision);
+      } catch (_) {
+        // Ignore malformed best-effort transport data; durable polling repairs it.
+      }
+    });
+    events.addEventListener('open', () => {
+      streamOpen = true;
+      if (pollTimer) window.clearTimeout(pollTimer);
+      pollTimer = 0;
+    });
+    events.addEventListener('error', () => {
+      streamOpen = false;
+      schedulePoll(0);
+    });
+  } else {
+    schedulePoll(0);
+  }
 })();`;
 
 function documentHtml(node: ReactNode): string {
@@ -386,7 +479,7 @@ function WorkstreamSidebar({
           New job
         </a>
       </nav>
-      <div className="hidden min-h-0 flex-1 overflow-y-auto px-2 py-3 lg:block">
+      <div data-operator-sidebar-scroll="" className="hidden min-h-0 flex-1 overflow-y-auto px-2 py-3 lg:block">
         {fleet.groups.filter((group) => group.cards.length).map((group, groupIndex) => (
           <section
             key={`${group.label}-${groupIndex}`}
@@ -515,10 +608,11 @@ function OperatorShell({
           data-testid="operator-shell"
           data-revision={initialRevision}
           data-revision-endpoint={revisionEndpoint}
+          data-revision-events-endpoint="/api/fleet-events"
           className="min-h-screen lg:grid lg:h-screen lg:grid-cols-[18rem_minmax(0,1fr)]"
         >
           <WorkstreamSidebar fleet={fleet} actor={actor} signOutAction={signOutAction} currentSlug={currentSlug} currentPage={currentPage} />
-          <main className="min-h-0 min-w-0 overflow-y-auto">
+          <main data-operator-scroll="" className="min-h-0 min-w-0 overflow-y-auto">
             {notice ? (
               <div data-testid="operator-notice" role="status" className="m-4 mb-0 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-3 text-sm text-violet-200 sm:m-6 sm:mb-0">
                 {notice}
@@ -526,6 +620,10 @@ function OperatorShell({
             ) : null}
             {children}
           </main>
+          <div data-live-update-status="" hidden className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border border-violet-500/40 bg-zinc-900 px-4 py-3 text-sm text-zinc-200 shadow-xl" role="status">
+            New activity is available. Your draft is safe.{' '}
+            <button type="button" data-live-refresh="" className="font-medium text-violet-300 underline underline-offset-2">Refresh now</button>
+          </div>
         </div>
         <script dangerouslySetInnerHTML={{ __html: OPERATOR_SCRIPT }} />
       </body>
@@ -1569,8 +1667,8 @@ export function renderOperatorWorkspaceHtml(props: OperatorWorkspaceRenderProps)
     <OperatorShell
       {...props}
       title={`Weaver · ${props.view.doc.workstream.title}`}
-      revisionEndpoint={`/api/workstreams/${encodeURIComponent(slug)}/revision`}
-      initialRevision={String(props.view.doc.revision)}
+      revisionEndpoint="/api/fleet-revision"
+      initialRevision={props.fleet.revision}
       currentSlug={slug}
       currentPage="workspace"
     >

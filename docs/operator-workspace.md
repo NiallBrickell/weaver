@@ -220,8 +220,10 @@ must never hand a bot the human's authority.
 
 1. read the same `StateStore` as the runner;
 2. server-render the existing React/Tailwind views on each request;
-3. refresh on a narrow revision-change event or bounded poll, with every pane
-   reloaded from one coherent revision rather than several independent timers;
+3. fan one narrow, server-sent fleet revision event to connected browsers and
+   retain a bounded poll as recovery; every page swaps one coherent
+   server-rendered snapshot in place, so workspace sidebars also update when a
+   sibling changes and no browser reload is required;
 4. use explicit redacted view DTOs or server-rendered HTML, never serialize a
    whole `WorkstreamDoc` into the browser;
 5. pass every response and downloadable artifact through secret redaction;

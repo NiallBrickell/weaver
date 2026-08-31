@@ -115,6 +115,10 @@ interface LoadedFleet {
 
 const MAX_BODY_BYTES = 1_000_000;
 const MAX_MESSAGE_LENGTH = 50_000;
+const LIVE_REVISION_POLL_MS = 2_000;
+const LIVE_HEARTBEAT_MS = 15_000;
+const LIVE_CONNECTION_MS = 5 * 60_000;
+const PRESENTATION_TICK_MS = 60_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 export { FLEET_ATTENTION_STEWARD_SOURCE_KEY } from './fleetHealth.js';
 
@@ -305,10 +309,22 @@ function observeRunner(sharedLiveRunnerIds: string[]): RunnerObservation {
   return { pid, stale, healthy: pid !== null && runnerLoopHealthy() && !stale, sharedLiveRunnerIds };
 }
 
-function fleetRevision(heads: WorkstreamHead[], runner: RunnerObservation): string {
+function fleetRevision(
+  heads: WorkstreamHead[],
+  runner: RunnerObservation,
+  wallNow = new Date(),
+  organizationalNow = virtualNow(),
+): string {
   return sha256(JSON.stringify({
     docs: heads.map((head) => [head.slug, head.revision]).sort(([a], [b]) => String(a).localeCompare(String(b))),
     runner,
+    // Lane readiness, expiring leases/capacity, due labels, and routine health
+    // are projections of time as well as durable revisions. A minute tick is
+    // the bounded semantic clock for those human-facing claims.
+    presentation: [
+      Math.floor(wallNow.getTime() / PRESENTATION_TICK_MS),
+      Math.floor(organizationalNow.getTime() / PRESENTATION_TICK_MS),
+    ],
   })).slice(0, 20);
 }
 
@@ -319,8 +335,112 @@ function fleetRevision(heads: WorkstreamHead[], runner: RunnerObservation): stri
 export async function currentFleetRevision(
   heads: () => Promise<WorkstreamHead[]> = listWorkstreamHeads,
   presences: () => Promise<RunnerPresence[]> = listRunnerPresence,
+  wallNow = new Date(),
+  organizationalNow = virtualNow(),
 ): Promise<string> {
-  return fleetRevision(await heads(), observeRunner(liveRunnerIds(await presences())));
+  const [currentHeads, currentPresences] = await Promise.all([heads(), presences()]);
+  return fleetRevision(currentHeads, observeRunner(liveRunnerIds(currentPresences)), wallNow, organizationalNow);
+}
+
+/**
+ * One shared store poll fans revision changes out to every connected browser.
+ * The durable store remains the source of truth — this resident helper only
+ * removes one poll per tab and never carries organizational state.
+ */
+class FleetRevisionEvents {
+  private readonly clients = new Set<ServerResponse>();
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private polling = false;
+  private revision: string | undefined;
+  private heartbeatAt = 0;
+  private observation: Promise<string | undefined> = Promise.resolve(undefined);
+
+  async subscribe(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const revision = await this.observe();
+    res.writeHead(200, {
+      ...secureHeaders('text/event-stream; charset=utf-8', res),
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    res.flushHeaders();
+    this.clients.add(res);
+    this.writeRevision(res, revision);
+    this.heartbeatAt = Date.now();
+    const expiry = setTimeout(() => res.end(), LIVE_CONNECTION_MS);
+    expiry.unref();
+    const remove = () => {
+      clearTimeout(expiry);
+      this.remove(res);
+    };
+    req.once('close', remove);
+    res.once('close', remove);
+    this.schedule();
+  }
+
+  close(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    for (const client of this.clients) client.end();
+    this.clients.clear();
+  }
+
+  private remove(res: ServerResponse): void {
+    this.clients.delete(res);
+    if (!this.clients.size && this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  private schedule(): void {
+    if (!this.clients.size || this.timer) return;
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      void this.poll();
+    }, LIVE_REVISION_POLL_MS);
+    this.timer.unref();
+  }
+
+  private async poll(): Promise<void> {
+    if (this.polling || !this.clients.size) return this.schedule();
+    this.polling = true;
+    try {
+      const before = this.revision;
+      const revision = await this.observe();
+      const now = Date.now();
+      if (revision !== before) {
+        this.heartbeatAt = now;
+      } else if (now - this.heartbeatAt >= LIVE_HEARTBEAT_MS) {
+        for (const client of this.clients) client.write(': keep-alive\n\n');
+        this.heartbeatAt = now;
+      }
+    } catch {
+      // Durable state is unchanged by a failed observation. The next bounded
+      // poll repairs the missed notification without inventing a revision.
+    } finally {
+      this.polling = false;
+      this.schedule();
+    }
+  }
+
+  private observe(): Promise<string> {
+    const next = this.observation.then(async () => {
+      const revision = await currentFleetRevision();
+      if (this.revision && revision !== this.revision) {
+        for (const client of this.clients) this.writeRevision(client, revision);
+      }
+      this.revision = revision;
+      return revision;
+    });
+    this.observation = next.catch(() => this.revision);
+    return next;
+  }
+
+  private writeRevision(res: ServerResponse, revision: string): void {
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(`id: ${revision}\ndata: ${JSON.stringify({ revision })}\n\n`);
+    }
+  }
 }
 
 function fleetScope(): OperatorFleetView['scope'] {
@@ -716,6 +836,7 @@ async function handle(
   res: ServerResponse,
   token?: string,
   clerk?: ClerkOperatorAuthenticator,
+  revisionEvents?: FleetRevisionEvents,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
@@ -778,6 +899,11 @@ async function handle(
 
   if (method === 'GET' && url.pathname === '/api/fleet-revision') {
     return sendJson(res, 200, { revision: await currentFleetRevision() });
+  }
+
+  if (method === 'GET' && url.pathname === '/api/fleet-events') {
+    if (!revisionEvents) return sendText(res, 503, 'Live updates are temporarily unavailable');
+    return revisionEvents.subscribe(req, res);
   }
 
   if (method === 'GET' && parts.length === 4 && parts[0] === 'api' && parts[1] === 'workstreams' && parts[3] === 'revision') {
@@ -952,8 +1078,9 @@ export async function startOperatorUi(opts: OperatorUiOptions = {}): Promise<Run
   if (!LOOPBACK_HOSTS.has(host) && !opts.token && !opts.clerk) {
     throw new Error('Clerk authentication or WEAVER_UI_TOKEN is required when weaver ui binds beyond loopback');
   }
+  const revisionEvents = new FleetRevisionEvents();
   const server = createServer((req, res) => {
-    handle(req, res, opts.token, opts.clerk).catch((error: unknown) => {
+    handle(req, res, opts.token, opts.clerk, revisionEvents).catch((error: unknown) => {
       if (res.headersSent) {
         res.destroy();
         return;
@@ -976,7 +1103,10 @@ export async function startOperatorUi(opts: OperatorUiOptions = {}): Promise<Run
       resolve({
         server,
         port: address.port,
-        close: () => new Promise<void>((done, fail) => server.close((error) => error ? fail(error) : done())),
+        close: () => {
+          revisionEvents.close();
+          return new Promise<void>((done, fail) => server.close((error) => error ? fail(error) : done()));
+        },
       });
     });
   });
