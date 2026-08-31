@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   COORDINATOR_SYSTEM_PROMPT,
+  FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT,
   clearCoordinatorCapacityBackoff,
   passOutcome,
   pickCoordinatorModel,
@@ -13,6 +14,7 @@ import {
   recordCoordinatorCapacityBackoff,
   runCoordinatorPass,
 } from './coordinator.js';
+import { FLEET_ATTENTION_STEWARD_SOURCE_KEY } from './fleetHealth.js';
 import { arrive, createWorkstream, heartbeatRunner, load, writeArtifact } from './store.js';
 import { setSecret } from './secrets.js';
 import { isCoordinatorCancellableWake, virtualNow, type CancellableWakePage } from './clock.js';
@@ -29,6 +31,19 @@ test('incident briefs must trace trigger, recovery, escape, and every fallback a
   assert.match(COORDINATOR_SYSTEM_PROMPT, /enumerate EVERY configured attempt/);
   assert.match(COORDINATOR_SYSTEM_PROMPT, /missing from telemetry is an observability defect/);
   assert.match(COORDINATOR_SYSTEM_PROMPT, /trigger, recovery, containment, detection, and recurrence evidence/);
+});
+
+test('the fleet steward contract requires durable root-cause ownership without cross-workstream authority', () => {
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /unchanged unresolved operational backlog is not healthy/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /exactly one durable disposition/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /EXISTING ACTIVE managed repair Workstream/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /stable source_key derived from the cause identity/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /producer-level cause and distinguish trigger, failed recovery, and escaped symptom/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /verified stale\/reconciled only from typed evidence/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /human judgment, a credential only the human can supply, or permission to spend/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /Never resolve, withdraw, approve, adopt, conclude, or otherwise mutate an item in another Workstream/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /sends, merges, deploys, pushes, spending.*remain gated and readback-verified/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /FLEET QUIET.*only when every supplied ask and health signal is covered and no actionable group is unowned/);
 });
 
 beforeEach(async () => {
@@ -67,6 +82,99 @@ afterEach(() => {
     else process.env[name] = value;
   }
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('only the source-keyed steward can wake an owner with idempotent untrusted repair evidence', async () => {
+  await createWorkstream({
+    slug: 'source-owner',
+    title: 'Source owner',
+    objective: 'Own and reconcile one operational repair',
+    tags: [], successCriteria: [], constraints: ['deployment remains gated'],
+    autonomy: { sendsRequireApproval: true },
+  });
+  await arrive('source-owner', (doc) => {
+    doc.decisions.push({
+      id: 'dec_owner', title: 'Keep the repair gated', rationale: 'External effects require readback.',
+      madeBy: 'coordinator', status: 'standing', decidedAtVirtual: virtualNow().toISOString(),
+    });
+    doc.attention.push({
+      id: 'att_operational', kind: 'blocker', summary: 'Operational failure needs repair.',
+      status: 'open', createdAt: new Date().toISOString(),
+    });
+  });
+  const sourceBefore = await load('source-owner');
+
+  await createWorkstream({
+    slug: 'fleet-attention-steward',
+    title: 'Fleet attention steward',
+    objective: 'Own fleet attention to its root cause',
+    sourceKey: FLEET_ATTENTION_STEWARD_SOURCE_KEY,
+    tags: ['routine'], successCriteria: [], constraints: [],
+    autonomy: { sendsRequireApproval: true },
+  });
+
+  let stewardPrompt = '';
+  const outcome = await runCoordinatorPass('fleet-attention-steward', ['manual'], {
+    id: 'local-sdk',
+    async execute(req) {
+      stewardPrompt = req.systemPrompt;
+      const report = req.tools.find((definition) => definition.name === 'report_repair_evidence');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(report && finish);
+      assert.match(report.description, /wakes an active owner/);
+      assert.match(report.description, /paused owner retains the observation and wake until resumed/);
+      assert.match(report.description, /cannot resolve\/withdraw attention/);
+      const unknownEntity = await report.handler({
+        target_slug: 'source-owner',
+        source_revision: sourceBefore.revision,
+        source_entity_id: 'att_not_real',
+        verified_evidence: 'This must not land because the cited entity does not exist.',
+      }, {});
+      assert.equal(unknownEntity.isError, true);
+      assert.match(JSON.stringify(unknownEntity), /no typed entity 'att_not_real'/);
+      const args = {
+        target_slug: 'source-owner',
+        source_revision: sourceBefore.revision,
+        source_entity_id: 'att_operational',
+        verified_evidence: 'The producer fix is deployed and the recurrence probe passed at the exact repaired revision.',
+      };
+      const first = await report.handler(args, {});
+      const retry = await report.handler(args, {});
+      assert.equal(first.isError, undefined);
+      assert.equal(retry.isError, undefined);
+      assert.match(JSON.stringify(first), /new untrusted observation/);
+      assert.match(JSON.stringify(retry), /existing untrusted observation/);
+      await finish.handler({ summary: 'Reported verified repair evidence to its owner.', acknowledged_steering: true }, {});
+      return { costUsd: 0 };
+    },
+  });
+  assert.equal(outcome.outcome, 'completed');
+  assert.match(stewardPrompt, /Additional contract for the built-in fleet attention steward/);
+  assert.match(stewardPrompt, /Use report_repair_evidence only to post verified closure\/reconciliation evidence as an untrusted Observation/);
+
+  const sourceAfter = await load('source-owner');
+  assert.equal(sourceAfter.observations.length, 1, 'exact retry deduplicates at ingress');
+  assert.match(sourceAfter.observations[0]!.source, /^fleet-attention-steward:/);
+  assert.match(sourceAfter.observations[0]!.summary, /revision .*entity att_operational.*producer fix is deployed/i);
+  assert.ok(sourceAfter.wakes.some((wake) => wake.status === 'pending' && wake.reason.includes('new observation')));
+  assert.deepEqual(sourceAfter.decisions, sourceBefore.decisions, 'untrusted evidence cannot change owner decisions');
+  assert.deepEqual(sourceAfter.attention, sourceBefore.attention, 'untrusted evidence cannot resolve owner attention');
+  assert.deepEqual(sourceAfter.workstream.autonomy, sourceBefore.workstream.autonomy, 'untrusted evidence cannot widen owner authority');
+  assert.deepEqual(sourceAfter.workstream.constraints, sourceBefore.workstream.constraints);
+
+  let ordinaryPrompt = '';
+  await runCoordinatorPass('coordinator-capacity', ['manual'], {
+    id: 'local-sdk',
+    async execute(req) {
+      ordinaryPrompt = req.systemPrompt;
+      assert.equal(req.tools.some((definition) => definition.name === 'report_repair_evidence'), false);
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(finish);
+      await finish.handler({ summary: 'Finished ordinary reconciliation.', acknowledged_steering: true }, {});
+      return { costUsd: 0 };
+    },
+  });
+  assert.doesNotMatch(ordinaryPrompt, /Additional contract for the built-in fleet attention steward/);
 });
 
 function wait(category: CapacityCategory, index: number): InfrastructureWait {

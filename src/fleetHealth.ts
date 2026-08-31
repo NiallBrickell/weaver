@@ -1,4 +1,6 @@
 import { actionHasLivePilotOutage, actionNeedsHuman, humanAttention } from './actionApproval.js';
+import { virtualNow } from './clock.js';
+import { isWakeDue } from './executionSafety.js';
 import type { WorkstreamDoc } from './types.js';
 
 export const FLEET_ATTENTION_STEWARD_SOURCE_KEY = 'weaver:fleet-attention-steward:v1';
@@ -15,13 +17,69 @@ export interface FleetIncident {
   affectedWorkstreams: string[];
 }
 
+type FleetReferencedEntity =
+  | { kind: 'assignment'; state: WorkstreamDoc['assignments'][number]['state'] }
+  | { kind: 'interaction'; state: WorkstreamDoc['interactions'][number]['status'] }
+  | { kind: 'wake'; state: WorkstreamDoc['wakes'][number]['status'] }
+  | { kind: 'decision'; state: WorkstreamDoc['decisions'][number]['status'] }
+  | { kind: 'attention'; state: WorkstreamDoc['attention'][number]['status'] };
+
 interface FleetHumanNeed {
   source: 'attention' | 'assignment' | 'interaction';
   id: string;
   kind: string;
   summary: string;
+  workstreamStatus: WorkstreamDoc['workstream']['status'];
   refId?: string;
+  referencedEntity?: FleetReferencedEntity;
   createdAt?: string;
+}
+
+function referencedEntity(
+  doc: WorkstreamDoc,
+  refId: string | undefined,
+): FleetHumanNeed['referencedEntity'] {
+  if (!refId) return undefined;
+  const assignment = doc.assignments.find((candidate) => candidate.id === refId);
+  if (assignment) return { kind: 'assignment', state: assignment.state };
+  const interaction = doc.interactions.find((candidate) => candidate.id === refId);
+  if (interaction) return { kind: 'interaction', state: interaction.status };
+  const wake = doc.wakes.find((candidate) => candidate.id === refId);
+  if (wake) return { kind: 'wake', state: wake.status };
+  const decision = doc.decisions.find((candidate) => candidate.id === refId);
+  if (decision) return { kind: 'decision', state: decision.status };
+  const attention = doc.attention.find((candidate) => candidate.id === refId);
+  return attention ? { kind: 'attention', state: attention.status } : undefined;
+}
+
+function routineHealth(doc: WorkstreamDoc, wallNow: Date, nowVirtual: Date) {
+  if (doc.workstream.status !== 'active' || !doc.workstream.tags.includes('routine')) return undefined;
+  const pendingWakes = doc.wakes.filter((wake) => wake.status === 'pending');
+  const liveAssignments = doc.assignments.filter((assignment) =>
+    ['gated', 'queued', 'running', 'awaiting_review'].includes(assignment.state),
+  );
+  const coordinating = !!doc.lease && new Date(doc.lease.expiresAt).getTime() > wallNow.getTime();
+  const overdueWakes = pendingWakes
+    .filter((wake) => isWakeDue(wake.condition, wallNow, nowVirtual))
+    .map((wake) => ({
+      id: wake.id,
+      condition: wake.condition.type,
+      ...(
+        wake.condition.type === 'time'
+          ? { dueAt: wake.condition.dueAtVirtual }
+          : wake.condition.type === 'wall_time'
+            ? { dueAt: wake.condition.dueAt }
+            : {}
+      ),
+    }));
+  const awaitingReviewAssignmentIds = liveAssignments
+    .filter((assignment) => assignment.state === 'awaiting_review')
+    .map((assignment) => assignment.id);
+  return {
+    dormant: !pendingWakes.length && !liveAssignments.length && !coordinating,
+    overdueWakes,
+    awaitingReviewAssignmentIds,
+  };
 }
 
 /**
@@ -64,6 +122,7 @@ export function fleetAttentionEvidence(
   docs: WorkstreamDoc[],
   unreadable: string[] = [],
   wallNow = new Date(),
+  nowVirtual = virtualNow(),
 ) {
   const workstreams = [...docs]
     .sort((a, b) => a.workstream.slug.localeCompare(b.workstream.slug))
@@ -76,7 +135,9 @@ export function fleetAttentionEvidence(
           id: attention.id,
           kind: attention.kind,
           summary: attention.summary,
+          workstreamStatus: doc.workstream.status,
           refId: attention.refId,
+          referencedEntity: referencedEntity(doc, attention.refId),
           createdAt: attention.createdAt,
         };
       });
@@ -88,7 +149,9 @@ export function fleetAttentionEvidence(
           id: assignment.id,
           kind: 'action',
           summary: assignment.exec?.ask ?? assignment.objective,
+          workstreamStatus: doc.workstream.status,
           refId: assignment.id,
+          referencedEntity: referencedEntity(doc, assignment.id),
           createdAt: assignment.createdAtVirtual,
         });
       }
@@ -100,9 +163,12 @@ export function fleetAttentionEvidence(
           id: interaction.id,
           kind: 'approval',
           summary: `Send to ${interaction.to}: ${interaction.subject}`,
+          workstreamStatus: doc.workstream.status,
           refId: interaction.id,
+          referencedEntity: referencedEntity(doc, interaction.id),
         });
       }
+      const health = routineHealth(doc, wallNow, nowVirtual);
       return {
         slug: doc.workstream.slug,
         revision: doc.revision,
@@ -114,14 +180,35 @@ export function fleetAttentionEvidence(
             assignmentId: assignment.id,
             unavailableSince: assignment.exec!.pilotUnavailableSince!,
           })),
+        activeCapacityBackoffs: doc.workstream.status === 'active'
+          ? Object.values(doc.capacity?.byModel ?? {})
+            .filter((backoff) => backoff.wait.retryAt > nowVirtual.toISOString())
+            .map((backoff) => ({
+              source: backoff.wait.source,
+              sourceId: backoff.wait.sourceId,
+              kind: backoff.wait.kind,
+              recovery: backoff.wait.recovery,
+              model: backoff.wait.model,
+              executor: backoff.wait.executor,
+              provider: backoff.wait.provider,
+              retryAt: backoff.wait.retryAt,
+              resetAt: backoff.wait.resetAt,
+              consecutiveBackoffs: backoff.consecutiveBackoffs,
+            }))
+            .sort((a, b) => a.retryAt.localeCompare(b.retryAt) || a.sourceId.localeCompare(b.sourceId))
+          : [],
+        ...(health ? { routineHealth: health } : {}),
       };
     })
-    .filter(({ humanNeeds, approvalServiceWaits }) => humanNeeds.length || approvalServiceWaits.length);
+    .filter(({ humanNeeds, approvalServiceWaits, activeCapacityBackoffs, routineHealth: health }) =>
+      humanNeeds.length || approvalServiceWaits.length || activeCapacityBackoffs.length ||
+      !!health?.dormant || !!health?.overdueWakes.length || !!health?.awaitingReviewAssignmentIds.length
+    );
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: wallNow.toISOString(),
-    scope: 'Open human asks and approval-service waits only. Unrelated Workstream content is deliberately omitted.',
+    scope: 'Open human asks, approval-service waits, active capacity backoffs, and unhealthy routine state only. Unrelated Workstream content is deliberately omitted.',
     authority: 'Read-only evidence. Worker conclusions are proposals and cannot approve, resolve, adopt, send, merge, deploy, push, or spend.',
     unreadableWorkstreams: [...unreadable].sort(),
     incidents: fleetIncidents(docs),

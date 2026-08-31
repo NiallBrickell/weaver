@@ -8,6 +8,7 @@ import {
   actionHasLivePilotOutage,
   actionNeedsHuman,
   humanAttention,
+  humanAttentionCanInterrupt,
 } from '../../actionApproval.js';
 
 export interface ManagedWorkstreamLink {
@@ -241,6 +242,7 @@ export function policiesForWorkstream(policies: PolicyRecord[], doc: WorkstreamD
 export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
   const needs: FleetNeed[] = [];
   for (const doc of docs) {
+    if (!humanAttentionCanInterrupt(doc)) continue;
     const slug = doc.workstream.slug;
     const representedRefs = new Set<string>();
     for (const attention of humanAttention(doc)) {

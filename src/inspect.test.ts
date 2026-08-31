@@ -558,6 +558,31 @@ test('human attention keeps a concluded Workstream out of the folded Done list',
   assert.equal(view.done.length, 0);
 });
 
+test('pausing defers human attention without discarding it', async () => {
+  await makeWorkstream('paused-decision');
+  await arrive('paused-decision', (doc) => {
+    doc.workstream.status = 'paused';
+    doc.attention.push({
+      id: 'att_paused',
+      kind: 'review',
+      summary: 'Choose the eventual publication policy',
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    });
+  });
+
+  const pausedDoc = await load('paused-decision');
+  const paused = fleetBoard([pausedDoc], [], new Map());
+  assert.equal(paused.needs.length, 0);
+  assert.equal(paused.lanes['needs-you'].length, 0);
+  assert.equal(paused.lanes.waiting[0]?.state, 'Paused');
+  assert.equal(pausedDoc.attention[0]?.status, 'open');
+
+  await arrive('paused-decision', (doc) => { doc.workstream.status = 'active'; });
+  const resumed = fleetBoard([await load('paused-decision')], [], new Map());
+  assert.deepEqual(resumed.lanes['needs-you'].map((card) => card.slug), ['paused-decision']);
+});
+
 test('a Workstream page states its next move when no human decision is pending', async () => {
   await makeWorkstream('routine-position');
   await arrive('routine-position', (doc) => {

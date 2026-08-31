@@ -166,17 +166,33 @@ also pauses its retries, so its last outage marker remains durable history until
 the job resumes; it is not evidence that the shared service is still down.
 
 **Start attention steward** creates one source-keyed routine Workstream. Each
-cycle audits typed attention state, groups related symptoms, repairs reversible
-causes or delegates a bounded repair outcome, and asks a person only for
-irreducible judgment. Before each steward worker starts, the harness writes a
-fresh read-only input containing only open human asks, approval-service waits,
+cycle audits typed attention and fleet-health state, groups related symptoms by
+root cause, confirms an existing live repair owner or delegates one bounded
+source-keyed repair outcome, and asks a person only for irreducible judgment,
+credentials, spend, or external-effect authority. An unchanged queue is not a
+healthy queue: **quiet** means every operational item has a recorded disposition
+and live owner, not merely that no new card appeared. Before each steward worker
+starts, the harness writes a fresh read-only input containing only open human
+asks, their current typed reference state, approval-service waits, active
+capacity backoffs, overdue wakes, dormant routines, results awaiting review,
 grouped incidents, counts, and source revisions. It does not expose unrelated
-objectives, decisions, artifacts, event history, or database credentials. The
-steward does not inherit operator authority: it cannot approve or resolve sends,
-merges, deploys, spending, or any other external effect, and its worker output
-is still only a proposal until adopted. This read-and-submit role is also capped
-at 16 model turns and a ten-minute wall: it cannot turn a small approval queue
-into an open-ended coding-agent investigation.
+objectives, decisions, artifacts, event prose, wake reasons, or database
+credentials. The steward does not inherit operator authority: it cannot approve
+or resolve sends, merges, deploys, spending, or any other external effect, and
+its worker output is still only a proposal until adopted. This read-and-submit
+role is also capped at 16 model turns and a ten-minute wall: it cannot turn a
+small approval queue into an open-ended coding-agent investigation.
+
+For each operational group, the report recommends the producer-level cause to
+investigate or fix, with recurrence evidence that would prove closure. If the
+narrow evidence cannot establish that cause, the steward owns the gap through a
+bounded managed investigation rather than guessing, retrying blindly, clearing
+the card, or hiding it in the interface.
+
+When a repair is verified, the steward can post one idempotent untrusted
+Observation to the owning job. That wakes the owner to reconcile its own card;
+the steward still cannot resolve, steer, approve, or otherwise mutate the
+owner's authority or course.
 
 The same steward can live on an exact remote execution host without keeping a
 dashboard, terminal, or model session open:

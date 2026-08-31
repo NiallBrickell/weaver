@@ -21,7 +21,7 @@ import { virtualNow } from './clock.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
 import { storeDisplayLabel } from './link.js';
 import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
-import { actionHasLivePilotOutage, actionNeedsHuman, humanAttention } from './actionApproval.js';
+import { actionHasLivePilotOutage, actionNeedsHuman, humanAttention, humanAttentionCanInterrupt } from './actionApproval.js';
 
 const R = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -132,7 +132,7 @@ export async function viewOf(slug: string): Promise<WsView> {
 
   let needsYou = 0;
   const representedRefs = new Set<string>();
-  for (const a of humanAttention(doc)) {
+  for (const a of humanAttentionCanInterrupt(doc) ? humanAttention(doc) : []) {
     if (a.refId && representedRefs.has(a.refId)) continue;
     if (a.refId) representedRefs.add(a.refId);
     needsYou++;
@@ -140,14 +140,14 @@ export async function viewOf(slug: string): Promise<WsView> {
     details.push(`${RED}▸ [${a.kind}]${R} ${fit(first, 14 + a.kind.length)}`);
     details.push(`  ${DIM}→ weaver status ${slug}   (resolve: weaver resolve ${slug} ${a.id})${R}`);
   }
-  for (const a of doc.assignments.filter(actionNeedsHuman)) {
+  for (const a of humanAttentionCanInterrupt(doc) ? doc.assignments.filter(actionNeedsHuman) : []) {
     if (representedRefs.has(a.id)) continue;
     representedRefs.add(a.id);
     needsYou++;
     details.push(`${RED}▸ gated action${R} ${fit(`"${a.objective}"`, 20)}`);
     details.push(`  ${DIM}→ weaver approve-action ${slug} ${a.id}${R}`);
   }
-  for (const i of doc.interactions.filter((x) => x.status === 'awaiting_approval')) {
+  for (const i of humanAttentionCanInterrupt(doc) ? doc.interactions.filter((x) => x.status === 'awaiting_approval') : []) {
     needsYou++;
     details.push(`${RED}▸ send awaiting approval${R} ${fit(`${i.kind} to ${i.to} "${i.subject}"`, 30)}`);
     details.push(`  ${DIM}→ weaver approve ${slug} ${i.id}${R}`);

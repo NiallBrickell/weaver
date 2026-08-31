@@ -199,6 +199,7 @@ bin/weaver-gcp.sh push-worker-secrets SENTRY_AUTH_TOKEN READONLY_DB_URL
 bin/weaver-gcp.sh update                   # pull/install only; still no restart
 bin/weaver-gcp.sh start                    # starts weaver-run: the explicit cutover
 bin/weaver-gcp.sh status                   # services + runner heartbeat
+bin/weaver-gcp.sh ssh --command 'hostname' # one non-interactive remote command
 ```
 
 Provisioning also records the VM's current private IPv4 as host-local

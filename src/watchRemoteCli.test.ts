@@ -38,6 +38,10 @@ test('watch --on starts one durable attention steward on the exact runner and ex
   assert.deepEqual(doc.workstream.executionPolicy?.coordinatorRunnerOrder, ['weaver-fleet']);
   assert.equal(doc.workstream.status, 'active');
   assert.ok(doc.wakes.some((wake) => wake.status === 'pending'));
+  assert.match(doc.workstream.objective, /dormant routines/);
+  assert.match(doc.workstream.objective, /Unchanged counts are not evidence of health/);
+  assert.ok(doc.workstream.successCriteria.some((criterion) => /live owner/.test(criterion)));
+  assert.ok(doc.workstream.constraints.some((constraint) => /Never call the fleet quiet/.test(constraint)));
 
   const repeated = weaver('watch', '--on', 'weaver-fleet');
   assert.equal(repeated.status, 0, repeated.stderr);

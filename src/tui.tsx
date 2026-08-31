@@ -42,7 +42,7 @@ import { publishPrintoutHtml } from './printoutHtml.js';
 import { acquireRunnerLock, liveRunnerPid, promoteOnRunnerVacancy, runLoop, runnerLoopHealthy, runnerSourceStale } from './runner.js';
 import { listRunnerPresence, listWorkstreams, load, weaverHome } from './store.js';
 import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
-import { actionAwaitingPilot, actionIsLivePilotWait, humanAttention } from './actionApproval.js';
+import { actionAwaitingPilot, actionIsLivePilotWait, humanAttention, humanAttentionCanInterrupt } from './actionApproval.js';
 import { liveRunnerIds } from './coordinatorRunner.js';
 import { runnerClaimIdentity } from './runnerIdentity.js';
 import { storeDisplayLabel } from './link.js';
@@ -327,7 +327,7 @@ async function snapshot(): Promise<Snapshot> {
     const commentary = new Map<string, string[]>();
     const seenRefs = new Set<string>();
     const seenSummaries = new Set<string>();
-    for (const a of humanAttention(doc)) {
+    for (const a of humanAttentionCanInterrupt(doc) ? humanAttention(doc) : []) {
       if (a.refId && approvableIds.has(a.refId)) {
         commentary.set(a.refId, [...(commentary.get(a.refId) ?? []), a.summary]);
         continue;
@@ -351,7 +351,7 @@ async function snapshot(): Promise<Snapshot> {
       });
     }
     const pendingPilot: string[] = [];
-    for (const a of gated) {
+    for (const a of humanAttentionCanInterrupt(doc) ? gated : []) {
       // A gated action with no Pilot verdict is operational dependency state,
       // never a human judgment. The fleet projection groups an outage once;
       // only an explicit Pilot deny/ask (or human-only mode) enters Needs you.
@@ -394,7 +394,7 @@ async function snapshot(): Promise<Snapshot> {
         ].join('\n'),
       });
     }
-    for (const i of pendingSends) {
+    for (const i of humanAttentionCanInterrupt(doc) ? pendingSends : []) {
       needsYou++;
       const notes = commentary.get(i.id);
       items.push({
