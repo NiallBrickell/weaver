@@ -47,6 +47,9 @@ test('the fleet steward contract requires durable root-cause ownership without c
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /humanNeeds summary is historical evidence at createdAt/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /create\/reuse a bounded managed verification repair first/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /operator report that they already acted is a trigger for immediate verification/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /OWN open attention text exactly current/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /withdraw that whole old card and raise one concise replacement/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /Avoiding queue churn.*never a reason to retain a false or moot sentence/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /PAUSED\/DEFERRED/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /preserve the operator's pause, create NO active repair, global steward attention, or owner Observation/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /Never resolve, withdraw, approve, adopt, conclude, or otherwise mutate an item in another Workstream/);
