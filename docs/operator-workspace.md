@@ -424,7 +424,9 @@ time and immediately before every merge.
   wakes verification instead of re-paging the stale ask. The steward's own
   grouped attention stays textually current: a settled clause withdraws the
   old card and, if needed, raises one replacement containing only freshly
-  verified remaining clauses; card-id churn never justifies false text. Its read-and-submit worker is capped at 16 model turns and ten awake
+  verified remaining clauses. Settled clauses remain in typed history rather
+  than the replacement, and executable retry/resume or repair clauses stay out
+  of a human-only card; card-id churn never justifies false text. Its read-and-submit worker is capped at 16 model turns and ten awake
   minutes; the general 200-turn repo-work allowance is explicitly wrong for
   this role;
 - preserve the operator-side delegate skill as a mechanism and doctrine source,
