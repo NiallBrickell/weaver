@@ -378,6 +378,9 @@ test('the fleet steward receives only fresh narrow attention evidence in its neu
     assert.match(request.prompt, /humanNeeds summary is historical at its createdAt/);
     assert.match(request.prompt, /propose a source-keyed managed verification repair — never repeat the old human ask/);
     assert.match(request.prompt, /only a freshly proven remaining spend, credential, judgment, or authority dependency may be surfaced/);
+    assert.match(request.prompt, /Do not propose a second human card when one precise ACTIVE source card already carries/);
+    assert.match(request.prompt, /grouped steward attention only for two or more ACTIVE source asks/);
+    assert.match(request.prompt, /Paused sources are deferred and never count toward that grouping threshold/);
     assert.match(request.prompt, /FLEET QUIET is invalid while any actionable item is unowned/);
     assert.match(request.prompt, /hard-aborted after 10 awake minutes/);
     assert.match(request.prompt, /cannot approve, resolve, withdraw, adopt, conclude, send, merge, deploy, push, or spend/);

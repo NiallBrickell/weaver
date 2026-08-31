@@ -42,6 +42,10 @@ test('the fleet steward contract requires durable root-cause ownership without c
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /producer-level cause and distinguish trigger, failed recovery, and escaped symptom/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /verified stale\/reconciled only from typed evidence/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /human judgment, a credential only the human can supply, or permission to spend/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /rely on one exact current ACTIVE source card/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /two or more ACTIVE source asks share one cause/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /paused source never counts toward the two-source grouping threshold/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /withdraw any duplicate steward card/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /premise can change outside Weaver/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /open source attention record.*never prove the outside-world premise remains current/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /humanNeeds summary is historical evidence at createdAt/);

@@ -426,7 +426,10 @@ time and immediately before every merge.
   old card and, if needed, raises one replacement containing only freshly
   verified remaining clauses. Settled clauses remain in typed history rather
   than the replacement, and executable retry/resume or repair clauses stay out
-  of a human-only card; card-id churn never justifies false text. Its read-and-submit worker is capped at 16 model turns and ten awake
+  of a human-only card; card-id churn never justifies false text. One precise
+  active source card remains the sole human disposition for its cause; the
+  steward groups only two or more active source asks or a truly fleet-level
+  choice, and paused sources never count toward that threshold. Its read-and-submit worker is capped at 16 model turns and ten awake
   minutes; the general 200-turn repo-work allowance is explicitly wrong for
   this role;
 - preserve the operator-side delegate skill as a mechanism and doctrine source,
