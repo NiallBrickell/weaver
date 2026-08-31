@@ -413,7 +413,8 @@ time and immediately before every merge.
   reasons, and database credentials stay outside the worker boundary. It must
   account for every input, group by root cause, recommend a producer-level
   remedy, and attach every actionable group to an existing or source-keyed
-  bounded managed repair. A verified repair may return only an idempotent,
+  bounded managed repair. A paused source is recorded as explicitly deferred
+  without opening replacement work or attention. A verified repair may return only an idempotent,
   untrusted Observation to the originating owner, which reconciles its own
   state; the steward cannot resolve or approve another Workstream's external
   effect. Its read-and-submit worker is capped at 16 model turns and ten awake

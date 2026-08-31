@@ -368,6 +368,8 @@ test('the fleet steward receives only fresh narrow attention evidence in its neu
     assert.match(request.prompt, /existing live managed repair/);
     assert.match(request.prompt, /source-keyed managed repair to create\/reuse/);
     assert.match(request.prompt, /verified stale\/reconciled-by-owner on newer typed evidence/);
+    assert.match(request.prompt, /explicitly deferred because every source Workstream is paused/);
+    assert.match(request.prompt, /do not reactivate it through a repair Workstream or re-page it through steward attention/);
     assert.match(request.prompt, /grouped human judgment\/credential\/spend ask/);
     assert.match(request.prompt, /recommend the producer-level root cause to investigate or fix/);
     assert.match(request.prompt, /make bounded investigation the owned next move instead of guessing/);

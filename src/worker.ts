@@ -56,9 +56,9 @@ import type { InfrastructureWait, ProviderCapacityObservation, WorkstreamDoc } f
 import { secureMcpHeaderCredentials, type SecuredMcpConfiguration } from './mcpConfig.js';
 import { pilotFetch, readPilotVerdict } from './pilot.js';
 import {
-  FLEET_ATTENTION_STEWARD_SOURCE_KEY,
   FLEET_EVIDENCE_FILE,
   fleetAttentionEvidence,
+  isFleetAttentionSteward,
 } from './fleetHealth.js';
 import {
   assignmentMatchesRunner,
@@ -491,18 +491,17 @@ export async function runWorker(
     });
     return false;
   }
-  const isFleetAttentionSteward = !isAction
-    && current.workstream.sourceKey === FLEET_ATTENTION_STEWARD_SOURCE_KEY;
+  const fleetSteward = !isAction && isFleetAttentionSteward(current);
   // The steward's narrow, generated attention input belongs in Weaver's
   // neutral workspace, never in a coordinator-named repository. Declared
   // directories remain additional context rather than becoming write targets.
   const workCwd = isAction
     ? asg.exec!.cwd
-    : isFleetAttentionSteward
+    : fleetSteward
       ? neutralWorkspace(slug)
       : (readDirs[0] ?? neutralWorkspace(slug));
   const harnessInputs: string[] = [];
-  if (isFleetAttentionSteward) {
+  if (fleetSteward) {
     const fleetDocs: WorkstreamDoc[] = [];
     const unreadable: string[] = [];
     for (const fleetSlug of await listWorkstreams()) {
@@ -524,7 +523,7 @@ export async function runWorker(
       `Read ${evidencePath} before investigating. It contains only open human asks plus their current typed reference state, approval-service waits, active capacity backoffs, unhealthy routine signals, grouped incidents, counts, and source revisions; unrelated Workstream content is deliberately omitted.`,
       `This is a bounded read-and-submit triage, not a coding or research task. Read the evidence once, do not inspect repositories, the network, other filesystem paths, or operator MCP servers, and do not create a working report file. Use at most eight investigation tool calls, then submit one concise human-facing report through Weaver. Cite each real ask, but summarize it instead of reproducing its full text.`,
       `Account for EVERY supplied ask and health signal: every humanNeeds entry, approvalServiceWait, activeCapacityBackoff, unhealthy routineHealth field, incident, and unreadable Workstream. Start the report with a compact coverage ledger keyed by source slug + revision + entity id (or incident key/unreadable slug), so omitted evidence is visible rather than silently declared healthy.`,
-      `Group entries by their shared causal failure, not by source Workstream or card type. For each root-cause group, distinguish an operational repair from an irreducible human need, and propose exactly one disposition: an existing live managed repair; a source-keyed managed repair to create/reuse; verified stale/reconciled-by-owner on newer typed evidence; or one grouped human judgment/credential/spend ask. Do not classify an operational defect, routine failure, capacity/retry failure, approval-service outage, executable fix, merge, deploy, or push as human judgment merely because a source card currently asks a human for help.`,
+      `Group entries by their shared causal failure, not by source Workstream or card type. For each root-cause group, distinguish an operational repair from an irreducible human need, and propose exactly one disposition: an existing live managed repair; a source-keyed managed repair to create/reuse; verified stale/reconciled-by-owner on newer typed evidence; explicitly deferred because every source Workstream is paused; or one grouped human judgment/credential/spend ask. A paused source is the operator's durable deferral: keep it covered in the ledger, but do not reactivate it through a repair Workstream or re-page it through steward attention. Do not classify an operational defect, routine failure, capacity/retry failure, approval-service outage, executable fix, merge, deploy, or push as human judgment merely because a source card currently asks a human for help.`,
       `For every operational group, recommend the producer-level root cause to investigate or fix; do not merely repeat the symptom, clear the card, add a retry, or propose a display filter. When the supplied evidence cannot establish the cause, say exactly which causal layer is unknown and make bounded investigation the owned next move instead of guessing.`,
       `A repair disposition must name the causal outcome to verify, all affected source ids, and the recurrence evidence that would close it. A stale/reconciled disposition requires explicit typed owner evidence; age, silence, a proposed fix, or your inference is insufficient. An unreadable or causally unclassified actionable signal remains owned investigation, never healthy by omission.`,
       `FLEET QUIET is invalid while any actionable item is unowned. Use it only when the coverage ledger proves there are no actionable groups and no unresolved evidence gaps; otherwise end with the owned next move for every group.`,
@@ -668,7 +667,7 @@ export async function runWorker(
   };
 
   const workerWallMs = timing?.wallMs
-    ?? (isFleetAttentionSteward ? FLEET_ATTENTION_STEWARD_WALL_MS : 40 * 60_000);
+    ?? (fleetSteward ? FLEET_ATTENTION_STEWARD_WALL_MS : 40 * 60_000);
   const submissionReserveMs = Math.min(10 * 60_000, Math.floor(workerWallMs / 2));
   const checkpointAtMs = workerWallMs - submissionReserveMs;
 
@@ -795,7 +794,7 @@ export async function runWorker(
       // it could submit (11 wasted minutes + a re-split). Repo-scale setup
       // alone eats dozens of turns; the real runaway bounds are the assignment
       // rolling start guard and the engine's supervision, not a tight turn count.
-      maxTurns: isFleetAttentionSteward
+      maxTurns: fleetSteward
         ? FLEET_ATTENTION_STEWARD_MAX_TURNS
         : Number(process.env.WEAVER_WORKER_MAX_TURNS) || 200,
       abort,

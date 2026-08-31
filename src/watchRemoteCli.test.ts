@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { createFleetAttentionSteward } from './operatorUi.js';
+import { FLEET_ATTENTION_STEWARD_SOURCE_KEY } from './fleetHealth.js';
 import { arrive, heartbeatRunner, load } from './store.js';
 
 let home: string;
@@ -26,6 +27,16 @@ function weaver(...args: string[]) {
   });
 }
 
+test('public create cannot claim the built-in steward identity', async () => {
+  const attempted = weaver(
+    'create', '--slug', 'spoofed-steward', '--title', 'Spoofed steward',
+    '--objective', 'Claim the privileged built-in identity.', '--source-key', FLEET_ATTENTION_STEWARD_SOURCE_KEY,
+  );
+  assert.notEqual(attempted.status, 0);
+  assert.match(attempted.stderr, /reserved for Weaver's built-in fleet attention steward/);
+  assert.equal(fs.existsSync(path.join(home, 'spoofed-steward')), false);
+});
+
 test('watch --on starts one durable attention steward on the exact runner and exits', async () => {
   await heartbeatRunner('weaver-fleet');
   const started = weaver('watch', '--on', 'weaver-fleet');
@@ -41,6 +52,7 @@ test('watch --on starts one durable attention steward on the exact runner and ex
   assert.match(doc.workstream.objective, /dormant routines/);
   assert.match(doc.workstream.objective, /Unchanged counts are not evidence of health/);
   assert.ok(doc.workstream.successCriteria.some((criterion) => /live owner/.test(criterion)));
+  assert.ok(doc.workstream.successCriteria.some((criterion) => /explicitly deferred/.test(criterion)));
   assert.ok(doc.workstream.constraints.some((constraint) => /Never call the fleet quiet/.test(constraint)));
 
   const repeated = weaver('watch', '--on', 'weaver-fleet');

@@ -239,10 +239,10 @@ export function policiesForWorkstream(policies: PolicyRecord[], doc: WorkstreamD
   );
 }
 
-export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
+function needsFromDocs(docs: WorkstreamDoc[], includeDeferred: boolean): FleetNeed[] {
   const needs: FleetNeed[] = [];
   for (const doc of docs) {
-    if (!humanAttentionCanInterrupt(doc)) continue;
+    if (!includeDeferred && !humanAttentionCanInterrupt(doc)) continue;
     const slug = doc.workstream.slug;
     const representedRefs = new Set<string>();
     for (const attention of humanAttention(doc)) {
@@ -301,6 +301,16 @@ export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
       (a.at ? (b.at ? a.at.localeCompare(b.at) : -1) : b.at ? 1 : 0) ||
       a.slug.localeCompare(b.slug),
   );
+}
+
+/** Global interrupts exclude deliberately paused work. */
+export function fleetNeeds(docs: WorkstreamDoc[]): FleetNeed[] {
+  return needsFromDocs(docs, false);
+}
+
+/** A job workspace keeps its own deferred decisions visible and answerable. */
+export function workstreamNeeds(doc: WorkstreamDoc): FleetNeed[] {
+  return needsFromDocs([doc], true);
 }
 
 function soonestWake(
@@ -604,7 +614,7 @@ export function workstreamPage(
   allPolicies: PolicyRecord[],
   managed: ManagedWorkstreamLink[] = [],
 ): WorkstreamPageView {
-  const needs = fleetNeeds([doc]);
+  const needs = workstreamNeeds(doc);
   const wallNow = new Date();
   const organizationalNow = virtualNow();
   const directionHistory = [...doc.steering]

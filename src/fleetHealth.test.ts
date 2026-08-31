@@ -114,23 +114,39 @@ test('fleet attention evidence exposes active capacity and unhealthy routine sta
     await arrive('routine-needs-recovery', (doc) => {
       doc.assignments.push({
         id: 'asg_review', objective: 'DO_NOT_EXPORT_REVIEW_OBJECTIVE', briefing: 'DO_NOT_EXPORT_BRIEFING',
-        kind: 'work', acceptanceCriteria: [], dependsOn: [], state: 'awaiting_review', attempts: [],
+        kind: 'work', acceptanceCriteria: [], dependsOn: [], state: 'awaiting_review', attempts: [{
+          runId: 'run_review', startedAt: '2026-08-26T08:30:00.000Z', endedAt: '2026-08-26T09:00:00.000Z',
+        }],
         submission: { summary: 'DO_NOT_EXPORT_SUBMISSION' }, adoption: { state: 'proposed' },
         createdAtVirtual: '2026-08-26T10:00:00.000Z',
       });
       doc.assignments.push({
         id: 'asg_unrelated_queued', objective: 'DO_NOT_EXPORT_QUEUED_OBJECTIVE', briefing: 'private',
-        kind: 'work', acceptanceCriteria: [], dependsOn: [], state: 'queued', attempts: [],
+        kind: 'work', acceptanceCriteria: [], dependsOn: [], state: 'queued', attempts: [{
+          runId: 'run_capacity', startedAt: '2026-08-26T09:00:00.000Z', endedAt: '2026-08-26T09:30:00.000Z',
+        }],
         adoption: { state: 'none' }, createdAtVirtual: '2026-08-26T10:01:00.000Z',
       });
       doc.wakes.push({
         id: 'wake_overdue', reason: 'DO_NOT_EXPORT_OVERDUE_WAKE_REASON',
         condition: { type: 'time', dueAtVirtual: '2026-08-26T10:30:00.000Z' },
         status: 'pending', createdAt: '2026-08-26T10:00:00.000Z',
+        infrastructure: {
+          kind: 'session_limit', recovery: 'automatic_retry', source: 'coordinator',
+          sourceId: 'pass_capacity', model: 'claude-sonnet', executor: 'local-sdk', provider: 'anthropic',
+          detectedAt: '2026-08-26T10:15:00.000Z', retryAt: '2026-08-26T12:00:00.000Z',
+        },
       }, {
         id: 'wake_future', reason: 'DO_NOT_EXPORT_FUTURE_WAKE_REASON',
         condition: { type: 'wall_time', dueAt: '2026-08-26T12:30:00.000Z' },
         status: 'pending', createdAt: '2026-08-26T10:00:00.000Z',
+      }, {
+        id: 'wake_wall_overdue', reason: 'DO_NOT_EXPORT_WALL_WAKE_REASON',
+        condition: { type: 'wall_time', dueAt: '2026-08-26T10:30:00.000Z' },
+        status: 'pending', createdAt: '2026-08-26T10:00:00.000Z',
+      }, {
+        id: 'wake_immediate_overdue', reason: 'DO_NOT_EXPORT_IMMEDIATE_WAKE_REASON',
+        condition: { type: 'immediate' }, status: 'pending', createdAt: '2026-08-26T10:30:00.000Z',
       });
       doc.capacity = {
         state: 'backoff',
@@ -144,6 +160,16 @@ test('fleet attention evidence exposes active capacity and unhealthy routine sta
             consecutiveBackoffs: 2,
             firstBackoffAtVirtual: '2026-08-26T10:00:00.000Z',
             lastBackoffAtVirtual: '2026-08-26T10:15:00.000Z',
+          },
+          activeWorker: {
+            wait: {
+              kind: 'rate_limit', recovery: 'automatic_retry', source: 'worker',
+              sourceId: 'run_capacity', model: 'worker-model', executor: 'pi', provider: 'zai',
+              detectedAt: '2026-08-26T10:20:00.000Z', retryAt: '2026-08-26T13:00:00.000Z',
+            },
+            consecutiveBackoffs: 1,
+            firstBackoffAtVirtual: '2026-08-26T10:20:00.000Z',
+            lastBackoffAtVirtual: '2026-08-26T10:20:00.000Z',
           },
           expired: {
             wait: {
@@ -177,12 +203,10 @@ test('fleet attention evidence exposes active capacity and unhealthy routine sta
       status: 'pending', createdAt: '2026-08-26T10:00:00.000Z',
     }));
 
+    const operationalDoc = await load('routine-needs-recovery');
+    const dormantDoc = await load('routine-dormant');
     const evidence = fleetAttentionEvidence(
-      [
-        await load('routine-needs-recovery'),
-        await load('routine-dormant'),
-        await load('routine-healthy'),
-      ],
+      [operationalDoc, dormantDoc, await load('routine-healthy')],
       [],
       new Date('2026-08-26T11:00:00.000Z'),
       new Date('2026-08-26T11:00:00.000Z'),
@@ -192,22 +216,120 @@ test('fleet attention evidence exposes active capacity and unhealthy routine sta
     const encoded = JSON.stringify(evidence);
 
     assert.equal(evidence.schemaVersion, 2);
-    assert.deepEqual(operational?.activeCapacityBackoffs, [{
-      source: 'coordinator', sourceId: 'pass_capacity', kind: 'session_limit', recovery: 'automatic_retry',
-      model: 'claude-sonnet', executor: 'local-sdk', provider: 'anthropic',
-      retryAt: '2026-08-26T12:00:00.000Z', resetAt: undefined, consecutiveBackoffs: 2,
-    }]);
+    assert.deepEqual(operational?.activeCapacityBackoffs, [
+      {
+        source: 'coordinator', sourceId: 'pass_capacity', sourceEntityKind: 'pass',
+        reportableEntity: { kind: 'wake', id: 'wake_overdue', state: 'pending' },
+        kind: 'session_limit', recovery: 'automatic_retry', model: 'claude-sonnet',
+        executor: 'local-sdk', provider: 'anthropic', retryAt: '2026-08-26T12:00:00.000Z',
+        resetAt: undefined, consecutiveBackoffs: 2,
+      },
+      {
+        source: 'worker', sourceId: 'run_capacity', sourceEntityKind: 'attempt',
+        reportableEntity: { kind: 'assignment', id: 'asg_unrelated_queued', state: 'queued' },
+        kind: 'rate_limit', recovery: 'automatic_retry', model: 'worker-model',
+        executor: 'pi', provider: 'zai', retryAt: '2026-08-26T13:00:00.000Z',
+        resetAt: undefined, consecutiveBackoffs: 1,
+      },
+    ]);
     assert.deepEqual(operational?.routineHealth, {
       dormant: false,
-      overdueWakes: [{
-        id: 'wake_overdue', condition: 'time', dueAt: '2026-08-26T10:30:00.000Z',
-      }],
-      awaitingReviewAssignmentIds: ['asg_review'],
+      overdueWakes: [
+        { id: 'wake_overdue', condition: 'time', dueAt: '2026-08-26T10:30:00.000Z' },
+        { id: 'wake_wall_overdue', condition: 'wall_time', dueAt: '2026-08-26T10:30:00.000Z' },
+        { id: 'wake_immediate_overdue', condition: 'immediate' },
+      ],
+      awaitingReviewAssignmentIds: [],
     });
+    assert.equal(operational?.workstreamId, operationalDoc.workstream.id);
     assert.deepEqual(dormant?.routineHealth, {
       dormant: true, overdueWakes: [], awaitingReviewAssignmentIds: [],
     });
+    assert.equal(dormant?.workstreamId, dormantDoc.workstream.id);
     assert.equal(evidence.workstreams.some((doc) => doc.slug === 'routine-healthy'), false);
+    assert.doesNotMatch(encoded, /DO_NOT_EXPORT/);
+  } finally {
+    await closeStore();
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('routine health waits for grace and suppresses work already being reconciled', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-fleet-routine-grace-'));
+  process.env.WEAVER_HOME = home;
+  const wallNow = new Date('2026-08-26T11:00:00.000Z');
+  const nowVirtual = new Date('2026-08-26T11:00:00.000Z');
+  const createRoutine = async (slug: string) => createWorkstream({
+    slug, title: slug, objective: `DO_NOT_EXPORT_${slug}`, tags: ['routine'],
+    successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+  });
+  const addReview = async (slug: string, endedAt: string) => arrive(slug, (doc) => {
+    doc.assignments.push({
+      id: `asg_${slug}`, objective: `DO_NOT_EXPORT_REVIEW_${slug}`, briefing: 'private',
+      kind: 'work', acceptanceCriteria: [], dependsOn: [], state: 'awaiting_review', attempts: [{
+        runId: `run_${slug}`, startedAt: '2026-08-26T08:00:00.000Z', endedAt,
+      }],
+      submission: { summary: 'DO_NOT_EXPORT_SUBMISSION' }, adoption: { state: 'proposed' },
+      createdAtVirtual: '2026-08-26T08:00:00.000Z',
+    });
+  });
+  try {
+    await createRoutine('stale-review');
+    await addReview('stale-review', '2026-08-26T09:00:00.000Z');
+
+    await createRoutine('fresh-review');
+    await addReview('fresh-review', '2026-08-26T10:30:00.000Z');
+
+    await createRoutine('woken-review');
+    await addReview('woken-review', '2026-08-26T09:00:00.000Z');
+    await arrive('woken-review', (doc) => doc.wakes.push({
+      id: 'wake_review', reason: 'DO_NOT_EXPORT_REVIEW_WAKE', condition: { type: 'immediate' },
+      status: 'pending', createdAt: '2026-08-26T10:59:00.000Z',
+    }));
+
+    await createRoutine('leased-review');
+    await addReview('leased-review', '2026-08-26T09:00:00.000Z');
+    await arrive('leased-review', (doc) => {
+      doc.lease = {
+        passId: 'pass_live_review', acquiredAt: '2026-08-26T10:50:00.000Z',
+        expiresAt: '2026-08-26T11:10:00.000Z',
+      };
+    });
+
+    await createRoutine('freshly-due');
+    await arrive('freshly-due', (doc) => doc.wakes.push({
+      id: 'wake_freshly_due', reason: 'DO_NOT_EXPORT_FRESH_WAKE',
+      condition: { type: 'time', dueAtVirtual: '2026-08-26T10:55:00.000Z' },
+      status: 'pending', createdAt: '2026-08-26T10:00:00.000Z',
+    }));
+
+    await createRoutine('leased-overdue');
+    await arrive('leased-overdue', (doc) => {
+      doc.wakes.push({
+        id: 'wake_leased_overdue', reason: 'DO_NOT_EXPORT_LEASED_WAKE',
+        condition: { type: 'wall_time', dueAt: '2026-08-26T10:00:00.000Z' },
+        status: 'pending', createdAt: '2026-08-26T09:00:00.000Z',
+      });
+      doc.lease = {
+        passId: 'pass_live_wake', acquiredAt: '2026-08-26T10:50:00.000Z',
+        expiresAt: '2026-08-26T11:10:00.000Z',
+      };
+    });
+
+    const slugs = [
+      'stale-review', 'fresh-review', 'woken-review', 'leased-review', 'freshly-due', 'leased-overdue',
+    ];
+    const evidence = fleetAttentionEvidence(
+      await Promise.all(slugs.map((slug) => load(slug))), [], wallNow, nowVirtual,
+    );
+    const stale = evidence.workstreams.find((doc) => doc.slug === 'stale-review');
+    const encoded = JSON.stringify(evidence);
+
+    assert.deepEqual(stale?.routineHealth, {
+      dormant: false, overdueWakes: [], awaitingReviewAssignmentIds: ['asg_stale-review'],
+    });
+    assert.deepEqual(evidence.workstreams.map((doc) => doc.slug), ['stale-review']);
     assert.doesNotMatch(encoded, /DO_NOT_EXPORT/);
   } finally {
     await closeStore();

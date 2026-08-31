@@ -21,6 +21,7 @@ import { loadPolicies, proposePolicy } from './policies.js';
 import { setSecret } from './secrets.js';
 import { arrive, createWorkstream, load, weaverHome, workstreamDir, writeArtifact } from './store.js';
 import type { Assignment, WorkstreamDoc } from './types.js';
+import { workstreamPage } from './ui/inspect/model.js';
 
 function freshHome(): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-inspect-'));
@@ -577,6 +578,9 @@ test('pausing defers human attention without discarding it', async () => {
   assert.equal(paused.lanes['needs-you'].length, 0);
   assert.equal(paused.lanes.waiting[0]?.state, 'Paused');
   assert.equal(pausedDoc.attention[0]?.status, 'open');
+  const workspace = workstreamPage(pausedDoc, []);
+  assert.deepEqual(workspace.needs.map((need) => need.source.id), ['att_paused']);
+  assert.equal(workspace.position.needCount, 1);
 
   await arrive('paused-decision', (doc) => { doc.workstream.status = 'active'; });
   const resumed = fleetBoard([await load('paused-decision')], [], new Map());

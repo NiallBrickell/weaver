@@ -1,9 +1,17 @@
 import { actionHasLivePilotOutage, actionNeedsHuman, humanAttention } from './actionApproval.js';
 import { virtualNow } from './clock.js';
 import { isWakeDue } from './executionSafety.js';
-import type { WorkstreamDoc } from './types.js';
+import type { InfrastructureWait, WorkstreamDoc } from './types.js';
 
 export const FLEET_ATTENTION_STEWARD_SOURCE_KEY = 'weaver:fleet-attention-steward:v1';
+export const FLEET_ATTENTION_STEWARD_SLUG = 'fleet-attention-steward';
+
+/** A reserved source key alone was historically caller-supplied. Requiring the
+ * built-in slug as well makes old spoofed holders fail closed after upgrade. */
+export function isFleetAttentionSteward(doc: WorkstreamDoc): boolean {
+  return doc.workstream.sourceKey === FLEET_ATTENTION_STEWARD_SOURCE_KEY &&
+    doc.workstream.slug === FLEET_ATTENTION_STEWARD_SLUG;
+}
 export const FLEET_EVIDENCE_FILE = '.weaver-fleet-evidence.json';
 
 export interface FleetIncident {
@@ -35,6 +43,13 @@ interface FleetHumanNeed {
   createdAt?: string;
 }
 
+// A resident runner normally consumes a due wake in seconds. Fifteen minutes
+// tolerates deployment/restart jitter without teaching the steward that normal
+// dispatch latency is an incident; one hour gives a submitted result a full
+// coordinator cycle before "awaiting review" becomes health evidence.
+const ROUTINE_WAKE_GRACE_MS = 15 * 60_000;
+const ROUTINE_REVIEW_GRACE_MS = 60 * 60_000;
+
 function referencedEntity(
   doc: WorkstreamDoc,
   refId: string | undefined,
@@ -52,6 +67,41 @@ function referencedEntity(
   return attention ? { kind: 'attention', state: attention.status } : undefined;
 }
 
+function isPastGrace(boundary: string, now: Date, graceMs: number): boolean {
+  const boundaryMs = Date.parse(boundary);
+  return Number.isFinite(boundaryMs) && now.getTime() >= boundaryMs + graceMs;
+}
+
+function wakePastGrace(
+  wake: WorkstreamDoc['wakes'][number],
+  wallNow: Date,
+  nowVirtual: Date,
+): boolean {
+  if (wake.condition.type === 'time') {
+    return isPastGrace(wake.condition.dueAtVirtual, nowVirtual, ROUTINE_WAKE_GRACE_MS);
+  }
+  if (wake.condition.type === 'wall_time') {
+    return isPastGrace(wake.condition.dueAt, wallNow, ROUTINE_WAKE_GRACE_MS);
+  }
+  return isPastGrace(wake.createdAt, wallNow, ROUTINE_WAKE_GRACE_MS);
+}
+
+function capacityReportableEntity(doc: WorkstreamDoc, wait: InfrastructureWait) {
+  if (wait.source === 'worker') {
+    const assignment = doc.assignments.find((candidate) =>
+      candidate.attempts.some((attempt) => attempt.runId === wait.sourceId),
+    );
+    return assignment
+      ? { kind: 'assignment' as const, id: assignment.id, state: assignment.state }
+      : undefined;
+  }
+  const wake = doc.wakes.find((candidate) =>
+    candidate.infrastructure?.source === wait.source &&
+    candidate.infrastructure.sourceId === wait.sourceId,
+  );
+  return wake ? { kind: 'wake' as const, id: wake.id, state: wake.status } : undefined;
+}
+
 function routineHealth(doc: WorkstreamDoc, wallNow: Date, nowVirtual: Date) {
   if (doc.workstream.status !== 'active' || !doc.workstream.tags.includes('routine')) return undefined;
   const pendingWakes = doc.wakes.filter((wake) => wake.status === 'pending');
@@ -59,8 +109,8 @@ function routineHealth(doc: WorkstreamDoc, wallNow: Date, nowVirtual: Date) {
     ['gated', 'queued', 'running', 'awaiting_review'].includes(assignment.state),
   );
   const coordinating = !!doc.lease && new Date(doc.lease.expiresAt).getTime() > wallNow.getTime();
-  const overdueWakes = pendingWakes
-    .filter((wake) => isWakeDue(wake.condition, wallNow, nowVirtual))
+  const overdueWakes = coordinating ? [] : pendingWakes
+    .filter((wake) => wakePastGrace(wake, wallNow, nowVirtual))
     .map((wake) => ({
       id: wake.id,
       condition: wake.condition.type,
@@ -72,8 +122,18 @@ function routineHealth(doc: WorkstreamDoc, wallNow: Date, nowVirtual: Date) {
             : {}
       ),
     }));
-  const awaitingReviewAssignmentIds = liveAssignments
-    .filter((assignment) => assignment.state === 'awaiting_review')
+  const hasDueReconciliationWake = pendingWakes.some((wake) =>
+    isWakeDue(wake.condition, wallNow, nowVirtual),
+  );
+  const awaitingReviewAssignmentIds = coordinating || hasDueReconciliationWake ? [] : liveAssignments
+    .filter((assignment) => {
+      if (assignment.state !== 'awaiting_review') return false;
+      // Worker completion is the only precise persisted timestamp for when a
+      // submission became reviewable. Missing legacy timing stays unknown
+      // rather than being guessed from the assignment's much older creation.
+      const endedAt = assignment.attempts.at(-1)?.endedAt;
+      return !!endedAt && isPastGrace(endedAt, wallNow, ROUTINE_REVIEW_GRACE_MS);
+    })
     .map((assignment) => assignment.id);
   return {
     dormant: !pendingWakes.length && !liveAssignments.length && !coordinating,
@@ -170,6 +230,7 @@ export function fleetAttentionEvidence(
       }
       const health = routineHealth(doc, wallNow, nowVirtual);
       return {
+        workstreamId: doc.workstream.id,
         slug: doc.workstream.slug,
         revision: doc.revision,
         status: doc.workstream.status,
@@ -186,6 +247,8 @@ export function fleetAttentionEvidence(
             .map((backoff) => ({
               source: backoff.wait.source,
               sourceId: backoff.wait.sourceId,
+              sourceEntityKind: backoff.wait.source === 'coordinator' ? 'pass' as const : 'attempt' as const,
+              reportableEntity: capacityReportableEntity(doc, backoff.wait),
               kind: backoff.wait.kind,
               recovery: backoff.wait.recovery,
               model: backoff.wait.model,

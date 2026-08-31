@@ -165,14 +165,19 @@ Only active jobs contribute to a live approval-service incident. Pausing a job
 also pauses its retries, so its last outage marker remains durable history until
 the job resumes; it is not evidence that the shared service is still down.
 
+Routine health is model-free in the Jobs page health card: a dormant cadence,
+wake overdue past the dispatch grace, or result genuinely stranded awaiting
+review warns immediately, without waiting for the attention steward to write a
+secondary card.
+
 **Start attention steward** creates one source-keyed routine Workstream. Each
 cycle audits typed attention and fleet-health state, groups related symptoms by
 root cause, confirms an existing live repair owner or delegates one bounded
 source-keyed repair outcome, and asks a person only for irreducible judgment,
 credentials, spend, or external-effect authority. An unchanged queue is not a
 healthy queue: **quiet** means every operational item has a recorded disposition
-and live owner, not merely that no new card appeared. Before each steward worker
-starts, the harness writes a fresh read-only input containing only open human
+and every non-deferred item has a live owner, not merely that no new card
+appeared. Before each steward worker starts, the harness writes a fresh read-only input containing only open human
 asks, their current typed reference state, approval-service waits, active
 capacity backoffs, overdue wakes, dormant routines, results awaiting review,
 grouped incidents, counts, and source revisions. It does not expose unrelated
@@ -188,6 +193,11 @@ investigate or fix, with recurrence evidence that would prove closure. If the
 narrow evidence cannot establish that cause, the steward owns the gap through a
 bounded managed investigation rather than guessing, retrying blindly, clearing
 the card, or hiding it in the interface.
+
+A paused job is the operator's explicit deferral. The steward still accounts
+for it, but does not reactivate it through a repair job or re-page it through its
+own attention; resuming the source job returns any still-open need to the global
+queue.
 
 When a repair is verified, the steward can post one idempotent untrusted
 Observation to the owning job. That wakes the owner to reconcile its own card;

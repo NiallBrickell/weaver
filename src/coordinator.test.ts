@@ -15,7 +15,8 @@ import {
   runCoordinatorPass,
 } from './coordinator.js';
 import { FLEET_ATTENTION_STEWARD_SOURCE_KEY } from './fleetHealth.js';
-import { arrive, createWorkstream, heartbeatRunner, load, writeArtifact } from './store.js';
+import { createOrGetFleetAttentionStewardWorkstream } from './ingress.js';
+import { arrive, createWorkstream, findBySourceKey, heartbeatRunner, load, writeArtifact } from './store.js';
 import { setSecret } from './secrets.js';
 import { isCoordinatorCancellableWake, virtualNow, type CancellableWakePage } from './clock.js';
 import type { CapacityCategory, InfrastructureWait } from './types.js';
@@ -41,6 +42,8 @@ test('the fleet steward contract requires durable root-cause ownership without c
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /producer-level cause and distinguish trigger, failed recovery, and escaped symptom/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /verified stale\/reconciled only from typed evidence/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /human judgment, a credential only the human can supply, or permission to spend/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /PAUSED\/DEFERRED/);
+  assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /preserve the operator's pause, create NO active repair, global steward attention, or owner Observation/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /Never resolve, withdraw, approve, adopt, conclude, or otherwise mutate an item in another Workstream/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /sends, merges, deploys, pushes, spending.*remain gated and readback-verified/);
   assert.match(FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT, /FLEET QUIET.*only when every supplied ask and health signal is covered and no actionable group is unowned/);
@@ -101,16 +104,52 @@ test('only the source-keyed steward can wake an owner with idempotent untrusted 
       id: 'att_operational', kind: 'blocker', summary: 'Operational failure needs repair.',
       status: 'open', createdAt: new Date().toISOString(),
     });
+    doc.assignments.push({
+      id: 'asg_capacity_source', objective: 'Retain the worker capacity provenance', briefing: 'No work.',
+      kind: 'work', acceptanceCriteria: [], dependsOn: [], state: 'failed',
+      attempts: [{
+        runId: 'run_capacity_source', executor: 'local-sdk', provider: 'anthropic', model: 'claude-sonnet',
+        startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+      }],
+      adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    });
+    doc.passes.push({
+      id: 'pass_capacity_source', startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+      baseRevision: doc.revision, wakeReasons: ['capacity test'], changes: [], outcome: 'error',
+    });
   });
   const sourceBefore = await load('source-owner');
 
   await createWorkstream({
-    slug: 'fleet-attention-steward',
+    slug: 'paused-owner', title: 'Paused owner', objective: 'Remain deliberately deferred',
+    tags: [], successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+  });
+  await arrive('paused-owner', (doc) => {
+    doc.workstream.status = 'paused';
+    doc.decisions.push({
+      id: 'dec_paused_source', title: 'Preserve the pause', rationale: 'The operator deferred this outcome.',
+      madeBy: 'human', status: 'standing', decidedAtVirtual: virtualNow().toISOString(),
+    });
+  });
+  const pausedBefore = await load('paused-owner');
+
+  await createWorkstream({
+    slug: 'done-owner', title: 'Done owner', objective: 'Remain concluded',
+    tags: [], successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+  });
+  await arrive('done-owner', (doc) => {
+    doc.workstream.status = 'done';
+    doc.decisions.push({
+      id: 'dec_done_source', title: 'Concluded course', rationale: 'The outcome was concluded.',
+      madeBy: 'human', status: 'standing', decidedAtVirtual: virtualNow().toISOString(),
+    });
+  });
+  const doneBefore = await load('done-owner');
+
+  await createOrGetFleetAttentionStewardWorkstream({
     title: 'Fleet attention steward',
     objective: 'Own fleet attention to its root cause',
-    sourceKey: FLEET_ATTENTION_STEWARD_SOURCE_KEY,
     tags: ['routine'], successCriteria: [], constraints: [],
-    autonomy: { sendsRequireApproval: true },
   });
 
   let stewardPrompt = '';
@@ -144,6 +183,38 @@ test('only the source-keyed steward can wake an owner with idempotent untrusted 
       assert.equal(retry.isError, undefined);
       assert.match(JSON.stringify(first), /new untrusted observation/);
       assert.match(JSON.stringify(retry), /existing untrusted observation/);
+
+      for (const [sourceEntityId, evidence] of [
+        ['pass_capacity_source', 'The coordinator capacity pass has recovered on readback.'],
+        ['run_capacity_source', 'The worker capacity run has recovered on readback.'],
+        [sourceBefore.workstream.id, 'The dormant Workstream-level health condition has recovered on readback.'],
+      ]) {
+        const result = await report.handler({
+          target_slug: 'source-owner',
+          source_revision: sourceBefore.revision,
+          source_entity_id: sourceEntityId,
+          verified_evidence: evidence,
+        }, {});
+        assert.equal(result.isError, undefined, `${sourceEntityId} should be a valid typed source`);
+      }
+
+      const paused = await report.handler({
+        target_slug: 'paused-owner',
+        source_revision: pausedBefore.revision,
+        source_entity_id: 'dec_paused_source',
+        verified_evidence: 'Verified evidence is retained for the paused owner to evaluate after resumption.',
+      }, {});
+      assert.equal(paused.isError, undefined);
+
+      const done = await report.handler({
+        target_slug: 'done-owner',
+        source_revision: doneBefore.revision,
+        source_entity_id: 'dec_done_source',
+        verified_evidence: 'This must not become a dead-letter observation.',
+      }, {});
+      assert.equal(done.isError, true);
+      assert.match(JSON.stringify(done), /is done; no repair observation was written/);
+      assert.match(JSON.stringify(done), /Only a human can reopen it with `weaver resume done-owner`/);
       await finish.handler({ summary: 'Reported verified repair evidence to its owner.', acknowledged_steering: true }, {});
       return { costUsd: 0 };
     },
@@ -153,7 +224,7 @@ test('only the source-keyed steward can wake an owner with idempotent untrusted 
   assert.match(stewardPrompt, /Use report_repair_evidence only to post verified closure\/reconciliation evidence as an untrusted Observation/);
 
   const sourceAfter = await load('source-owner');
-  assert.equal(sourceAfter.observations.length, 1, 'exact retry deduplicates at ingress');
+  assert.equal(sourceAfter.observations.length, 4, 'exact retry deduplicates while each typed source receives one observation');
   assert.match(sourceAfter.observations[0]!.source, /^fleet-attention-steward:/);
   assert.match(sourceAfter.observations[0]!.summary, /revision .*entity att_operational.*producer fix is deployed/i);
   assert.ok(sourceAfter.wakes.some((wake) => wake.status === 'pending' && wake.reason.includes('new observation')));
@@ -161,6 +232,17 @@ test('only the source-keyed steward can wake an owner with idempotent untrusted 
   assert.deepEqual(sourceAfter.attention, sourceBefore.attention, 'untrusted evidence cannot resolve owner attention');
   assert.deepEqual(sourceAfter.workstream.autonomy, sourceBefore.workstream.autonomy, 'untrusted evidence cannot widen owner authority');
   assert.deepEqual(sourceAfter.workstream.constraints, sourceBefore.workstream.constraints);
+
+  const pausedAfter = await load('paused-owner');
+  assert.equal(pausedAfter.workstream.status, 'paused');
+  assert.equal(pausedAfter.observations.length, 1);
+  assert.ok(pausedAfter.wakes.some((wake) => wake.status === 'pending' && wake.reason.includes('new observation')));
+  assert.deepEqual(pausedAfter.decisions, pausedBefore.decisions);
+
+  const doneAfter = await load('done-owner');
+  assert.equal(doneAfter.workstream.status, 'done');
+  assert.deepEqual(doneAfter.observations, doneBefore.observations);
+  assert.deepEqual(doneAfter.wakes, doneBefore.wakes, 'a concluded owner receives no dead-letter wake');
 
   let ordinaryPrompt = '';
   await runCoordinatorPass('coordinator-capacity', ['manual'], {
@@ -175,6 +257,51 @@ test('only the source-keyed steward can wake an owner with idempotent untrusted 
     },
   });
   assert.doesNotMatch(ordinaryPrompt, /Additional contract for the built-in fleet attention steward/);
+});
+
+test('a legacy source-key holder with the wrong slug receives no steward capability', async () => {
+  await createWorkstream({
+    slug: 'spoofed-steward', title: 'Spoofed steward', objective: 'Old caller-supplied source key.',
+    sourceKey: FLEET_ATTENTION_STEWARD_SOURCE_KEY, tags: [], successCriteria: [], constraints: [],
+    autonomy: { sendsRequireApproval: true },
+  });
+  let systemPrompt = '';
+  await runCoordinatorPass('spoofed-steward', ['manual'], {
+    id: 'local-sdk',
+    async execute(req) {
+      systemPrompt = req.systemPrompt;
+      assert.equal(req.tools.some((definition) => definition.name === 'report_repair_evidence'), false);
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(finish);
+      await finish.handler({ summary: 'No privileged capability was exposed.' }, {});
+      return { costUsd: 0 };
+    },
+  });
+  assert.doesNotMatch(systemPrompt, /Additional contract for the built-in fleet attention steward/);
+});
+
+test('an ordinary coordinator cannot claim the reserved steward source identity', async () => {
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], {
+    id: 'local-sdk',
+    async execute(req) {
+      const create = req.tools.find((definition) => definition.name === 'create_workstream');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(create && finish);
+      const spoof = await create.handler({
+        slug: 'spoofed-steward',
+        title: 'Spoofed steward',
+        source_key: FLEET_ATTENTION_STEWARD_SOURCE_KEY,
+        objective: 'Claim a built-in capability through a public source key.',
+        success_criteria: [], constraints: [], tags: [],
+      }, {});
+      assert.equal(spoof.isError, true);
+      assert.match(JSON.stringify(spoof), /reserved for Weaver's built-in fleet attention steward/);
+      await finish.handler({ summary: 'Refused the reserved source identity.', acknowledged_steering: true }, {});
+      return { costUsd: 0 };
+    },
+  });
+  assert.equal(outcome.outcome, 'completed');
+  assert.equal(await findBySourceKey(FLEET_ATTENTION_STEWARD_SOURCE_KEY), null);
 });
 
 function wait(category: CapacityCategory, index: number): InfrastructureWait {
