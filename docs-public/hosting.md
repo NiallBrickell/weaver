@@ -167,11 +167,12 @@ silently stranded.
 ## Deploying the runner on a GCP VM
 
 [`bin/weaver-gcp.sh`](../bin/weaver-gcp.sh) provisions an isolated execution
-host: the VM carries **no service account and no scopes** (a compromised
-workload cannot call any GCP API as anything), sits on **its own VPC** whose
-only ingress rule is IAP SSH, and receives secrets **over SSH stdin** into
-service-user-owned `0600` files, never via instance metadata or a command
-argument.
+host: by default the VM carries **no service account and no scopes** (a
+compromised workload cannot call any GCP API as anything), sits on **its own
+VPC** whose only ingress rule is IAP SSH, and receives secrets **over SSH
+stdin** into service-user-owned `0600` files, never via instance metadata or a
+command argument. The one opt-out is `WEAVER_GCP_TUNNEL_SA`, described under
+"Reaching a private database" below.
 
 The recommended shared-team shape keeps durable truth in hosted Postgres and
 uses GCP only for execution. Provisioning, credentials, code updates, and store
@@ -307,6 +308,34 @@ per-workstream overlay, executor identity, personal CLI/device login, or an
 ambient environment variable. Omission is revocation, so every invocation must
 name the complete hosted worker set. Workers reload the store for each attempt,
 therefore this command never restarts the resident services.
+
+### Reaching a private database
+
+A database with no public address is reached through an IAP tunnel to a
+bastion inside its VPC. Actions run on the host with the worker secrets in
+their environment, so the tunnel lives on the host as a systemd unit
+(`weaver-db-tunnel`) on a fixed local port, and the secret DSN points at
+`127.0.0.1:<port>` exactly as it would on a laptop:
+
+```bash
+export WEAVER_GCP_TUNNEL_SA=db-tunnel@<project>.iam.gserviceaccount.com
+bin/weaver-gcp.sh db-tunnel <bastion-instance> <zone>            # --port 55432 --remote-port 5432 by default
+bin/weaver-gcp.sh push-worker-secrets READONLY_DB_URL ...        # DSN host 127.0.0.1:55432, no sslmode=require
+```
+
+The VM then runs as that service account — `gcloud` on the box authenticates
+through the metadata server, so no key exists on disk. The account should be
+able to do exactly two things: open the IAP tunnel to that one bastion, and
+read that one instance (`compute.instances.get` on it); nothing else in the
+project. That is the whole widening of the "no identity" posture, and it is
+opt-in: without `WEAVER_GCP_TUNNEL_SA`, `create` still provisions with no
+service account.
+
+Attaching the identity to a VM that already exists needs a stop/start, which
+ends whatever the runner is doing; `db-tunnel` refuses unless you pass
+`--attach-identity`. The proxy behind the tunnel owns TLS to the database, so
+a DSN that carried `sslmode=require` must drop it (`prefer`, the default,
+works).
 
 ## Deploying with Docker Compose (any host)
 
