@@ -95,15 +95,21 @@ const OPTIONAL_CONFIG_NAMES = [
   'WEAVER_DETERMINISTIC_ACTIONS_ONLY',
   'WEAVER_RUNNER_EXECUTORS',
   'WEAVER_HOUSE_JSON',
-  'WEAVER_WORKSPACE_ROOT',
   'WEAVER_OPENHANDS_BASE_URL',
   'WEAVER_PILOT_URL',
   'WEAVER_WORKER_MAX_TURNS',
   'WEAVER_ATTEMPT_STALE_MS',
 ] as const;
 
-/** Host-local by design: provisioning owns them, so they are never mirrored. */
-const NEVER_REMOTE = new Set(['WEAVER_STORE', 'WEAVER_HOME']);
+/**
+ * Host-local by design: provisioning owns them, so they are never mirrored.
+ * These are machine-specific absolute paths — mirroring a laptop's value onto
+ * a remote host installs a path that does not exist there. WEAVER_WORKSPACE_ROOT
+ * belongs here: a leaked macOS `/Users/...` root made every remote worker's
+ * mkdir/clone fail, so gated GitHub actions died at preparation with "could not
+ * resolve cwd origin". The box sets its own root at provision time.
+ */
+const NEVER_REMOTE = new Set(['WEAVER_STORE', 'WEAVER_HOME', 'WEAVER_WORKSPACE_ROOT']);
 
 // ── pure helpers (unit-tested in login.test.ts) ──────────────────────────────
 
@@ -165,7 +171,8 @@ function assertRenderable(name: string, value: string): void {
  * The pure render behind --render-remote-env: executor secrets + effective
  * config in, EnvironmentFile-parseable KEY=value lines out. One identity
  * principal only (the subscription token wins, exactly as sdkEnv injects);
- * WEAVER_STORE/WEAVER_HOME are host-local and never emitted. The caller is
+ * WEAVER_STORE/WEAVER_HOME/WEAVER_WORKSPACE_ROOT are host-local and never
+ * emitted (see NEVER_REMOTE). The caller is
  * responsible for having minted WEAVER_SERVE_TOKEN first (ensureServeToken).
  */
 export function renderRemoteEnvLines(

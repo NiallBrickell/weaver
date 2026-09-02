@@ -79,7 +79,8 @@ test('render forwards registered provider keys and mirrors config, and flags cod
   assert.ok(lines.includes('WEAVER_WORKER_FALLBACKS=codex-sdk:gpt-5.6-sol,pi:zai/glm-5.3'));
   assert.ok(lines.includes('WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5'));
   assert.ok(lines.includes('WEAVER_HOUSE_JSON={"repoMap":"Primary application: /srv/application","tags":["application"]}'));
-  assert.ok(lines.includes('WEAVER_WORKSPACE_ROOT=/var/lib/weaver/workspaces'));
+  // WEAVER_WORKSPACE_ROOT is host-local: a laptop path must never be mirrored.
+  assert.ok(!lines.some((l) => l.startsWith('WEAVER_WORKSPACE_ROOT=')));
   assert.ok(lines.includes('WEAVER_PILOT_URL=http://127.0.0.1:9721'));
   assert.ok(!lines.some((l) => l.startsWith('WEAVER_RUNNER_EXECUTORS=')));
   assert.ok(warnings.some((w) => w.includes('remote rendering never copies personal auth.json')));
@@ -156,17 +157,21 @@ test('GitHub App identity travels only in the executor-secret render', () => {
   assert.ok(!general.lines.some((line) => line.startsWith('WEAVER_GITHUB_APP_')));
 });
 
-test('WEAVER_STORE and WEAVER_HOME are never emitted — provisioning owns them', () => {
+test('WEAVER_STORE, WEAVER_HOME and WEAVER_WORKSPACE_ROOT are never emitted — provisioning owns them', () => {
   const { lines } = renderRemoteEnvLines(
     { WEAVER_SERVE_TOKEN: 't' },
     {
       WEAVER_STORE: 'postgres://user:pass@host/db',
       WEAVER_HOME: '/var/lib/weaver',
+      WEAVER_WORKSPACE_ROOT: '/Users/someone/work/weaver/workspaces',
       WEAVER_EXECUTOR: 'local-sdk',
     },
   );
   assert.ok(!lines.some((l) => l.startsWith('WEAVER_STORE=')));
   assert.ok(!lines.some((l) => l.startsWith('WEAVER_HOME=')));
+  // A macOS laptop root leaked to a Linux host broke every remote worker's
+  // workspace mkdir/clone → gated GitHub actions died at cwd-origin resolution.
+  assert.ok(!lines.some((l) => l.startsWith('WEAVER_WORKSPACE_ROOT=')));
   assert.ok(lines.includes('WEAVER_EXECUTOR=local-sdk'));
 });
 
