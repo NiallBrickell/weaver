@@ -382,7 +382,7 @@ cmd_push_env() {
     *) echo "❌ usage: weaver-gcp push-env [--restart]" >&2; exit 1 ;;
   esac
   [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp push-env [--restart]" >&2; exit 1; }
-  hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-openrouter/z-ai/glm-5.2}"
+  hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-openrouter/z-ai/glm-5.3}"
   hosted_worker_complex_model="${WEAVER_GCP_WORKER_MODEL_COMPLEX:-$hosted_worker_model}"
   hosted_worker_fallbacks="${WEAVER_GCP_WORKER_FALLBACKS:-}"
   # The always-on controller starts on an explicitly registered Claude Code
@@ -390,7 +390,7 @@ cmd_push_env() {
   # Codex remains local-only because personal device authentication is never
   # copied to this credential-bearing host.
   hosted_coordinator_model="${WEAVER_GCP_COORDINATOR_MODEL:-claude-fable-5}"
-  hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-local-sdk:openrouter/z-ai/glm-5.2}"
+  hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-local-sdk:openrouter/z-ai/glm-5.3}"
 
   PUSH_ENV_RAW_TMP="$(mktemp)"
   PUSH_ENV_TMP="$(mktemp)"
