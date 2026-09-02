@@ -13,6 +13,7 @@ import {
   checkGitHubAppAuthentication,
   cloneGitHubRepository,
   GitHubAppPreparationError,
+  gitHubAppCommitIdentity,
   githubAppConfigured,
   githubAppEnvironment,
   githubRepositoryFromCwd,
@@ -445,4 +446,64 @@ test('network, provider, and response errors never include JWTs, tokens, keys, o
   assert.ok(error instanceof Error);
   assert.equal(error.message, 'GitHub App authentication check failed (HTTP 403)');
   assert.doesNotMatch(error.message, /must-not-leak-token/);
+});
+
+test('commit identity derives the App bot name/email and caches; null without credentials', async () => {
+  __setGitHubAppTestDependencies({
+    fetch: (async () => {
+      throw new Error('must not fetch');
+    }) as typeof globalThis.fetch,
+  });
+  assert.equal(await gitHubAppCommitIdentity(), null);
+
+  freshHome();
+  configure();
+  __resetGitHubAppForTests();
+  __setGitHubAppTestDependencies({ now: () => fixedNow });
+  let appCalls = 0;
+  let userCalls = 0;
+  __setGitHubAppTestDependencies({
+    now: () => fixedNow,
+    fetch: (async (input, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.endsWith('/app')) {
+        appCalls += 1;
+        assert.match(String((init.headers as Record<string, string>).Authorization), /^Bearer /);
+        return Response.json({ slug: 'weaver-fleet-production-912c84' }, { status: 200 });
+      }
+      if (url.includes('/access_tokens')) {
+        return tokenResponse('installation-token');
+      }
+      if (url.includes('/users/')) {
+        userCalls += 1;
+        assert.match(url, /weaver-fleet-production-912c84%5Bbot%5D$/);
+        return Response.json({ id: 321406343 }, { status: 200 });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof globalThis.fetch,
+  });
+
+  const identity = await gitHubAppCommitIdentity();
+  assert.deepEqual(identity, {
+    name: 'weaver-fleet-production-912c84[bot]',
+    email: '321406343+weaver-fleet-production-912c84[bot]@users.noreply.github.com',
+  });
+  // Cached: a second call hits neither GitHub endpoint again.
+  assert.deepEqual(await gitHubAppCommitIdentity(), identity);
+  assert.equal(appCalls, 1);
+  assert.equal(userCalls, 1);
+});
+
+test('commit identity fails closed on a bad metadata response without leaking key', async () => {
+  configure();
+  __setGitHubAppTestDependencies({
+    now: () => fixedNow,
+    fetch: (async (input) => String(input).endsWith('/app')
+      ? new Response(`leak ${privateKeyBase64}`, { status: 500 })
+      : tokenResponse('installation-token')) as typeof globalThis.fetch,
+  });
+  const error = await gitHubAppCommitIdentity().catch((caught: unknown) => caught);
+  assert.ok(error instanceof Error);
+  assert.equal(error.message, 'GitHub App metadata request failed (HTTP 500)');
+  assert.doesNotMatch(error.message, new RegExp(privateKeyBase64));
 });

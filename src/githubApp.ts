@@ -418,6 +418,91 @@ export async function githubAppEnvironment(
   };
 }
 
+export interface GitCommitIdentity {
+  name: string;
+  email: string;
+}
+
+let commitIdentityCache: GitCommitIdentity | null | undefined;
+
+/**
+ * The GitHub-native commit identity for this fleet's App bot, so autonomous
+ * commits are attributed to the same principal that opens the PRs rather than
+ * to whatever default git identity the worker's runtime happens to ship (the
+ * OpenHands container images git as `openhands@all-hands.dev`). GitHub renders
+ * a commit as authored by the App only when the author email matches the bot
+ * user's `<id>+<slug>[bot]@users.noreply.github.com`, so both the slug (from
+ * GET /app) and the bot user id (from GET /users/<slug>[bot]) are required.
+ *
+ * Returns null when the App is not configured — the caller then leaves the
+ * runtime's own identity in place. Cached: the App's slug and bot id do not
+ * change for the life of the process.
+ */
+export async function gitHubAppCommitIdentity(): Promise<GitCommitIdentity | null> {
+  if (commitIdentityCache !== undefined) return commitIdentityCache;
+  const config = credentials();
+  if (!config) {
+    commitIdentityCache = null;
+    return null;
+  }
+  const jwt = appJwt(config, nowImpl());
+  const appResponse = await githubFetch(
+    'https://api.github.com/app',
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${jwt}`,
+        'X-GitHub-Api-Version': API_VERSION,
+      },
+    },
+    'GitHub App metadata request',
+  );
+  if (appResponse.status !== 200) {
+    throw new Error(`GitHub App metadata request failed (HTTP ${appResponse.status})`);
+  }
+  const slug = extractString(await appResponse.json(), 'slug');
+  if (!slug) throw new Error('GitHub App metadata response had no slug');
+
+  const login = `${slug}[bot]`;
+  const token = await mintGitHubAppToken(undefined, 'read');
+  const userResponse = await githubFetch(
+    `https://api.github.com/users/${encodeURIComponent(login)}`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': API_VERSION,
+      },
+    },
+    'GitHub App bot user request',
+  );
+  if (userResponse.status !== 200) {
+    throw new Error(`GitHub App bot user request failed (HTTP ${userResponse.status})`);
+  }
+  const id = extractNumber(await userResponse.json(), 'id');
+  if (id === null) throw new Error('GitHub App bot user response had no numeric id');
+
+  commitIdentityCache = {
+    name: login,
+    email: `${id}+${login}@users.noreply.github.com`,
+  };
+  return commitIdentityCache;
+}
+
+function extractString(payload: unknown, key: string): string | null {
+  if (typeof payload !== 'object' || payload === null || !(key in payload)) return null;
+  const value = (payload as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function extractNumber(payload: unknown, key: string): number | null {
+  if (typeof payload !== 'object' || payload === null || !(key in payload)) return null;
+  const value = (payload as Record<string, unknown>)[key];
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
+}
+
 /** Prove the App JWT, installation, token, and read permission all work. */
 export async function checkGitHubAppAuthentication(): Promise<void> {
   const token = await mintGitHubAppToken(undefined, 'read');
@@ -451,6 +536,7 @@ export function __setGitHubAppTestDependencies(dependencies: {
 
 export function __resetGitHubAppForTests(): void {
   tokenCache.clear();
+  commitIdentityCache = undefined;
   nowImpl = Date.now;
   fetchImpl = globalThis.fetch;
   execFileSyncImpl = execFileSync;
