@@ -138,8 +138,8 @@ if env_has WEAVER_COORDINATOR_FALLBACKS; then
     case "$model" in
       openrouter/~anthropic/*|openrouter/anthropic/*|openrouter/*claude*) \
         fail 'Claude coordinator fallbacks must use the registered setup-token, never OpenRouter' ;;
-      openrouter/z-ai/glm-5.2) ;;
-      openrouter/*) fail 'hosted OpenRouter coordinator fallback must use the reviewed fixed model openrouter/z-ai/glm-5.2' ;;
+      openrouter/z-ai/glm-5.3) ;;
+      openrouter/*) fail 'hosted OpenRouter coordinator fallback must use the reviewed fixed model openrouter/z-ai/glm-5.3' ;;
     esac
     coordinator_executors+=("$executor")
   done < <(csv_entries "$coordinator_fallbacks")
@@ -152,8 +152,8 @@ else
   case "$coordinator_fallback_model" in
     openrouter/~anthropic/*|openrouter/anthropic/*|openrouter/*claude*) \
       fail 'a Claude coordinator fallback must use the registered setup-token, never OpenRouter' ;;
-    openrouter/z-ai/glm-5.2) ;;
-    openrouter/*) fail 'hosted OpenRouter coordinator fallback must use the reviewed fixed model openrouter/z-ai/glm-5.2' ;;
+    openrouter/z-ai/glm-5.3) ;;
+    openrouter/*) fail 'hosted OpenRouter coordinator fallback must use the reviewed fixed model openrouter/z-ai/glm-5.3' ;;
   esac
   coordinator_executors+=("$coordinator_fallback_executor")
 fi

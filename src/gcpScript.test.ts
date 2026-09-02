@@ -20,11 +20,11 @@ const roots: string[] = [];
 const SAFE_GCP_EXECUTION_ENV = [
   'WEAVER_EXECUTOR=openhands',
   'WEAVER_OPENHANDS_HOST_GATEWAY_IP=10.170.0.2',
-  'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.2',
+  'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.3',
   'WEAVER_WORKER_FALLBACKS=',
   'WEAVER_COORDINATOR_MODEL=claude-fable-5',
   'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
-  'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.2',
+  'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.3',
   'WEAVER_ACTION_EXECUTOR=local-sdk',
   'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
   'WEAVER_PILOT_URL=http://127.0.0.1:9721',
@@ -575,11 +575,11 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
   assert.ok(!`${result.stdout}${result.stderr}`.includes('Primary application'));
   assert.equal(fs.readFileSync(path.join(root, 'calls', 'render-profile'), 'utf8'), [
     'WEAVER_EXECUTOR=openhands',
-    'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.2',
+    'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.3',
     'WEAVER_WORKER_FALLBACKS=',
     'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
     'WEAVER_COORDINATOR_MODEL=claude-fable-5',
-    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.2',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.3',
     'WEAVER_ACTION_EXECUTOR=local-sdk',
     'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
     'WEAVER_RUNNER_EXECUTORS=openhands,local-sdk',
@@ -732,7 +732,7 @@ test('GCP start refuses an OpenRouter primary or device-login coordinator', () =
 
 test('GCP start permits a non-Claude OpenRouter fallback and refuses Claude API billing there', () => {
   const chain = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.2',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.3',
     'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-haiku-4.5',
   );
   const first = run(['start'], undefined, '', false, chain);
@@ -741,7 +741,7 @@ test('GCP start permits a non-Claude OpenRouter fallback and refuses Claude API 
   assert.equal(fs.existsSync(path.join(first.root, 'calls', '1.systemctl-executed')), false);
 
   const legacy = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.2\n',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.3\n',
     'WEAVER_COORDINATOR_FALLBACK_MODEL=openrouter/~anthropic/claude-haiku-4.5\n',
   );
   const second = run(['start'], undefined, '', false, legacy);
@@ -752,12 +752,12 @@ test('GCP start permits a non-Claude OpenRouter fallback and refuses Claude API 
 
 test('GCP start refuses moving OpenRouter coordinator aliases and ambient provider identity', () => {
   const moving = SAFE_GCP_EXECUTION_ENV.replace(
-    'local-sdk:openrouter/z-ai/glm-5.2',
+    'local-sdk:openrouter/z-ai/glm-5.3',
     'local-sdk:openrouter/auto',
   );
   const first = run(['start'], undefined, '', false, moving);
   assert.notEqual(first.result.status, 0);
-  assert.match(first.result.stderr, /must use the reviewed fixed model openrouter\/z-ai\/glm-5\.2/);
+  assert.match(first.result.stderr, /must use the reviewed fixed model openrouter\/z-ai\/glm-5\.3/);
 
   const ambient = `${SAFE_GCP_EXECUTION_ENV}OPENROUTER_API_KEY=ambient-provider-key\n`;
   const second = run(['start'], undefined, '', false, ambient);
