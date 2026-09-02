@@ -100,6 +100,10 @@ describe('OpenHands eval executor', () => {
       apiKey: 'provider-secret',
       baseUrl: 'https://provider.example/v1',
       hostGatewayIp: '10.170.0.2',
+      gitIdentity: async () => ({
+        name: 'weaver-fleet-production-912c84[bot]',
+        email: '321406343+weaver-fleet-production-912c84[bot]@users.noreply.github.com',
+      }),
       runCommand,
       fetch: fetchImpl,
       startSubmitBridge: async () => bridge,
@@ -176,6 +180,13 @@ describe('OpenHands eval executor', () => {
     assert.ok(valuesAfter(dockerRun.args, '--env').includes('OH_CONVERSATIONS_PATH=/tmp/weaver-conversations'));
     assert.ok(valuesAfter(dockerRun.args, '--env').includes('OH_BASH_EVENTS_DIR=/tmp/weaver-bash-events'));
     assert.ok(valuesAfter(dockerRun.args, '--env').includes('OH_WORKSPACE_PATH=/tmp/weaver-agent-server-workspace'));
+    // Commits made inside the container carry the fleet identity, not the
+    // OpenHands image default `openhands@all-hands.dev`.
+    const botEmail = '321406343+weaver-fleet-production-912c84[bot]@users.noreply.github.com';
+    assert.ok(valuesAfter(dockerRun.args, '--env').includes('GIT_AUTHOR_NAME=weaver-fleet-production-912c84[bot]'));
+    assert.ok(valuesAfter(dockerRun.args, '--env').includes(`GIT_AUTHOR_EMAIL=${botEmail}`));
+    assert.ok(valuesAfter(dockerRun.args, '--env').includes('GIT_COMMITTER_NAME=weaver-fleet-production-912c84[bot]'));
+    assert.ok(valuesAfter(dockerRun.args, '--env').includes(`GIT_COMMITTER_EMAIL=${botEmail}`));
     assert.equal(valueAfter(dockerRun.args, '--env-file'), workerEnvFilePath);
     assert.equal(workerEnvFileMode, 0o600);
     assert.equal(workerEnvFileContent, `READONLY_API_TOKEN=${selectedValue}\n`);
