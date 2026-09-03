@@ -206,18 +206,18 @@ test('overlap is reported so the author knows who else is in the file, and never
 
 // --- Settled-branch egress -------------------------------------------------
 // The stranded-commit incident: a workstream in a worktree on
-// feat/knock-crm-integration finished a follow-up refactor and pushed it 43
-// minutes AFTER that branch's PR (erdoai/erdo #2176) merged. The commit landed
+// feat/tracker-integration finished a follow-up refactor and pushed it 43
+// minutes AFTER that branch's PR merged. The commit landed
 // on a settled branch carried by no PR, and had to be re-homed by hand. Nothing
 // checked the target branch's PR state before egress; this is that check.
 
 const branchPr = (number: number, state: string): BranchPr => ({ number, state });
 
 test('a MERGED PR on the push target strands the commit', () => {
-  const v = judgeBranchPrs('feat/knock-crm-integration', [branchPr(2176, 'MERGED')]);
+  const v = judgeBranchPrs('feat/tracker-integration', [branchPr(2176, 'MERGED')]);
   assert.deepEqual(v, {
     verdict: 'stranded',
-    branch: 'feat/knock-crm-integration',
+    branch: 'feat/tracker-integration',
     prNumber: 2176,
     state: 'MERGED',
   });
@@ -263,13 +263,13 @@ test('pushTargetBranch reads the destination out of the push forms the gate sees
   // The incident's PR readback names its branch outright.
   assert.equal(
     pushTargetBranch(
-      "gh pr list --repo acme/widgets --head feat/knock-crm-integration --state open --json url --jq '.[0].url' | grep .",
+      "gh pr list --repo acme/widgets --head feat/tracker-integration --state open --json url --jq '.[0].url' | grep .",
     ),
-    'feat/knock-crm-integration',
+    'feat/tracker-integration',
   );
 });
 
-const io = (prs: BranchPr[] | null, branch: string | null = 'feat/knock-crm-integration'): StrandedPushIO => ({
+const io = (prs: BranchPr[] | null, branch: string | null = 'feat/tracker-integration'): StrandedPushIO => ({
   branchOf: () => branch,
   prsForBranch: () => prs,
 });
@@ -279,7 +279,7 @@ test('checkStrandedPush falls back to the checkout branch and fails open on gh f
   // `git push origin HEAD` names no ref; the world supplies the branch.
   assert.deepEqual(await checkStrandedPush('/nope', 'git push origin HEAD', io(merged)), {
     verdict: 'stranded',
-    branch: 'feat/knock-crm-integration',
+    branch: 'feat/tracker-integration',
     prNumber: 2176,
     state: 'MERGED',
   });
@@ -304,9 +304,9 @@ test('checkStrandedPush skips egresses that write no commits', async () => {
   // Deleting the merged branch is the CLEANUP this gate exists to make
   // possible; holding it would block the very fix a stranded push needs.
   for (const del of [
-    'git push origin --delete feat/knock-crm-integration',
-    'git -C /work/wt push origin :feat/knock-crm-integration',
-    'git push origin -d feat/knock-crm-integration',
+    'git push origin --delete feat/tracker-integration',
+    'git -C /work/wt push origin :feat/tracker-integration',
+    'git push origin -d feat/tracker-integration',
   ]) {
     assert.deepEqual(await checkStrandedPush('/nope', del, merged), { verdict: 'clear' }, del);
   }
@@ -322,7 +322,7 @@ function egressAction(): Assignment {
   return action({
     cwd: EGRESS_CWD,
     verify:
-      "gh pr list --repo acme/widgets --head feat/knock-crm-integration --state open --json url --jq '.[0].url' | grep .",
+      "gh pr list --repo acme/widgets --head feat/tracker-integration --state open --json url --jq '.[0].url' | grep .",
   });
 }
 
@@ -356,7 +356,7 @@ test('a MERGED PR on the target branch holds the egress and tells the stream to 
     assert.equal(proceed, false, 'the push must not fire into a merged branch');
 
     const doc = await load('stranded-ws');
-    const token = strandedPushKey('asg_1', 'feat/knock-crm-integration', 2176);
+    const token = strandedPushKey('asg_1', 'feat/tracker-integration', 2176);
     const held = doc.events.find((e) => e.type === 'action.repo_egress_settled_branch');
     assert.ok(held, 'the hold is on the record');
     assert.ok(held!.summary.includes(token), 'deduped on action + branch + PR');
@@ -367,7 +367,7 @@ test('a MERGED PR on the target branch holds the egress and tells the stream to 
     assert.equal(wake!.condition.type, 'immediate');
     assert.match(wake!.reason, /FRESH branch/);
     assert.match(wake!.reason, /open a NEW PR/);
-    assert.match(wake!.reason, /Do not re-push feat\/knock-crm-integration/);
+    assert.match(wake!.reason, /Do not re-push feat\/tracker-integration/);
     assert.match(wake!.reason, /do not reopen #2176/);
 
     // A merged PR never reopens, so the hold repeats every tick — it must not

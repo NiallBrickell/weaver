@@ -943,8 +943,8 @@ const LOOPBACK_URL_HOST =
   /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^/@]*@)?)(127\.0\.0\.1|localhost|\[::1\])(?=[:/?#]|$)/;
 
 // Inside the container, loopback is the container itself, not the VM host, so a
-// worker-visible URL served by a host-side tunnel (e.g. ERDO_PG_READONLY_URI on
-// the hosted fleet, whose global store value points at 127.0.0.1) is otherwise
+// worker-visible URL served by a host-side tunnel (e.g. a read-only database
+// URL in the fleet's global store whose value points at 127.0.0.1) is otherwise
 // unreachable. Rewrite the host to host.docker.internal — the same alias the
 // submission/MCP/provider bridges are advertised under, mapped by the container
 // run to the VM's private IP. Values that are not loopback URLs pass through
