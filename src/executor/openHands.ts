@@ -350,7 +350,9 @@ export class OpenHandsExecutor implements WorkerExecutor {
       sessionApiKey = randomBytes(32).toString('hex');
       const gitIdentityArgs = await this.resolveGitIdentityArgs();
       await this.reapOrphanedContainers(req.abort.signal);
-      workerEnvFile = await createWorkerEnvFile(req.workerVisibleEnv ?? {});
+      workerEnvFile = await createWorkerEnvFile(
+        rewriteLoopbackHostsForContainer(req.workerVisibleEnv ?? {}),
+      );
       containerAttempted = true;
       try {
         await this.checkedCommand(
@@ -931,6 +933,34 @@ function validateWorkerVisibleEnv(env: Record<string, string>): void {
       );
     }
   }
+}
+
+// A URL whose host is loopback, capturing the scheme + optional userinfo so the
+// host token can be swapped without disturbing the password or port. Anchored at
+// the start so it only fires on values that ARE a URL, never on tokens that
+// merely contain "127.0.0.1" as data.
+const LOOPBACK_URL_HOST =
+  /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^/@]*@)?)(127\.0\.0\.1|localhost|\[::1\])(?=[:/?#]|$)/;
+
+// Inside the container, loopback is the container itself, not the VM host, so a
+// worker-visible URL served by a host-side tunnel (e.g. ERDO_PG_READONLY_URI on
+// the hosted fleet, whose global store value points at 127.0.0.1) is otherwise
+// unreachable. Rewrite the host to host.docker.internal — the same alias the
+// submission/MCP/provider bridges are advertised under, mapped by the container
+// run to the VM's private IP. Values that are not loopback URLs pass through
+// untouched, so a machine whose store value already names a routable host (or a
+// non-URL secret) is unaffected.
+export function rewriteLoopbackHostsForContainer(
+  env: Record<string, string>,
+): Record<string, string> {
+  const rewritten: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    rewritten[name] = value.replace(
+      LOOPBACK_URL_HOST,
+      (_match, prefix: string) => `${prefix}host.docker.internal`,
+    );
+  }
+  return rewritten;
 }
 
 async function createWorkerEnvFile(env: Record<string, string>): Promise<WorkerEnvFile | null> {
