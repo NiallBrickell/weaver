@@ -26,6 +26,7 @@
 
 // Circular at module level (secrets.ts uses this file's path helpers), but
 // both sides only call functions at runtime, so ESM resolves it fine.
+import type { CapacityTarget } from './modelConfig.js';
 import type { PolicyStore } from './policies.js';
 import { assertNoSecretValues, loadRedactionSecrets, redactSecrets } from './secrets.js';
 import { FsStore, artifactsDir, newId, printoutJournalDir, sha256, weaverHome, workstreamDir } from './store/fs.js';
@@ -86,10 +87,17 @@ export async function listWorkstreamHeads(): Promise<WorkstreamHead[]> {
 export async function heartbeatRunner(
   runnerId: string,
   heartbeatAt = new Date().toISOString(),
+  coordinatorSeats?: readonly CapacityTarget[],
 ): Promise<void> {
   assertRunnerId(runnerId);
   if (!Number.isFinite(Date.parse(heartbeatAt))) throw new Error(`invalid runner heartbeat timestamp '${heartbeatAt}'`);
-  await getStore().heartbeatRunner({ runnerId, heartbeatAt });
+  await getStore().heartbeatRunner({
+    runnerId,
+    heartbeatAt,
+    ...(coordinatorSeats
+      ? { coordinatorSeats: coordinatorSeats.map(({ executor, provider, model }) => ({ executor, provider, model })) }
+      : {}),
+  });
 }
 
 export async function listRunnerPresence(): Promise<RunnerPresence[]> {

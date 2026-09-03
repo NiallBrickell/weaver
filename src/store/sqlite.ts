@@ -37,6 +37,7 @@
  * UTF-8 Buffers preserve the same exact bytes as the filesystem backend.
  */
 
+import type { CapacityTarget } from '../modelConfig.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -81,8 +82,9 @@ const SCHEMA = `
     acquired_at TEXT    NOT NULL
   );
   CREATE TABLE IF NOT EXISTS runner_presence (
-    runner_id    TEXT PRIMARY KEY,
-    heartbeat_at TEXT NOT NULL
+    runner_id         TEXT PRIMARY KEY,
+    heartbeat_at      TEXT NOT NULL,
+    coordinator_seats TEXT
   );
 `;
 
@@ -123,6 +125,12 @@ export class SqliteStore implements StateStore {
     // bytes. DDL is transactional here: interruption restores the old table.
     this.txn(() => {
       this.db.exec(SCHEMA);
+      // Additive presence column for files created before seat publication.
+      // SQLite has no ADD COLUMN IF NOT EXISTS, so ask the catalog first.
+      const seatsColumn = this.db.prepare(
+        `SELECT 1 FROM pragma_table_info('runner_presence') WHERE name = 'coordinator_seats'`,
+      ).get();
+      if (!seatsColumn) this.db.exec('ALTER TABLE runner_presence ADD COLUMN coordinator_seats TEXT');
       const artifactColumn = this.db.prepare(
         `SELECT type FROM pragma_table_info('artifacts') WHERE name = 'content'`,
       ).get() as { type: string } | undefined;
@@ -321,17 +329,30 @@ export class SqliteStore implements StateStore {
 
   async heartbeatRunner(presence: RunnerPresence): Promise<void> {
     this.db.prepare(
-      `INSERT INTO runner_presence (runner_id, heartbeat_at) VALUES (?, ?)
-       ON CONFLICT (runner_id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at`,
-    ).run(presence.runnerId, presence.heartbeatAt);
+      `INSERT INTO runner_presence (runner_id, heartbeat_at, coordinator_seats) VALUES (?, ?, ?)
+       ON CONFLICT (runner_id) DO UPDATE
+         SET heartbeat_at = excluded.heartbeat_at, coordinator_seats = excluded.coordinator_seats`,
+    ).run(
+      presence.runnerId,
+      presence.heartbeatAt,
+      presence.coordinatorSeats === undefined ? null : JSON.stringify(presence.coordinatorSeats),
+    );
   }
 
   async listRunnerPresence(): Promise<RunnerPresence[]> {
-    return this.db.prepare('SELECT runner_id, heartbeat_at FROM runner_presence ORDER BY runner_id').all()
-      .map((row) => ({
-        runnerId: (row as { runner_id: string }).runner_id,
-        heartbeatAt: (row as { heartbeat_at: string }).heartbeat_at,
-      }));
+    return this.db.prepare(
+      'SELECT runner_id, heartbeat_at, coordinator_seats FROM runner_presence ORDER BY runner_id',
+    ).all()
+      .map((row) => {
+        const { runner_id, heartbeat_at, coordinator_seats } = row as {
+          runner_id: string; heartbeat_at: string; coordinator_seats: string | null;
+        };
+        return {
+          runnerId: runner_id,
+          heartbeatAt: heartbeat_at,
+          ...(coordinator_seats ? { coordinatorSeats: JSON.parse(coordinator_seats) as CapacityTarget[] } : {}),
+        };
+      });
   }
 
   /**

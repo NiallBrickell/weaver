@@ -139,11 +139,14 @@ configuration from becoming a Postgres lock race:
 weaver coordinator-runners <workstream> mac-primary gcp-standby
 ```
 
-Resident runners publish shared heartbeats. The standby becomes eligible for a
-fresh coordinator lease only after every earlier runner has been absent for
-120 seconds. This does not stop it from executing workers, sends, or exact
-machine-placed actions in the same tick; it governs only coordination. Pass
-and lease provenance record the host that actually took over.
+Resident runners publish shared heartbeats together with the coordinator seats
+they can launch a pass on. The standby becomes eligible for a fresh coordinator
+lease when every earlier runner has been absent for 120 seconds, or is present
+but has every one of its seats capacity-parked on that Workstream — a live host
+that cannot run a pass does not hold the claim while a later host could. This
+does not stop it from executing workers, sends, or exact machine-placed actions
+in the same tick; it governs only coordination. Pass and lease provenance
+record the host that actually took over.
 
 Give every hosted execution process a stable `WEAVER_RUNNER_ID`; the OS
 hostname default is intended for normal local machines, not replaceable

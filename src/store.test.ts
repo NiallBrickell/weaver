@@ -141,7 +141,7 @@ const pgBackend: Backend = {
     process.env.WEAVER_STORE = PG_URL;
     freshHome(); // secrets and machine-local locks still live under WEAVER_HOME
     try {
-      await pgAdmin((c) => c.query('TRUNCATE workstreams, artifacts, policies'));
+      await pgAdmin((c) => c.query('TRUNCATE workstreams, artifacts, policies, runner_presence'));
     } catch (e) {
       // 42P01 undefined_table: first-ever run, migration hasn't created them.
       if ((e as { code?: string }).code !== '42P01') throw e;
@@ -447,13 +447,24 @@ function contractSuite(backend: Backend): void {
   test('runner presence is shared operational state and never bumps a Workstream revision', async () => {
     await makeWorkstream();
     const revision = (await load('test-ws')).revision;
+    const seats = [
+      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' },
+      { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
+    ];
     await heartbeatRunner('mac-primary', '2026-08-29T10:00:00.000Z');
     await heartbeatRunner('gcp-standby', '2026-08-29T10:00:01.000Z');
-    await heartbeatRunner('mac-primary', '2026-08-29T10:00:02.000Z');
+    await heartbeatRunner('mac-primary', '2026-08-29T10:00:02.000Z', seats);
     assert.deepEqual(await listRunnerPresence(), [
       { runnerId: 'gcp-standby', heartbeatAt: '2026-08-29T10:00:01.000Z' },
-      { runnerId: 'mac-primary', heartbeatAt: '2026-08-29T10:00:02.000Z' },
+      { runnerId: 'mac-primary', heartbeatAt: '2026-08-29T10:00:02.000Z', coordinatorSeats: seats },
     ]);
+    // A later heartbeat without seats is a runner that stopped publishing
+    // them — the stale seat list must not outlive it.
+    await heartbeatRunner('mac-primary', '2026-08-29T10:00:03.000Z');
+    assert.deepEqual(
+      (await listRunnerPresence()).find((presence) => presence.runnerId === 'mac-primary'),
+      { runnerId: 'mac-primary', heartbeatAt: '2026-08-29T10:00:03.000Z' },
+    );
     assert.equal((await load('test-ws')).revision, revision);
   });
 
@@ -720,6 +731,53 @@ describe(
   { skip: PG_URL ? false : 'WEAVER_TEST_PG_URL not set — export it (any plain Postgres) to run the store contract against the pg backend' },
   () => {
     contractSuite(pgBackend);
+
+    test('a current schema is confirmed from the catalog without queueing for a table lock', async () => {
+      // Regression for the 2026-09-03 fleet wedge: a client that died holding
+      // a row lock blocked every new process's `ALTER TABLE … IF NOT EXISTS`,
+      // whose queued ACCESS EXCLUSIVE lock then blocked every reader behind
+      // it. The holder below stands in for that orphan; a fresh process must
+      // still open the store and read while the row lock is held.
+      await makeWorkstream();
+      const holder = new pg.Client({ connectionString: PG_URL });
+      await holder.connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT 1 FROM workstreams WHERE slug = $1 FOR UPDATE', ['test-ws']);
+        await closeStore(); // the next store call is a fresh process's first connect
+        const slugs = await Promise.race([
+          listWorkstreams(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('schema pass queued behind the row lock')), 5_000).unref(),
+          ),
+        ]);
+        assert.deepEqual(slugs, ['test-ws']);
+      } finally {
+        await holder.query('ROLLBACK').catch(() => {});
+        await holder.end();
+      }
+    });
+
+    test('every pooled session carries the bounded-failure timeouts', async () => {
+      await makeWorkstream();
+      const settings = await pgAdmin(async (c) => {
+        const r = await c.query(
+          `SELECT application_name FROM pg_stat_activity WHERE application_name = 'weaver' LIMIT 1`,
+        );
+        return r.rows;
+      });
+      assert.ok(settings.length, 'store sessions identify themselves as weaver');
+      // The GUCs are per session, so read them back through the store's own
+      // pool rather than a fresh admin connection.
+      const { getStore } = await import('./store.js');
+      const pool = (getStore() as unknown as { pool: pg.Pool }).pool;
+      const r = await pool.query(
+        `SELECT current_setting('statement_timeout') AS statement,
+                current_setting('lock_timeout') AS lock,
+                current_setting('idle_in_transaction_session_timeout') AS idle`,
+      );
+      assert.deepEqual(r.rows[0], { statement: '1min', lock: '10s', idle: '1min' });
+    });
 
     test('two mutates racing on the same expected revision: exactly one wins the CAS', async () => {
       // A REAL race, not an interleaving accident: a barrier transaction holds

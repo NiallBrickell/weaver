@@ -67,7 +67,7 @@ import {
 } from './modelConfig.js';
 import { deterministicActionsOnly, runnerExecutorCapabilities } from './modelRouting.js';
 import { assertRunnerId, resolveAssignmentRunnerId, runnerClaimIdentity } from './runnerIdentity.js';
-import { coordinatorRunnerEligibility } from './coordinatorRunner.js';
+import { RUNNER_PRESENCE_TTL_MS, coordinatorRunnerEligibility } from './coordinatorRunner.js';
 import {
   selectCoordinatorExecutor,
   type CoordinatorExecutor,
@@ -255,7 +255,9 @@ export async function runCoordinatorPass(
     throw new Error(`another coordinator pass holds the lease (${doc.lease.passId})`);
   }
   if (doc.workstream.executionPolicy?.coordinatorRunnerOrder) {
-    const eligibility = coordinatorRunnerEligibility(doc, runner.id, await listRunnerPresence());
+    const eligibility = coordinatorRunnerEligibility(
+      doc, runner.id, await listRunnerPresence(), Date.now(), RUNNER_PRESENCE_TTL_MS, virtualNow().toISOString(),
+    );
     if (!eligibility.eligible) {
       throw new CoordinatorRunnerIneligibleError(runner.id, eligibility.reason ?? 'not eligible');
     }
@@ -303,7 +305,9 @@ export async function runCoordinatorPass(
       if (declaredExecutors && !declaredExecutors.has(passTarget.executor)) {
         throw new Error(`runner does not declare coordinator executor '${passTarget.executor}'`);
       }
-      const eligibility = coordinatorRunnerEligibility(d, runner.id, claimPresence, startedAt.getTime());
+      const eligibility = coordinatorRunnerEligibility(
+        d, runner.id, claimPresence, startedAt.getTime(), RUNNER_PRESENCE_TTL_MS, passNow,
+      );
       if (!eligibility.eligible) {
         throw new CoordinatorRunnerIneligibleError(runner.id, eligibility.reason ?? 'not eligible');
       }

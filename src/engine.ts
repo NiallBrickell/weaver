@@ -65,7 +65,7 @@ import {
   RunnerPlacementMismatchError,
   type RunnerClaimIdentity,
 } from './runnerIdentity.js';
-import { coordinatorRunnerEligibility } from './coordinatorRunner.js';
+import { RUNNER_PRESENCE_TTL_MS, coordinatorRunnerEligibility } from './coordinatorRunner.js';
 
 /**
  * The shell a declared action's `run`/`verify` command is executed with.
@@ -1601,7 +1601,9 @@ async function tickLocked(
       ? pickCoordinatorTargetForExecutors(preDoc, virtualNow().toISOString(), executorCapabilities)
       : pickCoordinatorTarget(preDoc, virtualNow().toISOString());
     const coordinatorRunnerEligible = !preDoc.workstream.executionPolicy?.coordinatorRunnerOrder ||
-      coordinatorRunnerEligibility(preDoc, runner.id, await listRunnerPresence()).eligible;
+      coordinatorRunnerEligibility(
+        preDoc, runner.id, await listRunnerPresence(), Date.now(), RUNNER_PRESENCE_TTL_MS, virtualNow().toISOString(),
+      ).eligible;
     // A live lease means no pass can start: leave the wakes PENDING for the
     // next tick rather than burning them against a pass that cannot run.
     const leaseLive = preDoc.lease && new Date(preDoc.lease.expiresAt).getTime() > Date.now();

@@ -515,7 +515,12 @@ test('the loop heartbeat lives beside the lock dir, never inside it', async () =
   await loop;
   assert.ok(fs.existsSync(path.join(home, '.runner.heartbeat')));
   assert.ok(!fs.existsSync(path.join(home, '.runner.lock', 'heartbeat')));
-  assert.equal((await listRunnerPresence()).find((presence) => presence.runnerId === 'mac-primary')?.runnerId, 'mac-primary');
+  const presence = (await listRunnerPresence()).find((candidate) => candidate.runnerId === 'mac-primary');
+  assert.equal(presence?.runnerId, 'mac-primary');
+  // Presence names the coordinator seats this host can launch a pass on, so a
+  // standby can distinguish a live preferred runner from a seated one.
+  assert.ok(presence?.coordinatorSeats?.length, 'a resident runner publishes its coordinator seats');
+  assert.deepEqual(Object.keys(presence!.coordinatorSeats![0]!).sort(), ['executor', 'model', 'provider']);
 });
 
 test('load-aware concurrency runs full width with headroom and throttles toward 1 when oversubscribed', () => {

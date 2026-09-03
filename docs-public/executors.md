@@ -144,11 +144,13 @@ of leaving it to whichever process wins the Postgres tick lock:
 weaver coordinator-runners daily-engineering-update mac-primary gcp-standby
 ```
 
-Resident runners publish shared TTL heartbeats. `mac-primary` claims
-coordinator passes while its heartbeat is fresh; `gcp-standby` takes over after
-the earlier heartbeat is older than 120 seconds. The order is rechecked in the
-revision-checked coordinator lease claim, and the lease/pass record pins the
-actual runner. Clear the preference with:
+Resident runners publish shared TTL heartbeats and the coordinator seats they
+are configured with. `mac-primary` claims coordinator passes while its
+heartbeat is fresh and at least one of its seats is not capacity-parked on the
+Workstream; `gcp-standby` takes over after the earlier heartbeat is older than
+120 seconds, or while every seat `mac-primary` publishes is parked there. The
+order is rechecked in the revision-checked coordinator lease claim, and the
+lease/pass record pins the actual runner. Clear the preference with:
 
 ```bash
 weaver coordinator-runners daily-engineering-update --clear

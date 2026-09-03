@@ -19,7 +19,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { tick } from './engine.js';
-import { coordinatorRunnerEligibility } from './coordinatorRunner.js';
+import { RUNNER_PRESENCE_TTL_MS, coordinatorRunnerEligibility } from './coordinatorRunner.js';
 import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
 import { sweepPrConflicts } from './prConflicts.js';
 import { sdkEnv } from './secrets.js';
@@ -42,7 +42,7 @@ import {
   retryCapacityTargetNow,
 } from './capacity.js';
 import { readFleetCapacity, supersededByFleetRecovery } from './fleetCapacity.js';
-import { targetOfWait, type CapacityTarget } from './modelConfig.js';
+import { coordinatorTargets, targetOfWait, type CapacityTarget } from './modelConfig.js';
 import { runnerExecutorCapabilities } from './modelRouting.js';
 import { acquireProcessLock, liveProcessLockPid, pidIsLive } from './processLock.js';
 import { runnerClaimIdentity, type RunnerClaimIdentity } from './runnerIdentity.js';
@@ -204,7 +204,7 @@ export function runnerDispatchSignature(
     .map((assignment) => assignment.id)
     .sort();
   const coordinatorEligibility = dueWakeIds.length
-    ? coordinatorRunnerEligibility(doc, runner.id, presences, wallNow.getTime())
+    ? coordinatorRunnerEligibility(doc, runner.id, presences, wallNow.getTime(), RUNNER_PRESENCE_TTL_MS, virtual.toISOString())
     : null;
   return JSON.stringify({
     revision: doc.revision,
@@ -727,7 +727,20 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   let prConflictSweepInFlight = false;
   let probing = false;
   let lastCredMtime = credentialsMtime();
-  const publishPresence = opts.heartbeat ?? heartbeatRunner;
+  // Presence carries this host's coordinator seats so a standby can tell a
+  // live preferred runner from a seated one: a host whose whole chain is
+  // parked on a Workstream yields that stream's claim (coordinatorRunner.ts).
+  // A misconfigured chain publishes no seats — such a host can launch no pass
+  // anyway, and saying so lets a standby take over instead of waiting.
+  const coordinatorSeats = ((): CapacityTarget[] => {
+    try {
+      return coordinatorTargets();
+    } catch (error) {
+      logError(`[run] coordinator chain is misconfigured — publishing no coordinator seats: ${error instanceof Error ? error.message : error}`);
+      return [];
+    }
+  })();
+  const publishPresence = opts.heartbeat ?? ((runnerId: string) => heartbeatRunner(runnerId, undefined, coordinatorSeats));
   const outageExitMs = opts.storeOutageExitMs ?? RUNNER_STORE_OUTAGE_EXIT_MS;
   let outageSince: number | null = null;
   let outageFailures = 0;
