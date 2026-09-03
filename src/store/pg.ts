@@ -36,6 +36,7 @@
  * into Postgres.
  */
 
+import type { CapacityTarget } from '../modelConfig.js';
 import { isDeepStrictEqual } from 'node:util';
 import pg from 'pg';
 import { virtualNow } from '../clock.js';
@@ -77,8 +78,9 @@ const SCHEMA = `
     store     json    NOT NULL
   );
   CREATE TABLE IF NOT EXISTS runner_presence (
-    runner_id    text        PRIMARY KEY,
-    heartbeat_at timestamptz NOT NULL
+    runner_id         text        PRIMARY KEY,
+    heartbeat_at      timestamptz NOT NULL,
+    coordinator_seats json
   );
 
   -- Existing fleets used jsonb. Convert once, without decoding and rewriting
@@ -135,6 +137,7 @@ const SCHEMA = `
 
   ALTER TABLE workstreams ADD COLUMN IF NOT EXISTS source_key_json text;
   ALTER TABLE workstreams ADD COLUMN IF NOT EXISTS source_key_initialized boolean NOT NULL DEFAULT false;
+  ALTER TABLE runner_presence ADD COLUMN IF NOT EXISTS coordinator_seats json;
   INSERT INTO policies (singleton, revision, store)
     VALUES (true, 0, '{"schemaVersion":1,"revision":0,"policies":[]}'::json)
     ON CONFLICT DO NOTHING;
@@ -163,6 +166,33 @@ export class PgStoreNotEmptyError extends Error {
   }
 }
 
+/**
+ * Session bounds every pooled connection carries. Without them a fleet hangs
+ * instead of failing: a stuck DNS lookup or black-holed route parks the runner
+ * loop in an await nothing can time out, a queued lock forms a queue behind a
+ * stuck holder, and a backend whose client died mid-transaction keeps its row
+ * locks until someone notices (three hours on 2026-09-03). Bounded failures
+ * are what the runner's store-outage exit and `ensureReady` retry act on.
+ */
+/** Pool wait plus DNS, TCP, and TLS for one new connection. */
+export const PG_CONNECT_TIMEOUT_MS = 15_000;
+/** Server-side ceiling per statement; every Weaver statement is one bounded
+ * document read/write or catalog probe. Advisory lock waits count. */
+export const PG_STATEMENT_TIMEOUT_MS = 60_000;
+/** Table and row lock waits fail fast: a waiting ACCESS EXCLUSIVE blocks
+ * every reader and writer behind it, so queueing is worse than failing. */
+export const PG_LOCK_TIMEOUT_MS = 10_000;
+/** Weaver transactions idle for milliseconds between statements (a synchronous
+ * mutator, a receipt write); a session idle in one for longer has lost its
+ * client, and the server ends it so its locks release. */
+export const PG_IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000;
+/** Client-side backstop above the server ceiling, for a server gone silent. */
+export const PG_QUERY_TIMEOUT_MS = 90_000;
+
+function notePgConnectionError(error: unknown): void {
+  process.stderr.write(`[store] postgres connection error: ${error instanceof Error ? error.message : String(error)}\n`);
+}
+
 export class PgStore implements StateStore {
   private readonly pool: pg.Pool;
   private readonly connectionString: string;
@@ -172,11 +202,87 @@ export class PgStore implements StateStore {
     this.connectionString = connectionString;
     // allowExitOnIdle: idle pooled connections must not pin a finished CLI
     // process open — closeStore() is the deliberate shutdown, this is the net.
-    this.pool = new pg.Pool({ connectionString, max: 10, allowExitOnIdle: true });
+    this.pool = new pg.Pool({
+      connectionString,
+      max: 10,
+      allowExitOnIdle: true,
+      application_name: 'weaver',
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
+      connectionTimeoutMillis: PG_CONNECT_TIMEOUT_MS,
+      statement_timeout: PG_STATEMENT_TIMEOUT_MS,
+      lock_timeout: PG_LOCK_TIMEOUT_MS,
+      idle_in_transaction_session_timeout: PG_IDLE_IN_TRANSACTION_TIMEOUT_MS,
+      query_timeout: PG_QUERY_TIMEOUT_MS,
+    });
+    // A pooled connection can die between queries (route loss, server
+    // restart). node-postgres reports that as an 'error' event — on the pool
+    // for an idle client, on the Client itself for a checked-out one — and an
+    // unhandled 'error' event ends the whole process: the resident runner died
+    // to `read EHOSTUNREACH` this way on 2026-09-03, orphaning in-flight runs.
+    // The in-flight query already rejects through its caller's error path, so
+    // these listeners only keep the process alive and leave one line of trace.
+    this.pool.on('connect', (client) => {
+      client.on('error', notePgConnectionError);
+    });
+    // An idle client's error is re-emitted on the pool after the client-level
+    // listener above has already traced it; the pool has removed the client.
+    this.pool.on('error', () => {});
   }
 
   private ensureReady(): Promise<void> {
-    return (this.ready ??= this.initializeSchema());
+    // A failed initialization (a lock wait that timed out, a route that
+    // dropped mid-handshake) must not be cached as permanent; the next store
+    // call tries again rather than failing until the process restarts.
+    return (this.ready ??= this.initializeSchema().catch((error: unknown) => {
+      this.ready = undefined;
+      throw error;
+    }));
+  }
+
+  /**
+   * Steady-state processes must not run DDL. `ALTER TABLE … IF NOT EXISTS`
+   * queues for an ACCESS EXCLUSIVE lock before it discovers there is nothing
+   * to do, and a queued exclusive lock blocks every reader and writer behind
+   * it — one orphaned transaction on 2026-09-03 turned every new process's
+   * schema pass into a fleet-wide wedge. Catalog reads take no table locks, so
+   * a current schema costs two SELECTs under the advisory lock and nothing
+   * else; only a genuinely missing piece runs the migration below.
+   */
+  private async schemaIsCurrent(client: pg.PoolClient): Promise<boolean> {
+    const tables = await client.query(
+      `SELECT to_regclass('workstreams') IS NOT NULL
+          AND to_regclass('artifacts') IS NOT NULL
+          AND to_regclass('policies') IS NOT NULL
+          AND to_regclass('runner_presence') IS NOT NULL AS present`,
+    );
+    if (tables.rows[0]?.present !== true) return false;
+    const shape = await client.query(
+      `SELECT
+         EXISTS (SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('workstreams') AND attname = 'doc'
+                   AND NOT attisdropped AND atttypid = 'json'::regtype)
+         AND EXISTS (SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('policies') AND attname = 'store'
+                   AND NOT attisdropped AND atttypid = 'json'::regtype)
+         AND EXISTS (SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('artifacts') AND attname = 'content'
+                   AND NOT attisdropped AND atttypid = 'bytea'::regtype)
+         AND EXISTS (SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('workstreams') AND attname = 'source_key_json'
+                   AND NOT attisdropped)
+         AND EXISTS (SELECT 1 FROM pg_attribute a
+                 JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+                 WHERE a.attrelid = to_regclass('workstreams') AND a.attname = 'source_key_initialized'
+                   AND NOT a.attisdropped AND pg_get_expr(d.adbin, d.adrelid) = 'true')
+         AND EXISTS (SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('runner_presence') AND attname = 'coordinator_seats'
+                   AND NOT attisdropped)
+         AND to_regclass('workstreams_source_key') IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM workstreams WHERE NOT source_key_initialized)
+         AND EXISTS (SELECT 1 FROM policies WHERE singleton) AS current`,
+    );
+    return shape.rows[0]?.current === true;
   }
 
   /**
@@ -192,6 +298,10 @@ export class PgStore implements StateStore {
     try {
       await client.query('BEGIN');
       await client.query("SELECT pg_advisory_xact_lock(hashtext('weaver-schema'))");
+      if (await this.schemaIsCurrent(client)) {
+        await client.query('COMMIT');
+        return;
+      }
       await client.query(SCHEMA);
 
       const pending = await client.query(
@@ -544,21 +654,30 @@ export class PgStore implements StateStore {
   async heartbeatRunner(presence: RunnerPresence): Promise<void> {
     await this.ensureReady();
     await this.pool.query(
-      `INSERT INTO runner_presence (runner_id, heartbeat_at) VALUES ($1, $2::timestamptz)
-       ON CONFLICT (runner_id) DO UPDATE SET heartbeat_at = EXCLUDED.heartbeat_at`,
-      [presence.runnerId, presence.heartbeatAt],
+      `INSERT INTO runner_presence (runner_id, heartbeat_at, coordinator_seats)
+       VALUES ($1, $2::timestamptz, $3::json)
+       ON CONFLICT (runner_id) DO UPDATE
+         SET heartbeat_at = EXCLUDED.heartbeat_at, coordinator_seats = EXCLUDED.coordinator_seats`,
+      [
+        presence.runnerId,
+        presence.heartbeatAt,
+        presence.coordinatorSeats === undefined ? null : JSON.stringify(presence.coordinatorSeats),
+      ],
     );
   }
 
   async listRunnerPresence(): Promise<RunnerPresence[]> {
     await this.ensureReady();
     const result = await this.pool.query(
-      `SELECT runner_id, to_char(heartbeat_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS heartbeat_at
+      `SELECT runner_id,
+              to_char(heartbeat_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS heartbeat_at,
+              coordinator_seats
        FROM runner_presence ORDER BY runner_id`,
     );
     return result.rows.map((row) => ({
       runnerId: row.runner_id as string,
       heartbeatAt: row.heartbeat_at as string,
+      ...(row.coordinator_seats ? { coordinatorSeats: row.coordinator_seats as CapacityTarget[] } : {}),
     }));
   }
 
@@ -579,10 +698,26 @@ export class PgStore implements StateStore {
     // inside those ticks would queue on the pool forever, and no tick could
     // finish to release one. Lock connections are bounded by runner
     // concurrency; session death still auto-releases (why no pid file here).
-    const client = new pg.Client({ connectionString: this.connectionString });
+    const client = new pg.Client({
+      connectionString: this.connectionString,
+      application_name: 'weaver-tick',
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
+      connectionTimeoutMillis: PG_CONNECT_TIMEOUT_MS,
+      statement_timeout: PG_STATEMENT_TIMEOUT_MS,
+    });
     await client.connect();
     let locked = false;
     try {
+      // The lock lives exactly as long as the server thinks this session is
+      // alive. A holder that vanishes without a FIN (route loss, a machine
+      // that slept) would otherwise keep the Workstream unticked until the
+      // server's OS keepalive notices — two hours by default on Linux. Ask the
+      // server to probe this session itself; a provider that refuses the
+      // setting keeps its own default, which is why the failure is ignored.
+      await client
+        .query('SET tcp_keepalives_idle = 60; SET tcp_keepalives_interval = 10; SET tcp_keepalives_count = 3')
+        .catch(() => {});
       const r = await client.query('SELECT pg_try_advisory_lock(hashtext($1)) AS ok', [key]);
       locked = r.rows[0]?.ok === true;
     } finally {

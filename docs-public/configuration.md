@@ -122,7 +122,8 @@ preference. Configure it with
 an environment setting, so different hosts' local model configuration cannot
 turn shared Postgres lock acquisition into an accidental provider choice.
 Resident runners publish shared heartbeats every poll, and a standby becomes
-eligible after earlier entries have been absent for 120 seconds.
+eligible after earlier entries have been absent for 120 seconds or have every
+published coordinator seat capacity-parked on the Workstream.
 
 A hosted Pilot must use HTTPS and a bearer registered in Weaver's executor-only
 secret store, never `.env` or an action-secret scope:

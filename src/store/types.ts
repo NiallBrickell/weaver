@@ -40,6 +40,7 @@
 
 // Type-only import: erased at compile time, so the runtime chain
 // policies → store → store/fs → store/types stays acyclic.
+import type { CapacityTarget } from '../modelConfig.js';
 import type { PolicyStore } from '../policies.js';
 import type { EventRecord, WorkstreamCore, WorkstreamDoc } from '../types.js';
 
@@ -48,6 +49,12 @@ import type { EventRecord, WorkstreamCore, WorkstreamDoc } from '../types.js';
 export interface RunnerPresence {
   runnerId: string;
   heartbeatAt: string;
+  /** The coordinator seats (executor, provider, model) this runner can launch
+   * a pass on, in its configured chain order. A preferred runner whose every
+   * published seat is capacity-parked on a Workstream yields that stream's
+   * coordinator claim to the next runner in order. Absent on presences from
+   * runners that predate the field, which count as seated. */
+  coordinatorSeats?: CapacityTarget[];
 }
 
 /** Cheap identity of a Workstream's current durable head. Runners use this
