@@ -584,6 +584,11 @@ export interface RunnerOptions {
    * action executions and coordinator passes while never pinning a restart
    * behind a 40-minute worker wall. */
   drainMs?: number;
+  /** Shared-presence publisher; injectable only for deterministic runner tests. */
+  heartbeat?: (runnerId: string) => Promise<void>;
+  /** How long an unbroken run of failed iterations may last before the loop
+   * exits for its supervisor; see RUNNER_STORE_OUTAGE_EXIT_MS. */
+  storeOutageExitMs?: number;
 }
 
 /**
@@ -678,8 +683,23 @@ function waitForNextIteration(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** Why a resident runner's poll loop returned. */
+export type RunLoopExit = 'aborted' | 'source-stale' | 'store-unreachable';
+
+/**
+ * A loop that cannot reach the store is not a runner — it publishes no
+ * presence, so a standby takes the coordinator seat, yet its live pid keeps
+ * the supervisor satisfied and nothing ever restarts it. That ran for 24 hours
+ * on 2026-09-02: a Mac runner's every iteration failed `getaddrinfo ENOTFOUND`
+ * for the fleet Postgres after a network change while fresh processes on the
+ * same machine resolved the host fine. Once failures have been unbroken for
+ * this long the loop exits so launchd/systemd relaunch it with fresh process
+ * state; an outage that outlives the restart just repeats the bounded cycle.
+ */
+export const RUNNER_STORE_OUTAGE_EXIT_MS = 300_000;
+
 /** The poll loop. Headless runners omit `signal`; embedded dashboards own one. */
-export async function runLoop(opts: RunnerOptions): Promise<void> {
+export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   const log = opts.log ?? ((l: string) => process.stdout.write(l + '\n'));
   const logError = opts.logError ?? ((l: string) => process.stderr.write(l + '\n'));
   const loadSample = opts.loadSample ?? (() => ({ load1: os.loadavg()[0]!, cores: os.cpus().length }));
@@ -707,6 +727,11 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
   let prConflictSweepInFlight = false;
   let probing = false;
   let lastCredMtime = credentialsMtime();
+  const publishPresence = opts.heartbeat ?? heartbeatRunner;
+  const outageExitMs = opts.storeOutageExitMs ?? RUNNER_STORE_OUTAGE_EXIT_MS;
+  let outageSince: number | null = null;
+  let outageFailures = 0;
+  let exit: RunLoopExit = 'aborted';
   while (!opts.signal?.aborted) {
     if (sourceStale()) {
       logError('[run] Weaver source changed since startup — stopping before further dispatch; restart Weaver');
@@ -714,13 +739,14 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       // crash-recoverable work, and the shared bounded drain below is the one
       // exit contract — waiting for them here would make source-stale restarts
       // unbounded.
+      exit = 'source-stale';
       break;
     }
     try {
       // Shared TTL presence is separate from Workstream truth and from the
       // machine-local pid heartbeat. Publish before scanning so a preferred
       // coordinator host is visible before any standby considers a claim.
-      await heartbeatRunner(runner.id);
+      await publishPresence(runner.id);
       try {
         fs.writeFileSync(heartbeatPath(), String(Date.now()));
       } catch { /* lock dir may be mid-recreate */ }
@@ -765,6 +791,9 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       const docs = await workstreams.scan();
       dispatches.retain(new Set(docs.keys()));
       const presences = await listRunnerPresence();
+      // The store answered a full scan: any running outage clock stops here.
+      outageSince = null;
+      outageFailures = 0;
       const wallNow = new Date();
       const virtual = virtualNow();
       for (const [slug, doc] of docs) {
@@ -836,8 +865,22 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       }
     } catch (e) {
       // The LOOP must survive anything an iteration throws (fd exhaustion on
-      // listWorkstreams once killed it silently while the pid lived on).
+      // listWorkstreams once killed it silently while the pid lived on) — but
+      // only while the failures are transient. An unbroken run of them past
+      // the outage window means this process can no longer reach the store,
+      // and a fresh process is the only repair the loop has to offer.
       logError(`[run] loop iteration failed: ${e instanceof Error ? e.message : e}`);
+      outageSince ??= Date.now();
+      outageFailures += 1;
+      const outageMs = Date.now() - outageSince;
+      if (outageMs >= outageExitMs) {
+        logError(
+          `[run] every iteration for ${Math.round(outageMs / 1000)}s (${outageFailures} in a row) failed before the store answered — ` +
+          'exiting so the supervisor restarts this process with fresh network state; a standby runner keeps the coordinator seat meanwhile',
+        );
+        exit = 'store-unreachable';
+        break;
+      }
     }
     await waitForNextIteration(opts.intervalMs, opts.signal);
   }
@@ -857,4 +900,5 @@ export async function runLoop(opts: RunnerOptions): Promise<void> {
       log('[run] drained cleanly');
     }
   }
+  return exit;
 }

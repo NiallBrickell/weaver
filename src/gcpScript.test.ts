@@ -24,7 +24,7 @@ const SAFE_GCP_EXECUTION_ENV = [
   'WEAVER_WORKER_FALLBACKS=',
   'WEAVER_COORDINATOR_MODEL=claude-fable-5',
   'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
-  'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.3',
+  'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3',
   'WEAVER_ACTION_EXECUTOR=local-sdk',
   'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
   'WEAVER_PILOT_URL=http://127.0.0.1:9721',
@@ -579,7 +579,7 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
     'WEAVER_WORKER_FALLBACKS=',
     'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
     'WEAVER_COORDINATOR_MODEL=claude-fable-5',
-    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.3',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3',
     'WEAVER_ACTION_EXECUTOR=local-sdk',
     'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
     'WEAVER_RUNNER_EXECUTORS=openhands,local-sdk',
@@ -732,7 +732,7 @@ test('GCP start refuses an OpenRouter primary or device-login coordinator', () =
 
 test('GCP start permits a non-Claude OpenRouter fallback and refuses Claude API billing there', () => {
   const chain = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.3',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3',
     'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-haiku-4.5',
   );
   const first = run(['start'], undefined, '', false, chain);
@@ -741,7 +741,7 @@ test('GCP start permits a non-Claude OpenRouter fallback and refuses Claude API 
   assert.equal(fs.existsSync(path.join(first.root, 'calls', '1.systemctl-executed')), false);
 
   const legacy = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.3\n',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3\n',
     'WEAVER_COORDINATOR_FALLBACK_MODEL=openrouter/~anthropic/claude-haiku-4.5\n',
   );
   const second = run(['start'], undefined, '', false, legacy);

@@ -1039,7 +1039,7 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       };
       process.on('SIGINT', () => requestStop('SIGINT'));
       process.on('SIGTERM', () => requestStop('SIGTERM'));
-      await runLoop({ intervalMs: interval, concurrency, executorCapabilities, signal: stopper.signal });
+      const loopExit = await runLoop({ intervalMs: interval, concurrency, executorCapabilities, signal: stopper.signal });
       // runLoop returning is the decision to stop, but it cannot END the
       // process: an in-flight worker's SDK child process is a live handle that
       // pins the event loop past any drain window, so a drained runner sat
@@ -1047,7 +1047,9 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       // Exit explicitly — the abandoned attempt is exactly what action/worker
       // crash recovery reconciles on the next runner's first tick.
       process.stdout.write('[run] loop stopped — exiting\n');
-      process.exit(0);
+      // A store-outage exit is a failure for the supervisor to relaunch and
+      // for an operator reading the exit status to see as one.
+      process.exit(loopExit === 'store-unreachable' ? 1 : 0);
     }
     case 'serve': {
       const token = process.env.WEAVER_SERVE_TOKEN;
