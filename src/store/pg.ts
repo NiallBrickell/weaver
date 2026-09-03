@@ -246,7 +246,7 @@ export class PgStore implements StateStore {
    * to do, and a queued exclusive lock blocks every reader and writer behind
    * it — one orphaned transaction on 2026-09-03 turned every new process's
    * schema pass into a fleet-wide wedge. Catalog reads take no table locks, so
-   * a current schema costs two SELECTs under the advisory lock and nothing
+   * a current schema costs three SELECTs under the advisory lock and nothing
    * else; only a genuinely missing piece runs the migration below.
    */
   private async schemaIsCurrent(client: pg.PoolClient): Promise<boolean> {
@@ -278,11 +278,17 @@ export class PgStore implements StateStore {
          AND EXISTS (SELECT 1 FROM pg_attribute
                  WHERE attrelid = to_regclass('runner_presence') AND attname = 'coordinator_seats'
                    AND NOT attisdropped)
-         AND to_regclass('workstreams_source_key') IS NOT NULL
-         AND NOT EXISTS (SELECT 1 FROM workstreams WHERE NOT source_key_initialized)
-         AND EXISTS (SELECT 1 FROM policies WHERE singleton) AS current`,
+         AND to_regclass('workstreams_source_key') IS NOT NULL AS current`,
     );
-    return shape.rows[0]?.current === true;
+    if (shape.rows[0]?.current !== true) return false;
+    // Row-level facts only once the columns they name are known to exist: a
+    // legacy table makes any statement that mentions the column fail to parse,
+    // regardless of short-circuit order.
+    const rows = await client.query(
+      `SELECT NOT EXISTS (SELECT 1 FROM workstreams WHERE NOT source_key_initialized)
+          AND EXISTS (SELECT 1 FROM policies WHERE singleton) AS current`,
+    );
+    return rows.rows[0]?.current === true;
   }
 
   /**
