@@ -40,6 +40,14 @@ that executes work.
    create and inspect work. A non-loopback listener requires Clerk or the
    private-network Basic fallback.
 
+A runner that cannot reach the database is not a runner, whatever its pid
+says. If every poll has failed for five minutes without one successful scan,
+`weaver run` exits with a non-zero status so its supervisor (launchd
+`KeepAlive`, systemd `Restart=always`) relaunches it with fresh process state;
+another runner with a live heartbeat holds the coordinator seat meanwhile. A
+Mac runner once spent a day failing DNS for the fleet Postgres after a network
+change while fresh processes on the same machine resolved it fine.
+
 ## Environment every hosted process needs
 
 ```bash
@@ -291,6 +299,15 @@ host profile choice, not an automatic model route. `WEAVER_GCP_WORKER_MODEL`,
 `WEAVER_GCP_WORKER_MODEL_COMPLEX`, `WEAVER_GCP_WORKER_FALLBACKS`,
 `WEAVER_GCP_COORDINATOR_MODEL`, and `WEAVER_GCP_COORDINATOR_FALLBACKS` may
 override the profile's model seats without weakening its substrate checks.
+
+The hosted coordinator chain defaults to `claude-fable-5` on the registered
+setup-token, then `claude-opus-5` on the same token, then the OpenRouter seat.
+A chain is only as good as the independence of its pools: when the Fable
+allowance ran out with nothing but an out-of-credit OpenRouter seat behind it,
+every coordinator pass on the host failed for a day while Opus would have
+answered. Change the chain with `push-env` (optionally `--restart`); the host
+installer treats the model seats as one managed set and drops any seat a
+partial render omits, so never merge a single key by hand.
 Personal CLI and device-login state is never copied to the host. In particular,
 `push-env` does not deliver Claude's credential file, `~/.codex/auth.json`, `gh`
 authentication, or `gcloud` authentication. It delivers only the deliberately

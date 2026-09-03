@@ -588,3 +588,41 @@ test('a runner slot remains owned until its exact tick settles', async () => {
     await loop;
   }
 });
+
+test('a runner whose every iteration fails before the store answers exits for its supervisor', async () => {
+  const errors: string[] = [];
+  const exit = await runLoop({
+    intervalMs: 5,
+    concurrency: 1,
+    storeOutageExitMs: 40,
+    sourceStale: () => false,
+    heartbeat: async () => { throw new Error('getaddrinfo ENOTFOUND thomas.proxy.rlwy.net'); },
+    log: () => {},
+    logError: (line) => errors.push(line),
+  });
+  assert.equal(exit, 'store-unreachable', 'an unbroken outage past the window ends the loop');
+  assert.ok(errors.filter((l) => l.includes('loop iteration failed')).length >= 2, 'the failures themselves stay visible');
+  assert.ok(errors.some((l) => l.includes('exiting so the supervisor restarts')), 'the exit names its cause');
+});
+
+test('one iteration that reaches the store again resets the outage clock', async () => {
+  await make('outage-recovers');
+  const abort = new AbortController();
+  let attempts = 0;
+  const loop = runLoop({
+    intervalMs: 5,
+    concurrency: 1,
+    storeOutageExitMs: 200,
+    signal: abort.signal,
+    sourceStale: () => false,
+    // Three failures, one success, repeat: never 200ms of unbroken failure.
+    heartbeat: async () => { attempts++; if (attempts % 4 !== 0) throw new Error('read EHOSTUNREACH'); },
+    tickFn: async () => ({ cycles: 0, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] }),
+    log: () => {},
+    logError: () => {},
+  });
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  abort.abort();
+  assert.equal(await loop, 'aborted', 'intermittent failures with a success between them never trip the outage exit');
+  assert.ok(attempts >= 8, 'the loop kept polling through the transient failures');
+});

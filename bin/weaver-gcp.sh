@@ -386,11 +386,15 @@ cmd_push_env() {
   hosted_worker_complex_model="${WEAVER_GCP_WORKER_MODEL_COMPLEX:-$hosted_worker_model}"
   hosted_worker_fallbacks="${WEAVER_GCP_WORKER_FALLBACKS:-}"
   # The always-on controller starts on an explicitly registered Claude Code
-  # setup-token. A non-Claude OpenRouter seat is the hosted recovery path;
-  # Codex remains local-only because personal device authentication is never
-  # copied to this credential-bearing host.
+  # setup-token. Opus on that same token is the first fallback: on 2026-09-02
+  # the Fable seat's weekly allowance ran out while Opus still answered, and
+  # with only the OpenRouter seat behind it (out of credits at the time) every
+  # coordinator pass on the host failed for a day. The non-Claude OpenRouter
+  # seat stays as the last hosted recovery path; Codex remains local-only
+  # because personal device authentication is never copied to this
+  # credential-bearing host.
   hosted_coordinator_model="${WEAVER_GCP_COORDINATOR_MODEL:-claude-fable-5}"
-  hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-local-sdk:openrouter/z-ai/glm-5.3}"
+  hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3}"
 
   PUSH_ENV_RAW_TMP="$(mktemp)"
   PUSH_ENV_TMP="$(mktemp)"
