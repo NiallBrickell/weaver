@@ -6,6 +6,8 @@
 #   weaver-gcp set-store          install an external Postgres URL from hidden stdin
 #   weaver-gcp push-env [--restart]  merge credentials/config (no restart by default)
 #   weaver-gcp push-worker-secrets NAME...  exactly sync selected global secrets
+#   weaver-gcp db-tunnel INSTANCE ZONE [--port N] [--remote-port N] [--attach-identity]
+#                                            keep an IAP tunnel to a private database open on the VM
 #   weaver-gcp tunnel             forward Postgres + serve to localhost
 #   weaver-gcp join               print the exact commands a second machine runs
 #   weaver-gcp ssh [--command cmd] SSH into the VM (IAP tunnel)
@@ -41,6 +43,9 @@ VM="${WEAVER_GCP_VM:-weaver-fleet}"
 MACHINE="${WEAVER_GCP_MACHINE:-e2-standard-2}"
 CONCURRENCY="${WEAVER_GCP_CONCURRENCY:-4}"
 NETWORK="${WEAVER_GCP_NETWORK:-weaver-vpc}"
+# Service account the VM runs as, ONLY if it must open an IAP tunnel to a
+# private database (weaver-gcp db-tunnel). Unset = no identity at all.
+TUNNEL_SA="${WEAVER_GCP_TUNNEL_SA:-}"
 SUBNET="${WEAVER_GCP_SUBNET:-weaver-subnet}"
 REPO_URL="https://github.com/NiallBrickell/weaver"
 REPO="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
@@ -118,14 +123,23 @@ cmd_create() {
       echo "✓ VM $VM already exists in $ZONE — provisioning only"
     fi
   else
-    echo "creating $VM ($MACHINE, $ZONE, isolated VPC, no service account, no open ports)…"
+    local -a identity=(--no-service-account --no-scopes)
+    local identity_desc="no service account"
+    if [ -n "$TUNNEL_SA" ]; then
+      # Opt-in: the VM runs as a service account whose only powers are the
+      # ones the IAP tunnel needs (see cmd_db_tunnel). No key ever exists —
+      # gcloud on the box uses the metadata server.
+      identity=(--service-account "$TUNNEL_SA" --scopes https://www.googleapis.com/auth/cloud-platform)
+      identity_desc="identity $TUNNEL_SA (tunnel-only)"
+    fi
+    echo "creating $VM ($MACHINE, $ZONE, isolated VPC, $identity_desc, no open ports)…"
     "${GC[@]}" compute instances create "$VM" \
       --zone "$ZONE" \
       --machine-type "$MACHINE" \
       --image-family debian-12 --image-project debian-cloud \
       --boot-disk-size 30GB --boot-disk-type pd-balanced \
       --network "$NETWORK" --subnet "$SUBNET" \
-      --no-service-account --no-scopes \
+      "${identity[@]}" \
       --labels app=weaver
     wait_for_ssh
   fi
@@ -508,6 +522,87 @@ cmd_tunnel() {
   "${GSSH[@]}" -- -N -L 6543:127.0.0.1:5432 -L 9723:127.0.0.1:9723
 }
 
+# ── db-tunnel ────────────────────────────────────────────────────────────────
+# A database with no public address is reached through an IAP tunnel to a
+# bastion inside its VPC. Actions run on this host with the worker secrets in
+# their env, so the tunnel lives here as a systemd unit on a fixed local port
+# and the secret DSN points at 127.0.0.1:PORT. gcloud on the VM authenticates
+# as the VM's service account (WEAVER_GCP_TUNNEL_SA) through the metadata
+# server — no key on disk. That account should be able to open the tunnel to
+# INSTANCE and read INSTANCE, nothing else in the project.
+#
+# Attaching the identity to an existing VM requires a stop/start, which ends
+# whatever the runner is doing; it only happens with --attach-identity.
+cmd_db_tunnel() {
+  local instance="${1:-}" zone="${2:-}" port=55432 remote_port=5432 attach=0
+  [ -n "$instance" ] && [ -n "$zone" ] || {
+    echo "❌ usage: weaver-gcp db-tunnel INSTANCE ZONE [--port N] [--remote-port N] [--attach-identity]" >&2; exit 1;
+  }
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --port) port="${2:?--port needs a value}"; shift 2 ;;
+      --remote-port) remote_port="${2:?--remote-port needs a value}"; shift 2 ;;
+      --attach-identity) attach=1; shift ;;
+      *) echo "❌ unknown option $1" >&2; exit 1 ;;
+    esac
+  done
+  [ -n "$TUNNEL_SA" ] || { echo "❌ set WEAVER_GCP_TUNNEL_SA to the service account the VM should run as" >&2; exit 1; }
+  vm_exists || { echo "❌ VM $VM does not exist in $ZONE" >&2; exit 1; }
+
+  local current
+  current="$("${GC[@]}" compute instances describe "$VM" --zone "$ZONE" --format='value(serviceAccounts[0].email)')"
+  if [ "$current" != "$TUNNEL_SA" ]; then
+    if [ "$attach" -ne 1 ]; then
+      echo "❌ $VM runs as '${current:-no service account}', not $TUNNEL_SA." >&2
+      echo "   Attaching it stops and starts the VM (interrupting the runner); re-run with --attach-identity." >&2
+      exit 1
+    fi
+    echo "attaching $TUNNEL_SA to $VM (stop → set identity → start)…"
+    "${GC[@]}" compute instances stop "$VM" --zone "$ZONE"
+    "${GC[@]}" compute instances set-service-account "$VM" --zone "$ZONE" \
+      --service-account "$TUNNEL_SA" --scopes https://www.googleapis.com/auth/cloud-platform
+    "${GC[@]}" compute instances start "$VM" --zone "$ZONE"
+    wait_for_ssh
+  fi
+
+  echo "installing tunnel unit on $VM → $instance:$remote_port ($zone) at 127.0.0.1:$port…"
+  "${GSSH[@]}" --command "sudo bash -s" <<INSTALL
+set -euo pipefail
+if ! command -v gcloud >/dev/null 2>&1; then
+  apt-get install -qy apt-transport-https ca-certificates gnupg curl >/dev/null
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" > /etc/apt/sources.list.d/google-cloud-sdk.list
+  apt-get update -q >/dev/null && apt-get install -qy google-cloud-cli >/dev/null
+fi
+cat > /etc/systemd/system/weaver-db-tunnel.service <<EOF
+[Unit]
+Description=IAP tunnel to the private database bastion ($instance)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=weaver
+ExecStart=/usr/bin/gcloud compute start-iap-tunnel $instance $remote_port --project $PROJECT --zone $zone --local-host-port=localhost:$port
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now weaver-db-tunnel
+for _ in \$(seq 1 60); do
+  if (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null; then echo "✓ tunnel up on 127.0.0.1:$port"; exit 0; fi
+  sleep 1
+done
+echo "❌ tunnel not accepting after 60s:" >&2
+journalctl -u weaver-db-tunnel -n 30 --no-pager >&2
+exit 1
+INSTALL
+  echo "   worker DSNs on this host should use 127.0.0.1:$port (push them with push-worker-secrets)"
+}
+
 # ── join ──────────────────────────────────────────────────────────────────────
 # Everything a second machine needs, ready to paste. The store password is
 # fetched over SSH and embedded in the link URL — which `weaver link` persists
@@ -585,6 +680,7 @@ case "${1:-}" in
   push-env) shift; cmd_push_env "$@";;
   push-worker-secrets) shift; cmd_push_worker_secrets "$@";;
   tunnel)   shift; cmd_tunnel "$@";;
+  db-tunnel) shift; cmd_db_tunnel "$@";;
   join)     shift; cmd_join "$@";;
   ssh)      shift; cmd_ssh "$@";;
   logs)     shift; cmd_logs "$@";;
