@@ -33,7 +33,7 @@
  * not merged, not reviewed, and not visible to anyone except as GitHub's "had
  * recent pushes" banner. A workstream that starts a follow-up refactor before
  * the merge and finishes after it does exactly this — one did, forty-three
- * minutes after erdoai/erdo #2176 merged, and the commit had to be re-homed on
+ * minutes after that branch's PR merged, and the commit had to be re-homed on
  * a fresh branch by hand. Unlike a file overlap, this has no benign reading and
  * git settles nothing at merge time: there is no merge left to have.
  *

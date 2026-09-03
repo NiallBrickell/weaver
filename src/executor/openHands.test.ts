@@ -5,11 +5,11 @@ import { rewriteLoopbackHostsForContainer } from './openHands.js';
 describe('rewriteLoopbackHostsForContainer', () => {
   it('rewrites a loopback DB URL to host.docker.internal, preserving userinfo, port and query', () => {
     const out = rewriteLoopbackHostsForContainer({
-      ERDO_PG_READONLY_URI:
+      PG_READONLY_URI:
         'postgresql://claude_code:p%40ss-w0rd@127.0.0.1:55432/postgres?sslmode=disable',
     });
     assert.equal(
-      out.ERDO_PG_READONLY_URI,
+      out.PG_READONLY_URI,
       'postgresql://claude_code:p%40ss-w0rd@host.docker.internal:55432/postgres?sslmode=disable',
     );
   });

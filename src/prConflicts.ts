@@ -5,7 +5,7 @@
  * The deconfliction gate (deconflict.ts) looks at file overlaps at EGRESS
  * time; nothing watched the PR afterwards, so when main moved under an open
  * PR the conflict sat invisible until a human noticed and relayed it by hand
- * (erdoai/erdo #2139 and #2144 in one weekend). The stream that owns the PR
+ * (twice in one weekend). The stream that owns the PR
  * has everything needed to rebase — it just never learns the fact.
  *
  * Ownership is derived from the WORLD, not from parsing model text: an egress
