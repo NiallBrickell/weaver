@@ -792,6 +792,76 @@ describe(
   () => {
     contractSuite(pgBackend);
 
+    test('an unchanged document is re-read by its change token only; any row write moves the body again', async () => {
+      // One tick reads its document twenty-odd times, and over a hosted
+      // store's public proxy every body is billed. The cache may therefore
+      // skip the body ONLY while the row is provably the same version — and
+      // "row write" means any write: a store mutation, a rename, a re-create,
+      // or an out-of-band UPDATE that never bumped the revision.
+      const counts = { head: 0, body: 0 };
+      const originalQuery = pg.Pool.prototype.query;
+      pg.Pool.prototype.query = function (this: pg.Pool, ...args: unknown[]) {
+        const first = args[0];
+        const text = typeof first === 'string' ? first : ((first as { text?: string } | undefined)?.text ?? '');
+        if (/^SELECT xmin::text AS xmin, revision, doc FROM workstreams/.test(text)) counts.body += 1;
+        else if (/^SELECT xmin::text AS xmin, revision FROM workstreams/.test(text)) counts.head += 1;
+        return (originalQuery as unknown as (...a: unknown[]) => unknown).apply(this, args);
+      } as unknown as typeof originalQuery;
+      try {
+        await makeWorkstream();
+        await closeStore(); // a fresh process knows nothing: its first read must move the body
+        const first = await load('test-ws');
+        await load('test-ws');
+        await load('test-ws');
+        assert.deepEqual(counts, { head: 2, body: 1 });
+
+        // A returned document is the caller's own copy.
+        first.workstream.title = 'edited in place by a reader';
+        assert.equal((await load('test-ws')).workstream.title, 'Test');
+        assert.deepEqual(counts, { head: 3, body: 1 });
+
+        // Another process's revision-checked write: the next read transfers it.
+        const elsewhere = structuredClone(first);
+        elsewhere.workstream.title = 'written by another process';
+        elsewhere.revision = first.revision + 1;
+        await pgAdmin((c) =>
+          c.query('UPDATE workstreams SET doc = $1::json, revision = revision + 1 WHERE slug = $2', [
+            JSON.stringify(elsewhere),
+            'test-ws',
+          ]),
+        );
+        assert.equal((await load('test-ws')).workstream.title, 'written by another process');
+        assert.deepEqual(counts, { head: 4, body: 2 });
+
+        // An out-of-band write that forgot the revision is still a new row
+        // version: the revision alone would have served the stale body.
+        elsewhere.workstream.title = 'edited without a revision bump';
+        await pgAdmin((c) =>
+          c.query('UPDATE workstreams SET doc = $1::json WHERE slug = $2', [JSON.stringify(elsewhere), 'test-ws']),
+        );
+        assert.equal((await load('test-ws')).workstream.title, 'edited without a revision bump');
+        assert.deepEqual(counts, { head: 5, body: 3 });
+
+        // A write through this store primes the cache: the read after it is a hit.
+        const current = await load('test-ws');
+        await mutate('test-ws', current.revision, (d) => {
+          d.workstream.title = 'mutated here';
+        });
+        assert.equal((await load('test-ws')).workstream.title, 'mutated here');
+        assert.deepEqual(counts, { head: 7, body: 3 });
+
+        // A rename carries the body to the new slug and forgets the old one.
+        await rename('test-ws', 'renamed-ws');
+        assert.equal((await load('renamed-ws')).workstream.slug, 'renamed-ws');
+        await assert.rejects(load('test-ws'), /no workstream 'test-ws'/);
+        // A slug this process no longer remembers is asked for in full; the
+        // row is gone, so the statement ran but no body crossed the wire.
+        assert.deepEqual(counts, { head: 8, body: 4 });
+      } finally {
+        pg.Pool.prototype.query = originalQuery;
+      }
+    });
+
     test('head columns are backfilled once for rows written before they existed', async () => {
       // A fleet copied in by a build that predates the columns carries NULL
       // head columns; the next process's schema pass fills them from the

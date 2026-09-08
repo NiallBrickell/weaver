@@ -46,6 +46,24 @@ still walks its local files. Rule of thumb for hosted stores: a hot path may
 loop over `listWorkstreamHeads()`, never over `load()` — anything that needs one
 field of every document is a head column and a backend method.
 
+The same measurement showed the other half of the residual: one tick re-reads
+its own document twenty-odd times (`load(slug)` at the top of most engine
+helpers, `workstreamStatus`, `deliverManagerNotices`, the coordinator pass),
+and a routine's document is large — `daily-engineering-update` was 4.1 MB at
+revision 4829 because assignments, passes, wakes and decisions are unbounded
+history while only `events` is a bounded tail — so ticks alone moved about a
+document a second. `PgStore.load()` therefore keeps a process-local body cache
+validated on every read by the row's change token, `xmin` plus the CAS
+revision: a hit costs one narrow head read, and any committed write to the row
+(a store mutation, a rename, a re-create, an out-of-band UPDATE that forgot the
+revision) is a new row version and so a miss. Writes through the store prime
+the cache from their `RETURNING` row; callers get a clone so an in-place edit
+cannot leak into the next reader. This is deliberately not a time-based cache
+and it does not change `load()`'s contract — every call still returns the
+current durable document — it only changes what crosses the wire to prove it.
+Document growth itself (compacting a routine's finished passes, wakes and
+assignments) is the remaining structural item.
+
 **External poolers must preserve session identity.** The Postgres tick lock is
 session-scoped, so transaction-mode PgBouncer can hand the next statement a
 different backend and silently destroy the exclusion contract. Use a direct or

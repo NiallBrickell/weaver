@@ -173,6 +173,13 @@ function headColumns(doc: WorkstreamDoc): { managedBySlug: string | null; status
   return { managedBySlug: managedBySlug ?? null, status: doc.workstream.status };
 }
 
+/** The change token of one row version — see PgStore.bodies. Selected as
+ * `xmin::text AS xmin, revision` by every statement that primes or validates
+ * the body cache; `xmin` is a system column node-postgres returns as text. */
+function rowToken(row: { xmin: string; revision: number }): string {
+  return `${row.xmin}:${row.revision}`;
+}
+
 /**
  * The deliberately narrow seam used by the one-time filesystem → Postgres
  * fleet copy. Ordinary writes must continue through StateStore's revisioned
@@ -223,6 +230,21 @@ export class PgStore implements StateStore {
   private readonly pool: pg.Pool;
   private readonly connectionString: string;
   private ready: Promise<void> | undefined;
+  /**
+   * Process-local document bodies, keyed by slug and validated on EVERY read
+   * against the row's change token — never trusted on elapsed time. The token
+   * is the row version's `xmin` plus the CAS revision: any committed write to
+   * the row (a store write, a rename, a re-create after deletion, even an
+   * out-of-band UPDATE that forgot the revision) produces a new row version
+   * and so a new token, and the next load() transfers the body again. A hit
+   * costs one narrow head read instead of a document that can be megabytes;
+   * one tick reads its document twenty-odd times, and over a hosted store's
+   * public proxy every one of those bodies was billed egress. Writes made
+   * through this store prime the cache from their RETURNING row so the read
+   * that follows a write is a hit too. Callers receive a clone: a document
+   * they edit in place must not leak into the next reader.
+   */
+  private readonly bodies = new Map<string, { token: string; doc: WorkstreamDoc }>();
 
   constructor(connectionString: string) {
     this.connectionString = connectionString;
@@ -412,6 +434,9 @@ export class PgStore implements StateStore {
    */
   async importExactFleet(snapshot: ExactPgFleetSnapshot): Promise<void> {
     await this.ensureReady();
+    // A whole new fleet is about to land; nothing remembered about the old
+    // (empty) one may answer for it.
+    this.bodies.clear();
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
@@ -544,9 +569,31 @@ export class PgStore implements StateStore {
 
   async load(slug: string): Promise<WorkstreamDoc> {
     await this.ensureReady();
-    const r = await this.pool.query('SELECT doc FROM workstreams WHERE slug = $1', [slug]);
-    if (r.rowCount === 0) throw new Error(`no workstream '${slug}' in the Postgres store`);
-    return r.rows[0].doc as WorkstreamDoc;
+    const cached = this.bodies.get(slug);
+    if (cached) {
+      const head = await this.pool.query(
+        'SELECT xmin::text AS xmin, revision FROM workstreams WHERE slug = $1',
+        [slug],
+      );
+      if (head.rowCount === 0) {
+        this.bodies.delete(slug);
+        throw new Error(`no workstream '${slug}' in the Postgres store`);
+      }
+      if (rowToken(head.rows[0] as { xmin: string; revision: number }) === cached.token) {
+        return structuredClone(cached.doc);
+      }
+    }
+    const r = await this.pool.query(
+      'SELECT xmin::text AS xmin, revision, doc FROM workstreams WHERE slug = $1',
+      [slug],
+    );
+    if (r.rowCount === 0) {
+      this.bodies.delete(slug);
+      throw new Error(`no workstream '${slug}' in the Postgres store`);
+    }
+    const doc = r.rows[0].doc as WorkstreamDoc;
+    this.bodies.set(slug, { token: rowToken(r.rows[0] as { xmin: string; revision: number }), doc: structuredClone(doc) });
+    return doc;
   }
 
   async create(core: Omit<WorkstreamCore, 'id' | 'createdAt' | 'status'>): Promise<WorkstreamDoc> {
@@ -558,12 +605,14 @@ export class PgStore implements StateStore {
     writeJournalReceipt(printoutJournalDir(core.slug), creationReceipt(doc));
     const head = headColumns(doc);
     try {
-      await this.pool.query(
+      const inserted = await this.pool.query(
         `INSERT INTO workstreams
            (slug, revision, doc, source_key_json, source_key_initialized, managed_by_slug, status)
-         VALUES ($1, $2, $3::json, $4, true, $5, $6)`,
+         VALUES ($1, $2, $3::json, $4, true, $5, $6)
+         RETURNING xmin::text AS xmin, revision`,
         [core.slug, doc.revision, JSON.stringify(doc), sourceKeyJson(doc), head.managedBySlug, head.status],
       );
+      this.bodies.set(core.slug, { token: rowToken(inserted.rows[0] as { xmin: string; revision: number }), doc: structuredClone(doc) });
     } catch (e) {
       if ((e as { code?: string }).code === '23505') {
         // Two unique constraints can raise 23505: the slug PK and the
@@ -619,7 +668,8 @@ export class PgStore implements StateStore {
              managed_by_slug = $5,
              status = $6,
              revision = revision + 1
-         WHERE slug = $3 AND revision = $4`,
+         WHERE slug = $3 AND revision = $4
+         RETURNING xmin::text AS xmin, revision`,
         [JSON.stringify(doc), sourceKeyJson(doc), slug, stored, head.managedBySlug, head.status],
       );
       if (upd.rowCount === 0) {
@@ -640,9 +690,13 @@ export class PgStore implements StateStore {
         events: emitted,
       } satisfies PrintoutMutationReceipt);
       await client.query('COMMIT');
+      this.bodies.set(slug, { token: rowToken(upd.rows[0] as { xmin: string; revision: number }), doc: structuredClone(doc) });
       return doc;
     } catch (e) {
       await client.query('ROLLBACK').catch(() => {});
+      // Whatever this process believed about the row may now be wrong (a
+      // concurrent write beat us); make the next read prove it.
+      this.bodies.delete(slug);
       if (
         (e as { code?: string; constraint?: string }).code === '23505' &&
         (e as { constraint?: string }).constraint === 'workstreams_source_key' &&
@@ -845,7 +899,7 @@ export class PgStore implements StateStore {
       doc.workstream.slug = newSlug;
       doc.revision = stored + 1;
       const head = headColumns(doc);
-      await client.query(
+      const renamed = await client.query(
         `UPDATE workstreams
          SET slug = $1,
              doc = $2::json,
@@ -854,7 +908,8 @@ export class PgStore implements StateStore {
              managed_by_slug = $5,
              status = $6,
              revision = revision + 1
-         WHERE slug = $4`,
+         WHERE slug = $4
+         RETURNING xmin::text AS xmin, revision`,
         [newSlug, JSON.stringify(doc), sourceKeyJson(doc), oldSlug, head.managedBySlug, head.status],
       );
       await client.query('UPDATE artifacts SET slug = $1 WHERE slug = $2', [newSlug, oldSlug]);
@@ -868,6 +923,8 @@ export class PgStore implements StateStore {
         events: emitted,
       } satisfies PrintoutMutationReceipt);
       await client.query('COMMIT');
+      this.bodies.delete(oldSlug);
+      this.bodies.set(newSlug, { token: rowToken(renamed.rows[0] as { xmin: string; revision: number }), doc: structuredClone(doc) });
       moveLocalSidecars(oldSlug, newSlug);
       return doc;
     } catch (e) {
