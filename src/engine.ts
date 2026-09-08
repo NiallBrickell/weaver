@@ -137,7 +137,14 @@ export async function runActionCommand(
         if (process.platform === 'win32') child.kill(signal);
         else process.kill(-child.pid, signal);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        // ESRCH: the group is already gone. EPERM: the group id now belongs to
+        // a process we may not signal — Weaver spawned this tree as itself, so
+        // that can only be an unrelated process that reused the id after the
+        // last member exited (seen at `close`, where the leader is dead by
+        // definition). Either way there is nothing of ours left to kill, and
+        // throwing from the close handler would take the runner down instead.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ESRCH' && code !== 'EPERM') throw error;
       }
     };
 
