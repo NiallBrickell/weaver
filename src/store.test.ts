@@ -29,6 +29,7 @@ import {
   createWorkstream,
   findBySourceKey,
   heartbeatRunner,
+  listManagedBy,
   listRunnerPresence,
   listWorkstreamHeads,
   listWorkstreams,
@@ -177,6 +178,65 @@ function contractSuite(backend: Backend): void {
       { slug: 'a-head', revision: first.revision },
       { slug: 'b-head', revision: changed.revision },
     ]);
+  });
+
+  test('manager → children listing is one level, ordered, live-status, and follows rename', async () => {
+    // A coordinator pass asks this at every start ("how many of mine are still
+    // running?"), so the answer is typed store state — direct children only,
+    // each with its current status — not a fleet scan the caller reassembles.
+    await makeWorkstream('mgr');
+    await makeWorkstream('child-b');
+    await makeWorkstream('child-a');
+    await makeWorkstream('bystander');
+    await makeWorkstream('grandchild');
+    const adopt = async (child: string, manager: string) => {
+      const doc = await load(child);
+      await mutate(child, doc.revision, (d) => {
+        d.workstream.managedBy = { slug: manager, sinceVirtual: virtualNow().toISOString() };
+      });
+    };
+    await adopt('child-a', 'mgr');
+    await adopt('child-b', 'mgr');
+    await adopt('grandchild', 'child-a'); // one hop below: never the manager's
+
+    assert.deepEqual(await listManagedBy('mgr'), [
+      { slug: 'child-a', status: 'active' },
+      { slug: 'child-b', status: 'active' },
+    ]);
+    assert.deepEqual(await listManagedBy('child-a'), [{ slug: 'grandchild', status: 'active' }]);
+    assert.deepEqual(await listManagedBy('bystander'), []);
+    assert.deepEqual(await listManagedBy('no-such-manager'), []);
+
+    // Status is read live: a child concluding shows up on the next call.
+    const childB = await load('child-b');
+    await mutate('child-b', childB.revision, (d) => {
+      d.workstream.status = 'done';
+    });
+    assert.deepEqual(await listManagedBy('mgr'), [
+      { slug: 'child-a', status: 'active' },
+      { slug: 'child-b', status: 'done' },
+    ]);
+
+    // Renaming a child moves its head with it; the pointer survives.
+    await rename('child-a', 'child-a-renamed');
+    assert.deepEqual(await listManagedBy('mgr'), [
+      { slug: 'child-a-renamed', status: 'active' },
+      { slug: 'child-b', status: 'done' },
+    ]);
+  });
+
+  test('source-key lookup finds the exact holder and nothing else', async () => {
+    const quoted = 'tracker:"quoted"\\slash\u00e9';
+    await createWorkstream({
+      slug: 'holder', title: 'H', objective: 'o', tags: [], successCriteria: [], constraints: [],
+      sourceKey: quoted, autonomy: { sendsRequireApproval: true }, budget: { maxCoordinatorPasses: 5, maxCostUsd: 5 },
+    });
+    await makeWorkstream('unkeyed');
+    assert.equal(await findBySourceKey(quoted), 'holder');
+    // Neither the JSON encoding of the key nor a prefix of it is the key.
+    assert.equal(await findBySourceKey(JSON.stringify(quoted)), null);
+    assert.equal(await findBySourceKey('tracker:'), null);
+    assert.equal(await findBySourceKey('missing'), null);
   });
 
   test('a stale write is rejected with RevisionConflictError and mutates nothing', async () => {
@@ -731,6 +791,29 @@ describe(
   { skip: PG_URL ? false : 'WEAVER_TEST_PG_URL not set — export it (any plain Postgres) to run the store contract against the pg backend' },
   () => {
     contractSuite(pgBackend);
+
+    test('head columns are backfilled once for rows written before they existed', async () => {
+      // A fleet copied in by a build that predates the columns carries NULL
+      // head columns; the next process's schema pass fills them from the
+      // documents under the schema lock, and the manager listing is answered
+      // from the columns from then on (no body read).
+      await makeWorkstream('mgr');
+      await makeWorkstream('child');
+      const child = await load('child');
+      await mutate('child', child.revision, (d) => {
+        d.workstream.managedBy = { slug: 'mgr', sinceVirtual: virtualNow().toISOString() };
+      });
+      await pgAdmin((c) => c.query('UPDATE workstreams SET managed_by_slug = NULL, status = NULL'));
+      await closeStore(); // the next store call is a fresh process's first connect
+      assert.deepEqual(await listManagedBy('mgr'), [{ slug: 'child', status: 'active' }]);
+      const columns = await pgAdmin((c) =>
+        c.query('SELECT slug, managed_by_slug, status FROM workstreams ORDER BY slug'),
+      );
+      assert.deepEqual(columns.rows, [
+        { slug: 'child', managed_by_slug: 'mgr', status: 'active' },
+        { slug: 'mgr', managed_by_slug: null, status: 'active' },
+      ]);
+    });
 
     test('a current schema is confirmed from the catalog without queueing for a table lock', async () => {
       // Regression for the 2026-09-03 fleet wedge: a client that died holding

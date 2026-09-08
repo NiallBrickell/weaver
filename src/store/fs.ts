@@ -27,7 +27,7 @@ import { acquireProcessLock } from '../processLock.js';
 import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc, newId, sha256 } from './doc.js';
-import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 export { newId, sha256 };
 
@@ -111,6 +111,36 @@ export class FsStore implements StateStore {
       }
     }
     return heads;
+  }
+
+  async listManagedBy(managerSlug: string): Promise<ManagedWorkstreamHead[]> {
+    // O(fleet) on the reference backend: every document is on local disk, so
+    // a scan costs no network. Unreadable siblings are skipped, never thrown —
+    // one corrupt workstream must not blind a manager to the rest of its fleet.
+    const out: ManagedWorkstreamHead[] = [];
+    for (const slug of await this.listWorkstreams()) {
+      let doc: WorkstreamDoc;
+      try {
+        doc = this.loadSync(slug);
+      } catch {
+        continue;
+      }
+      if (doc.workstream.managedBy?.slug === managerSlug) out.push({ slug, status: doc.workstream.status });
+    }
+    return out;
+  }
+
+  async findBySourceKey(sourceKey: string): Promise<string | null> {
+    // Best-effort lookup (an unreadable document is skipped). Uniqueness is
+    // enforced inside create() by the fail-loud slugForSourceKey scan.
+    for (const slug of await this.listWorkstreams()) {
+      try {
+        if (this.loadSync(slug).workstream.sourceKey === sourceKey) return slug;
+      } catch {
+        continue;
+      }
+    }
+    return null;
   }
 
   /** Synchronous read shared by load() and mutate() — mutate must not yield

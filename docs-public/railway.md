@@ -105,7 +105,21 @@ This preserves the same fresh-head, wake, recovery, and revision-CAS semantics
 without retransmitting or reprocessing the knowledge base every few seconds.
 Keep runners current:
 older builds that list and reload every document on every poll can turn a large
-fleet's public-database traffic into the dominant Railway cost.
+fleet's public-database traffic into the dominant Railway cost. Builds before
+2026-09-08 also answered "which workstreams does this manager own?" and "does a
+workstream already stand for this source key?" by loading every document; a
+coordinator pass asks the first question at every start, so each pass moved the
+whole fleet over the public proxy. Current builds keep the manager pointer and
+status as indexed head columns beside each document and probe the source-key
+index, so those questions cost one narrow query. Railway bills every byte a
+service sends over the public TCP proxy as network egress at $0.05/GB; traffic
+between services on the private network (`postgres.railway.internal`) is not
+metered that way, which is why the operator UI's full-fleet page renders do not
+appear on the bill while a runner on an external host does. If egress climbs
+again, attribute it before guessing: Railway's Postgres image preloads
+`pg_stat_statements`, so one `CREATE EXTENSION IF NOT EXISTS pg_stat_statements`
+makes `SELECT calls, rows, query FROM pg_stat_statements ORDER BY calls DESC`
+show exactly which statement is moving documents and how often.
 
 The browser's four-second change detector uses that same head list plus current
 runner presence. It does not render or transfer Workstream documents until the

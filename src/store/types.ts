@@ -65,6 +65,15 @@ export interface WorkstreamHead {
   revision: number;
 }
 
+/** Cheap identity of one direct child of a manager: its slug and live status.
+ * Backends answer this from an index over the manager pointer, never by
+ * transferring every document — a coordinator pass asks it at every start, and
+ * over a hosted store each document read is billed network egress. */
+export interface ManagedWorkstreamHead {
+  slug: string;
+  status: WorkstreamDoc['workstream']['status'];
+}
+
 export type EventHelper = (type: string, summary: string, refs?: string[]) => void;
 
 export type Mutator = (doc: WorkstreamDoc, event: EventHelper) => void;
@@ -111,6 +120,17 @@ export interface StateStore {
   /** Current readable heads, ordered by slug. The revision is the same CAS
    * revision carried by load(slug); no document bodies cross this seam. */
   listWorkstreamHeads(): Promise<WorkstreamHead[]>;
+  /** Direct children of one manager — the workstreams whose
+   * `workstream.managedBy.slug` is managerSlug — ordered by slug with each
+   * child's live status. Single-level, never resolved transitively (kernel
+   * rule 1: flat identities, no trees). An unreadable document is skipped,
+   * never thrown: one corrupt workstream must not blind a manager to the rest
+   * of its fleet. Database backends answer from an index, not from bodies. */
+  listManagedBy(managerSlug: string): Promise<ManagedWorkstreamHead[]>;
+  /** The slug already standing for an external sourceKey, or null. Best-effort
+   * (an unreadable document is skipped); create() is what enforces uniqueness
+   * atomically at the write. */
+  findBySourceKey(sourceKey: string): Promise<string | null>;
   load(slug: string): Promise<WorkstreamDoc>;
   create(core: Omit<WorkstreamCore, 'id' | 'createdAt' | 'status'>): Promise<WorkstreamDoc>;
   /** undefined expectedRevision = serialized arrival (see contract above). */
