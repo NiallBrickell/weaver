@@ -28,6 +28,24 @@ typed runner presence to reproduce the full render's hash shape without
 calling `loadFleet()`; full documents cross the store seam only for an actual
 page render after that cheap hash changes.
 
+**Second remote-store cost surprise (2026-09-08).** After the runner fix the
+Railway Postgres still transmitted 30–110 GB/day, and on 2026-09-08 the
+workspace's prepaid credit ran out and Railway stopped every service in the
+account for three hours. Attribution with `pg_stat_statements` (preloaded in
+Railway's Postgres image; `CREATE EXTENSION` once) showed the head poll was
+narrow but `SELECT doc … WHERE slug = $1` still ran ~0.6/s: the shared layer's
+`listManagedBy()` and `findBySourceKey()` were `listWorkstreams()` + `load()`
+loops, and a coordinator pass calls `listManagedBy()` at every start to state
+the live count of the streams it manages — one full-fleet transfer (100
+documents, 51 MB, some 4 MB each) per pass, over the billed public proxy. Both
+are now `StateStore` methods: pg keeps `managed_by_slug` and `status` head
+columns beside the document (written by every create/mutate/rename/import,
+backfilled once under the schema lock, indexed) and probes the existing
+source-key index; sqlite uses `json_extract`; only the fs reference backend
+still walks its local files. Rule of thumb for hosted stores: a hot path may
+loop over `listWorkstreamHeads()`, never over `load()` — anything that needs one
+field of every document is a head column and a backend method.
+
 **External poolers must preserve session identity.** The Postgres tick lock is
 session-scoped, so transaction-mode PgBouncer can hand the next statement a
 different backend and silently destroy the exclusion contract. Use a direct or

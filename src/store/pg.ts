@@ -45,7 +45,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 /**
  * Idempotent, run on first use of every process. The `revision` COLUMN is the
@@ -137,6 +137,16 @@ const SCHEMA = `
 
   ALTER TABLE workstreams ADD COLUMN IF NOT EXISTS source_key_json text;
   ALTER TABLE workstreams ADD COLUMN IF NOT EXISTS source_key_initialized boolean NOT NULL DEFAULT false;
+  -- Head columns beside the document: the manager pointer and live status are
+  -- what a coordinator pass asks of every sibling at start, and answering from
+  -- the row instead of the body keeps that question off the wire (every body
+  -- read over a hosted store's public proxy is billed egress). NULL status
+  -- marks a row written before these columns existed; initializeSchema
+  -- backfills it from the document once.
+  ALTER TABLE workstreams ADD COLUMN IF NOT EXISTS managed_by_slug text;
+  ALTER TABLE workstreams ADD COLUMN IF NOT EXISTS status text;
+  CREATE INDEX IF NOT EXISTS workstreams_managed_by
+    ON workstreams (managed_by_slug) WHERE managed_by_slug IS NOT NULL;
   ALTER TABLE runner_presence ADD COLUMN IF NOT EXISTS coordinator_seats json;
   INSERT INTO policies (singleton, revision, store)
     VALUES (true, 0, '{"schemaVersion":1,"revision":0,"policies":[]}'::json)
@@ -145,6 +155,22 @@ const SCHEMA = `
 
 function sourceKeyJson(doc: WorkstreamDoc): string | null {
   return doc.workstream.sourceKey === undefined ? null : JSON.stringify(doc.workstream.sourceKey);
+}
+
+/**
+ * The head columns every write keeps beside the document. A document always
+ * carries a status, so a NULL `status` column can only mean "row predates the
+ * columns"; a missing manager pointer is a real NULL.
+ */
+function headColumns(doc: WorkstreamDoc): { managedBySlug: string | null; status: string } {
+  const managedBySlug = doc.workstream.managedBy?.slug;
+  if (managedBySlug !== undefined && typeof managedBySlug !== 'string') {
+    throw new Error(`workstream '${doc.workstream.slug}' has an invalid non-string managedBy.slug`);
+  }
+  if (typeof doc.workstream.status !== 'string') {
+    throw new Error(`workstream '${doc.workstream.slug}' has an invalid non-string status`);
+  }
+  return { managedBySlug: managedBySlug ?? null, status: doc.workstream.status };
 }
 
 /**
@@ -278,6 +304,13 @@ export class PgStore implements StateStore {
          AND EXISTS (SELECT 1 FROM pg_attribute
                  WHERE attrelid = to_regclass('runner_presence') AND attname = 'coordinator_seats'
                    AND NOT attisdropped)
+         AND EXISTS (SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('workstreams') AND attname = 'managed_by_slug'
+                   AND NOT attisdropped)
+         AND EXISTS (SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('workstreams') AND attname = 'status'
+                   AND NOT attisdropped)
+         AND to_regclass('workstreams_managed_by') IS NOT NULL
          AND to_regclass('workstreams_source_key') IS NOT NULL AS current`,
     );
     if (shape.rows[0]?.current !== true) return false;
@@ -286,6 +319,7 @@ export class PgStore implements StateStore {
     // regardless of short-circuit order.
     const rows = await client.query(
       `SELECT NOT EXISTS (SELECT 1 FROM workstreams WHERE NOT source_key_initialized)
+          AND NOT EXISTS (SELECT 1 FROM workstreams WHERE status IS NULL)
           AND EXISTS (SELECT 1 FROM policies WHERE singleton) AS current`,
     );
     return rows.rows[0]?.current === true;
@@ -326,6 +360,23 @@ export class PgStore implements StateStore {
            SET source_key_json = $1, source_key_initialized = true
            WHERE slug = $2`,
           [sourceKey === undefined ? null : JSON.stringify(sourceKey), row.slug],
+        );
+      }
+
+      // Head columns for rows written before they existed. Decoded in
+      // JavaScript like the source key above (no SQL JSON operator may touch
+      // the document), once, under the same schema lock.
+      const headless = await client.query(
+        `SELECT slug, doc FROM workstreams
+         WHERE status IS NULL
+         ORDER BY slug
+         FOR UPDATE`,
+      );
+      for (const row of headless.rows as { slug: string; doc: WorkstreamDoc }[]) {
+        const head = headColumns(row.doc);
+        await client.query(
+          'UPDATE workstreams SET managed_by_slug = $1, status = $2 WHERE slug = $3',
+          [head.managedBySlug, head.status, row.slug],
         );
       }
 
@@ -384,11 +435,12 @@ export class PgStore implements StateStore {
       }
 
       for (const entry of snapshot.workstreams) {
+        const head = headColumns(entry.doc);
         await client.query(
           `INSERT INTO workstreams
-             (slug, revision, doc, source_key_json, source_key_initialized)
-           VALUES ($1, $2, $3::json, $4, true)`,
-          [entry.slug, entry.revision, JSON.stringify(entry.doc), sourceKeyJson(entry.doc)],
+             (slug, revision, doc, source_key_json, source_key_initialized, managed_by_slug, status)
+           VALUES ($1, $2, $3::json, $4, true, $5, $6)`,
+          [entry.slug, entry.revision, JSON.stringify(entry.doc), sourceKeyJson(entry.doc), head.managedBySlug, head.status],
         );
       }
       for (const artifact of snapshot.artifacts) {
@@ -469,6 +521,27 @@ export class PgStore implements StateStore {
     return r.rows.map((row) => ({ slug: row.slug as string, revision: row.revision as number }));
   }
 
+  async listManagedBy(managerSlug: string): Promise<ManagedWorkstreamHead[]> {
+    await this.ensureReady();
+    // Answered from the head columns alone: no document body crosses the wire.
+    const r = await this.pool.query(
+      'SELECT slug, status FROM workstreams WHERE managed_by_slug = $1 ORDER BY slug',
+      [managerSlug],
+    );
+    return r.rows.map((row) => ({ slug: row.slug as string, status: row.status as ManagedWorkstreamHead['status'] }));
+  }
+
+  async findBySourceKey(sourceKey: string): Promise<string | null> {
+    await this.ensureReady();
+    // The same JSON-string encoding and C collation the uniqueness index is
+    // built on, so this is one index probe rather than a fleet scan.
+    const r = await this.pool.query(
+      'SELECT slug FROM workstreams WHERE source_key_json COLLATE "C" = $1 LIMIT 1',
+      [JSON.stringify(sourceKey)],
+    );
+    return r.rowCount ? (r.rows[0].slug as string) : null;
+  }
+
   async load(slug: string): Promise<WorkstreamDoc> {
     await this.ensureReady();
     const r = await this.pool.query('SELECT doc FROM workstreams WHERE slug = $1', [slug]);
@@ -483,12 +556,13 @@ export class PgStore implements StateStore {
     // leave an orphan future receipt, which printout readers ignore, but never
     // a committed head whose transition is missing.
     writeJournalReceipt(printoutJournalDir(core.slug), creationReceipt(doc));
+    const head = headColumns(doc);
     try {
       await this.pool.query(
         `INSERT INTO workstreams
-           (slug, revision, doc, source_key_json, source_key_initialized)
-         VALUES ($1, $2, $3::json, $4, true)`,
-        [core.slug, doc.revision, JSON.stringify(doc), sourceKeyJson(doc)],
+           (slug, revision, doc, source_key_json, source_key_initialized, managed_by_slug, status)
+         VALUES ($1, $2, $3::json, $4, true, $5, $6)`,
+        [core.slug, doc.revision, JSON.stringify(doc), sourceKeyJson(doc), head.managedBySlug, head.status],
       );
     } catch (e) {
       if ((e as { code?: string }).code === '23505') {
@@ -536,14 +610,17 @@ export class PgStore implements StateStore {
       fn(doc, eventHelperFor(doc, emitted));
       doc.revision = stored + 1;
       attemptedSourceKey = doc.workstream.sourceKey;
+      const head = headColumns(doc);
       const upd = await client.query(
         `UPDATE workstreams
          SET doc = $1::json,
              source_key_json = $2,
              source_key_initialized = true,
+             managed_by_slug = $5,
+             status = $6,
              revision = revision + 1
          WHERE slug = $3 AND revision = $4`,
-        [JSON.stringify(doc), sourceKeyJson(doc), slug, stored],
+        [JSON.stringify(doc), sourceKeyJson(doc), slug, stored, head.managedBySlug, head.status],
       );
       if (upd.rowCount === 0) {
         // A concurrent transaction committed between our snapshot read and the
@@ -767,15 +844,18 @@ export class PgStore implements StateStore {
       eventHelperFor(doc, emitted)('workstream.renamed', `renamed from '${oldSlug}' to '${newSlug}'`);
       doc.workstream.slug = newSlug;
       doc.revision = stored + 1;
+      const head = headColumns(doc);
       await client.query(
         `UPDATE workstreams
          SET slug = $1,
              doc = $2::json,
              source_key_json = $3,
              source_key_initialized = true,
+             managed_by_slug = $5,
+             status = $6,
              revision = revision + 1
          WHERE slug = $4`,
-        [newSlug, JSON.stringify(doc), sourceKeyJson(doc), oldSlug],
+        [newSlug, JSON.stringify(doc), sourceKeyJson(doc), oldSlug, head.managedBySlug, head.status],
       );
       await client.query('UPDATE artifacts SET slug = $1 WHERE slug = $2', [newSlug, oldSlug]);
       // Receipt before COMMIT, into the OLD slug's machine-local journal — the

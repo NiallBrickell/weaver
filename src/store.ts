@@ -33,7 +33,7 @@ import { FsStore, artifactsDir, newId, printoutJournalDir, sha256, weaverHome, w
 import { PgStore } from './store/pg.js';
 import { SqliteStore } from './store/sqlite.js';
 import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './store/types.js';
-import type { RunnerPresence, WorkstreamHead } from './store/types.js';
+import type { ManagedWorkstreamHead, RunnerPresence, WorkstreamHead } from './store/types.js';
 import type { WorkstreamCore, WorkstreamDoc } from './types.js';
 import { assertRunnerId } from './runnerIdentity.js';
 
@@ -110,44 +110,31 @@ export async function load(slug: string): Promise<WorkstreamDoc> {
 
 /**
  * Direct children of one manager slug — a single-level scan, never resolved
- * transitively (kernel rule 1: flat identities, no trees). O(fleet) on the fs
- * backend; flagged as a fast-follow for the in-flight Postgres adapter to
- * index instead. Unreadable sibling docs are skipped, never thrown: one
- * corrupt workstream must not blind a manager to the rest of its fleet.
+ * transitively (kernel rule 1: flat identities, no trees). Every coordinator
+ * pass asks this at start, so it is a backend method: the database backends
+ * answer it from the manager pointer they keep beside each document, and only
+ * the fs reference backend still walks its local files. It used to be a
+ * shared-layer `listWorkstreams()` + `load()` loop, which on a hosted Postgres
+ * transferred the whole fleet — every body — once per pass over the billed
+ * public proxy (see docs/harness.md, "Remote-store cost surprise").
+ * Unreadable sibling docs are skipped, never thrown: one corrupt workstream
+ * must not blind a manager to the rest of its fleet.
  */
-export async function listManagedBy(managerSlug: string): Promise<{ slug: string; status: WorkstreamDoc['workstream']['status'] }[]> {
-  const out: { slug: string; status: WorkstreamDoc['workstream']['status'] }[] = [];
-  for (const slug of await listWorkstreams()) {
-    let doc: WorkstreamDoc;
-    try {
-      doc = await load(slug);
-    } catch {
-      continue;
-    }
-    if (doc.workstream.managedBy?.slug === managerSlug) {
-      out.push({ slug, status: doc.workstream.status });
-    }
-  }
-  return out;
+export async function listManagedBy(managerSlug: string): Promise<ManagedWorkstreamHead[]> {
+  return getStore().listManagedBy(managerSlug);
 }
 
 /**
  * The slug of the workstream already standing for an external thing, if one
  * exists. Intake is at-least-once — a repeated pass, a redelivered webhook, a
  * coordinator that simply looks again — so spawning is keyed on this rather
- * than on anyone remembering what they already created.
+ * than on anyone remembering what they already created. Best-effort: a single
+ * unreadable document must not make an existing workstream invisible to the
+ * dedupe, but it must not wedge intake either; create() enforces uniqueness.
  */
 export async function findBySourceKey(sourceKey: string): Promise<string | null> {
-  for (const slug of await listWorkstreams()) {
-    try {
-      if ((await load(slug)).workstream.sourceKey === sourceKey) return slug;
-    } catch {
-      // A single unreadable document must not make an existing workstream
-      // invisible to the dedupe — but it must not wedge intake either.
-      continue;
-    }
-  }
-  return null;}
+  return getStore().findBySourceKey(sourceKey);
+}
 
 /**
  * Apply a revision-checked mutation. `expectedRevision` must equal the stored

@@ -48,7 +48,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, SourceKeyConflictError, type Mutator, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 /**
  * Idempotent, run once per process at construction. TEXT for doc JSON (SQLite
@@ -197,6 +197,31 @@ export class SqliteStore implements StateStore {
       const typed = row as { slug: string; revision: number };
       return { slug: typed.slug, revision: typed.revision };
     });
+  }
+
+  async listManagedBy(managerSlug: string): Promise<ManagedWorkstreamHead[]> {
+    // json_extract reads the manager pointer and status out of the stored
+    // document without transferring bodies; json_valid skips a corrupt row the
+    // same way the fs backend skips an unreadable file.
+    return this.db.prepare(
+      `SELECT slug, json_extract(doc, '$.workstream.status') AS status
+       FROM workstreams
+       WHERE json_valid(doc) AND json_extract(doc, '$.workstream.managedBy.slug') = ?
+       ORDER BY slug`,
+    ).all(managerSlug).map((row) => {
+      const typed = row as { slug: string; status: ManagedWorkstreamHead['status'] };
+      return { slug: typed.slug, status: typed.status };
+    });
+  }
+
+  async findBySourceKey(sourceKey: string): Promise<string | null> {
+    // Best-effort lookup; create() enforces uniqueness under BEGIN IMMEDIATE.
+    const row = this.db.prepare(
+      `SELECT slug FROM workstreams
+       WHERE json_valid(doc) AND json_extract(doc, '$.workstream.sourceKey') = ?
+       LIMIT 1`,
+    ).get(sourceKey) as { slug: string } | undefined;
+    return row?.slug ?? null;
   }
 
   async load(slug: string): Promise<WorkstreamDoc> {
