@@ -798,15 +798,20 @@ describe(
       // skip the body ONLY while the row is provably the same version — and
       // "row write" means any write: a store mutation, a rename, a re-create,
       // or an out-of-band UPDATE that never bumped the revision.
+      // Count at the client: pool.query() (load) runs through a pooled client,
+      // and mutate/arrive hold a checked-out client, so one seam sees both
+      // paths exactly once, and the head statement is the same text on both.
       const counts = { head: 0, body: 0 };
-      const originalQuery = pg.Pool.prototype.query;
-      pg.Pool.prototype.query = function (this: pg.Pool, ...args: unknown[]) {
-        const first = args[0];
-        const text = typeof first === 'string' ? first : ((first as { text?: string } | undefined)?.text ?? '');
-        if (/^SELECT xmin::text AS xmin, revision, doc FROM workstreams/.test(text)) counts.body += 1;
-        else if (/^SELECT xmin::text AS xmin, revision FROM workstreams/.test(text)) counts.head += 1;
-        return (originalQuery as unknown as (...a: unknown[]) => unknown).apply(this, args);
-      } as unknown as typeof originalQuery;
+      const originalClientQuery = pg.Client.prototype.query;
+      const counting = (original: unknown) =>
+        function (this: unknown, ...args: unknown[]) {
+          const first = args[0];
+          const text = typeof first === 'string' ? first : ((first as { text?: string } | undefined)?.text ?? '');
+          if (/^SELECT xmin::text AS xmin, revision, doc FROM workstreams/.test(text)) counts.body += 1;
+          else if (/^SELECT xmin::text AS xmin, revision FROM workstreams/.test(text)) counts.head += 1;
+          return (original as (...a: unknown[]) => unknown).apply(this, args);
+        };
+      pg.Client.prototype.query = counting(originalClientQuery) as unknown as typeof originalClientQuery;
       try {
         await makeWorkstream();
         await closeStore(); // a fresh process knows nothing: its first read must move the body
@@ -842,13 +847,38 @@ describe(
         assert.equal((await load('test-ws')).workstream.title, 'edited without a revision bump');
         assert.deepEqual(counts, { head: 5, body: 3 });
 
-        // A write through this store primes the cache: the read after it is a hit.
+        // A checked write's own read is the same head check: it holds this
+        // row version already, so the transaction reads no body. Its RETURNING
+        // row then primes the cache, and the read after it is a hit.
         const current = await load('test-ws');
         await mutate('test-ws', current.revision, (d) => {
           d.workstream.title = 'mutated here';
         });
         assert.equal((await load('test-ws')).workstream.title, 'mutated here');
-        assert.deepEqual(counts, { head: 7, body: 3 });
+        assert.deepEqual(counts, { head: 8, body: 3 });
+
+        // An arrival takes the row lock on the head and likewise needs no body
+        // while the version is the one it holds.
+        await arrive('test-ws', (d) => {
+          d.workstream.title = 'arrived';
+        });
+        assert.equal((await load('test-ws')).workstream.title, 'arrived');
+        assert.deepEqual(counts, { head: 10, body: 3 });
+
+        // When the row moved underneath it, the arrival reads the body inside
+        // its own locked transaction and applies the mutator to THAT version.
+        const moved = structuredClone(await load('test-ws'));
+        moved.workstream.objective = 'objective set by another process';
+        await pgAdmin((c) =>
+          c.query('UPDATE workstreams SET doc = $1::json WHERE slug = $2', [JSON.stringify(moved), 'test-ws']),
+        );
+        await arrive('test-ws', (d) => {
+          d.workstream.title = 'arrived onto moved row';
+        });
+        const after = await load('test-ws');
+        assert.equal(after.workstream.title, 'arrived onto moved row');
+        assert.equal(after.workstream.objective, 'objective set by another process');
+        assert.deepEqual(counts, { head: 13, body: 4 });
 
         // A rename carries the body to the new slug and forgets the old one.
         await rename('test-ws', 'renamed-ws');
@@ -856,9 +886,9 @@ describe(
         await assert.rejects(load('test-ws'), /no workstream 'test-ws'/);
         // A slug this process no longer remembers is asked for in full; the
         // row is gone, so the statement ran but no body crossed the wire.
-        assert.deepEqual(counts, { head: 8, body: 4 });
+        assert.deepEqual(counts, { head: 14, body: 5 });
       } finally {
-        pg.Pool.prototype.query = originalQuery;
+        pg.Client.prototype.query = originalClientQuery;
       }
     });
 

@@ -640,18 +640,42 @@ export class PgStore implements StateStore {
       // An ARRIVAL (undefined expectedRevision) reads FOR UPDATE: the row lock
       // serializes the whole read-modify-write region, so simultaneous
       // arrivals queue and all land instead of racing the CAS.
-      const r = await client.query(
+      // Head first (row-locked for an arrival). If this process already holds
+      // this exact row version, the body need not cross the wire again: the
+      // arrival's row lock, or the checked write's revision predicate below,
+      // guards the write exactly as it did when the body was always re-read.
+      const headRow = await client.query(
         expectedRevision === undefined
-          ? 'SELECT doc, revision FROM workstreams WHERE slug = $1 FOR UPDATE'
-          : 'SELECT doc, revision FROM workstreams WHERE slug = $1',
+          ? 'SELECT xmin::text AS xmin, revision FROM workstreams WHERE slug = $1 FOR UPDATE'
+          : 'SELECT xmin::text AS xmin, revision FROM workstreams WHERE slug = $1',
         [slug],
       );
-      if (r.rowCount === 0) throw new Error(`no workstream '${slug}' in the Postgres store`);
-      const stored = r.rows[0].revision as number;
+      if (headRow.rowCount === 0) {
+        this.bodies.delete(slug);
+        throw new Error(`no workstream '${slug}' in the Postgres store`);
+      }
+      const stored = headRow.rows[0].revision as number;
       if (expectedRevision !== undefined && stored !== expectedRevision) {
         throw new RevisionConflictError(expectedRevision, stored);
       }
-      const doc = r.rows[0].doc as WorkstreamDoc;
+      const token = rowToken(headRow.rows[0] as { xmin: string; revision: number });
+      const cached = this.bodies.get(slug);
+      let doc: WorkstreamDoc;
+      if (cached && cached.token === token) {
+        doc = structuredClone(cached.doc);
+      } else {
+        const r = await client.query(
+          'SELECT xmin::text AS xmin, revision, doc FROM workstreams WHERE slug = $1',
+          [slug],
+        );
+        // A checked write reads without a row lock, so a concurrent commit can
+        // land between the head and the body. The body must be the version the
+        // head described; anything else is the conflict the CAS would report.
+        if (r.rowCount === 0 || rowToken(r.rows[0] as { xmin: string; revision: number }) !== token) {
+          throw new RevisionConflictError(expectedRevision ?? stored, (r.rows[0]?.revision as number | undefined) ?? -1);
+        }
+        doc = r.rows[0].doc as WorkstreamDoc;
+      }
       const before = structuredClone(doc);
       const emitted: EventRecord[] = [];
       // The mutator contract is SYNCHRONOUS (enforced structurally in
