@@ -111,7 +111,11 @@ workstream already stand for this source key?" by loading every document; a
 coordinator pass asks the first question at every start, so each pass moved the
 whole fleet over the public proxy. Current builds keep the manager pointer and
 status as indexed head columns beside each document and probe the source-key
-index, so those questions cost one narrow query. Railway bills every byte a
+index, so those questions cost one narrow query. They also re-read a document a
+process already holds only when the row has actually changed: every read still
+returns the current durable document, but proving it unchanged costs one head
+read instead of the body, so a tick that consults its multi-megabyte routine
+document twenty times transfers it once. Railway bills every byte a
 service sends over the public TCP proxy as network egress at $0.05/GB; traffic
 between services on the private network (`postgres.railway.internal`) is not
 metered that way, which is why the operator UI's full-fleet page renders do not
