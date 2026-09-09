@@ -401,7 +401,7 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
         );
       });
       process.stdout.write(
-        `provider retry due for ${retried.join(', ')} — Weaver changed no billing or identity; the next runner/tick will test recovery\n`,
+        `provider retry due for ${retried.join(', ')} — Weaver changed no billing or identity; the next real run will test recovery\n`,
       );
       break;
     }

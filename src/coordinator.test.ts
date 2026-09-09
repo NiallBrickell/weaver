@@ -540,6 +540,89 @@ test('a mid-chain capacity failure wakes immediately for non-Claude OpenRouter',
   });
 });
 
+test('a successful fallback retires covered coordinator retries without clearing the failed pool or real wakes', async () => {
+  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = 'claude-opus-5';
+  await runCoordinatorPass('coordinator-capacity', ['real work'], {
+    id: 'local-sdk', async execute() { throw new Error('You have hit your weekly limit'); },
+  });
+  const failed = await load('coordinator-capacity');
+  const retry = failed.wakes.find((wake) => wake.infrastructure?.source === 'coordinator')!;
+  assert.ok(retry);
+  const capacityBefore = failed.capacity;
+  await arrive('coordinator-capacity', (doc) => {
+    doc.wakes.push({
+      id: 'wake_real_check', reason: 'Review tomorrow', status: 'pending',
+      condition: { type: 'time', dueAtVirtual: new Date(Date.now() + 86_400_000).toISOString() },
+      createdAt: new Date().toISOString(),
+    }, {
+      ...retry, id: 'wake_worker_retry',
+      infrastructure: { ...retry.infrastructure!, source: 'worker', sourceId: 'run_worker' },
+    }, {
+      ...retry, id: 'wake_safety',
+      executionSafety: { blockedUntil: retry.infrastructure!.retryAt, observedStarts: 30, limit: 30, windowSeconds: 3600 },
+    });
+  });
+  await runCoordinatorPass('coordinator-capacity', ['continue on fallback'], {
+    id: 'local-sdk', async execute(req) {
+      assert.equal(req.model, 'claude-opus-5');
+      await req.tools.find((tool) => tool.name === 'finish_pass')!.handler({ summary: 'Real work reconciled.' }, {});
+      return { costUsd: 0 };
+    },
+  });
+  const completed = await load('coordinator-capacity');
+  assert.equal(completed.wakes.find((wake) => wake.id === retry.id)!.status, 'cancelled');
+  assert.equal(completed.wakes.find((wake) => wake.id === retry.id)!.coordinatorCancellation, undefined);
+  for (const id of ['wake_real_check', 'wake_worker_retry', 'wake_safety']) {
+    assert.equal(completed.wakes.find((wake) => wake.id === id)!.status, 'pending');
+  }
+  assert.deepEqual(completed.capacity, capacityBefore, 'fallback success does not claim primary recovery');
+  assert.equal(pickCoordinatorTarget(completed, virtualNow().toISOString()).model, 'claude-opus-5');
+  assert.equal(pickCoordinatorTarget(completed, retry.infrastructure!.retryAt).model, 'claude-fable-5',
+    'the next real wake after reset may use the primary without a separate probe');
+  assert.ok(completed.events.some((event) => event.type === 'wake.coordinator_retry_superseded'));
+});
+
+for (const ending of ['no_finish', 'conflicted'] as const) {
+  test(`a ${ending} fallback preserves retry wakes and concurrent arrivals`, async () => {
+    await runCoordinatorPass('coordinator-capacity', ['real work'], {
+      id: 'local-sdk', async execute() { throw new Error('You have hit your weekly limit'); },
+    });
+    const retry = (await load('coordinator-capacity')).wakes.find((wake) => wake.infrastructure)!;
+    const result = await runCoordinatorPass('coordinator-capacity', ['continue on fallback'], {
+      id: 'local-sdk', async execute(req) {
+        if (ending === 'conflicted') {
+          await arrive('coordinator-capacity', (doc) => {
+            doc.wakes.push({ ...retry, id: 'wake_concurrent' });
+          });
+          const reply = await req.tools.find((tool) => tool.name === 'finish_pass')!.handler({ summary: 'Stale finish.' }, {});
+          assert.equal(reply.isError, true);
+        }
+        return { costUsd: 0 };
+      },
+    });
+    assert.equal(result.outcome, ending);
+    const doc = await load('coordinator-capacity');
+    assert.equal(doc.wakes.find((wake) => wake.id === retry.id)!.status, 'pending');
+    if (ending === 'conflicted') assert.equal(doc.wakes.find((wake) => wake.id === 'wake_concurrent')!.status, 'pending');
+  });
+}
+
+test('an SDK limit after a successful finish keeps its new retry wake', async () => {
+  await runCoordinatorPass('coordinator-capacity', ['real work'], {
+    id: 'local-sdk', async execute() { throw new Error('You have hit your weekly limit'); },
+  });
+  const priorRetry = (await load('coordinator-capacity')).wakes.find((wake) => wake.infrastructure)!;
+  const result = await runCoordinatorPass('coordinator-capacity', ['continue on fallback'], {
+    id: 'local-sdk', async execute(req) {
+      await req.tools.find((tool) => tool.name === 'finish_pass')!.handler({ summary: 'Reconciled.' }, {});
+      return { costUsd: 0, error: 'You have hit your weekly limit' };
+    },
+  });
+  const doc = await load('coordinator-capacity');
+  assert.equal(doc.wakes.find((wake) => wake.id === priorRetry.id)!.status, 'cancelled');
+  assert.ok(doc.wakes.some((wake) => wake.status === 'pending' && wake.infrastructure?.sourceId === result.passId));
+});
+
 test('a runner without the selected coordinator executor cannot claim a pass lease', async () => {
   const before = await load('coordinator-capacity');
   await assert.rejects(

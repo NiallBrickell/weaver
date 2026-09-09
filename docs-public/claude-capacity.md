@@ -29,6 +29,14 @@ A usage, session, rate-limit, overload, or authentication failure is infrastruct
 5. Weaver retries the limited execution target at the earliest future reset reported by its provider. If the provider supplies no usable reset, Weaver uses a bounded fallback delay.
 6. A fresh process continues from the stored projection when the wake becomes due. Another rejection parks it again; a successful real run clears the matching capacity state and restores the primary when it is available.
 
+Once a coordinator successfully reconciles the work, including on a fallback,
+Weaver retires the earlier coordinator retry timers that pass covered. The
+failed pools' capacity records remain: the next genuine work wake after their
+reset can select them again. A timer does not launch a model just to recheck a
+pool whose work has already continued. Worker retries, scheduled organizational
+checks, and new failures remain pending; a failed or conflicted reconciliation
+does not retire its retry timers.
+
 There are no periodic model probes: polling a limited account would consume scarce capacity and amplify an outage. Weaver performs one bounded, model-specific Claude SDK probe when Claude credential-file metadata changes, without reading the credential. Non-Claude executor waits are never sent through that probe. After changing usage or billing settings, make the stored wait due explicitly:
 
 ```bash
