@@ -343,6 +343,16 @@ export async function runCoordinatorPass(
   // Read the children's live status now, so "how many are still in flight?" is
   // a typed fact in the projection rather than something the pass reconstructs.
   const projection = buildProjection(doc, wakeReasons, matchedPolicies, await listManagedBy(slug));
+  // A successful reconciliation covers earlier failed coordinator attempts,
+  // even when a fallback supplied it. Keep their capacity facts, but do not
+  // wake a model just to recheck a pool after its work has already continued.
+  // Pin the exact wakes visible to this pass; later arrivals remain pending.
+  const coveredCoordinatorRetries = new Set(doc.wakes.filter((wake) =>
+    wake.status === 'pending' && wake.condition.type === 'time' &&
+    !wake.executionSafety && wake.infrastructure?.source === 'coordinator' &&
+    doc.passes.some((pass) => pass.id === wake.infrastructure!.sourceId &&
+      pass.id !== passId && pass.outcome !== 'running'),
+  ).map((wake) => wake.id));
   let finished = false;
   // Latched when finish_pass's OWN revision-checked write loses to a concurrent
   // arrival. Without this, a conflicted finish still finalized as 'completed'
@@ -1269,6 +1279,18 @@ export async function runCoordinatorPass(
             for (const dir of d.managerDirections ?? []) {
               if (!dir.consumedByPass) dir.consumedByPass = passId;
             }
+            const retiredRetries: string[] = [];
+            for (const wake of d.wakes) {
+              if (wake.status === 'pending' && coveredCoordinatorRetries.has(wake.id)) {
+                wake.status = 'cancelled';
+                retiredRetries.push(wake.id);
+              }
+            }
+            if (retiredRetries.length) {
+              event('wake.coordinator_retry_superseded',
+                `${passId} reconciled the work behind ${retiredRetries.length} earlier coordinator retries; capacity waits remain until recovery`,
+                [passId, ...retiredRetries]);
+            }
             d.lease = null;
             event('pass.finished', `${passId}: ${a.summary}`, [passId]);
             return `pass ${passId} finished`;
@@ -1411,9 +1433,9 @@ export async function runCoordinatorPass(
       // Degrade, don't park: if ANY other seat in the ordered chain has no
       // active wait, wake immediately — the next pass will pick the first
       // available seat (pickCoordinatorTarget reads the capacity entry just
-      // recorded). The typed wake above stays: it is the failed pool's
-      // bookkeeping; its scheduled reset (or explicit retry) restores that
-      // seat as soon as a real pass proves the pool recovered.
+      // recorded). The retry wake stays until a pass successfully reconciles
+      // this work. That finish retires the timer, not the capacity entry:
+      // the next real wake after reset may select this pool again.
       const passNowIso = virtualNow().toISOString();
       const next = coordinatorTargets().find((target) => {
         const failedSeat = target.executor === infrastructure.executor &&
