@@ -23,6 +23,9 @@ import {
 import type { ClerkOperatorAuthenticator } from './clerkOperatorAuth.js';
 import { arrive, createWorkstream, heartbeatRunner, listWorkstreams, load, newId, writeArtifact } from './store.js';
 import { OPERATOR_SCRIPT } from './ui/operator/render.js';
+import { recordCapacityBackoff } from './capacity.js';
+import { viewOf } from './watch.js';
+import { snapshot as terminalSnapshot } from './tui.js';
 
 let home: string;
 let running: RunningOperatorUi | undefined;
@@ -780,6 +783,51 @@ test('fleet revision advances on the bounded presentation clock without a durabl
     new Date('2026-08-31T12:01:00.000Z'),
   );
   assert.notEqual(after, before, 'due labels, lease expiry, and routine readiness cannot remain stale forever');
+});
+
+test('published coordinator seat changes invalidate the browser without heartbeat-only churn', async () => {
+  const now = new Date('2026-09-10T12:00:10.000Z');
+  const heads = async () => [{ slug: 'alpha', revision: 3 }];
+  const seat = { executor: 'local-sdk', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.3' };
+  const presence = { runnerId: 'gcp', heartbeatAt: now.toISOString(), coordinatorSeats: [seat] };
+  const first = await currentFleetRevision(heads, async () => [presence], now, now);
+  const heartbeat = await currentFleetRevision(heads, async () => [{ ...presence, heartbeatAt: new Date(now.getTime() + 1000).toISOString() }], now, now);
+  const changed = await currentFleetRevision(heads, async () => [{ ...presence, coordinatorSeats: [{ ...seat, model: 'new-reviewed-model' }] }], now, now);
+  assert.equal(first, heartbeat);
+  assert.notEqual(first, changed);
+  const nearlyStale = { ...presence, heartbeatAt: new Date(now.getTime() - 119_000).toISOString() };
+  const fresh = await currentFleetRevision(heads, async () => [nearlyStale], now, now);
+  const expired = await currentFleetRevision(heads, async () => [nearlyStale], new Date(now.getTime() + 2000), now);
+  assert.notEqual(fresh, expired, 'TTL expiry refreshes the view even within one presentation minute');
+});
+
+test('live browser and terminal watch use the hosted chain and preserve scheduled provider retries', async () => {
+  const created = await createTeamWorkstream({ message: 'Reconcile hosted capacity.', requestId: 'hosted-capacity', actor: 'alice' });
+  const now = new Date().toISOString();
+  const retryAt = new Date(Date.now() + 60 * 60_000).toISOString();
+  const seat = { executor: 'local-sdk', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.3' };
+  await heartbeatRunner('gcp', now, [seat]);
+  await arrive(created.slug, (doc) => {
+    doc.workstream.executionPolicy = { coordinatorRunnerOrder: ['gcp'] };
+    const wait = { ...seat, kind: 'usage_limit' as const, recovery: 'wait_or_enable_usage_credits' as const, source: 'coordinator' as const, sourceId: 'pass_hosted', detectedAt: now, retryAt };
+    recordCapacityBackoff(doc, wait);
+    doc.wakes = [{ id: 'wake_hosted', reason: 'RAW PROVIDER ERROR', condition: { type: 'time', dueAtVirtual: retryAt }, status: 'pending', createdAt: now, infrastructure: wait }];
+  });
+  const page = await (await fetch(`${base}/workstreams/${created.slug}`)).text();
+  assert.match(page, /OpenRouter/);
+  assert.doesNotMatch(page, /fallback .* available|No next move scheduled/);
+  const board = await (await fetch(base)).text();
+  assert.match(board, /OpenRouter/);
+  const terminal = await viewOf(created.slug);
+  assert.equal(terminal.bucket, 2);
+  assert.match(terminal.details.join('\n'), /next wake .*provider retry/);
+  assert.doesNotMatch(terminal.details.join('\n'), /RAW PROVIDER ERROR|fallback .* available/);
+  const tui = await terminalSnapshot();
+  const row = tui.streams.find((stream) => stream.slug === created.slug)!;
+  assert.equal(row.bucket, 2);
+  assert.equal(row.nextRun, retryAt);
+  assert.match(row.details.join('\n'), /OpenRouter/);
+  assert.doesNotMatch(row.nextReason!, /RAW PROVIDER ERROR/);
 });
 
 test('decision responses accept an option with a condition or a custom answer without granting authority', async () => {

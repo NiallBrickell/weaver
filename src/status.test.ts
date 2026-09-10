@@ -7,6 +7,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { renderStatus } from './status.js';
+import { fleetBoard, workstreamPage } from './ui/inspect/model.js';
 import type {
   CapacityCategory,
   InfrastructureRecovery,
@@ -257,6 +258,29 @@ test('a wait whose retry is still ahead is reported as a live block', () => {
 
   assert.match(status, /WAITING — coordinator Claude claude-fable-5 rate limited/);
   assert.match(status, /provider retry scheduled at/);
+});
+
+test('status and browser views retain hosted retry timers without advertising the Mac fallback or false dormancy', () => {
+  const wait = infrastructure('usage_limit', 'wait_or_enable_usage_credits', {
+    provider: 'openrouter', model: 'openrouter/z-ai/glm-5.3',
+  });
+  const d = doc([infrastructureWake('wake_hosted', wait)]);
+  d.workstream.executionPolicy = { coordinatorRunnerOrder: ['gcp'] };
+  const seats = [{ executor: wait.executor!, provider: wait.provider!, model: wait.model }];
+  const presences = [{ runnerId: 'gcp', heartbeatAt: new Date().toISOString(), coordinatorSeats: seats }];
+  const status = renderStatus(d, [], presences);
+  assert.match(status, /WAITING — coordinator OpenRouter/);
+  assert.match(status, /provider retry .*openrouter\/z-ai\/glm-5.3 scheduled at/);
+  assert.doesNotMatch(status, /dormant|fallback .* available|RAW PROVIDER ERROR|secret-token-value/);
+  const page = workstreamPage(d, [], [], presences);
+  assert.equal(page.position.lane, 'waiting');
+  assert.match(page.position.next, /OpenRouter/);
+  const board = fleetBoard([d], [], new Map(), [], undefined, undefined, presences);
+  assert.equal(board.lanes.waiting[0]!.slug, d.workstream.slug);
+  const unknown = renderStatus(d, [], []);
+  assert.match(unknown, /capacity unknown/);
+  assert.match(unknown, /provider retry .* scheduled at/);
+  assert.doesNotMatch(unknown, /dormant|fallback .* available/);
 });
 
 test('a successful probe exposes its due reconciliation after clearing capacity state', () => {

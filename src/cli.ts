@@ -14,6 +14,7 @@ import {
   closeStore,
   createWorkstream,
   listManagedBy,
+  listRunnerPresence,
   listWorkstreams,
   load,
   newId,
@@ -375,7 +376,7 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
 
     case 'status': {
       const slug = rest[0] ?? fail('slug required');
-      process.stdout.write(renderStatus(await load(slug), await listManagedBy(slug)) + '\n');
+      process.stdout.write(renderStatus(await load(slug), await listManagedBy(slug), await listRunnerPresence()) + '\n');
       break;
     }
 

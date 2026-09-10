@@ -6,10 +6,11 @@
 import type { WorkstreamDoc } from './types.js';
 import { virtualNow } from './clock.js';
 import {
-  capacityPresentation,
   hasCapacityBackoffForWait,
   providerCapacityHeadline,
 } from './capacity.js';
+import { operatorCapacityPresentation } from './coordinatorRunner.js';
+import type { RunnerPresence } from './store/types.js';
 import {
   executionPosition,
   isWakeDue,
@@ -54,7 +55,7 @@ function sinceCutoff(doc: WorkstreamDoc): string | undefined {
  * `manages` list — never a manager's manager, never a managed stream's own
  * managed streams.
  */
-export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status: string }[] = []): string {
+export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status: string }[] = [], presences: readonly RunnerPresence[] = []): string {
   const ws = doc.workstream;
   const out: string[] = [];
   out.push(`# ${ws.title} (${ws.slug}) — ${ws.status}`);
@@ -93,7 +94,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   const wallNow = new Date();
   const virtual = virtualNow();
   const nowVirtual = virtual.toISOString();
-  const capacity = capacityPresentation(doc, nowVirtual);
+  const capacity = operatorCapacityPresentation(doc, nowVirtual, presences);
   const pilotUnavailable = doc.assignments.filter(
     (assignment) => actionHasLivePilotOutage(doc, assignment),
   );
@@ -111,6 +112,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
       : []),
     ...(capacity.blocking ? [`WAITING — ${capacity.blocking.summary}. ${capacity.blocking.recovery}`] : []),
     ...(capacity.executorUnavailable ? [`WAITING — ${capacity.executorUnavailable.summary}`] : []),
+    ...(capacity.unknown ? [`UNKNOWN — ${capacity.unknown.summary}`] : []),
     ...capacity.details
       .filter((detail) =>
         detail !== capacity.blocking?.summary && detail !== capacity.executorUnavailable?.summary,
@@ -155,12 +157,20 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
 
   // NEXT
   const nextLines = [
+    ...(capacity.unknown ? [capacity.unknown.summary] : []),
     ...(pilotUnavailable.length
       ? ['waiting for a fresh approval-service verdict; no human approval has been requested']
       : []),
     ...(capacity.blocking
       ? [`provider retry scheduled at ${capacity.blocking.retryAt.slice(0, 16)}`]
       : []),
+    ...[...new Set(pendingWakes
+      .filter((wake) => wake.infrastructure && hasCapacityBackoffForWait(doc, wake.infrastructure))
+      .map((wake) => wake.condition.type === 'time'
+        ? wake.condition.dueAtVirtual > nowVirtual
+          ? `provider retry ${wake.infrastructure!.executor ?? 'executor'}/${wake.infrastructure!.provider ?? 'provider'} ${wake.infrastructure!.model} scheduled at ${wake.condition.dueAtVirtual.slice(0, 16)}`
+          : 'provider retry reconciliation is due now'
+        : 'provider retry reconciliation is scheduled'))],
     ...recoveredCapacityWakes.map((wake) =>
       wake.condition.type === 'time' && wake.condition.dueAtVirtual > nowVirtual
         ? `capacity recovery wake at ${wake.condition.dueAtVirtual.slice(0, 16)}`

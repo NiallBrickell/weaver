@@ -16,11 +16,7 @@ import * as path from 'node:path';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, render, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
-import {
-  capacityPresentation,
-  hasCapacityBackoffForWait,
-  providerCapacityHeadline,
-} from './capacity.js';
+import { providerCapacityHeadline } from './capacity.js';
 import { activitySummary } from './activity.js';
 import { pendingSteering } from './steering.js';
 import { isWakeDue } from './executionSafety.js';
@@ -43,7 +39,7 @@ import { acquireRunnerLock, liveRunnerPid, promoteOnRunnerVacancy, runLoop, runn
 import { listRunnerPresence, listWorkstreams, load, weaverHome } from './store.js';
 import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 import { actionAwaitingPilot, actionIsLivePilotWait, humanAttention, humanAttentionCanInterrupt } from './actionApproval.js';
-import { liveRunnerIds } from './coordinatorRunner.js';
+import { liveRunnerIds, operatorCapacityPresentation } from './coordinatorRunner.js';
 import { runnerClaimIdentity, runnerDisabled } from './runnerIdentity.js';
 import { storeDisplayLabel } from './link.js';
 
@@ -295,7 +291,7 @@ export function gatedActionPosition(
   return actionIsLivePilotWait(doc, assignment) ? 'pilot-live' : 'pilot-held';
 }
 
-async function snapshot(): Promise<Snapshot> {
+export async function snapshot(): Promise<Snapshot> {
   const items: NeedsYouItem[] = [];
   const streams: StreamRow[] = [];
   const providerCapacity: ProviderCapacityObservation[] = [];
@@ -427,12 +423,8 @@ async function snapshot(): Promise<Snapshot> {
     const virtual = virtualNow();
     const nowV = virtual.toISOString();
     const pending = doc.wakes.filter((w) => w.status === 'pending');
-    const capacity = capacityPresentation(doc, nowV);
-    const operationalPending = pending.filter((wake) =>
-      !wake.infrastructure ||
-      capacity.relevantSourceIds.includes(wake.infrastructure.sourceId) ||
-      !hasCapacityBackoffForWait(doc, wake.infrastructure),
-    );
+    const capacity = operatorCapacityPresentation(doc, nowV, presences);
+    const operationalPending = pending;
     const dueNow = operationalPending.filter((w) => isWakeDue(w.condition, wallNow, virtual)).length;
     if (dueNow && !working) details.push(`○ ${dueNow} wake(s) due — in line for the runner`);
     const last = doc.events[doc.events.length - 1];
@@ -441,7 +433,7 @@ async function snapshot(): Promise<Snapshot> {
     const bucket: StreamRow['bucket'] =
       ws.status === 'paused' && !needsYou ? 3
       : needsYou ? 0
-      : (capacity.blocking || capacity.executorUnavailable || pendingPilot.length) && !working ? 2
+      : (capacity.blocking || capacity.executorUnavailable || capacity.unknown || pendingPilot.length) && !working ? 2
       : working || queued ? 1
       : ws.status === 'active' && operationalPending.length ? 2
       : 3;
@@ -454,10 +446,10 @@ async function snapshot(): Promise<Snapshot> {
     }
     // Pilot-pending actions live in the stream details (visible, not yours).
     details.unshift(...pendingPilot);
-    // Capacity is rendered from the shared role-aware projection. Historical,
-    // overdue, or fallback-covered records are never labelled WAITING.
+    // Provider blocks come from the shared role-aware projection. Historical
+    // timers remain visible as scheduled reconciliation, not a capacity block.
     const detailWidth = Math.max(40, (process.stdout.columns ?? 120) - 20);
-    const infrastructureDetails = capacity.details.flatMap((summary) =>
+    const infrastructureDetails = [...capacity.details, ...(capacity.unknown ? [capacity.unknown.summary] : [])].flatMap((summary) =>
       wrapDetail(summary, detailWidth).map((line, index) =>
         index === 0 ? `○ ${line}` : `  ${line}`,
       ),
@@ -490,7 +482,7 @@ async function snapshot(): Promise<Snapshot> {
     }
 
     const nextInfrastructureWake = operationalPending
-      .filter((w) => capacity.blocking && w.infrastructure && w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
+      .filter((w) => w.infrastructure && w.condition.type === 'time' && w.condition.dueAtVirtual > nowV)
       .sort((a, b) =>
         (a.condition as { dueAtVirtual: string }).dueAtVirtual.localeCompare(
           (b.condition as { dueAtVirtual: string }).dueAtVirtual,
@@ -530,7 +522,7 @@ async function snapshot(): Promise<Snapshot> {
       assignmentRunnerId: ws.assignmentRunnerId,
       depth: 0,
       nextRun,
-      nextReason: displayedWake?.reason,
+      nextReason: displayedWake?.infrastructure ? 'Scheduled provider retry reconciliation' : displayedWake?.reason,
       infrastructureWait: capacity.blocking?.summary,
       // Only when capacity is what actually holds the stream — a stream with
       // work in flight has already routed around the limit and must not wear

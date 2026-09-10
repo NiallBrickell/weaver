@@ -10,15 +10,12 @@
  * that needs a human, it never runs one.
  */
 
-import {
-  capacityPresentation,
-  hasCapacityBackoffForWait,
-  providerCapacityHeadline,
-} from './capacity.js';
+import { providerCapacityHeadline } from './capacity.js';
+import { operatorCapacityPresentation } from './coordinatorRunner.js';
 import { activitySummary } from './activity.js';
 import { isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
-import { listWorkstreams, load, weaverHome } from './store.js';
+import { listRunnerPresence, listWorkstreams, load, weaverHome, type RunnerPresence } from './store.js';
 import { storeDisplayLabel } from './link.js';
 import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 import { actionHasLivePilotOutage, actionNeedsHuman, humanAttention, humanAttentionCanInterrupt } from './actionApproval.js';
@@ -105,7 +102,7 @@ function attemptFresh(a: Assignment): boolean {
 
 /** Exported for the managed-workstream flat-rendering test — otherwise an
  * internal helper for the live frame loop below. */
-export async function viewOf(slug: string): Promise<WsView> {
+export async function viewOf(slug: string, presences?: readonly RunnerPresence[]): Promise<WsView> {
   let doc: WorkstreamDoc;
   try {
     // Through the store (not a direct file read) so the dashboard reflects
@@ -176,7 +173,8 @@ export async function viewOf(slug: string): Promise<WsView> {
   const virtual = virtualNow();
   const nowV = virtual.toISOString();
   const pendingWakes = doc.wakes.filter((w) => w.status === 'pending');
-  const capacity = capacityPresentation(doc, nowV);
+  const capacity = operatorCapacityPresentation(doc, nowV, presences ?? await listRunnerPresence());
+  if (capacity.unknown) details.push(`${BLUE}▸ ${capacity.unknown.summary}${R}`);
   for (const summary of capacity.details) {
     const lines = wrap(summary, 17);
     details.push(`${BLUE}▸ ${lines[0] ?? ''}${R}`);
@@ -184,18 +182,13 @@ export async function viewOf(slug: string): Promise<WsView> {
   }
   // Typed infrastructure waits have a safe summary above. Never fall back to
   // their raw provider reason; ordinary wakes retain their existing display.
-  const recoveredCapacityWakes = pendingWakes.filter(
-    (wake) => wake.infrastructure && !hasCapacityBackoffForWait(doc, wake.infrastructure),
-  );
-  const relevantCapacityWakes = pendingWakes.filter(
-    (wake) => wake.infrastructure && capacity.relevantSourceIds.includes(wake.infrastructure.sourceId),
-  );
+  const relevantCapacityWakes = pendingWakes.filter((wake) => wake.infrastructure);
   const normalWakes = pendingWakes.filter((w) => !w.infrastructure);
-  const operationalWakes = [...normalWakes, ...recoveredCapacityWakes, ...relevantCapacityWakes];
+  const operationalWakes = [...normalWakes, ...relevantCapacityWakes];
   const dueNow = operationalWakes.filter(
     (w) => isWakeDue(w.condition, wallNow, virtual),
   ).length;
-  const nextWake = normalWakes
+  const nextWake = operationalWakes
     .filter((w) =>
       (w.condition.type === 'time' && w.condition.dueAtVirtual > nowV) ||
       (w.condition.type === 'wall_time' && w.condition.dueAt > wallNow.toISOString()),
@@ -207,7 +200,7 @@ export async function viewOf(slug: string): Promise<WsView> {
   if (dueNow && !working && !queued) details.push(`${BLUE}▸ ${dueNow} wake(s) due — runner will pick up${R}`);
   else if (nextWake && !working)
     details.push(
-      `${BLUE}▸ next wake ${(nextWake.condition.type === 'wall_time' ? nextWake.condition.dueAt : (nextWake.condition as { dueAtVirtual: string }).dueAtVirtual).slice(0, 16)}${R} ${DIM}${fit(nextWake.reason, 40)}${R}`,
+      `${BLUE}▸ next wake ${(nextWake.condition.type === 'wall_time' ? nextWake.condition.dueAt : (nextWake.condition as { dueAtVirtual: string }).dueAtVirtual).slice(0, 16)}${R} ${DIM}${fit(nextWake.infrastructure ? `provider retry ${nextWake.infrastructure.model}` : nextWake.reason, 40)}${R}`,
     );
 
   const lastEvent = doc.events[doc.events.length - 1];
@@ -220,7 +213,7 @@ export async function viewOf(slug: string): Promise<WsView> {
       ? 3
       : needsYou
         ? 0
-        : (capacity.blocking || capacity.executorUnavailable || pendingPilot.length) && !working
+        : (capacity.blocking || capacity.executorUnavailable || capacity.unknown || pendingPilot.length) && !working
           ? 2
         : working || queued
           ? 1
@@ -243,7 +236,8 @@ export async function viewOf(slug: string): Promise<WsView> {
 
 async function frame(): Promise<string> {
   const slugs = await listWorkstreams();
-  const views = (await Promise.all(slugs.map(viewOf)))
+  const presences = await listRunnerPresence();
+  const views = (await Promise.all(slugs.map((slug) => viewOf(slug, presences))))
     .sort((a, b) => a.bucket - b.bucket || a.slug.localeCompare(b.slug));
   const counts = [0, 0, 0, 0, 0];
   for (const v of views) counts[v.bucket]! += 1;

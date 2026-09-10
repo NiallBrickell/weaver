@@ -1,5 +1,6 @@
 import type { PolicyRecord } from '../../policies.js';
 import type { WorkstreamDoc } from '../../types.js';
+import type { RunnerPresence } from '../../store/types.js';
 import { FleetPage } from './fleet-page.js';
 import { LearnedPage } from './learned-page.js';
 import {
@@ -15,16 +16,18 @@ export function renderOverviewHtml(
   policies: PolicyRecord[],
   managedBySlug = new Map<string, ManagedWorkstreamLink[]>(),
   unreadable: string[] = [],
+  presences: readonly RunnerPresence[] = [],
 ): string {
-  return documentHtml(<FleetPage view={fleetBoard(docs, policies, managedBySlug, unreadable)} />);
+  return documentHtml(<FleetPage view={fleetBoard(docs, policies, managedBySlug, unreadable, undefined, undefined, presences)} />);
 }
 
 export function renderWorkstreamHtml(
   doc: WorkstreamDoc,
   policies: PolicyRecord[],
   managed: ManagedWorkstreamLink[] = [],
+  presences: readonly RunnerPresence[] = [],
 ): string {
-  return documentHtml(<WorkstreamPage view={workstreamPage(doc, policies, managed)} totalPolicyCount={policies.length} />);
+  return documentHtml(<WorkstreamPage view={workstreamPage(doc, policies, managed, presences)} totalPolicyCount={policies.length} />);
 }
 
 export function renderLearnedHtml(policies: PolicyRecord[]): string {

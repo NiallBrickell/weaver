@@ -16,13 +16,12 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { userInfo } from 'node:os';
 
-import { capacityPresentation } from './capacity.js';
 import type {
   ClerkBrowserAssets,
   ClerkOperatorAuthenticator,
 } from './clerkOperatorAuth.js';
 import { virtualNow } from './clock.js';
-import { liveRunnerIds } from './coordinatorRunner.js';
+import { liveRunnerIds, operatorCapacityPresentation } from './coordinatorRunner.js';
 import {
   FLEET_ATTENTION_STEWARD_SOURCE_KEY,
   fleetAttentionEvidence,
@@ -111,6 +110,7 @@ interface LoadedFleet {
   unreadable: string[];
   managed: Map<string, ManagedWorkstreamLink[]>;
   view: OperatorFleetView;
+  presences: RunnerPresence[];
 }
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -301,12 +301,20 @@ interface RunnerObservation {
   stale: boolean;
   healthy: boolean;
   sharedLiveRunnerIds: string[];
+  sharedCoordinatorSeats?: Array<{ runnerId: string; seats?: RunnerPresence['coordinatorSeats'] }>;
 }
 
-function observeRunner(sharedLiveRunnerIds: string[]): RunnerObservation {
+function observeRunner(sharedLiveRunnerIds: string[], presences: readonly RunnerPresence[] = []): RunnerObservation {
   const pid = liveRunnerPid();
   const stale = pid !== null && runnerSourceStale();
-  return { pid, stale, healthy: pid !== null && runnerLoopHealthy() && !stale, sharedLiveRunnerIds };
+  return {
+    pid, stale, healthy: pid !== null && runnerLoopHealthy() && !stale, sharedLiveRunnerIds,
+    sharedCoordinatorSeats: sharedLiveRunnerIds.map((runnerId) => ({
+      runnerId,
+      seats: presences.filter((presence) => presence.runnerId === runnerId)
+        .sort((a, b) => b.heartbeatAt.localeCompare(a.heartbeatAt))[0]?.coordinatorSeats,
+    })),
+  };
 }
 
 function fleetRevision(
@@ -339,7 +347,7 @@ export async function currentFleetRevision(
   organizationalNow = virtualNow(),
 ): Promise<string> {
   const [currentHeads, currentPresences] = await Promise.all([heads(), presences()]);
-  return fleetRevision(currentHeads, observeRunner(liveRunnerIds(currentPresences)), wallNow, organizationalNow);
+  return fleetRevision(currentHeads, observeRunner(liveRunnerIds(currentPresences, wallNow.getTime()), currentPresences), wallNow, organizationalNow);
 }
 
 /**
@@ -456,7 +464,7 @@ function fleetScope(): OperatorFleetView['scope'] {
   };
 }
 
-function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: string[], runner: RunnerObservation): OperatorFleetView['health'] {
+function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: string[], runner: RunnerObservation, presences: readonly RunnerPresence[]): OperatorFleetView['health'] {
   const { pid, stale: staleRunner, healthy: healthyRunner } = runner;
   const sharedRunnerHealthy = /^postgres(?:ql)?:\/\//.test(process.env.WEAVER_STORE ?? '') &&
     runner.sharedLiveRunnerIds.length > 0;
@@ -465,13 +473,14 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
   const pilotIncident = incidents.find((incident) => incident.key === 'approval-service-unavailable');
   const now = virtualNow().toISOString();
   const capacityBlocked = docs.filter((doc) => {
-    const position = capacityPresentation(doc, now);
+    const position = operatorCapacityPresentation(doc, now, presences);
     return !!position.blocking || !!position.executorUnavailable;
   });
   const degraded = docs.filter((doc) => {
-    const position = capacityPresentation(doc, now);
-    return !position.blocking && !position.executorUnavailable && position.details.length > 0;
+    const position = operatorCapacityPresentation(doc, now, presences);
+    return !position.blocking && !position.executorUnavailable && !!position.degraded;
   });
+  const unknownCapacity = docs.filter((doc) => operatorCapacityPresentation(doc, now, presences).unknown);
   const unhealthyRoutines = fleetAttentionEvidence(docs, unreadable).workstreams.filter(({ routineHealth }) =>
     !!routineHealth && (
       routineHealth.dormant ||
@@ -484,6 +493,7 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
   if (unreadable.length) details.push(`${unreadable.length} unreadable Workstream${unreadable.length === 1 ? '' : 's'}`);
   if (pilotIncident) details.push(`approval service affects ${pilotIncident.affectedWorkstreams.length} outcome${pilotIncident.affectedWorkstreams.length === 1 ? '' : 's'}`);
   if (capacityBlocked.length) details.push(`execution capacity blocks ${capacityBlocked.length} outcome${capacityBlocked.length === 1 ? '' : 's'}`);
+  if (unknownCapacity.length) details.push(`execution capacity is unknown for ${unknownCapacity.length} outcome${unknownCapacity.length === 1 ? '' : 's'}`);
   if (degraded.length) details.push(`${degraded.length} outcome${degraded.length === 1 ? '' : 's'} using fallbacks`);
   if (unhealthyRoutines.length) details.push(`routine health gaps affect ${unhealthyRoutines.length} outcome${unhealthyRoutines.length === 1 ? '' : 's'}`);
   details.push(`${Object.values(board.lanes).flat().length} live · ${board.done.length} done`);
@@ -495,14 +505,16 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
       detail: `${details.join(' · ')}. Stored work is retained; execution needs operator attention.`,
     };
   }
-  if (pilotIncident || capacityBlocked.length || degraded.length || unhealthyRoutines.length) {
+  if (pilotIncident || capacityBlocked.length || degraded.length || unhealthyRoutines.length || unknownCapacity.length) {
     return {
       tone: 'warning',
       headline: pilotIncident || capacityBlocked.length
         ? 'Fleet has blocked dependencies'
         : unhealthyRoutines.length
           ? 'Fleet has stalled routines'
-          : 'Fleet is using fallback capacity',
+          : degraded.length
+            ? 'Fleet is using fallback capacity'
+            : 'Fleet capacity is not fully observable',
       detail: `${details.join(' · ')}. Intended work remains durable; no gated external effect is assumed to have happened.`,
     };
   }
@@ -576,13 +588,14 @@ async function loadFleet(): Promise<LoadedFleet> {
   }
   const managed = managedIndex(docs);
   const policies = (await loadPolicies()).policies;
-  const board = fleetBoard(docs, policies, managed, unreadable);
+  const presences = await listRunnerPresence();
+  const board = fleetBoard(docs, policies, managed, unreadable, new Date(), virtualNow(), presences);
   const incidents = fleetIncidents(docs);
   const stewardDoc = docs.find(isFleetAttentionSteward);
   const stewardCard = stewardDoc
     ? Object.values(board.lanes).flat().find((card) => card.slug === stewardDoc.workstream.slug)
     : undefined;
-  const runner = observeRunner(liveRunnerIds(await listRunnerPresence()));
+  const runner = observeRunner(liveRunnerIds(presences), presences);
   const revision = fleetRevision(
     docs.map((doc) => ({ slug: doc.workstream.slug, revision: doc.revision })),
     runner,
@@ -591,11 +604,12 @@ async function loadFleet(): Promise<LoadedFleet> {
     docs,
     unreadable,
     managed,
+    presences,
     view: {
       board,
       groups: fleetGroups(board),
       scope: fleetScope(),
-      health: fleetHealth(docs, board, unreadable, runner),
+      health: fleetHealth(docs, board, unreadable, runner, presences),
       status: fleetStatus(docs, board, runner),
       incidents,
       steward: stewardDoc ? {
@@ -1056,7 +1070,7 @@ async function handle(
     const doc = fleet.docs.find((candidate) => candidate.workstream.slug === slug);
     if (!doc) return sendHtml(res, 404, '<h1>Workstream not found</h1>');
     const policies = (await loadPolicies()).policies;
-    const view = workstreamPage(doc, policies, fleet.managed.get(slug) ?? []);
+    const view = workstreamPage(doc, policies, fleet.managed.get(slug) ?? [], fleet.presences);
     const primaryNeed = view.needs[0];
     return sendHtml(res, 200, renderOperatorWorkspaceHtml({
       fleet: fleet.view,

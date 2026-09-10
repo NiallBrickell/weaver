@@ -47,7 +47,18 @@ weaver capacity retry <slug> --model sonnet
 
 This command does not claim recovery, change billing, or count as human steering. The next real coordinator or worker run proves whether capacity recovered.
 
-The five-question status view shows the typed wait immediately. `WAITING` means the current configured execution path is genuinely blocked: a primary coordinator using its fallback continues normally, a retry that is already due is eligible rather than parked, and an old wait for a model no longer configured stays only in the full record. Authentication opens one needs-you card on the first clear failure because only the operator can log in. Usage, session, rate, and provider waits get twelve consecutive backoffs to self-clear before Weaver opens one deduplicated capacity card.
+The five-question status view shows the typed wait immediately. A provider `WAITING` means the current configured execution path is genuinely blocked: a primary coordinator using its fallback continues normally, a retry that is already due is eligible rather than parked, and an old wait for a model no longer configured cannot establish a current capacity block. Authentication opens one needs-you card on the first clear failure because only the operator can log in. Usage, session, rate, and provider waits get twelve consecutive backoffs to self-clear before Weaver opens one deduplicated capacity card.
+
+On a shared fleet, status, terminal watch, and browser views use the selected
+runner's freshly published coordinator seats, not the operator laptop's model
+settings. A missing/stale heartbeat or an older runner that publishes no seats
+means capacity is **unknown**, never that the laptop's fallback is available.
+Runner presence currently publishes no worker seats, so a remote worker's
+fallback availability is also unknown; a stored running attempt still proves
+that work started. Pending provider retry timers remain visible even when
+capacity cannot be determined, rather than making scheduled work look dormant.
+These are read-only projections: execution routing and the provider's billing
+controls are unchanged.
 
 ## Supported recovery paths
 

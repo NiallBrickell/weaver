@@ -20,7 +20,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 
-import { listManagedBy, load, SourceKeyConflictError } from './store.js';
+import { listManagedBy, listRunnerPresence, load, SourceKeyConflictError } from './store.js';
 import { renderStatus } from './status.js';
 import {
   createOrGetWorkstream,
@@ -136,7 +136,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, token: string):
       objective: doc.workstream.objective,
       revision: doc.revision,
       concluded: doc.workstream.conclusion ? doc.workstream.conclusion.summary : null,
-      status_text: renderStatus(doc, managed),
+      status_text: renderStatus(doc, managed, await listRunnerPresence()),
     });
   }
 
