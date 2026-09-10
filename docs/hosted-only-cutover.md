@@ -10,7 +10,7 @@ silently moving it back to the operator's workstation when a provider fails.
 - [x] Verify no local actions were running; drain and unload the Mac runner.
 - [x] Trace prior hosting direction against transcript evidence and current typed placement.
 - [x] Remove Mac placement/fallback from non-concluded shared work; preserve paused state and action history.
-- [x] Add and validate a machine-local execution-off posture covering runners, manual ticks, and embedded watch promotion (805 deterministic tests passed; two optional Postgres tests skipped).
+- [x] Add and validate a machine-local execution-off posture covering runners, manual ticks, and embedded watch promotion (807 deterministic tests passed; two optional Postgres tests skipped).
 - [x] Correct the operator skill's automatic local restart instructions across Codex, Claude, and Pi.
 - [x] Ship the tested change and verify the deployed local posture and hosted fleet readback (PR #191; `run` and `tick` refused, `weaver-up --restart` stayed operator-only).
 
@@ -35,6 +35,9 @@ approved commands refer to workstation-only artifacts cannot just have paths
 rewritten: preserve their state and require a hosted readback/replanning step.
 Cloud CLI reauthentication failures must be reported as an access limitation,
 not as a missing VM or a reason to restart a workstation runner.
+The GCP helper now preserves that distinction in status and provisioning;
+regression tests cover expired authentication, denied permission, network
+failure, and explicit missing-instance responses without cloud calls.
 
 The 10 September cutover reconciled 52 non-concluded Workstreams through the
 existing placement and lifecycle APIs. All 27 remaining active Workstreams

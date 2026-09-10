@@ -68,7 +68,22 @@ resolve_target() {
   GSSH=(gcloud compute ssh "$VM" --project "$PROJECT" --zone "$ZONE" --tunnel-through-iap)
 }
 
-vm_exists() { "${GC[@]}" compute instances describe "$VM" --zone "$ZONE" >/dev/null 2>&1; }
+vm_exists() {
+  local detail
+  if detail="$("${GC[@]}" compute instances describe "$VM" --zone "$ZONE" 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  # Only the provider's explicit missing-instance result permits provisioning.
+  # Expired login / permission / network errors say nothing about existence.
+  case "$detail" in
+    *"The resource 'projects/"*"/instances/$VM' was not found"*) return 1 ;;
+    *)
+      echo "❌ Cannot verify VM $VM in $ZONE; refusing to treat it as absent." >&2
+      printf '%s\n' "$detail" >&2
+      exit 1
+      ;;
+  esac
+}
 
 wait_for_ssh() {
   echo "waiting for SSH…"
@@ -656,9 +671,9 @@ cmd_update()  {
   fi
 }
 cmd_status()  {
+  vm_exists || { echo "VM $VM: not created"; exit 1; }
   "${GC[@]}" compute instances describe "$VM" --zone "$ZONE" \
-    --format='value(name,status,machineType.basename(),networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null \
-    || { echo "VM $VM: not created"; exit 1; }
+    --format='value(name,status,machineType.basename(),networkInterfaces[0].accessConfigs[0].natIP)'
   "${GSSH[@]}" --command '
     systemctl is-active weaver-run weaver-serve docker | paste - - - | sed "s/^/services (run serve docker): /"
     hb=/home/weaver/state/.runner.heartbeat

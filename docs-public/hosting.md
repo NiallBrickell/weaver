@@ -251,6 +251,12 @@ on the box itself, `weaver status <slug>` works as-is — the safe launcher read
 the same raw env records as the services without evaluating credential or JSON
 values as shell.
 
+Cloud authentication, permission, and transport failures are not evidence that
+the VM is missing. The helper refuses provisioning on those errors and reports
+the failed check; only an explicit missing-instance response permits treating
+the VM as absent. `status` likewise retains the authentication error instead of
+misreporting it as an uncreated VM.
+
 `start`, `restart`, `push-env --restart`, and `update --restart` all run the
 same fail-closed host preflight before systemd can launch the runner. This GCP
 helper is deliberately narrower than Weaver's general executor support:
