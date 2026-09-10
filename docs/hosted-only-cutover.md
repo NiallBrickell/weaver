@@ -12,7 +12,7 @@ silently moving it back to the operator's workstation when a provider fails.
 - [x] Remove Mac placement/fallback from non-concluded shared work; preserve paused state and action history.
 - [x] Add and validate a machine-local execution-off posture covering runners, manual ticks, and embedded watch promotion (805 deterministic tests passed; two optional Postgres tests skipped).
 - [x] Correct the operator skill's automatic local restart instructions across Codex, Claude, and Pi.
-- [ ] Ship the tested change and verify the deployed local posture and hosted fleet readback.
+- [x] Ship the tested change and verify the deployed local posture and hosted fleet readback (PR #191; `run` and `tick` refused, `weaver-up --restart` stayed operator-only).
 
 ## Cause
 
@@ -51,3 +51,14 @@ retained. The hosted runner continued publishing a fresh shared heartbeat,
 while cloud CLI access required operator reauthentication. Direct host repair
 and transferring/verifying the held source artifacts remain separate work
 from proving local execution is off.
+
+The owning Mac process was verified absent before its two unfinished ordinary
+Attempts were recorded as interrupted/crashed. Their responsibilities remain
+failed, not complete, with steering to verify hosted sources before replacement;
+their original host and run IDs remain intact. Cross-host recovery otherwise
+intentionally refuses to infer process death from a different machine's PID
+namespace, so merely stopping the local runner would leave these records running.
+
+Post-cutover hosted passes still reported `usage_limit`. Moving execution off
+the workstation does not restore a subscription allowance, and no account was
+rotated, billing changed, or artificial model probe launched for validation.
