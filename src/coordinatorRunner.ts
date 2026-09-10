@@ -1,5 +1,5 @@
-import { capacityBackoffFor } from './capacity.js';
-import { assertRunnerId } from './runnerIdentity.js';
+import { capacityBackoffFor, capacityPresentation, type CapacityPresentation } from './capacity.js';
+import { assertRunnerId, runnerDisabled, runnerIdentity } from './runnerIdentity.js';
 import type { RunnerPresence } from './store/types.js';
 import type { WorkstreamDoc } from './types.js';
 
@@ -53,6 +53,45 @@ export function runnerCoordinatorSeatOpen(
   return seats.some((seat) => {
     const wait = capacityBackoffFor(doc, seat)?.wait;
     return !wait || wait.retryAt <= nowIso;
+  });
+}
+
+/** Operator clients cannot use their own model configuration as evidence
+ * about a different execution host. This projection never changes routing. */
+export function operatorCapacityPresentation(
+  doc: WorkstreamDoc,
+  nowIso: string,
+  presences: readonly RunnerPresence[] = [],
+  wallNowMs = Date.now(),
+): CapacityPresentation {
+  const order = doc.workstream.executionPolicy?.coordinatorRunnerOrder;
+  const shared = /^postgres(?:ql)?:\/\//.test(process.env.WEAVER_STORE ?? '');
+  const remote = shared || runnerDisabled() || !!order?.some((id) => id !== runnerIdentity());
+  if (!remote) return capacityPresentation(doc, nowIso);
+
+  const live = new Set(liveRunnerIds(presences, wallNowMs));
+  const candidates = (order ?? [...live].sort()).flatMap((id) => {
+    if (!live.has(id)) return [];
+    const latest = presences.filter((presence) => presence.runnerId === id)
+      .sort((a, b) => b.heartbeatAt.localeCompare(a.heartbeatAt))[0];
+    return latest ? [latest] : [];
+  });
+  // Match the runner preference rule: an earlier host whose published seats
+  // are all parked yields to the next live host with an open seat.
+  const selected = candidates.find((presence) => runnerCoordinatorSeatOpen(doc, presence, nowIso))
+    ?? candidates[0];
+  const seats = selected?.coordinatorSeats ?? [];
+  const unknown = !selected
+    ? 'coordinator capacity unknown — no fresh heartbeat from an eligible runner'
+    : !seats.length
+      ? `coordinator capacity unknown — runner ${selected.runnerId} publishes no coordinator seats`
+      : undefined;
+  return capacityPresentation(doc, nowIso, new Set(seats.map((seat) => seat.executor)), {
+    coordinatorTargets: seats,
+    ...(unknown ? { coordinatorUnknown: unknown } : {}),
+    // Presence currently publishes coordinator seats only. Inferring worker
+    // fallback availability from the viewer's env would repeat the same bug.
+    workerUnknown: `worker capacity unknown — ${doc.workstream.assignmentRunnerId ?? 'execution runner'} does not publish worker seats`,
   });
 }
 

@@ -449,6 +449,16 @@ export interface CapacityPresentation {
   /** Process-local launchability is not provider capacity. Keep it separate
    * so the UI can be honest without inventing a retry timestamp. */
   executorUnavailable?: { summary: string };
+  /** Missing host publication is an evidence gap, not a provider outage. */
+  unknown?: { summary: string };
+}
+
+/** Read-only operator views can supply the selected host's published seats.
+ * Execution callers omit this and retain their own configured launch policy. */
+export interface CapacityPresentationContext {
+  coordinatorTargets: readonly CapacityTarget[];
+  coordinatorUnknown?: string;
+  workerUnknown?: string;
 }
 
 function activeWait(entry: CapacityBackoff | undefined, nowIso: string): InfrastructureWait | undefined {
@@ -524,12 +534,13 @@ export function capacityPresentation(
   doc: WorkstreamDoc,
   nowIso: string,
   executorCapabilities: ReadonlySet<string> = runnerExecutorCapabilities(),
+  context?: CapacityPresentationContext,
 ): CapacityPresentation {
   const now = new Date(nowIso);
   // The deduped coordinator chain, primary first. Every coordinator judgment
   // below walks this list: blocked only when EVERY seat has an active wait,
   // degraded when the primary waits but a later seat is available.
-  const currentCoordinatorTargets = coordinatorTargets();
+  const currentCoordinatorTargets = context?.coordinatorTargets ?? coordinatorTargets();
   const chainEntries = currentCoordinatorTargets.map((target) =>
     [target, capacityBackoffFor(doc, target)] as const,
   );
@@ -547,6 +558,7 @@ export function capacityPresentation(
     doc.wakes.some((wake) => {
       if (wake.status !== 'pending') return false;
       if (wake.infrastructure) {
+        if (context?.coordinatorUnknown) return wake.infrastructure.source === 'coordinator';
         return currentCoordinatorTargets.some((target) => waitMatchesTarget(wake.infrastructure!, target));
       }
       return wake.condition.type === 'immediate' ||
@@ -573,6 +585,8 @@ export function capacityPresentation(
   }
   const selectedCoordinatorTarget = firstAvailableTarget;
   const executorWaits: string[] = [];
+  const unknownReasons: string[] = [];
+  if (coordinatorIntent && context?.coordinatorUnknown) unknownReasons.push(context.coordinatorUnknown);
   const coordinatorExecutorWait = (
     coordinatorIntent &&
     selectedCoordinatorTarget &&
@@ -588,7 +602,9 @@ export function capacityPresentation(
     assignmentDependenciesSatisfied(doc, assignment),
   );
   const uniqueWorkerTargets = new Map<string, CapacityTarget>();
-  for (const assignment of queuedWorkerAssignments) {
+  const knownWorkerAssignments = context?.workerUnknown ? [] : queuedWorkerAssignments;
+  if (queuedWorkerAssignments.length && context?.workerUnknown) unknownReasons.push(context.workerUnknown);
+  for (const assignment of knownWorkerAssignments) {
     for (const target of workerTargetsForAssignment(assignment)) {
       uniqueWorkerTargets.set(capacityTargetKey(target), target);
     }
@@ -602,7 +618,7 @@ export function capacityPresentation(
     .map(([, entry]) => activeWait(entry, nowIso))
     .filter((wait): wait is InfrastructureWait => wait !== undefined);
   for (const wait of activeWorkerWaits) details.push(waitPosition(wait, 'worker', now));
-  const selectedWorkerTargets = queuedWorkerAssignments.map((assignment) =>
+  const selectedWorkerTargets = knownWorkerAssignments.map((assignment) =>
     selectWorkerCapacityTarget(doc, assignment, nowIso),
   );
   const everyQueuedWorkerBlocked = selectedWorkerTargets.length > 0 &&
@@ -674,6 +690,7 @@ export function capacityPresentation(
     relevantSourceIds: [...new Set(relevantEntries.flatMap(([, entry]) => entry ? [entry.wait.sourceId] : []))],
     retryEligibleSourceIds: [...new Set(retryEligibleSourceIds)],
     ...(executorUnavailable ? { executorUnavailable } : {}),
+    ...(unknownReasons.length ? { unknown: { summary: unknownReasons.join('; ') } } : {}),
   };
 }
 

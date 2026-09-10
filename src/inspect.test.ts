@@ -400,7 +400,8 @@ test('fleet capacity does not let overdue or unconfigured raw provider wakes par
     const view = fleetBoard(docs, [], new Map(), [], now, now);
     assert.equal(view.lanes.waiting.length, 0);
     assert.equal(view.lanes.ready.find((card) => card.slug === 'overdue-capacity')!.state, 'Ready to reconcile');
-    assert.equal(view.lanes.ready.find((card) => card.slug === 'unconfigured-capacity')!.state, 'No next step');
+    assert.equal(view.lanes.ready.find((card) => card.slug === 'unconfigured-capacity')!.state, 'Retry scheduled');
+    assert.match(view.lanes.ready.find((card) => card.slug === 'unconfigured-capacity')!.next, /Scheduled provider retry reconciliation/);
   });
 });
 

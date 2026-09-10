@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import { loadPolicies } from './policies.js';
 import { writePrintoutIndex } from './printoutHtml.js';
 import { loadAllSecrets, redactSecrets } from './secrets.js';
-import { listWorkstreams, load, weaverHome, workstreamDir } from './store.js';
+import { listRunnerPresence, listWorkstreams, load, weaverHome, workstreamDir } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 import type { ManagedWorkstreamLink } from './ui/inspect/model.js';
 import { renderLearnedHtml, renderOverviewHtml, renderWorkstreamHtml } from './ui/inspect/render.js';
@@ -76,17 +76,18 @@ export async function runInspect(slug?: string): Promise<string> {
   }
 
   const managed = managedIndex(docs);
+  const presences = await listRunnerPresence();
   for (const doc of docs) {
     const target = path.join(workstreamDir(doc.workstream.slug), 'inspect.html');
     writeRedacted(
       target,
-      renderWorkstreamHtml(doc, policies, managed.get(doc.workstream.slug) ?? []),
+      renderWorkstreamHtml(doc, policies, managed.get(doc.workstream.slug) ?? [], presences),
       secrets,
     );
   }
 
   const overview = path.join(weaverHome(), 'inspect.html');
-  writeRedacted(overview, renderOverviewHtml(docs, policies, managed, unreadable), secrets);
+  writeRedacted(overview, renderOverviewHtml(docs, policies, managed, unreadable, presences), secrets);
   writeRedacted(path.join(weaverHome(), 'learned.html'), renderLearnedHtml(policies), secrets);
   await writePrintoutIndex();
   return slug ? path.join(workstreamDir(slug), 'inspect.html') : overview;

@@ -1,5 +1,6 @@
 import { compactAge } from '../../activity.js';
-import { capacityPresentation } from '../../capacity.js';
+import { operatorCapacityPresentation } from '../../coordinatorRunner.js';
+import type { RunnerPresence } from '../../store/types.js';
 import { assignmentBoard, type AssignmentBoardView } from '../../assignmentBoard.js';
 import { virtualNow } from '../../clock.js';
 import { isDoctrine, type PolicyRecord } from '../../policies.js';
@@ -317,8 +318,8 @@ function soonestWake(
   doc: WorkstreamDoc,
   wallNow: Date,
   organizationalNow: Date,
-): { remaining: number; reason: string; blocking: boolean; createdAt: string } | undefined {
-  let soonest: { remaining: number; reason: string; blocking: boolean; createdAt: string } | undefined;
+): { remaining: number; reason: string; blocking: boolean; providerRetry: boolean; createdAt: string } | undefined {
+  let soonest: { remaining: number; reason: string; blocking: boolean; providerRetry: boolean; createdAt: string } | undefined;
   for (const wake of doc.wakes) {
     if (wake.status !== 'pending') continue;
     const remaining =
@@ -328,16 +329,15 @@ function soonestWake(
           ? Date.parse(wake.condition.dueAt) - wallNow.getTime()
           : 0;
     if (!Number.isFinite(remaining)) continue;
-    // Provider wakes are scheduler receipts, not an organizational wait by
-    // themselves. Future capacity blocking comes exclusively from the shared,
-    // role-aware capacity projection; an overdue receipt remains a real
-    // reconciliation move for the Ready lane.
-    if (wake.infrastructure && remaining > 0) continue;
+    // A provider receipt still names scheduled reconciliation even when the
+    // viewer cannot observe that host's current model configuration. It is
+    // not itself proof of provider blocking or a human dependency.
     if (!soonest || remaining < soonest.remaining) {
       soonest = {
         remaining,
-        reason: wake.reason,
+        reason: wake.infrastructure ? 'Scheduled provider retry reconciliation' : wake.reason,
         blocking: wake.executionSafety !== undefined,
+        providerRetry: wake.infrastructure !== undefined,
         createdAt: wake.createdAt,
       };
     }
@@ -448,6 +448,7 @@ function cardFor(
   managed: ManagedWorkstreamLink[],
   wallNow: Date,
   organizationalNow: Date,
+  presences: readonly RunnerPresence[],
 ): WorkstreamCardView {
   const needs = allNeeds.filter((need) => need.slug === doc.workstream.slug);
   const running = doc.assignments.find((assignment) => assignment.state === 'running');
@@ -459,7 +460,7 @@ function cardFor(
   const pilotUnavailable = doc.assignments.find(
     (assignment) => actionHasLivePilotOutage(doc, assignment),
   );
-  const capacity = capacityPresentation(doc, organizationalNow.toISOString());
+  const capacity = operatorCapacityPresentation(doc, organizationalNow.toISOString(), presences, wallNow.getTime());
   const wake = soonestWake(doc, wallNow, organizationalNow);
   const standing = standingCourse(doc, organizationalNow)[0]?.decision;
   const direction = [...doc.steering]
@@ -498,13 +499,16 @@ function cardFor(
     doc.workstream.status === 'paused' ||
     capacity.blocking ||
     capacity.executorUnavailable ||
-    (wake && wake.remaining > 0 && (wake.blocking || !queued))
+    capacity.unknown ||
+    (wake && wake.remaining > 0 && (wake.blocking || (!queued && !capacity.degraded && !wake.providerRetry)))
   ) {
     lane = 'waiting';
     state = pilotUnavailable
       ? 'Approval service unavailable'
       : doc.workstream.status === 'paused'
       ? 'Paused'
+      : capacity.unknown && !capacity.blocking && !capacity.executorUnavailable
+        ? 'Capacity unknown'
       : capacity.blocking || capacity.executorUnavailable || wake?.blocking
         ? 'Temporarily blocked'
         : 'Next check scheduled';
@@ -516,12 +520,14 @@ function cardFor(
         ? `${capacity.blocking.summary}. ${capacity.blocking.recovery}`
         : capacity.executorUnavailable
           ? capacity.executorUnavailable.summary
+          : capacity.unknown
+            ? capacity.unknown.summary
           : `${wake!.reason}${wake!.remaining > 0 ? ` · ${dueLabel(wake!.remaining)}` : ''}`;
     nowAge = doc.workstream.status === 'paused' || !wake ? undefined : compactAge(wake.createdAt, wallNow);
   } else {
     lane = 'ready';
-    state = capacity.degraded ? 'Degraded' : queued ? 'Ready to start' : wake ? 'Ready to reconcile' : 'No next step';
-    next = capacity.degraded?.summary ?? queued?.objective ?? wake?.reason ?? standing?.title ?? 'No next move scheduled';
+    state = capacity.degraded ? 'Degraded' : queued ? 'Ready to start' : wake ? wake.remaining > 0 ? 'Retry scheduled' : 'Ready to reconcile' : 'No next step';
+    next = capacity.degraded?.summary ?? queued?.objective ?? (wake ? `${wake.reason}${wake.remaining > 0 ? ` · ${dueLabel(wake.remaining)}` : ''}` : undefined) ?? standing?.title ?? 'No next move scheduled';
     nowAge = queued
       ? compactAge(queued.createdAtVirtual, organizationalNow)
       : wake
@@ -569,12 +575,13 @@ export function fleetBoard(
   unreadable: string[] = [],
   wallNow = new Date(),
   organizationalNow = virtualNow(),
+  presences: readonly RunnerPresence[] = [],
 ): FleetBoardView {
   const needs = fleetNeeds(docs);
   const slugsNeedingHuman = new Set(needs.map((need) => need.slug));
   const cards = docs
     .filter((doc) => doc.workstream.status !== 'done' || slugsNeedingHuman.has(doc.workstream.slug))
-    .map((doc) => cardFor(doc, needs, managedBySlug.get(doc.workstream.slug) ?? [], wallNow, organizationalNow));
+    .map((doc) => cardFor(doc, needs, managedBySlug.get(doc.workstream.slug) ?? [], wallNow, organizationalNow, presences));
   const lanes: Record<WorkstreamLane, WorkstreamCardView[]> = {
     'needs-you': [],
     moving: [],
@@ -613,6 +620,7 @@ export function workstreamPage(
   doc: WorkstreamDoc,
   allPolicies: PolicyRecord[],
   managed: ManagedWorkstreamLink[] = [],
+  presences: readonly RunnerPresence[] = [],
 ): WorkstreamPageView {
   const needs = workstreamNeeds(doc);
   const wallNow = new Date();
@@ -625,7 +633,7 @@ export function workstreamPage(
     managed,
     policies: policiesForWorkstream(allPolicies, doc),
     assignments: assignmentBoard(doc),
-    position: cardFor(doc, needs, managed, wallNow, organizationalNow),
+    position: cardFor(doc, needs, managed, wallNow, organizationalNow, presences),
     needs,
     integrityWarnings: passIntegrityWarnings(doc),
     generatedAt: new Date().toISOString(),

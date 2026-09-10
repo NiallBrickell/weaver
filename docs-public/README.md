@@ -26,7 +26,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Secrets & access](./secrets-and-access.md) — models see names, ordinary work receives only its declared credentials, and values never persist
 - [GitHub access on a hosted runner](./github-app.md) — a dedicated App mints short-lived, repo-scoped credentials without putting a person's login on the VM
 - [Configuration](./configuration.md) — machine-local settings (models, store, actions) in a `.env` file that only ever fills gaps
-- [Claude capacity & billing](./claude-capacity.md) — keeping durable work moving through Claude usage limits without changing billing or identity
+- [Claude capacity & billing](./claude-capacity.md) — provider recovery, honest hosted capacity views, and keeping work moving without changing billing or identity
 - [Execution safety](./execution-safety.md) — the rolling model-start guard that catches runaway churn and resumes automatically, without pretending SDK estimates are billing
 - [Team seeds](./team-seeds.md) — share your guardrails with your team, never your trust or your transcripts
 - [Hosted state](./hosted-state.md) — point `WEAVER_STORE` at SQLite or plain Postgres and the durable layer lives in one database
