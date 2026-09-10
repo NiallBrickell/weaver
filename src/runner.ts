@@ -45,7 +45,7 @@ import { readFleetCapacity, supersededByFleetRecovery } from './fleetCapacity.js
 import { coordinatorTargets, targetOfWait, type CapacityTarget } from './modelConfig.js';
 import { runnerExecutorCapabilities } from './modelRouting.js';
 import { acquireProcessLock, liveProcessLockPid, pidIsLive } from './processLock.js';
-import { runnerClaimIdentity, type RunnerClaimIdentity } from './runnerIdentity.js';
+import { assertRunnerEnabled, runnerClaimIdentity, runnerDisabled, type RunnerClaimIdentity } from './runnerIdentity.js';
 import type { WorkstreamDoc } from './types.js';
 
 function lockDir(): string {
@@ -253,12 +253,18 @@ export class RunnerDispatchTracker {
  * This polls the singleton lock and, the first time it acquires, hands the
  * release to `onPromote` and stops. Returns a stop() for the poller; the timer
  * is unref'd so a standby dashboard never pins the process on this alone.
+ * A host with execution disabled always remains a viewer, even on vacancy.
  */
 export function promoteOnRunnerVacancy(
   onPromote: (release: () => void) => void,
   intervalMs = 5_000,
 ): () => void {
+  if (runnerDisabled()) return () => {};
   const timer = setInterval(() => {
+    if (runnerDisabled()) {
+      clearInterval(timer);
+      return;
+    }
     const release = acquireRunnerLock();
     if (!release) return;
     clearInterval(timer);
@@ -700,6 +706,7 @@ export const RUNNER_STORE_OUTAGE_EXIT_MS = 300_000;
 
 /** The poll loop. Headless runners omit `signal`; embedded dashboards own one. */
 export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
+  assertRunnerEnabled();
   const log = opts.log ?? ((l: string) => process.stdout.write(l + '\n'));
   const logError = opts.logError ?? ((l: string) => process.stderr.write(l + '\n'));
   const loadSample = opts.loadSample ?? (() => ({ load1: os.loadavg()[0]!, cores: os.cpus().length }));

@@ -342,6 +342,42 @@ function startExistingFixture(f: { root: string; env: NodeJS.ProcessEnv }): Spaw
   }) as SpawnSyncReturns<string>;
 }
 
+test('status and provisioning do not mistake cloud auth or transport failures for a missing VM', () => {
+  for (const message of ['Reauthentication failed. cannot prompt during non-interactive execution.', 'Permission denied', 'Connection timed out']) {
+    for (const command of ['status', 'create', 'db-tunnel']) {
+      const f = fixture();
+      fs.writeFileSync(path.join(f.root, 'bin', 'gcloud'), `#!/bin/bash
+printf '%s\\n' "$*" >> "$WEAVER_GCP_TEST_CALLS/argv"
+case "$*" in
+  *'compute instances describe'*) printf '%s\\n' "$WEAVER_GCP_TEST_ERROR" >&2; exit 1 ;;
+esac
+`, { mode: 0o755 });
+      const result = spawnSync('bash', [script, command, ...(command === 'db-tunnel' ? ['bastion', 'europe-west2-a'] : [])], {
+        env: { ...f.env, WEAVER_GCP_TEST_ERROR: message, WEAVER_GCP_TUNNEL_SA: 'tunnel@test-project.iam.gserviceaccount.com' },
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Cannot verify VM/);
+      assert.ok(result.stderr.includes(message));
+      assert.doesNotMatch(result.stdout + result.stderr, /not created|does not exist/);
+      const calls = fs.readFileSync(path.join(f.root, 'calls', 'argv'), 'utf8');
+      assert.doesNotMatch(calls, /compute instances create|compute ssh|compute instances start/);
+    }
+  }
+});
+
+test('status reports absence only after an explicit missing-instance response', () => {
+  const f = fixture();
+  fs.writeFileSync(path.join(f.root, 'bin', 'gcloud'), `#!/bin/bash
+printf '%s\\n' "ERROR: The resource 'projects/test-project/zones/europe-west2-a/instances/test-runner' was not found" >&2
+exit 1
+`, { mode: 0o755 });
+  const result = spawnSync('bash', [script, 'status'], { env: f.env, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /VM test-runner: not created/);
+  assert.doesNotMatch(result.stderr, /Cannot verify VM/);
+});
+
 function call(root: string, n: number, kind: 'args' | 'stdin'): string {
   return fs.readFileSync(path.join(root, 'calls', `${n}.${kind}`), 'utf8');
 }

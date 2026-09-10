@@ -103,13 +103,14 @@ const OPTIONAL_CONFIG_NAMES = [
 
 /**
  * Host-local by design: provisioning owns them, so they are never mirrored.
+ * An operator-only workstation must not disable its hosted execution fleet.
  * These are machine-specific absolute paths — mirroring a laptop's value onto
  * a remote host installs a path that does not exist there. WEAVER_WORKSPACE_ROOT
  * belongs here: a leaked macOS `/Users/...` root made every remote worker's
  * mkdir/clone fail, so gated GitHub actions died at preparation with "could not
  * resolve cwd origin". The box sets its own root at provision time.
  */
-const NEVER_REMOTE = new Set(['WEAVER_STORE', 'WEAVER_HOME', 'WEAVER_WORKSPACE_ROOT']);
+const NEVER_REMOTE = new Set(['WEAVER_STORE', 'WEAVER_HOME', 'WEAVER_WORKSPACE_ROOT', 'WEAVER_RUNNER_DISABLED']);
 
 // ── pure helpers (unit-tested in login.test.ts) ──────────────────────────────
 

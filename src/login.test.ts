@@ -66,6 +66,7 @@ test('render forwards registered provider keys and mirrors config, and flags cod
       WEAVER_COORDINATOR_FALLBACK_EXECUTOR: 'codex-sdk',
       WEAVER_HOUSE_JSON: '{"repoMap":"Primary application: /srv/application","tags":["application"]}',
       WEAVER_WORKSPACE_ROOT: '/var/lib/weaver/workspaces',
+      WEAVER_RUNNER_DISABLED: '1',
       WEAVER_PILOT_URL: 'http://127.0.0.1:9721',
       WEAVER_RUNNER_EXECUTORS: undefined, // unset locally → not mirrored
     },
@@ -81,6 +82,7 @@ test('render forwards registered provider keys and mirrors config, and flags cod
   assert.ok(lines.includes('WEAVER_HOUSE_JSON={"repoMap":"Primary application: /srv/application","tags":["application"]}'));
   // WEAVER_WORKSPACE_ROOT is host-local: a laptop path must never be mirrored.
   assert.ok(!lines.some((l) => l.startsWith('WEAVER_WORKSPACE_ROOT=')));
+  assert.ok(!lines.some((l) => l.startsWith('WEAVER_RUNNER_DISABLED=')), 'the operator-only host must not disable its remote runners');
   assert.ok(lines.includes('WEAVER_PILOT_URL=http://127.0.0.1:9721'));
   assert.ok(!lines.some((l) => l.startsWith('WEAVER_RUNNER_EXECUTORS=')));
   assert.ok(warnings.some((w) => w.includes('remote rendering never copies personal auth.json')));

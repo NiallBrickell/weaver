@@ -20,6 +20,8 @@
 #
 # The script resolves through symlinks (like bin/weaver.mjs) so it always
 # operates on the checkout it lives in. WEAVER_HOME overrides the state dir.
+# WEAVER_RUNNER_DISABLED=1 keeps this host in operator mode: no local runner
+# starts or restarts, and watch stays a viewer. The CLI loads repo .env.
 
 set -euo pipefail
 
@@ -44,6 +46,9 @@ Usage: weaver-up [--no-watch] [--restart] [--print]
                loaded at start)
   --print      print what would run, change nothing
   -h, --help   this help
+
+WEAVER_RUNNER_DISABLED=1 (environment or repo .env) opens only the viewer;
+--restart never starts local execution in this mode.
 EOF
   exit 0
 }
@@ -78,6 +83,12 @@ runner_alive() {
 echo "🌐 Weaver fleet: $REPO"
 
 # ── 1. Resident runner ────────────────────────────────────────────────────────
+# Resolve config through this checkout's CLI, including normal .env precedence.
+# Never source .env as shell: its values are data, not executable commands.
+RUNNER_MODE="$(node "$REPO/bin/weaver.mjs" run --check)"
+if [ "$RUNNER_MODE" = disabled ]; then
+  echo "operator mode — local execution disabled (WEAVER_RUNNER_DISABLED=1)"
+elif [ "$RUNNER_MODE" = enabled ]; then
 if $RESTART; then
   pid="$(runner_pid)"
   if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; then
@@ -123,19 +134,32 @@ if ! $DRY_RUN && [ -f "$STATE_DIR/.runner.heartbeat" ]; then
   fi
 fi
 
+else
+  echo "❌ unexpected runner configuration response: $RUNNER_MODE" >&2
+  exit 1
+fi
+
 # ── 2. Watch dashboard ────────────────────────────────────────────────────────
 if $OPEN_WATCH; then
   if pgrep -f "(weaver|cli[.]ts) watch" >/dev/null 2>&1; then
     echo "watch ✓ already open"
   elif command -v osascript >/dev/null 2>&1; then
     echo "opening \`weaver watch\` in a new Terminal window…"
+    # A fresh Terminal does not inherit an invocation's explicit environment.
+    # Carry the disabled posture so this viewer cannot become a local runner.
+    WATCH_ENV=""
+    if [ "$RUNNER_MODE" = disabled ]; then WATCH_ENV="WEAVER_RUNNER_DISABLED=1 "; fi
     # Non-fatal: the runner is already up; a permission-denied osascript must
     # not abort the script.
-    run osascript -e "tell application \"Terminal\" to do script \"cd $REPO && weaver watch\"" \
+    run osascript -e "tell application \"Terminal\" to do script \"cd $REPO && ${WATCH_ENV}weaver watch\"" \
       || echo "⚠️  could not open a Terminal window (automation permission?) — open \`weaver watch\` yourself" >&2
   else
     echo "⚠️  no osascript (macOS Terminal) — open \`weaver watch\` yourself in another terminal" >&2
   fi
 fi
 
-echo "✅ fleet up (runner$( if $OPEN_WATCH; then echo " + watch"; fi))"
+if [ "$RUNNER_MODE" = disabled ]; then
+  echo "✅ operator mode$( if $OPEN_WATCH; then echo " + watch"; fi) (local execution disabled)"
+else
+  echo "✅ fleet up (runner$( if $OPEN_WATCH; then echo " + watch"; fi))"
+fi

@@ -66,7 +66,7 @@ import {
   type CapacityTarget,
 } from './modelConfig.js';
 import { deterministicActionsOnly, runnerExecutorCapabilities } from './modelRouting.js';
-import { assertRunnerId, resolveAssignmentRunnerId, runnerClaimIdentity } from './runnerIdentity.js';
+import { assertRunnerEnabled, assertRunnerId, resolveAssignmentRunnerId, runnerClaimIdentity } from './runnerIdentity.js';
 import { RUNNER_PRESENCE_TTL_MS, coordinatorRunnerEligibility } from './coordinatorRunner.js';
 import {
   selectCoordinatorExecutor,
@@ -239,6 +239,7 @@ export async function runCoordinatorPass(
   providedExecutor?: CoordinatorExecutor,
   executorCapabilities?: ReadonlySet<string>,
 ): Promise<PassOutcome> {
+  assertRunnerEnabled();
   const runner = runnerClaimIdentity();
   const declaredExecutors = executorCapabilities ??
     (providedExecutor ? undefined : runnerExecutorCapabilities());

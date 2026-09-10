@@ -155,6 +155,24 @@ When intended work names one exact runner — typically because the effect is
 machine-local — every other runner leaves it queued with no mutation, and the
 attempt records which runner actually claimed it.
 
+### An operator-only workstation
+
+When hosted runners own routine execution, put `WEAVER_RUNNER_DISABLED=1` in
+the workstation checkout's `.env`. `weaver watch` remains an interactive viewer
+and never takes over when a local runner disappears. `weaver-up`, including
+`--restart`, skips local runner startup; `weaver run`, `weaver tick` (including
+`--engine-only`), direct coordinator/worker claims, and action shells refuse
+execution on that host. Read, steer, and placement commands still operate on
+the shared fleet, and no Workstream is paused or moved by this setting.
+
+The setting accepts only `0` or `1`; unset/`0` preserves normal execution.
+Check the effective configuration with `weaver run --check`. Environment values
+take precedence over `.env`, and a running process must be stopped or restarted
+to read changes to the file. This setting is host-local and is never copied by
+`weaver login --render-remote-env`; hosted runners keep their own execution
+configuration. Stopping a workstation runner leaves hosted runners free to
+continue according to the fleet's existing placement policy.
+
 ### A narrow machine-local action scheduler
 
 A workstation can join a shared fleet without becoming another general brain.
@@ -232,6 +250,12 @@ and `update` never disturb a running process. `logs` tails the runner journal;
 on the box itself, `weaver status <slug>` works as-is — the safe launcher reads
 the same raw env records as the services without evaluating credential or JSON
 values as shell.
+
+Cloud authentication, permission, and transport failures are not evidence that
+the VM is missing. The helper refuses provisioning on those errors and reports
+the failed check; only an explicit missing-instance response permits treating
+the VM as absent. `status` likewise retains the authentication error instead of
+misreporting it as an uncreated VM.
 
 `start`, `restart`, `push-env --restart`, and `update --restart` all run the
 same fail-closed host preflight before systemd can launch the runner. This GCP

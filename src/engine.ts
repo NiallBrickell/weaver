@@ -62,6 +62,7 @@ import {
 import {
   assignmentMatchesRunner,
   runnerClaimIdentity,
+  assertRunnerEnabled,
   RunnerPlacementMismatchError,
   type RunnerClaimIdentity,
 } from './runnerIdentity.js';
@@ -101,6 +102,7 @@ export async function runActionCommand(
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
 ): Promise<{ ok: boolean; output: string }> {
+  assertRunnerEnabled();
   return new Promise((resolve) => {
     const shell = actionShell() ?? (process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : '/bin/sh');
     const args = process.platform === 'win32'
@@ -699,6 +701,7 @@ async function execActionVerifier(
  * verifyAction); staleness of gated actions stays a human-visible fact.
  */
 export async function preflightApprovedAction(slug: string, assignmentId: string): Promise<boolean> {
+  assertRunnerEnabled();
   const doc = await load(slug);
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg?.exec || asg.kind !== 'action') return false;
@@ -736,6 +739,7 @@ export async function preflightApprovedAction(slug: string, assignmentId: string
 }
 
 export async function verifyAction(slug: string, assignmentId: string): Promise<boolean> {
+  assertRunnerEnabled();
   const doc = await load(slug);
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg?.exec) throw new Error(`${assignmentId} is not an action assignment`);
@@ -1323,6 +1327,7 @@ export async function tick(
     coordinatorExecutor?: CoordinatorExecutor;
   } = {},
 ): Promise<TickReport> {
+  assertRunnerEnabled();
   const runner = runnerClaimIdentity();
   const maxPasses = opts.maxPasses ?? 3;
   if (opts.engineOnly && !runner.placementOnly) {

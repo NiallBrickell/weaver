@@ -96,6 +96,7 @@ routes, then these configured seats — is covered in
 | `WEAVER_EXECUTOR` | `local-sdk` | Where a worker's model loop runs — `local-sdk` (Claude), `codex-sdk` (local Codex), `pi` (pinned provider-neutral host process), or `openhands` (pinned container). See [Where workers run](./executors.md) |
 | `WEAVER_WORKSPACE_ROOT` | `~/.weaver/workspaces` | Absolute root for persistent neutral per-workstream workspaces when intended work does not name a checkout. Hosted runners should place it on their persistent disk |
 | `WEAVER_RUNNER_ID` | OS hostname | Stable exact name for this execution host. Set it explicitly on hosted/container runners; assignments may use this name for machine-local placement, and attempts pin the actual claimant |
+| `WEAVER_RUNNER_DISABLED` | `0` | Host-local operator mode: `1` refuses resident runs, all ticks (including `--engine-only`), coordinator/worker claims, and action shells before execution. Watch remains a viewer and `weaver-up` never starts/restarts a local runner. Accepts only `0`/`1`; never mirrored to remote hosts |
 | `WEAVER_RUNNER_EXECUTORS` | configured coordinator, worker, and action executors | Comma-separated substrates this process may claim. Add reviewed route executors such as `openhands` explicitly on a capable host |
 | `WEAVER_RUNNER_PLACEMENT_ONLY` | `0` | `1` narrows a bounded manual tick to assignments explicitly placed on this exact `WEAVER_RUNNER_ID`; requires an explicit runner ID and is refused by the resident runner. Use only with `weaver tick <slug> --engine-only` for a machine scheduler |
 | `WEAVER_ACTION_EXECUTOR` | `local-sdk` | Separate Pilot-supervised action runtime; automatic model routes never apply to actions |
@@ -106,6 +107,13 @@ routes, then these configured seats — is covered in
 
 An unknown work or action executor fails hard before any attempt starts — a
 silent local fallback would make a misconfigured remote fleet look healthy.
+Set `WEAVER_RUNNER_DISABLED=1` in a workstation's `.env` to keep routine fleet
+execution on hosted runners. This leaves shared Workstream status and placement
+unchanged; read, steer, and placement commands remain usable. `weaver run
+--check` reports `enabled` or `disabled` after loading normal CLI configuration,
+without connecting to the store or starting a runner. Existing processes must
+be stopped or restarted to pick up a changed `.env`.
+
 Runner IDs accept 1–128 ASCII letters, digits, dots, underscores, and hyphens,
 starting with a letter or digit. Invalid IDs and placement-only values other
 than `0`/`1` fail before a claim. The hostname fallback is conservative for a

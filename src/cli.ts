@@ -22,7 +22,7 @@ import {
 } from './store.js';
 import { createWorkstreamUnderParent, ManagedWorkstreamError } from './managedWorkstreams.js';
 import { assertPublicWorkstreamSourceKey } from './ingress.js';
-import { assertRunnerId, resolveAssignmentRunnerId } from './runnerIdentity.js';
+import { assertRunnerEnabled, assertRunnerId, resolveAssignmentRunnerId, runnerDisabled } from './runnerIdentity.js';
 
 function args(): string[] {
   return process.argv.slice(2);
@@ -152,6 +152,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
   weaver tick <slug> --engine-only           placed exact actions/readback only (requires placement-only env)
   weaver run [--interval N]                  resident runner: tick every active workstream every N seconds (default 30)
+  weaver run --check                         report enabled/disabled for this host after loading .env; starts nothing
   weaver serve [--host H] [--port N]         HTTP ingress for external bots (needs WEAVER_SERVE_TOKEN); create-or-get workstreams, post observations, read status
   weaver pause [slug]                        pause every active workstream, or one named workstream (state is kept)
   weaver resume <slug>                       restart one paused or concluded workstream (state and conclusion lineage are kept)
@@ -1011,6 +1012,11 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
     }
 
     case 'run': {
+      if (rest.includes('--check')) {
+        process.stdout.write(runnerDisabled() ? 'disabled\n' : 'enabled\n');
+        break;
+      }
+      assertRunnerEnabled();
       const { acquireRunnerLock, liveRunnerPid, runLoop } = await import('./runner.js');
       const { runnerExecutorCapabilities } = await import('./modelRouting.js');
       const interval = Number(opt(rest, 'interval') ?? '30') * 1000;
