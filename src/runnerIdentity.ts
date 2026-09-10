@@ -3,6 +3,23 @@ import type { Assignment } from './types.js';
 
 const RUNNER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+/** Host-local execution switch, independent of shared Workstream placement or
+ * pause state. Operator commands may still read and steer the hosted fleet. */
+export function runnerDisabled(environment: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = environment.WEAVER_RUNNER_DISABLED;
+  if (raw !== undefined && raw !== '0' && raw !== '1') {
+    throw new Error(`WEAVER_RUNNER_DISABLED must be 0 or 1; got ${JSON.stringify(raw)}`);
+  }
+  return raw === '1';
+}
+
+/** Call before any execution claim, mutation, or subprocess launch. */
+export function assertRunnerEnabled(environment: NodeJS.ProcessEnv = process.env): void {
+  if (runnerDisabled(environment)) {
+    throw new Error('WEAVER_RUNNER_DISABLED=1: execution is disabled on this host; use a hosted runner. Read, steer, and placement commands remain available.');
+  }
+}
+
 /**
  * Validate one durable runner name. Runner placement is an exact execution
  * constraint, so accepting invisible whitespace or shell-shaped values would

@@ -85,6 +85,7 @@ General discipline (each of these has cost real time in sibling repos):
 Weaver-specific — each one is a way to quietly fail the acceptance proof:
 
 - **Never keep a process, session, or model context alive across a wait to make continuity "work".** If the demo only works because something stayed resident, the demo is a lie. Kill the coordinator between passes; resume from stored state only.
+- **Hosting direction survives provider outages.** An operator-only host with `WEAVER_RUNNER_DISABLED=1` must not become a fallback runner, embedded watch, or local schedule to recover model capacity. Model preference does not authorize changing execution host; inspect the configured shared store, not stale local mirrors. See [operator-only cutover](./docs/hosted-only-cutover.md).
 - **Never store authoritative state only in a transcript, log, or SDK session file.** Transcripts and run traces are provenance for debugging; the projection is assembled from typed state. If a fresh coordinator would need to parse prose to know where things stand, the state model is broken.
 - **Never let a summary mutate truth.** Compression is fine for supporting history; a summary that flips a decision, completes an assignment, or claims a send happened is a bug of the highest severity here.
 - **Never conflate a worker finishing with its result being adopted,** and never treat a mutable resource head as an accepted deliverable — pin the revision/snapshot at adoption.

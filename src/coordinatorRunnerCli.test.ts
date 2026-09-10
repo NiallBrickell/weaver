@@ -52,3 +52,26 @@ test('coordinator-runners rejects duplicate or malformed runner ids without muta
   assert.match(malformed.stderr, /coordinator runner id/);
   assert.equal((await load('daily-routine')).workstream.executionPolicy, undefined);
 });
+
+test('an operator-only host can read, steer, and place hosted fleet work without executing it', async () => {
+  const commands = [
+    ['list'],
+    ['status', 'daily-routine'],
+    ['steer', 'daily-routine', 'Continue routine work on the hosted runner'],
+    ['placement', 'daily-routine', 'gcp-primary'],
+    ['coordinator-runners', 'daily-routine', 'gcp-primary'],
+    ['watch', '--on', 'gcp-primary'],
+  ];
+  for (const args of commands) {
+    const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...args], {
+      cwd: process.cwd(), env: { ...process.env, WEAVER_RUNNER_DISABLED: '1' }, encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, `${args.join(' ')}: ${result.stderr}`);
+  }
+  const doc = await load('daily-routine');
+  assert.equal(doc.workstream.status, 'active');
+  assert.equal(doc.workstream.assignmentRunnerId, 'gcp-primary');
+  assert.deepEqual(doc.workstream.executionPolicy?.coordinatorRunnerOrder, ['gcp-primary']);
+  assert.equal(doc.lease, null);
+  assert.equal(fs.existsSync(path.join(home, '.runner.lock')), false);
+});

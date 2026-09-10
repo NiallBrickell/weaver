@@ -44,7 +44,7 @@ import { listRunnerPresence, listWorkstreams, load, weaverHome } from './store.j
 import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 import { actionAwaitingPilot, actionIsLivePilotWait, humanAttention, humanAttentionCanInterrupt } from './actionApproval.js';
 import { liveRunnerIds } from './coordinatorRunner.js';
-import { runnerClaimIdentity } from './runnerIdentity.js';
+import { runnerClaimIdentity, runnerDisabled } from './runnerIdentity.js';
 import { storeDisplayLabel } from './link.js';
 
 const STALE_ATTEMPT_MS = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
@@ -619,6 +619,7 @@ const NO_SELECTION = -1;
 
 function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element {
   const { exit } = useApp();
+  const operatorOnly = useMemo(() => runnerDisabled(), []);
   // The store is async, so the first snapshot arrives via the mount effect —
   // render paths never await; state loads in effects/callbacks only.
   const [snap, setSnap] = useState<Snapshot>({
@@ -883,7 +884,8 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
           {counts[5] ? <><Text dimColor> · </Text><Text color="green">{counts[5]} done</Text></> : null}
           {counts[4] ? <Text bold color="red"> · {counts[4]} UNREADABLE</Text> : null}
           <Text dimColor> · </Text>
-          {runnerState === 'embedded' ? <Text color="green">runner ✓</Text>
+          {operatorOnly ? <Text color="cyan">viewer · local execution disabled</Text>
+            : runnerState === 'embedded' ? <Text color="green">runner ✓</Text>
             : runnerState === 'external' ? <Text color="green">runner ✓ ext</Text>
             : runnerState === 'stalled' ? <Text bold color="red">RUNNER STALLED — q and relaunch!</Text>
             : <Text bold color="red">NO RUNNER — nothing will advance!</Text>}
@@ -1087,11 +1089,16 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
   );
 }
 
+/** An operator-only dashboard never claims local execution, even on vacancy. */
+export function acquireTuiRunnerLock(): (() => void) | null {
+  return runnerDisabled() ? null : acquireRunnerLock();
+}
+
 export async function runTui(): Promise<void> {
   // ONE command: the dashboard embeds the runner unless one is already live
   // elsewhere (headless `weaver run`, another watch). The singleton lock makes
   // extra dashboards harmless viewers.
-  let release = acquireRunnerLock();
+  let release = acquireTuiRunnerLock();
   let stopPromotion: (() => void) | undefined;
   const runnerAbort = new AbortController();
   // The embedded runner, its workers, and the SDK all write diagnostics to

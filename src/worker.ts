@@ -63,6 +63,7 @@ import {
 import {
   assignmentMatchesRunner,
   runnerClaimIdentity,
+  assertRunnerEnabled,
   RunnerPlacementMismatchError,
 } from './runnerIdentity.js';
 
@@ -383,6 +384,7 @@ export async function runWorker(
   executorCapabilities?: ReadonlySet<string>,
   timing?: { wallMs?: number; wallTickMs?: number },
 ): Promise<boolean> {
+  assertRunnerEnabled();
   const runner = runnerClaimIdentity();
   const declaredExecutors = executorCapabilities ??
     (providedExecutor ? undefined : runnerExecutorCapabilities());
