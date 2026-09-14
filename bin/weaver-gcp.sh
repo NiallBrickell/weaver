@@ -42,6 +42,12 @@ REGION="${ZONE%-*}"
 VM="${WEAVER_GCP_VM:-weaver-fleet}"
 MACHINE="${WEAVER_GCP_MACHINE:-e2-standard-2}"
 CONCURRENCY="${WEAVER_GCP_CONCURRENCY:-4}"
+# Boot disk in GB. Workers leave repository checkouts and container images
+# behind (an OpenHands image alone is ~6 GB) and the runner refuses to
+# dispatch below a free-space floor, so the disk is sized for that residue,
+# not for Weaver state (~150 MB). 30 GB filled in three weeks (2026-09-10);
+# a persistent disk can be grown online later but never shrunk.
+DISK_GB="${WEAVER_GCP_DISK_GB:-100}"
 NETWORK="${WEAVER_GCP_NETWORK:-weaver-vpc}"
 # Service account the VM runs as, ONLY if it must open an IAP tunnel to a
 # private database (weaver-gcp db-tunnel). Unset = no identity at all.
@@ -127,6 +133,9 @@ cmd_create() {
   [[ "$CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || {
     echo "❌ WEAVER_GCP_CONCURRENCY must be a positive integer" >&2; exit 1;
   }
+  [[ "$DISK_GB" =~ ^[1-9][0-9]*$ ]] && [ "$DISK_GB" -ge 20 ] || {
+    echo "❌ WEAVER_GCP_DISK_GB must be an integer of at least 20" >&2; exit 1;
+  }
 
   ensure_network
   if vm_exists; then
@@ -147,12 +156,12 @@ cmd_create() {
       identity=(--service-account "$TUNNEL_SA" --scopes https://www.googleapis.com/auth/cloud-platform)
       identity_desc="identity $TUNNEL_SA (tunnel-only)"
     fi
-    echo "creating $VM ($MACHINE, $ZONE, isolated VPC, $identity_desc, no open ports)…"
+    echo "creating $VM ($MACHINE, ${DISK_GB} GB pd-balanced, $ZONE, isolated VPC, $identity_desc, no open ports)…"
     "${GC[@]}" compute instances create "$VM" \
       --zone "$ZONE" \
       --machine-type "$MACHINE" \
       --image-family debian-12 --image-project debian-cloud \
-      --boot-disk-size 30GB --boot-disk-type pd-balanced \
+      --boot-disk-size "${DISK_GB}GB" --boot-disk-type pd-balanced \
       --network "$NETWORK" --subnet "$SUBNET" \
       "${identity[@]}" \
       --labels app=weaver
