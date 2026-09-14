@@ -80,7 +80,8 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS runner_presence (
     runner_id         text        PRIMARY KEY,
     heartbeat_at      timestamptz NOT NULL,
-    coordinator_seats json
+    coordinator_seats json,
+    degraded          text
   );
 
   -- Existing fleets used jsonb. Convert once, without decoding and rewriting
@@ -148,6 +149,7 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS workstreams_managed_by
     ON workstreams (managed_by_slug) WHERE managed_by_slug IS NOT NULL;
   ALTER TABLE runner_presence ADD COLUMN IF NOT EXISTS coordinator_seats json;
+  ALTER TABLE runner_presence ADD COLUMN IF NOT EXISTS degraded text;
   INSERT INTO policies (singleton, revision, store)
     VALUES (true, 0, '{"schemaVersion":1,"revision":0,"policies":[]}'::json)
     ON CONFLICT DO NOTHING;
@@ -325,6 +327,9 @@ export class PgStore implements StateStore {
                    AND NOT a.attisdropped AND pg_get_expr(d.adbin, d.adrelid) = 'true')
          AND EXISTS (SELECT 1 FROM pg_attribute
                  WHERE attrelid = to_regclass('runner_presence') AND attname = 'coordinator_seats'
+                   AND NOT attisdropped)
+         AND EXISTS (SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('runner_presence') AND attname = 'degraded'
                    AND NOT attisdropped)
          AND EXISTS (SELECT 1 FROM pg_attribute
                  WHERE attrelid = to_regclass('workstreams') AND attname = 'managed_by_slug'
@@ -815,14 +820,17 @@ export class PgStore implements StateStore {
   async heartbeatRunner(presence: RunnerPresence): Promise<void> {
     await this.ensureReady();
     await this.pool.query(
-      `INSERT INTO runner_presence (runner_id, heartbeat_at, coordinator_seats)
-       VALUES ($1, $2::timestamptz, $3::json)
+      `INSERT INTO runner_presence (runner_id, heartbeat_at, coordinator_seats, degraded)
+       VALUES ($1, $2::timestamptz, $3::json, $4)
        ON CONFLICT (runner_id) DO UPDATE
-         SET heartbeat_at = EXCLUDED.heartbeat_at, coordinator_seats = EXCLUDED.coordinator_seats`,
+         SET heartbeat_at = EXCLUDED.heartbeat_at,
+             coordinator_seats = EXCLUDED.coordinator_seats,
+             degraded = EXCLUDED.degraded`,
       [
         presence.runnerId,
         presence.heartbeatAt,
         presence.coordinatorSeats === undefined ? null : JSON.stringify(presence.coordinatorSeats),
+        presence.degraded ?? null,
       ],
     );
   }
@@ -832,13 +840,15 @@ export class PgStore implements StateStore {
     const result = await this.pool.query(
       `SELECT runner_id,
               to_char(heartbeat_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS heartbeat_at,
-              coordinator_seats
+              coordinator_seats,
+              degraded
        FROM runner_presence ORDER BY runner_id`,
     );
     return result.rows.map((row) => ({
       runnerId: row.runner_id as string,
       heartbeatAt: row.heartbeat_at as string,
       ...(row.coordinator_seats ? { coordinatorSeats: row.coordinator_seats as CapacityTarget[] } : {}),
+      ...(typeof row.degraded === 'string' ? { degraded: row.degraded } : {}),
     }));
   }
 

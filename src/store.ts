@@ -88,15 +88,18 @@ export async function heartbeatRunner(
   runnerId: string,
   heartbeatAt = new Date().toISOString(),
   coordinatorSeats?: readonly CapacityTarget[],
+  degraded?: string,
 ): Promise<void> {
   assertRunnerId(runnerId);
   if (!Number.isFinite(Date.parse(heartbeatAt))) throw new Error(`invalid runner heartbeat timestamp '${heartbeatAt}'`);
+  if (degraded !== undefined && degraded.trim() === '') throw new Error('a degraded runner presence must carry a reason');
   await getStore().heartbeatRunner({
     runnerId,
     heartbeatAt,
     ...(coordinatorSeats
       ? { coordinatorSeats: coordinatorSeats.map(({ executor, provider, model }) => ({ executor, provider, model })) }
       : {}),
+    ...(degraded !== undefined ? { degraded } : {}),
   });
 }
 

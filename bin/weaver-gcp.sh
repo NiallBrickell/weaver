@@ -237,6 +237,17 @@ sudo -u weaver bash -c 'cd /opt/weaver && git pull --ff-only && yarn install'
 # trust the checkout itself for its launch gate.
 install -o root -g root -m 755 /opt/weaver/bin/weaver-gcp-preflight.sh /usr/local/sbin/weaver-gcp-preflight
 
+# Worker commands clone repositories into /tmp and nothing removes what a
+# finished or crashed run leaves there; Debian's default tmpfiles rule keeps
+# /tmp forever. Six such clones (1.9 GB) plus a stray Yarn v1 cache filled the
+# 30 GB boot disk on 2026-09-10 and every store write failed for four days.
+# Age out anything untouched for a week — no worker run lives that long.
+install -o root -g root -m 644 /dev/stdin /etc/tmpfiles.d/tmp.conf <<'TMPFILES'
+# Managed by weaver-gcp.sh: age out abandoned worker scratch under /tmp.
+D /tmp 1777 root root 7d
+TMPFILES
+systemd-tmpfiles --clean /etc/tmpfiles.d/tmp.conf || true
+
 # Base env. `push-env` merges portable credentials/config into this file and
 # preserves host-local settings instead of rebuilding it from two selected
 # lines. The runner already holds every value in its process env, so allowing
@@ -678,6 +689,10 @@ cmd_status()  {
     systemctl is-active weaver-run weaver-serve docker | paste - - - | sed "s/^/services (run serve docker): /"
     hb=/home/weaver/state/.runner.heartbeat
     if sudo test -f $hb; then echo "runner heartbeat: $(( $(date +%s) - $(sudo stat -c %Y $hb) ))s ago"; else echo "runner heartbeat: none yet"; fi
+    # A fresh heartbeat is not health: a full disk fails every state write
+    # while the DB-only presence keeps beating. Show the disk beside it.
+    df -h --output=size,used,avail,pcent / | tail -1 | sed "s/^ */disk (\/): /"
+    sudo journalctl -u weaver-run -n 200 --no-pager 2>/dev/null | grep -c "DEGRADED" | sed "s/^/runner DEGRADED lines in last 200 journal lines: /"
   '
 }
 cmd_destroy() {

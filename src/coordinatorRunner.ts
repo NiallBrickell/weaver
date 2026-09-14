@@ -83,9 +83,11 @@ export function operatorCapacityPresentation(
   const seats = selected?.coordinatorSeats ?? [];
   const unknown = !selected
     ? 'coordinator capacity unknown — no fresh heartbeat from an eligible runner'
-    : !seats.length
-      ? `coordinator capacity unknown — runner ${selected.runnerId} publishes no coordinator seats`
-      : undefined;
+    : selected.degraded
+      ? `runner ${selected.runnerId} is DEGRADED and can launch no pass — ${selected.degraded}`
+      : !seats.length
+        ? `coordinator capacity unknown — runner ${selected.runnerId} publishes no coordinator seats`
+        : undefined;
   return capacityPresentation(doc, nowIso, new Set(seats.map((seat) => seat.executor)), {
     coordinatorTargets: seats,
     ...(unknown ? { coordinatorUnknown: unknown } : {}),

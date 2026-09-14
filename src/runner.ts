@@ -590,8 +590,12 @@ export interface RunnerOptions {
    * action executions and coordinator passes while never pinning a restart
    * behind a 40-minute worker wall. */
   drainMs?: number;
-  /** Shared-presence publisher; injectable only for deterministic runner tests. */
-  heartbeat?: (runnerId: string) => Promise<void>;
+  /** Shared-presence publisher; injectable only for deterministic runner tests.
+   * `degraded` carries the reason this host can commit nothing right now. */
+  heartbeat?: (runnerId: string, degraded?: string) => Promise<void>;
+  /** State-directory probe; injectable only for deterministic runner tests.
+   * Defaults to a write into WEAVER_HOME plus the free-space floor. */
+  homeHealth?: () => RunnerHomeHealth;
   /** How long an unbroken run of failed iterations may last before the loop
    * exits for its supervisor; see RUNNER_STORE_OUTAGE_EXIT_MS. */
   storeOutageExitMs?: number;
@@ -660,6 +664,59 @@ function heartbeatPath(): string {
   // BESIDE the lock dir, never inside it: the process lock treats any second
   // file in its dir as a malformed lock and fails closed (see processLock.ts).
   return path.join(weaverHome(), '.runner.heartbeat');
+}
+
+export type RunnerHomeHealth = { ok: true } | { ok: false; reason: string };
+
+/** How often a degraded runner repeats its reason in the log. */
+export const RUNNER_DEGRADED_REMINDER_MS = 10 * 60_000;
+
+/** Below this much free space in WEAVER_HOME's filesystem the runner stops
+ * dispatching BEFORE a write fails mid-transaction. A coordinator pass or a
+ * worker checkout can take hundreds of MB, and an ENOSPC that lands inside
+ * mutate() rolls the durable write back with the printout receipt half
+ * written. Override with WEAVER_RUNNER_MIN_FREE_MB. */
+export const RUNNER_MIN_FREE_BYTES_DEFAULT = 512 * 1024 * 1024;
+
+export function runnerMinFreeBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.WEAVER_RUNNER_MIN_FREE_MB;
+  if (raw === undefined || raw === '') return RUNNER_MIN_FREE_BYTES_DEFAULT;
+  const mb = Number(raw);
+  if (!Number.isFinite(mb) || mb < 0) throw new Error(`WEAVER_RUNNER_MIN_FREE_MB must be a non-negative number, got '${raw}'`);
+  return Math.round(mb * 1024 * 1024);
+}
+
+/**
+ * Can this host commit anything? The loop heartbeat write doubles as the
+ * probe: it lands in the same directory every store mutation writes its
+ * printout receipt into, so ENOSPC / EROFS / EACCES here is the same failure
+ * every tick would hit. The free-space floor catches the disk BEFORE it is
+ * full. Returned reasons are operator-facing: they are published in shared
+ * presence and rendered by status/watch as the coordinator capacity reason.
+ */
+export function runnerHomeHealth(minFreeBytes = runnerMinFreeBytes()): RunnerHomeHealth {
+  const home = weaverHome();
+  try {
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(heartbeatPath(), String(Date.now()));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? 'error';
+    return { ok: false, reason: `state directory ${home} is not writable (${code}: ${error instanceof Error ? error.message : error})` };
+  }
+  let free: number;
+  try {
+    const stat = fs.statfsSync(home);
+    free = Number(stat.bavail) * Number(stat.bsize);
+  } catch {
+    // A filesystem that answers writes but not statfs (some FUSE mounts) is
+    // writable as far as this probe can tell; the write above is the truth.
+    return { ok: true };
+  }
+  if (free < minFreeBytes) {
+    const mib = (n: number) => `${Math.round(n / (1024 * 1024))} MiB`;
+    return { ok: false, reason: `state directory ${home} has ${mib(free)} free, below the ${mib(minFreeBytes)} floor (WEAVER_RUNNER_MIN_FREE_MB)` };
+  }
+  return { ok: true };
 }
 
 /**
@@ -747,10 +804,17 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       return [];
     }
   })();
-  const publishPresence = opts.heartbeat ?? ((runnerId: string) => heartbeatRunner(runnerId, undefined, coordinatorSeats));
+  const publishPresence = opts.heartbeat ?? ((runnerId: string, degraded?: string) =>
+    heartbeatRunner(runnerId, undefined, degraded === undefined ? coordinatorSeats : [], degraded));
+  const homeHealth = opts.homeHealth ?? runnerHomeHealth;
   const outageExitMs = opts.storeOutageExitMs ?? RUNNER_STORE_OUTAGE_EXIT_MS;
   let outageSince: number | null = null;
   let outageFailures = 0;
+  // The state directory's last known condition, so a degraded host logs on the
+  // transition and then once per reminder window — never every 5 seconds, and
+  // never silently.
+  let degradedReason: string | null = null;
+  let degradedLoggedAt = 0;
   let exit: RunLoopExit = 'aborted';
   while (!opts.signal?.aborted) {
     if (sourceStale()) {
@@ -763,13 +827,39 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       break;
     }
     try {
+      // A runner whose state directory cannot take a write is not a runner
+      // either: every store mutation writes a printout receipt under
+      // WEAVER_HOME before it commits, so a full or read-only disk fails every
+      // tick before any durable write while a DB-only heartbeat keeps reading
+      // as healthy. That hid a frozen fleet for four days (2026-09-10 → 14: a
+      // 30 GB VM filled up, 4 ticks/5s each died on ENOSPC, the heartbeat was
+      // 3s fresh throughout). Probe the directory with the loop heartbeat
+      // write plus a free-space floor; while it fails, publish the reason with
+      // NO coordinator seats — so status/watch name the cause and a standby
+      // takes the seat — and dispatch nothing, since a tick that cannot commit
+      // only burns advisory locks and log lines.
+      const health = homeHealth();
+      if (!health.ok) {
+        const now = Date.now();
+        if (health.reason !== degradedReason || now - degradedLoggedAt >= RUNNER_DEGRADED_REMINDER_MS) {
+          logError(`[run] DEGRADED — ${health.reason}; publishing no coordinator seats and dispatching nothing until the state directory is writable again`);
+          degradedReason = health.reason;
+          degradedLoggedAt = now;
+        }
+        await publishPresence(runner.id, health.reason);
+        outageSince = null;
+        outageFailures = 0;
+        await waitForNextIteration(opts.intervalMs, opts.signal);
+        continue;
+      }
+      if (degradedReason !== null) {
+        log(`[run] state directory writable again — resuming dispatch (was: ${degradedReason})`);
+        degradedReason = null;
+      }
       // Shared TTL presence is separate from Workstream truth and from the
       // machine-local pid heartbeat. Publish before scanning so a preferred
       // coordinator host is visible before any standby considers a claim.
       await publishPresence(runner.id);
-      try {
-        fs.writeFileSync(heartbeatPath(), String(Date.now()));
-      } catch { /* lock dir may be mid-recreate */ }
       // Auth recovery: one probe (never concurrently) when credential-file
       // metadata changes. Usage/rate recovery waits for the stored wake or an
       // explicit `weaver capacity retry`; blind probes only consume capacity.

@@ -84,7 +84,8 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS runner_presence (
     runner_id         TEXT PRIMARY KEY,
     heartbeat_at      TEXT NOT NULL,
-    coordinator_seats TEXT
+    coordinator_seats TEXT,
+    degraded          TEXT
   );
 `;
 
@@ -131,6 +132,10 @@ export class SqliteStore implements StateStore {
         `SELECT 1 FROM pragma_table_info('runner_presence') WHERE name = 'coordinator_seats'`,
       ).get();
       if (!seatsColumn) this.db.exec('ALTER TABLE runner_presence ADD COLUMN coordinator_seats TEXT');
+      const degradedColumn = this.db.prepare(
+        `SELECT 1 FROM pragma_table_info('runner_presence') WHERE name = 'degraded'`,
+      ).get();
+      if (!degradedColumn) this.db.exec('ALTER TABLE runner_presence ADD COLUMN degraded TEXT');
       const artifactColumn = this.db.prepare(
         `SELECT type FROM pragma_table_info('artifacts') WHERE name = 'content'`,
       ).get() as { type: string } | undefined;
@@ -354,28 +359,32 @@ export class SqliteStore implements StateStore {
 
   async heartbeatRunner(presence: RunnerPresence): Promise<void> {
     this.db.prepare(
-      `INSERT INTO runner_presence (runner_id, heartbeat_at, coordinator_seats) VALUES (?, ?, ?)
+      `INSERT INTO runner_presence (runner_id, heartbeat_at, coordinator_seats, degraded) VALUES (?, ?, ?, ?)
        ON CONFLICT (runner_id) DO UPDATE
-         SET heartbeat_at = excluded.heartbeat_at, coordinator_seats = excluded.coordinator_seats`,
+         SET heartbeat_at = excluded.heartbeat_at,
+             coordinator_seats = excluded.coordinator_seats,
+             degraded = excluded.degraded`,
     ).run(
       presence.runnerId,
       presence.heartbeatAt,
       presence.coordinatorSeats === undefined ? null : JSON.stringify(presence.coordinatorSeats),
+      presence.degraded ?? null,
     );
   }
 
   async listRunnerPresence(): Promise<RunnerPresence[]> {
     return this.db.prepare(
-      'SELECT runner_id, heartbeat_at, coordinator_seats FROM runner_presence ORDER BY runner_id',
+      'SELECT runner_id, heartbeat_at, coordinator_seats, degraded FROM runner_presence ORDER BY runner_id',
     ).all()
       .map((row) => {
-        const { runner_id, heartbeat_at, coordinator_seats } = row as {
-          runner_id: string; heartbeat_at: string; coordinator_seats: string | null;
+        const { runner_id, heartbeat_at, coordinator_seats, degraded } = row as {
+          runner_id: string; heartbeat_at: string; coordinator_seats: string | null; degraded: string | null;
         };
         return {
           runnerId: runner_id,
           heartbeatAt: heartbeat_at,
           ...(coordinator_seats ? { coordinatorSeats: JSON.parse(coordinator_seats) as CapacityTarget[] } : {}),
+          ...(typeof degraded === 'string' ? { degraded } : {}),
         };
       });
   }

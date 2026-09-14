@@ -48,6 +48,22 @@ another runner with a live heartbeat holds the coordinator seat meanwhile. A
 Mac runner once spent a day failing DNS for the fleet Postgres after a network
 change while fresh processes on the same machine resolved it fine.
 
+A runner whose state directory cannot take a write is not a runner either.
+Every store mutation writes a printout receipt under `WEAVER_HOME` before it
+commits, so a full or read-only disk fails every tick before any durable write
+while a database-only heartbeat keeps reading as healthy — a 30 GB VM filled
+up on 10 September 2026 and the fleet froze for four days behind a heartbeat
+that was never more than a few seconds old. `weaver run` now probes the
+directory every poll (a write, plus a free-space floor of 512 MiB, overridable
+with `WEAVER_RUNNER_MIN_FREE_MB`). While the probe fails the runner publishes
+its presence as **degraded** with the reason and no coordinator seats, so
+`weaver status` / `weaver watch` name the host condition instead of "capacity
+unknown", a standby can take the coordinator seat, and no tick is launched
+until the directory is writable again. The reason is logged on the transition
+and every ten minutes. Size the boot disk for what workers leave behind: an
+OpenHands image is ~6 GB, each repository checkout a few hundred MB, and
+`bin/weaver-gcp.sh status` now shows disk usage beside the heartbeat.
+
 ## Environment every hosted process needs
 
 ```bash
