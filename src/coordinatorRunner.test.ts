@@ -142,6 +142,19 @@ test('operator view never invents capacity from a missing, stale, legacy, or emp
   }
 });
 
+test('a degraded hosted runner is named as the reason no pass can launch, never as unknown capacity', () => {
+  const d = doc(['gcp']);
+  const now = '2026-09-14T12:00:00.000Z';
+  d.wakes.push({ id: 'wake_test', reason: 'reconcile', condition: { type: 'immediate' }, status: 'pending', createdAt: now });
+  const reason = 'state directory /home/weaver/state is not writable (ENOSPC: no space left on device)';
+  const position = operatorCapacityPresentation(
+    d, now, [{ runnerId: 'gcp', heartbeatAt: now, coordinatorSeats: [], degraded: reason }], Date.parse(now),
+  );
+  assert.match(position.unknown!.summary, /runner gcp is DEGRADED and can launch no pass/);
+  assert.ok(position.unknown!.summary.includes(reason), 'the operator sees the exact host condition');
+  assert.doesNotMatch(position.unknown!.summary, /capacity unknown/);
+});
+
 test('operator view follows hosted standby preference and does not infer worker seats', () => {
   const d = doc(['gcp', 'standby']);
   const now = '2026-09-10T12:00:00.000Z';

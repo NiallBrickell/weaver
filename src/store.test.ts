@@ -525,6 +525,20 @@ function contractSuite(backend: Backend): void {
       (await listRunnerPresence()).find((presence) => presence.runnerId === 'mac-primary'),
       { runnerId: 'mac-primary', heartbeatAt: '2026-08-29T10:00:03.000Z' },
     );
+    // A degraded runner publishes WHY it can commit nothing, and no seats; the
+    // reason is cleared by the next healthy heartbeat, never left to outlive it.
+    const reason = 'state directory /srv/weaver has 12 MiB free, below the 512 MiB floor (WEAVER_RUNNER_MIN_FREE_MB)';
+    await heartbeatRunner('gcp-standby', '2026-08-29T10:00:04.000Z', [], reason);
+    assert.deepEqual(
+      (await listRunnerPresence()).find((presence) => presence.runnerId === 'gcp-standby'),
+      { runnerId: 'gcp-standby', heartbeatAt: '2026-08-29T10:00:04.000Z', coordinatorSeats: [], degraded: reason },
+    );
+    await heartbeatRunner('gcp-standby', '2026-08-29T10:00:05.000Z', seats);
+    assert.deepEqual(
+      (await listRunnerPresence()).find((presence) => presence.runnerId === 'gcp-standby'),
+      { runnerId: 'gcp-standby', heartbeatAt: '2026-08-29T10:00:05.000Z', coordinatorSeats: seats },
+    );
+    await assert.rejects(heartbeatRunner('gcp-standby', '2026-08-29T10:00:06.000Z', [], '  '), /must carry a reason/);
     assert.equal((await load('test-ws')).revision, revision);
   });
 

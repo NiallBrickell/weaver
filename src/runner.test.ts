@@ -594,6 +594,65 @@ test('a runner slot remains owned until its exact tick settles', async () => {
   }
 });
 
+test('a runner whose state directory cannot take a write publishes why, dispatches nothing, and resumes when it can', async () => {
+  await make('degraded-home');
+  const abort = new AbortController();
+  const errors: string[] = [];
+  const logs: string[] = [];
+  const beats: (string | undefined)[] = [];
+  let ticks = 0;
+  let writable = false;
+  const loop = runLoop({
+    intervalMs: 5,
+    concurrency: 2,
+    signal: abort.signal,
+    sourceStale: () => false,
+    homeHealth: () => (writable ? { ok: true } : { ok: false, reason: 'state directory /x is not writable (ENOSPC: no space left on device)' }),
+    heartbeat: async (_runnerId, degraded) => { beats.push(degraded); },
+    tickFn: async () => {
+      ticks++;
+      return { cycles: 0, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] } as never;
+    },
+    log: (line) => logs.push(line),
+    logError: (line) => errors.push(line),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(ticks, 0, 'a tick that cannot commit is never launched');
+  assert.ok(beats.length >= 3, 'presence keeps flowing so the host is not mistaken for dead');
+  assert.ok(beats.every((b) => b?.includes('ENOSPC')), 'every heartbeat while degraded carries the reason');
+  assert.equal(errors.filter((l) => l.includes('DEGRADED')).length, 1, 'the reason is logged on the transition, not every iteration');
+
+  writable = true;
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  abort.abort();
+  await loop;
+  assert.ok(ticks >= 1, 'dispatch resumes once the directory is writable');
+  assert.equal(beats.at(-1), undefined, 'a healthy heartbeat clears the reason');
+  assert.ok(logs.some((l) => l.includes('writable again')), 'recovery is logged');
+});
+
+test('the default state-directory probe reports a read-only home and a breached free-space floor', async () => {
+  const { runnerHomeHealth, runnerMinFreeBytes } = await import('./runner.js');
+  assert.deepEqual(runnerHomeHealth(0), { ok: true });
+  const floored = runnerHomeHealth(Number.MAX_SAFE_INTEGER);
+  assert.equal(floored.ok, false);
+  assert.match((floored as { reason: string }).reason, /free, below the .* floor \(WEAVER_RUNNER_MIN_FREE_MB\)/);
+  assert.equal(runnerMinFreeBytes({}), 512 * 1024 * 1024);
+  assert.equal(runnerMinFreeBytes({ WEAVER_RUNNER_MIN_FREE_MB: '2048' }), 2048 * 1024 * 1024);
+  assert.throws(() => runnerMinFreeBytes({ WEAVER_RUNNER_MIN_FREE_MB: 'lots' }), /non-negative number/);
+  if (process.getuid?.() !== 0) {
+    fs.rmSync(path.join(home, '.runner.heartbeat'), { force: true });
+    fs.chmodSync(home, 0o500);
+    try {
+      const sealed = runnerHomeHealth(0);
+      assert.equal(sealed.ok, false);
+      assert.match((sealed as { reason: string }).reason, /is not writable \(EACCES/);
+    } finally {
+      fs.chmodSync(home, 0o700);
+    }
+  }
+});
+
 test('a runner whose every iteration fails before the store answers exits for its supervisor', async () => {
   const errors: string[] = [];
   const exit = await runLoop({

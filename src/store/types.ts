@@ -55,6 +55,11 @@ export interface RunnerPresence {
    * coordinator claim to the next runner in order. Absent on presences from
    * runners that predate the field, which count as seated. */
   coordinatorSeats?: CapacityTarget[];
+  /** Why this runner can commit nothing right now (its state directory is
+   * unwritable or below the free-space floor). A degraded presence publishes
+   * no seats; the reason is rendered wherever capacity is shown so a fresh
+   * heartbeat can never read as a healthy fleet. */
+  degraded?: string;
 }
 
 /** Cheap identity of a Workstream's current durable head. Runners use this
