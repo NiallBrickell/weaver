@@ -257,6 +257,8 @@ address; the worker stays on its ordinary container bridge and never receives
 host networking or access to host loopback.
 
 The project defaults to the active gcloud project; zone, VM name, machine type,
+boot disk (`WEAVER_GCP_DISK_GB`, default 100 — sized for the checkouts and
+container images workers leave behind, not for Weaver state),
 network, and every override use `WEAVER_GCP_*` variables at the top of the
 script. The resident unit defaults to four concurrent workstreams on the
 default 8 GB VM (`WEAVER_GCP_CONCURRENCY=4`) and still applies the runner's
