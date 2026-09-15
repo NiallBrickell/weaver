@@ -242,7 +242,7 @@ WEAVER_PILOT_URL=http://127.0.0.1:9721 \
 # selection replaces the previous hosted worker set; omitted names are revoked.
 bin/weaver-gcp.sh push-worker-secrets SENTRY_AUTH_TOKEN READONLY_DB_URL
 
-bin/weaver-gcp.sh update                   # pull/install only; still no restart
+bin/weaver-gcp.sh update                   # roll forward now + install the self-update timer
 bin/weaver-gcp.sh start                    # starts weaver-run: the explicit cutover
 bin/weaver-gcp.sh status                   # services + runner heartbeat
 bin/weaver-gcp.sh ssh --command 'hostname' # one non-interactive remote command
@@ -255,6 +255,25 @@ local address to reach Weaver's ephemeral bearer-authenticated submission, MCP,
 and provider proxies. Preflight refuses a missing, malformed, or non-local
 address; the worker stays on its ordinary container bridge and never receives
 host networking or access to host loopback.
+
+The host rolls itself forward. `create` and `update` both install a root-owned
+copy of `bin/weaver-gcp-update.sh` as `/usr/local/sbin/weaver-gcp-update` and
+enable `weaver-update.timer`, which every five minutes fetches `origin/main`,
+fast-forwards `/opt/weaver`, runs `yarn install --immutable`, and restarts
+`weaver-serve`. It never restarts `weaver-run`: the runner notices its own
+checkout has moved, stops taking new ticks, drains the in-flight ones for a
+bounded window, and exits, and systemd relaunches it on the new code through
+the same launch preflight. A merged runner fix therefore reaches the fleet
+within about five minutes with no gcloud session involved — which is also the
+trust decision this makes: anything that lands on the repository's `main`
+branch runs on the credential-bearing host. The updater and the preflight are
+deliberately not taken from the checkout the service user owns; they are the
+operator's copies, refreshed only by `create`, `update`, `start`, and
+`restart`. A checkout that cannot fast-forward (a hand edit on the box) is left
+where it is and the timer's journal says so (`journalctl -u weaver-update`);
+`status` prints the timer state and the checkout's current revision. `update
+--restart` still forces an immediate restart when a change must not wait for
+the drain.
 
 The project defaults to the active gcloud project; zone, VM name, machine type,
 boot disk (`WEAVER_GCP_DISK_GB`, default 100 — sized for the checkouts and
