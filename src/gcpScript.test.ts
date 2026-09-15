@@ -77,6 +77,7 @@ if printf '%s\n' "$@" | grep -q 'weaver-gcp-preflight'; then
   WEAVER_GCP_PREFLIGHT_SERVICE_HOME="$WEAVER_GCP_TEST_SERVICE_HOME" \
   WEAVER_GCP_PREFLIGHT_EXECUTOR_SECRETS_FILE="$WEAVER_GCP_TEST_EXECUTOR_SECRETS" \
   WEAVER_GCP_PREFLIGHT_WEAVER_BIN="$WEAVER_GCP_TEST_WEAVER_BIN" \
+  WEAVER_GCP_PREFLIGHT_NODE="$WEAVER_GCP_TEST_NODE" \
     bash "$WEAVER_GCP_TEST_CALLS/$n.stdin"
   : > "$WEAVER_GCP_TEST_CALLS/$n.systemctl-executed"
 fi
@@ -294,6 +295,7 @@ printf '%s' "$WEAVER_GCP_TEST_REMOTE_ENV"
       WEAVER_GCP_TEST_PERSONAL_GITHUB_AUTH: personalGithubAuth ? '1' : '0',
       WEAVER_GCP_TEST_EXECUTOR_SECRETS: executorSecretsFile,
       WEAVER_GCP_TEST_WEAVER_BIN: weaverProbe,
+      WEAVER_GCP_TEST_NODE: process.execPath,
     },
   };
 }
@@ -1032,6 +1034,48 @@ test('GCP start refuses a hosted GitHub MCP configuration', () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /hosted GitHub MCP credentials are forbidden/);
   assert.equal(fs.existsSync(path.join(f.root, 'calls', 'github-client-probe')), false);
+});
+
+test('GCP start refuses a GitHub MCP server declared per project in the Claude state file', () => {
+  const f = fixture();
+  fs.writeFileSync(
+    path.join(f.root, 'service-home', '.claude.json'),
+    '{"mcpServers":{},"projects":{"/opt/weaver":{"mcpServers":{"github":{"command":"npx","args":["@modelcontextprotocol/server-github"]}}}}}\n',
+  );
+  const result = startExistingFixture(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /hosted GitHub MCP credentials are forbidden/);
+});
+
+test('GCP start refuses an MCP server carrying a GitHub token under any name', () => {
+  const f = fixture();
+  fs.writeFileSync(path.join(f.root, 'service-home', '.mcp.json'), '{"mcpServers":{"vcs":{"command":"x","env":{"GH_TOKEN":"static"}}}}\n');
+  const result = startExistingFixture(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /hosted GitHub MCP credentials are forbidden/);
+});
+
+test('GCP start does not mistake a cached feature-flag name for a GitHub MCP credential', () => {
+  // The fleet sat down for an hour on 2026-09-15 because the coordinator's SDK
+  // had cached `tengu_kairos_github_webhooks` into ~/.claude.json and the
+  // launch gate grepped the whole file for "github".
+  const f = fixture();
+  fs.writeFileSync(
+    path.join(f.root, 'service-home', '.claude.json'),
+    '{"cachedGrowthBookFeatures":{"tengu_kairos_github_webhooks":false},"mcpServers":{},"projects":{"/opt/weaver":{"mcpServers":{},"history":[{"display":"look at github.com/octo/repo"}]}}}\n',
+  );
+  fs.mkdirSync(path.join(f.root, 'service-home', '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(f.root, 'service-home', '.claude', 'settings.json'), '{"permissions":{"allow":["Bash(gh pr view:*)"]},"enabledMcpjsonServers":[]}\n');
+  const result = startExistingFixture(f);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('GCP start fails closed on an MCP configuration it cannot parse', () => {
+  const f = fixture();
+  fs.writeFileSync(path.join(f.root, 'service-home', '.mcp.json'), '{"mcpServers": {not json\n');
+  const result = startExistingFixture(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /hosted MCP configuration is not readable JSON/);
 });
 
 test('GCP start requires every configured coordinator capability without treating it as work', () => {

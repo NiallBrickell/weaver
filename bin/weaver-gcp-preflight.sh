@@ -14,6 +14,8 @@ service_user="${WEAVER_GCP_PREFLIGHT_SERVICE_USER:-weaver}"
 service_home="${WEAVER_GCP_PREFLIGHT_SERVICE_HOME:-/home/$service_user}"
 executor_secrets_file="${WEAVER_GCP_PREFLIGHT_EXECUTOR_SECRETS_FILE:-/home/weaver/state/executor-secrets.env}"
 weaver_binary="${WEAVER_GCP_PREFLIGHT_WEAVER_BIN:-/usr/local/bin/weaver}"
+# The Node used to parse MCP configuration files; the hosted runner ships its own.
+node_binary="${WEAVER_GCP_PREFLIGHT_NODE:-$(command -v node || true)}"
 
 fail() {
   printf '❌ GCP execution preflight refused: %s\n' "$1" >&2
@@ -37,6 +39,55 @@ env_count() {
 
 env_has() {
   [ "$(env_count "$1")" -gt 0 ]
+}
+
+# A hosted GitHub MCP server is refused by what the files DECLARE, never by a
+# substring. Claude Code's ~/.claude.json is a 40 KB state file that caches
+# feature-flag names, and on 2026-09-15 one of them
+# (`tengu_kairos_github_webhooks: false`) matched a whole-file grep for
+# "github": the launch gate refused every restart and the fleet sat down for
+# an hour on a flag name while the file declared no MCP server at all. Only an
+# MCP server declaration (`mcpServers`/`servers` entries, at any depth — the
+# state file keeps them per project) is inspected: a GitHub-named server, or
+# one whose declaration carries a GitHub token or endpoint, is refused. A file
+# that is not JSON fails closed — it cannot be shown clean.
+refuse_github_mcp_config() {
+  local file files='' verdict
+  for file in "$@"; do
+    [ -s "$file" ] || continue
+    files="${files}${file}
+"
+  done
+  [ -n "$files" ] || return 0
+  [ -n "$node_binary" ] && [ -x "$node_binary" ] || fail 'node is missing; hosted MCP configuration cannot be inspected'
+  verdict="$(WEAVER_GCP_PREFLIGHT_MCP_FILES="$files" "$node_binary" -e '
+const fs = require("fs");
+const forbidden = /github|GH_TOKEN|GITHUB_TOKEN/i;
+const walk = (node, hit) => {
+  if (!node || typeof node !== "object") return;
+  if (Array.isArray(node)) { for (const item of node) walk(item, hit); return; }
+  for (const [key, value] of Object.entries(node)) {
+    if ((key === "mcpServers" || key === "servers") && value && typeof value === "object" && !Array.isArray(value)) {
+      for (const [name, decl] of Object.entries(value)) {
+        if (forbidden.test(name) || forbidden.test(JSON.stringify(decl))) hit();
+      }
+    }
+    walk(value, hit);
+  }
+};
+for (const file of process.env.WEAVER_GCP_PREFLIGHT_MCP_FILES.split("\n").filter(Boolean)) {
+  let doc;
+  try { doc = JSON.parse(fs.readFileSync(file, "utf8")); } catch { console.log("unreadable " + file); process.exit(0); }
+  walk(doc, () => { console.log("forbidden " + file); process.exit(0); });
+}
+console.log("clean");
+' 2>/dev/null)" || fail 'hosted MCP configuration inspection failed'
+  case "$verdict" in
+    clean) ;;
+    unreadable\ *) fail "hosted MCP configuration is not readable JSON: ${verdict#unreadable }" ;;
+    forbidden\ *) fail 'hosted GitHub MCP credentials are forbidden' ;;
+    *) fail 'hosted MCP configuration inspection failed' ;;
+  esac
 }
 
 env_value() {
@@ -340,16 +391,10 @@ secure_github_app_boundary() {
     fi
   done < <(find "$state_root" -type f -name 'secrets.env' -print 2>/dev/null)
 
-  for config_file in "$service_home/.claude.json" "$service_home/.mcp.json"; do
-    if [ -s "$config_file" ] && grep -Eqi 'github|GH_TOKEN|GITHUB_TOKEN' "$config_file"; then
-      fail 'hosted GitHub MCP credentials are forbidden'
-    fi
-  done
+  refuse_github_mcp_config "$service_home/.claude.json" "$service_home/.mcp.json"
   if [ -d "$service_home/.claude" ]; then
     while IFS= read -r config_file; do
-      if grep -Eqi 'github|GH_TOKEN|GITHUB_TOKEN' "$config_file"; then
-        fail 'hosted GitHub MCP credentials are forbidden'
-      fi
+      refuse_github_mcp_config "$config_file"
     done < <(find "$service_home/.claude" -type f -name '*.json' -print 2>/dev/null)
   fi
 
@@ -362,9 +407,7 @@ secure_github_app_boundary() {
       fi
     done < <(find "$workspace_root" -path '*/.git/config' -type f -print 2>/dev/null)
     while IFS= read -r config_file; do
-      if grep -Eqi 'github|GH_TOKEN|GITHUB_TOKEN' "$config_file"; then
-        fail 'hosted GitHub MCP credentials are forbidden'
-      fi
+      refuse_github_mcp_config "$config_file"
     done < <(find "$workspace_root" -type f \( -name '.mcp.json' -o -path '*/.claude/*.json' \) -print 2>/dev/null)
   fi
 
