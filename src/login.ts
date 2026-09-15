@@ -20,6 +20,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { OPENHANDS_AGENT_SERVER_IMAGE } from './executor/openHands.js';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -96,6 +97,8 @@ const OPTIONAL_CONFIG_NAMES = [
   'WEAVER_RUNNER_EXECUTORS',
   'WEAVER_HOUSE_JSON',
   'WEAVER_OPENHANDS_BASE_URL',
+  'WEAVER_LOCAL_SDK_CONTAINER',
+  'WEAVER_LOCAL_SDK_CONTAINER_IMAGE',
   'WEAVER_PILOT_URL',
   'WEAVER_WORKER_MAX_TURNS',
   'WEAVER_ATTEMPT_STALE_MS',
@@ -276,6 +279,13 @@ function currentConfig(): Record<string, string | undefined> {
     WEAVER_HOUSE_JSON: process.env.WEAVER_HOUSE_JSON,
     WEAVER_WORKSPACE_ROOT: process.env.WEAVER_WORKSPACE_ROOT,
     WEAVER_OPENHANDS_BASE_URL: process.env.WEAVER_OPENHANDS_BASE_URL,
+    WEAVER_LOCAL_SDK_CONTAINER: process.env.WEAVER_LOCAL_SDK_CONTAINER,
+    // A host running Claude workers in the container seam gets the image
+    // spelled out: its launch preflight proves that exact image can run the
+    // SDK binary, and a default that lived only in TypeScript would be
+    // invisible to it.
+    WEAVER_LOCAL_SDK_CONTAINER_IMAGE: process.env.WEAVER_LOCAL_SDK_CONTAINER_IMAGE ??
+      (process.env.WEAVER_LOCAL_SDK_CONTAINER === '1' ? OPENHANDS_AGENT_SERVER_IMAGE : undefined),
     WEAVER_PILOT_URL: process.env.WEAVER_PILOT_URL,
     WEAVER_WORKER_MAX_TURNS: process.env.WEAVER_WORKER_MAX_TURNS,
     WEAVER_ATTEMPT_STALE_MS: process.env.WEAVER_ATTEMPT_STALE_MS,

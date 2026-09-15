@@ -10,12 +10,25 @@
 
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { containerSpawner, type ClaudeContainerConfig } from './claudeContainer.js';
 import type {
   SubmitReply,
   WorkerExecutionOutcome,
   WorkerExecutionRequest,
   WorkerExecutor,
 } from './types.js';
+
+export interface LocalSdkExecutorOptions {
+  /**
+   * Run ORDINARY work's Claude Code process inside the rootless Docker worker
+   * seam instead of as a host process (see claudeContainer.ts). A declared
+   * action is never containerized: its calls are supervised live by Pilot and
+   * it runs where the engine can read the effect back, exactly as before.
+   */
+  container?: ClaudeContainerConfig;
+  /** Test seam. */
+  runQuery?: typeof query;
+}
 
 /** Map a harness SubmitReply onto the SDK's MCP tool-result shape. */
 function asToolResult(r: SubmitReply): { content: { type: 'text'; text: string }[]; isError?: boolean } {
@@ -24,8 +37,27 @@ function asToolResult(r: SubmitReply): { content: { type: 'text'; text: string }
 
 export class LocalSdkExecutor implements WorkerExecutor {
   readonly id = 'local-sdk' as const;
+  private readonly container: ClaudeContainerConfig | undefined;
+  private readonly runQuery: typeof query;
+
+  constructor(options: LocalSdkExecutorOptions = {}) {
+    this.container = options.container;
+    this.runQuery = options.runQuery ?? query;
+  }
 
   async execute(req: WorkerExecutionRequest): Promise<WorkerExecutionOutcome> {
+    const containerized = this.container !== undefined && req.supervise === undefined;
+    if (containerized && req.cwd === undefined) {
+      throw new Error('a containerized local-sdk worker needs a working directory to mount');
+    }
+    const spawnClaudeCodeProcess = containerized
+      ? containerSpawner(this.container!, {
+          assignmentId: req.assignmentId,
+          cwd: req.cwd!,
+          additionalDirectories: req.additionalDirectories,
+          workerVisibleEnv: req.workerVisibleEnv ?? {},
+        })
+      : undefined;
     const server = createSdkMcpServer({
       name: 'weaver',
       version: '0.1.0',
@@ -58,9 +90,10 @@ export class LocalSdkExecutor implements WorkerExecutor {
     let sessionId: string | undefined;
     let error: string | undefined;
     try {
-      for await (const message of query({
+      for await (const message of this.runQuery({
         prompt: req.prompt,
         options: {
+          ...(spawnClaudeCodeProcess ? { spawnClaudeCodeProcess } : {}),
           model: req.model,
           systemPrompt: req.systemPrompt,
           tools: req.tools,

@@ -297,16 +297,40 @@ misreporting it as an uncreated VM.
 `start`, `restart`, `push-env --restart`, and `update --restart` all run the
 same fail-closed host preflight before systemd can launch the runner. This GCP
 helper is deliberately narrower than Weaver's general executor support:
-ordinary work and every worker fallback must use `openhands`, the coordinator
+ordinary work and every worker fallback must run inside the service user's
+rootless Docker daemon — either Claude Code itself in the pinned worker image
+(`WEAVER_EXECUTOR=local-sdk` with `WEAVER_LOCAL_SDK_CONTAINER=1`, the default
+profile) or the OpenHands agent server on the OpenRouter seat — the coordinator
 uses the tool-restricted Claude SDK directly with a registered
 `CLAUDE_CODE_OAUTH_TOKEN` created by `claude setup-token`, the capability
-declaration is explicit, and the service user's rootless Docker daemon must
-answer. The hosted coordinator chain is Claude through that setup-token, then
-non-Claude OpenRouter through a fresh isolated API home. OpenRouter-backed
-Claude is refused so every Claude run stays subscription-backed. Pi,
-local-login Claude, and Codex remain valid on
-operator-controlled machines; copied device-login state and Anthropic API keys
-are refused on this credential-bearing host.
+declaration is explicit, and the daemon must answer. The hosted coordinator
+chain is Claude through that setup-token, then non-Claude OpenRouter through a
+fresh isolated API home; the hosted worker chain is Claude on the same
+setup-token first (`claude-opus-5` by default), then `openhands` on
+`openrouter/z-ai/glm-5.3`. OpenRouter-backed Claude is refused on both so every
+Claude run stays subscription-backed. Pi, host-process Claude, and Codex remain
+valid on operator-controlled machines; copied device-login state and Anthropic
+API keys are refused on this credential-bearing host.
+
+A containerized Claude worker is the same confinement as an OpenHands worker,
+reached through the SDK's `spawnClaudeCodeProcess` hook: the runner starts
+Claude Code as `docker run` in the worker image with exactly three kinds of
+host state visible — the SDK's native binary directory read-only, the
+assignment's working directory read-write and its declared source directories
+read-only, all at their host paths — and an allowlisted environment (the
+registered Claude identity, the assignment's declared worker secrets with
+loopback hosts rewritten to the host gateway, and the SDK's own protocol
+variables). The controller's secret store, `WEAVER_STORE`, the Docker socket
+and the GitHub App identity are not mounted and not forwarded, and secret
+values never appear in argv. Until 2026-09-15 hosted workers were
+OpenRouter-only, so one exhausted OpenRouter account parked every worker
+attempt for a day while the subscription the coordinator was already using sat
+idle for them. The launch preflight proves the image can run the SDK binary
+from that read-only mount, refuses a bare `local-sdk` worker (a host process
+sharing the controller UID), keeps each seat's model on the route its executor
+owns, and refuses the containerized profile on a checkout whose code predates
+the spawner — roll the checkout forward before pushing it.
+`WEAVER_GCP_EXECUTOR=openhands` restores the OpenRouter-only worker profile.
 Rootless Docker is separate from the root-owned daemon used by the optional
 bundled Postgres, so disposable workers do not make the service account
 root-equivalent through the Docker group.

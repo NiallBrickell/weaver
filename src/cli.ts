@@ -238,6 +238,13 @@ async function main(): Promise<void> {
   // Intake is the default action: bare `weaver`, or a first word that is not a
   // subcommand, is a message to onboard (alias `w=weaver`). Every real
   // subcommand dispatches natively below.
+  if (cmd !== undefined && cmd.startsWith('-')) {
+    // `weaver --version` and `weaver -h` are questions about the CLI, never a
+    // message to onboard: on 2026-09-14 two of them became live workstreams
+    // titled "version" and "--version" and burned coordinator passes.
+    if (cmd === '-h' || cmd === '--help') { process.stdout.write(USAGE); return; }
+    fail(`unknown option '${cmd}' — an intake message never starts with a dash; see weaver --help`);
+  }
   if (cmd === undefined || !KNOWN_COMMANDS.has(cmd)) {
     await runIntake(cmd === undefined ? '' : [cmd, ...rest].join(' '));
     return;
