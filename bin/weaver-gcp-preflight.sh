@@ -479,8 +479,11 @@ if [ "$local_sdk_container" = 1 ]; then
   container_image="$(env_value WEAVER_LOCAL_SDK_CONTAINER_IMAGE)"
   [ -n "$container_image" ] || fail 'WEAVER_LOCAL_SDK_CONTAINER_IMAGE must be explicit when WEAVER_LOCAL_SDK_CONTAINER=1'
   claude_binary_dir="$(dirname "$claude_binary")"
+  # --entrypoint: the image's own entrypoint (the OpenHands agent server) must
+  # not receive the binary as its arguments — the first live proof failed on
+  # exactly that and read as "the image cannot run the binary".
   sudo -u "$service_user" env DOCKER_HOST="$docker_host" docker run --rm --user 0 \
-    --volume "$claude_binary_dir:$claude_binary_dir:ro" "$container_image" "$claude_binary" --version >/dev/null 2>&1 || \
+    --volume "$claude_binary_dir:$claude_binary_dir:ro" --entrypoint "$claude_binary" "$container_image" --version >/dev/null 2>&1 || \
     fail "the worker image $container_image cannot run the SDK's Claude Code binary"
 fi
 
