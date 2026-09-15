@@ -16,7 +16,8 @@
 #   weaver-gcp start              start the execution runner
 #   weaver-gcp stop               stop runner + ingress
 #   weaver-gcp restart            restart runner + serve (after push-env / git pull)
-#   weaver-gcp update [--restart] git pull + yarn install (no restart by default)
+#   weaver-gcp update [--restart] roll forward now + (re)install the 5-minute self-update timer
+#                                 (the runner relaunches itself; --restart forces it)
 #   weaver-gcp destroy            delete the VM (asks; bundled Postgres dies too)
 #
 # Design notes (why it is shaped this way):
@@ -56,6 +57,7 @@ SUBNET="${WEAVER_GCP_SUBNET:-weaver-subnet}"
 REPO_URL="https://github.com/NiallBrickell/weaver"
 REPO="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
 PREFLIGHT="$REPO/bin/weaver-gcp-preflight.sh"
+UPDATER="$REPO/bin/weaver-gcp-update.sh"
 
 GC=()
 GSSH=()
@@ -245,6 +247,11 @@ sudo -u weaver bash -c 'cd /opt/weaver && git pull --ff-only && yarn install'
 # Root-owned copy: the service account owns the checkout, so systemd must not
 # trust the checkout itself for its launch gate.
 install -o root -g root -m 755 /opt/weaver/bin/weaver-gcp-preflight.sh /usr/local/sbin/weaver-gcp-preflight
+# The host rolls itself forward from origin/main every five minutes
+# (weaver-update.timer). Same trust rule as the preflight: the updater is a
+# root-owned copy, never run out of the service-user-owned checkout, and it
+# never copies anything root-executable out of that checkout either.
+install -o root -g root -m 755 /opt/weaver/bin/weaver-gcp-update.sh /usr/local/sbin/weaver-gcp-update
 
 # Worker commands clone repositories into /tmp and nothing removes what a
 # finished or crashed run leaves there; Debian's default tmpfiles rule keeps
@@ -367,6 +374,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
+/usr/local/sbin/weaver-gcp-update install
 if [ "$WEAVER_GCP_STORE_MODE" = "external" ]; then
   # The explicit `start` is the cutover and enables only execution. A reboot
   # between provisioning and that act must not start against an unset/old DB.
@@ -682,12 +690,16 @@ cmd_update()  {
     *) echo "❌ usage: weaver-gcp update [--restart]" >&2; exit 1 ;;
   esac
   [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp update [--restart]" >&2; exit 1; }
-  "${GSSH[@]}" --command 'sudo -u weaver bash -c "cd /opt/weaver && git pull --ff-only && yarn install"'
+  [ -r "$UPDATER" ] || { echo "❌ missing hosted updater: $UPDATER" >&2; exit 1; }
+  # Ship this checkout's updater as the root-owned copy, (re)install its timer,
+  # and roll forward once now. The runner notices its checkout moved and
+  # relaunches itself after a bounded drain; --restart forces it immediately.
+  "${GSSH[@]}" --command "updater=/tmp/weaver-gcp-update.\$\$; trap 'rm -f -- \"\$updater\"' EXIT; umask 077; cat > \"\$updater\"; sudo install -o root -g root -m 755 \"\$updater\" /usr/local/sbin/weaver-gcp-update; sudo /usr/local/sbin/weaver-gcp-update install; sudo /usr/local/sbin/weaver-gcp-update" < "$UPDATER"
   if [ "$restart" -eq 1 ]; then
     run_after_execution_preflight restart
     echo "✓ updated + restarted"
   else
-    echo "✓ updated; services were not restarted"
+    echo "✓ updated; self-update timer installed; the runner relaunches itself if its source moved"
   fi
 }
 cmd_status()  {
@@ -696,6 +708,8 @@ cmd_status()  {
     --format='value(name,status,machineType.basename(),networkInterfaces[0].accessConfigs[0].natIP)'
   "${GSSH[@]}" --command '
     systemctl is-active weaver-run weaver-serve docker | paste - - - | sed "s/^/services (run serve docker): /"
+    systemctl is-active weaver-update.timer 2>/dev/null | sed "s/^/self-update timer: /"
+    sudo -u weaver git -C /opt/weaver rev-parse --short=12 HEAD 2>/dev/null | sed "s/^/checkout: /"
     hb=/home/weaver/state/.runner.heartbeat
     if sudo test -f $hb; then echo "runner heartbeat: $(( $(date +%s) - $(sudo stat -c %Y $hb) ))s ago"; else echo "runner heartbeat: none yet"; fi
     # A fresh heartbeat is not health: a full disk fails every state write

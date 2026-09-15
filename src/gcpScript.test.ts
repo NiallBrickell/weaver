@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 const script = fileURLToPath(new URL('../bin/weaver-gcp.sh', import.meta.url));
 const installer = fileURLToPath(new URL('../bin/weaver-install-env.sh', import.meta.url));
 const gcpPreflight = fileURLToPath(new URL('../bin/weaver-gcp-preflight.sh', import.meta.url));
+const gcpUpdater = fileURLToPath(new URL('../bin/weaver-gcp-update.sh', import.meta.url));
 const roots: string[] = [];
 
 const SAFE_GCP_EXECUTION_ENV = [
@@ -690,8 +691,15 @@ test('restart remains an explicit push-env and update option', () => {
   const updated = run(['update'], undefined);
   assert.equal(updated.result.status, 0, updated.result.stderr);
   assert.equal(fs.readFileSync(path.join(updated.root, 'calls', 'count'), 'utf8').trim(), '1');
+  // The updater travels on stdin as a root-owned copy, its timer is
+  // (re)installed, and one roll-forward runs now — the runner relaunches
+  // itself, so no explicit restart.
+  assert.equal(call(updated.root, 1, 'stdin'), fs.readFileSync(gcpUpdater, 'utf8'));
+  assert.match(call(updated.root, 1, 'args'), /install -o root -g root -m 755 .* \/usr\/local\/sbin\/weaver-gcp-update;/);
+  assert.match(call(updated.root, 1, 'args'), /weaver-gcp-update install; sudo \/usr\/local\/sbin\/weaver-gcp-update$/m);
+  assert.ok(!call(updated.root, 1, 'args').includes('git pull'));
   assert.ok(!call(updated.root, 1, 'args').includes('systemctl restart'));
-  assert.match(updated.result.stdout, /services were not restarted/);
+  assert.match(updated.result.stdout, /self-update timer installed/);
 
   const updatedAndRestarted = run(['update', '--restart'], undefined);
   assert.equal(updatedAndRestarted.result.status, 0, updatedAndRestarted.result.stderr);
