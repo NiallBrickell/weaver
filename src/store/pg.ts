@@ -877,6 +877,25 @@ export class PgStore implements StateStore {
       connectionTimeoutMillis: PG_CONNECT_TIMEOUT_MS,
       statement_timeout: PG_STATEMENT_TIMEOUT_MS,
     });
+    // This session can die mid-tick (route loss, a server restart, a provider
+    // ending it). node-postgres reports that as an 'error' event on the
+    // Client, and an unlistened 'error' event is an uncaught exception: the
+    // hosted runner died exactly this way on 2026-09-14 ("Connection
+    // terminated unexpectedly", exit 1), orphaning two in-flight passes
+    // behind their leases. The pool's clients carry this listener (see the
+    // constructor); this dedicated session was the one that did not. The
+    // server released the advisory lock with the session, so the tick that
+    // held it finishes under the document's revision check alone — the guard
+    // every write carries anyway — and release() must not ask a dead session
+    // to unlock: a completed tick would otherwise throw at its last step and
+    // be re-dispatched as if it had failed.
+    let lost: Error | undefined;
+    client.on('error', (error) => {
+      lost = error;
+      process.stderr.write(
+        `[store] tick lock session for '${slug}' lost: ${error.message} — the lock went with it; this tick finishes under the revision check alone\n`,
+      );
+    });
     await client.connect();
     let locked = false;
     try {
@@ -897,7 +916,7 @@ export class PgStore implements StateStore {
     if (!locked) return null;
     return async () => {
       try {
-        await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key]);
+        if (!lost) await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key]);
       } finally {
         await client.end().catch(() => {});
       }
