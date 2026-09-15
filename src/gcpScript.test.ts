@@ -448,6 +448,10 @@ test('host env merge preserves local state and replaces the complete portable re
     'WEAVER_EXECUTOR=local-sdk',
     'OPENROUTER_API_KEY=revoked-secret',
     'WEAVER_ACTION_MODEL=removed-action-model',
+    // A worker-seat mode is part of the managed set: a render that switches
+    // the host back to OpenHands must not leave the container flag behind.
+    'WEAVER_LOCAL_SDK_CONTAINER=1',
+    'WEAVER_LOCAL_SDK_CONTAINER_IMAGE=ghcr.io/openhands/agent-server:1.41.0-python',
     'CUSTOM_HOST_SETTING=keep-me',
     '',
   ].join('\n'));
