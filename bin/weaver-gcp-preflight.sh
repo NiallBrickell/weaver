@@ -16,6 +16,9 @@ executor_secrets_file="${WEAVER_GCP_PREFLIGHT_EXECUTOR_SECRETS_FILE:-/home/weave
 weaver_binary="${WEAVER_GCP_PREFLIGHT_WEAVER_BIN:-/usr/local/bin/weaver}"
 # The Node used to parse MCP configuration files; the hosted runner ships its own.
 node_binary="${WEAVER_GCP_PREFLIGHT_NODE:-$(command -v node || true)}"
+# The checkout the runner executes from: the SDK's native Claude Code binary
+# lives there and is what a containerized worker runs.
+checkout_dir="${WEAVER_GCP_PREFLIGHT_CHECKOUT:-/opt/weaver}"
 
 fail() {
   printf '❌ GCP execution preflight refused: %s\n' "$1" >&2
@@ -125,8 +128,48 @@ csv_entries() {
   done
 }
 
+# Ordinary work must be structurally confined: a worker sharing the controller
+# UID can read absolute credential paths. Two routes satisfy that: the
+# OpenHands agent-server container on OpenRouter, and — since 2026-09-15 —
+# Claude Code itself started inside the same rootless Docker seam
+# (WEAVER_LOCAL_SDK_CONTAINER=1, src/executor/claudeContainer.ts), which is
+# how the host puts its Claude subscription first for workers. A bare local-sdk
+# worker on this host remains a same-UID model process and is refused.
 worker_executor="$(env_value WEAVER_EXECUTOR)"
-[ "$worker_executor" = openhands ] || fail 'WEAVER_EXECUTOR must be openhands on this credential-bearing host'
+local_sdk_container="$(env_value WEAVER_LOCAL_SDK_CONTAINER)"
+require_worker_executor() {
+  local executor="$1" env_name="$2"
+  case "$executor" in
+    openhands) ;;
+    local-sdk)
+      [ "$local_sdk_container" = 1 ] || \
+        fail "$env_name may use local-sdk only with WEAVER_LOCAL_SDK_CONTAINER=1: a host-process worker would share the controller UID"
+      ;;
+    *) fail "$env_name must be openhands or containerized local-sdk on this credential-bearing host" ;;
+  esac
+}
+# A worker seat's model follows its executor: the OpenHands route is the
+# OpenRouter seat, the containerized Claude route is the subscription seat.
+# Claude through OpenRouter is refused on both (every hosted Claude run stays
+# subscription-backed), and OpenRouter through the subscription route is
+# simply not a thing.
+require_worker_model() {
+  local executor="$1" model="$2" env_name="$3"
+  case "$executor" in
+    openhands)
+      case "$model" in
+        openrouter/*) ;;
+        *) fail "$env_name must be an openrouter/ provider-qualified model for an openhands seat on this host" ;;
+      esac
+      ;;
+    local-sdk)
+      case "$model" in
+        openrouter/*) fail "$env_name must be a subscription-backed Claude model for a containerized local-sdk seat, not an openrouter/ route" ;;
+      esac
+      ;;
+  esac
+}
+require_worker_executor "$worker_executor" WEAVER_EXECUTOR
 openhands_host_gateway="$(env_value WEAVER_OPENHANDS_HOST_GATEWAY_IP)"
 awk -v value="$openhands_host_gateway" 'BEGIN {
   count = split(value, octets, ".")
@@ -138,28 +181,22 @@ ip -4 -o addr show scope global | awk -v expected="$openhands_host_gateway" '
   END { exit found ? 0 : 1 }
 ' || fail 'WEAVER_OPENHANDS_HOST_GATEWAY_IP must be owned by this execution host'
 worker_model="$(env_value WEAVER_WORKER_MODEL)"
-case "$worker_model" in
-  openrouter/*) ;;
-  *) fail 'WEAVER_WORKER_MODEL must be an openrouter/ provider-qualified model on this host' ;;
-esac
+[ -n "$worker_model" ] || fail 'WEAVER_WORKER_MODEL must be explicit on this host'
+require_worker_model "$worker_executor" "$worker_model" WEAVER_WORKER_MODEL
 worker_complex_model="$(env_value WEAVER_WORKER_MODEL_COMPLEX)"
 if [ -n "$worker_complex_model" ]; then
-  case "$worker_complex_model" in
-    openrouter/*) ;;
-    *) fail 'WEAVER_WORKER_MODEL_COMPLEX must use the openrouter/ provider prefix on this host' ;;
-  esac
+  require_worker_model "$worker_executor" "$worker_complex_model" WEAVER_WORKER_MODEL_COMPLEX
 fi
 
+worker_executors=("$worker_executor")
 worker_fallbacks="$(env_value WEAVER_WORKER_FALLBACKS)"
 while IFS= read -r entry; do
   [ -z "$entry" ] && continue
   executor="$(parse_target_executor "$entry" WEAVER_WORKER_FALLBACKS)"
-  [ "$executor" = openhands ] || fail 'every WEAVER_WORKER_FALLBACKS target must use openhands on this host'
+  require_worker_executor "$executor" 'every WEAVER_WORKER_FALLBACKS target'
   model="$(trim "${entry#*:}")"
-  case "$model" in
-    openrouter/*) ;;
-    *) fail 'every WEAVER_WORKER_FALLBACKS model must use the openrouter/ provider prefix on this host' ;;
-  esac
+  require_worker_model "$executor" "$model" 'every WEAVER_WORKER_FALLBACKS model'
+  worker_executors+=("$executor")
 done < <(csv_entries "$worker_fallbacks")
 
 # The coordinator is a separate, tool-restricted process seam. Its primary is
@@ -243,6 +280,9 @@ capability_has() {
 capability_has openhands || fail 'WEAVER_RUNNER_EXECUTORS must include openhands for ordinary work'
 for executor in "${coordinator_executors[@]}"; do
   capability_has "$executor" || fail 'WEAVER_RUNNER_EXECUTORS is missing a configured coordinator capability'
+done
+for executor in "${worker_executors[@]}"; do
+  capability_has "$executor" || fail 'WEAVER_RUNNER_EXECUTORS is missing a configured worker capability'
 done
 
 secure_openrouter_boundary() {
@@ -422,5 +462,26 @@ service_uid="$(id -u "$service_user")"
 docker_host="unix:///run/user/$service_uid/docker.sock"
 sudo -u "$service_user" env DOCKER_HOST="$docker_host" docker info >/dev/null 2>&1 || \
   fail 'rootless Docker is not accessible to the Weaver service user'
+
+# A containerized Claude seat is only real if the image can run the SDK's
+# native binary from its read-only mount: prove it the way the worker will
+# (same user, same daemon, same mount, uid 0), not with a liveness ping.
+if [ "$local_sdk_container" = 1 ]; then
+  # The flag is honoured by the runner's code, not by this gate: a profile that
+  # says "containerized" pushed onto a checkout that predates the spawner would
+  # start every worker as a host process with the secret store readable. The
+  # gate therefore refuses to launch a checkout that cannot honour the flag —
+  # update the checkout (the self-update timer does this from main) first.
+  [ -f "$checkout_dir/src/executor/claudeContainer.ts" ] || \
+    fail "the checkout at $checkout_dir predates containerized local-sdk workers; roll it forward before pushing this profile"
+  claude_binary="$checkout_dir/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"
+  [ -x "$claude_binary" ] || fail "the SDK's native Claude Code binary is missing from the checkout at $claude_binary"
+  container_image="$(env_value WEAVER_LOCAL_SDK_CONTAINER_IMAGE)"
+  [ -n "$container_image" ] || fail 'WEAVER_LOCAL_SDK_CONTAINER_IMAGE must be explicit when WEAVER_LOCAL_SDK_CONTAINER=1'
+  claude_binary_dir="$(dirname "$claude_binary")"
+  sudo -u "$service_user" env DOCKER_HOST="$docker_host" docker run --rm --user 0 \
+    --volume "$claude_binary_dir:$claude_binary_dir:ro" "$container_image" "$claude_binary" --version >/dev/null 2>&1 || \
+    fail "the worker image $container_image cannot run the SDK's Claude Code binary"
+fi
 
 echo '✓ GCP execution preflight passed (workers containerized; action lane supervised; GitHub machine identity authenticated)'

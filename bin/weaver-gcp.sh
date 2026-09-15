@@ -431,7 +431,7 @@ push_remote_installer() {
 # metadata. Adapters deliberately load the latter instead of ambient identity.
 cmd_push_env() {
   local restart=0
-  local hosted_worker_model hosted_worker_complex_model hosted_worker_fallbacks
+  local hosted_worker_executor hosted_local_sdk_container hosted_worker_model hosted_worker_complex_model hosted_worker_fallbacks
   local hosted_coordinator_model hosted_coordinator_fallbacks
   case "${1:-}" in
     --restart) restart=1; shift ;;
@@ -439,9 +439,28 @@ cmd_push_env() {
     *) echo "❌ usage: weaver-gcp push-env [--restart]" >&2; exit 1 ;;
   esac
   [ "$#" -eq 0 ] || { echo "❌ usage: weaver-gcp push-env [--restart]" >&2; exit 1; }
-  hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-openrouter/z-ai/glm-5.3}"
+  # Ordinary work runs Claude Code inside the rootless Docker worker seam on
+  # the registered subscription first (WEAVER_LOCAL_SDK_CONTAINER=1), and
+  # falls back to the OpenHands container on the OpenRouter seat. Until
+  # 2026-09-15 workers were OpenRouter-only, so one exhausted OpenRouter
+  # account parked every worker attempt for a day while the subscription the
+  # coordinator was already using sat idle for them. WEAVER_GCP_EXECUTOR=openhands
+  # restores the OpenRouter-only worker profile.
+  hosted_worker_executor="${WEAVER_GCP_EXECUTOR:-local-sdk}"
+  case "$hosted_worker_executor" in
+    local-sdk)
+      hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-claude-opus-5}"
+      hosted_worker_fallbacks="${WEAVER_GCP_WORKER_FALLBACKS:-openhands:openrouter/z-ai/glm-5.3}"
+      hosted_local_sdk_container=1
+      ;;
+    openhands)
+      hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-openrouter/z-ai/glm-5.3}"
+      hosted_worker_fallbacks="${WEAVER_GCP_WORKER_FALLBACKS:-}"
+      hosted_local_sdk_container=""
+      ;;
+    *) echo "❌ WEAVER_GCP_EXECUTOR must be local-sdk (containerized Claude) or openhands" >&2; exit 1 ;;
+  esac
   hosted_worker_complex_model="${WEAVER_GCP_WORKER_MODEL_COMPLEX:-$hosted_worker_model}"
-  hosted_worker_fallbacks="${WEAVER_GCP_WORKER_FALLBACKS:-}"
   # The always-on controller starts on an explicitly registered Claude Code
   # setup-token. Opus on that same token is the first fallback: on 2026-09-02
   # the Fable seat's weekly allowance ran out while Opus still answered, and
@@ -460,7 +479,8 @@ cmd_push_env() {
   trap 'rm -f -- "${PUSH_ENV_RAW_TMP:-}" "${PUSH_ENV_TMP:-}" "${PUSH_EXECUTOR_SECRETS_RAW_TMP:-}" "${PUSH_EXECUTOR_SECRETS_TMP:-}"' EXIT
   chmod 600 "$PUSH_ENV_RAW_TMP" "$PUSH_ENV_TMP" "$PUSH_EXECUTOR_SECRETS_RAW_TMP" "$PUSH_EXECUTOR_SECRETS_TMP"
   env \
-    WEAVER_EXECUTOR=openhands \
+    WEAVER_EXECUTOR="$hosted_worker_executor" \
+    ${hosted_local_sdk_container:+WEAVER_LOCAL_SDK_CONTAINER=1} \
     WEAVER_WORKER_MODEL="$hosted_worker_model" \
     WEAVER_WORKER_MODEL_COMPLEX="$hosted_worker_complex_model" \
     WEAVER_WORKER_FALLBACKS="$hosted_worker_fallbacks" \

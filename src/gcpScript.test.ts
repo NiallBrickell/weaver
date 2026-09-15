@@ -19,10 +19,12 @@ const gcpUpdater = fileURLToPath(new URL('../bin/weaver-gcp-update.sh', import.m
 const roots: string[] = [];
 
 const SAFE_GCP_EXECUTION_ENV = [
-  'WEAVER_EXECUTOR=openhands',
+  'WEAVER_EXECUTOR=local-sdk',
+  'WEAVER_LOCAL_SDK_CONTAINER=1',
+  'WEAVER_LOCAL_SDK_CONTAINER_IMAGE=ghcr.io/openhands/agent-server:1.41.0-python',
   'WEAVER_OPENHANDS_HOST_GATEWAY_IP=10.170.0.2',
-  'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.3',
-  'WEAVER_WORKER_FALLBACKS=',
+  'WEAVER_WORKER_MODEL=claude-opus-5',
+  'WEAVER_WORKER_FALLBACKS=openhands:openrouter/z-ai/glm-5.3',
   'WEAVER_COORDINATOR_MODEL=claude-fable-5',
   'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
   'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3',
@@ -78,6 +80,7 @@ if printf '%s\n' "$@" | grep -q 'weaver-gcp-preflight'; then
   WEAVER_GCP_PREFLIGHT_EXECUTOR_SECRETS_FILE="$WEAVER_GCP_TEST_EXECUTOR_SECRETS" \
   WEAVER_GCP_PREFLIGHT_WEAVER_BIN="$WEAVER_GCP_TEST_WEAVER_BIN" \
   WEAVER_GCP_PREFLIGHT_NODE="$WEAVER_GCP_TEST_NODE" \
+  WEAVER_GCP_PREFLIGHT_CHECKOUT="$WEAVER_GCP_TEST_CHECKOUT" \
     bash "$WEAVER_GCP_TEST_CALLS/$n.stdin"
   : > "$WEAVER_GCP_TEST_CALLS/$n.systemctl-executed"
 fi
@@ -137,7 +140,14 @@ esac
     path.join(bin, 'docker'),
     `#!/bin/bash
 set -euo pipefail
-[ "\${WEAVER_GCP_TEST_DOCKER_OK:-0}" = 1 ]
+case "\${1:-}" in
+  info) [ "\${WEAVER_GCP_TEST_DOCKER_OK:-0}" = 1 ] ;;
+  run)
+    printf '%s\n' "$*" > "$WEAVER_GCP_TEST_CALLS/docker-run"
+    [ "\${WEAVER_GCP_TEST_CLAUDE_IMAGE_OK:-1}" = 1 ] && printf '%s\n' '2.1.220 (Claude Code)'
+    ;;
+  *) exit 1 ;;
+esac
 `,
     { mode: 0o755 },
   );
@@ -203,6 +213,13 @@ fi
     { mode: 0o755 },
   );
   const weaverProbe = path.join(bin, 'weaver-probe');
+  // The checkout the preflight looks in for the SDK's native Claude Code binary.
+  const checkout = path.join(root, 'checkout');
+  const claudeBinaryDir = path.join(checkout, 'node_modules', '@anthropic-ai', 'claude-agent-sdk-linux-x64');
+  fs.mkdirSync(claudeBinaryDir, { recursive: true });
+  fs.writeFileSync(path.join(claudeBinaryDir, 'claude'), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
+  fs.mkdirSync(path.join(checkout, 'src', 'executor'), { recursive: true });
+  fs.writeFileSync(path.join(checkout, 'src', 'executor', 'claudeContainer.ts'), '// marker: this checkout honours WEAVER_LOCAL_SDK_CONTAINER\n');
   fs.writeFileSync(
     weaverProbe,
     `#!/bin/bash
@@ -257,6 +274,7 @@ set -euo pipefail
 if [ -n "\${WEAVER_EXECUTOR:-}" ]; then
 printf '%s\n' \
   "WEAVER_EXECUTOR=$WEAVER_EXECUTOR" \
+  "WEAVER_LOCAL_SDK_CONTAINER=\${WEAVER_LOCAL_SDK_CONTAINER:-}" \
   "WEAVER_WORKER_MODEL=$WEAVER_WORKER_MODEL" \
   "WEAVER_WORKER_FALLBACKS=$WEAVER_WORKER_FALLBACKS" \
   "WEAVER_COORDINATOR_EXECUTOR=$WEAVER_COORDINATOR_EXECUTOR" \
@@ -296,6 +314,7 @@ printf '%s' "$WEAVER_GCP_TEST_REMOTE_ENV"
       WEAVER_GCP_TEST_EXECUTOR_SECRETS: executorSecretsFile,
       WEAVER_GCP_TEST_WEAVER_BIN: weaverProbe,
       WEAVER_GCP_TEST_NODE: process.execPath,
+      WEAVER_GCP_TEST_CHECKOUT: checkout,
     },
   };
 }
@@ -613,9 +632,10 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
   assert.match(result.stdout, /services were not restarted/);
   assert.ok(!`${result.stdout}${result.stderr}`.includes('Primary application'));
   assert.equal(fs.readFileSync(path.join(root, 'calls', 'render-profile'), 'utf8'), [
-    'WEAVER_EXECUTOR=openhands',
-    'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.3',
-    'WEAVER_WORKER_FALLBACKS=',
+    'WEAVER_EXECUTOR=local-sdk',
+    'WEAVER_LOCAL_SDK_CONTAINER=1',
+    'WEAVER_WORKER_MODEL=claude-opus-5',
+    'WEAVER_WORKER_FALLBACKS=openhands:openrouter/z-ai/glm-5.3',
     'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
     'WEAVER_COORDINATOR_MODEL=claude-fable-5',
     'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3',
@@ -727,10 +747,10 @@ test('GCP start runs the containment preflight before systemctl', () => {
 });
 
 test('GCP start refuses host-process normal workers before systemctl', () => {
-  const unsafe = SAFE_GCP_EXECUTION_ENV.replace('WEAVER_EXECUTOR=openhands', 'WEAVER_EXECUTOR=pi');
+  const unsafe = SAFE_GCP_EXECUTION_ENV.replace('WEAVER_EXECUTOR=local-sdk', 'WEAVER_EXECUTOR=pi');
   const { result, root } = run(['start'], undefined, '', false, unsafe);
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /WEAVER_EXECUTOR must be openhands/);
+  assert.match(result.stderr, /WEAVER_EXECUTOR must be openhands or containerized local-sdk/);
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
 });
 
@@ -747,13 +767,66 @@ test('GCP start refuses a non-local OpenHands bridge address before systemctl', 
 
 test('GCP restart refuses a host-process worker fallback before systemctl', () => {
   const unsafe = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_WORKER_FALLBACKS=',
+    'WEAVER_WORKER_FALLBACKS=openhands:openrouter/z-ai/glm-5.3',
     'WEAVER_WORKER_FALLBACKS=codex-sdk:gpt-5.6-sol',
   );
   const { result, root } = run(['restart'], undefined, '', false, unsafe);
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /every WEAVER_WORKER_FALLBACKS target must use openhands/);
+  assert.match(result.stderr, /every WEAVER_WORKER_FALLBACKS target must be openhands or containerized local-sdk/);
   assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start refuses a bare local-sdk worker: without the container seam it shares the controller UID', () => {
+  const unsafe = SAFE_GCP_EXECUTION_ENV.replace('WEAVER_LOCAL_SDK_CONTAINER=1\n', '');
+  const { result, root } = run(['start'], undefined, '', false, unsafe);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /only with WEAVER_LOCAL_SDK_CONTAINER=1/);
+  assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start keeps every hosted worker seat on the route its executor owns', () => {
+  const routedClaude = SAFE_GCP_EXECUTION_ENV.replace('WEAVER_WORKER_MODEL=claude-opus-5', 'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.3');
+  const first = run(['start'], undefined, '', false, routedClaude);
+  assert.notEqual(first.result.status, 0);
+  assert.match(first.result.stderr, /must be a subscription-backed Claude model for a containerized local-sdk seat/);
+
+  const claudeOnOpenHands = SAFE_GCP_EXECUTION_ENV.replace(
+    'WEAVER_WORKER_FALLBACKS=openhands:openrouter/z-ai/glm-5.3',
+    'WEAVER_WORKER_FALLBACKS=openhands:claude-opus-5',
+  );
+  const second = run(['start'], undefined, '', false, claudeOnOpenHands);
+  assert.notEqual(second.result.status, 0);
+  assert.match(second.result.stderr, /must be an openrouter\/ provider-qualified model for an openhands seat/);
+  assert.equal(fs.existsSync(path.join(second.root, 'calls', '1.systemctl-executed')), false);
+});
+
+test('GCP start proves the worker image can run the SDK binary from its read-only mount', () => {
+  const proven = run(['start'], undefined);
+  assert.equal(proven.result.status, 0, proven.result.stderr);
+  const dockerRun = fs.readFileSync(path.join(proven.root, 'calls', 'docker-run'), 'utf8').trim();
+  assert.match(dockerRun, /^run --rm --user 0 --volume \S+\/claude-agent-sdk-linux-x64:\S+\/claude-agent-sdk-linux-x64:ro ghcr\.io\/openhands\/agent-server:1\.41\.0-python \S+\/claude --version$/);
+
+  process.env.WEAVER_GCP_TEST_CLAUDE_IMAGE_OK = '0';
+  try {
+    const { result, root } = run(['start'], undefined);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /cannot run the SDK's Claude Code binary/);
+    assert.equal(fs.existsSync(path.join(root, 'calls', '1.systemctl-executed')), false);
+  } finally {
+    delete process.env.WEAVER_GCP_TEST_CLAUDE_IMAGE_OK;
+  }
+});
+
+test('GCP start refuses the containerized profile on a checkout that cannot honour it', () => {
+  // Pushing WEAVER_LOCAL_SDK_CONTAINER=1 onto a runner whose code predates the
+  // spawner would start every worker as a host process with the secret store
+  // readable; the gate must catch that ordering mistake, not the incident.
+  const f = fixture();
+  fs.rmSync(path.join(f.root, 'checkout', 'src'), { recursive: true, force: true });
+  const result = startExistingFixture(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /predates containerized local-sdk workers/);
+  assert.equal(fs.existsSync(path.join(f.root, 'calls', '1.systemctl-executed')), false);
 });
 
 test('GCP start refuses an OpenRouter primary or device-login coordinator', () => {

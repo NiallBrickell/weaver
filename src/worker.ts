@@ -12,6 +12,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { virtualNow } from './clock.js';
+import { claudeContainerFromEnv } from './executor/claudeContainer.js';
 import { LocalSdkExecutor } from './executor/localSdk.js';
 import { OpenHandsExecutor } from './executor/openHands.js';
 import { CodexExecutor } from './executor/codex.js';
@@ -105,7 +106,7 @@ export function workerExceptionReason(
  * routed through Pilot supervision.
  */
 export function selectExecutor(name = workerExecutorName()): WorkerExecutor {
-  if (name === 'local-sdk') return new LocalSdkExecutor();
+  if (name === 'local-sdk') return new LocalSdkExecutor({ container: claudeContainerFromEnv() });
   if (name === 'codex-sdk') return new CodexExecutor();
   if (name === 'openhands') return new OpenHandsExecutor();
   if (name === 'pi') return new PiExecutor();
