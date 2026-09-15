@@ -806,6 +806,42 @@ describe(
   () => {
     contractSuite(pgBackend);
 
+    test('a tick lock whose session dies mid-tick neither kills the process nor fails the tick at release', async () => {
+      // The hosted runner died on 2026-09-14 to an unlistened 'error' event on
+      // exactly this session ("Connection terminated unexpectedly", exit 1),
+      // orphaning two in-flight passes behind their leases. Kill the lock's
+      // backend the way a route loss or an operator would. The process must
+      // survive it (an unhandled 'error' would end this test run), the lock
+      // must be free — the server released it with the session — and the
+      // tick's release must not throw at what is a completed tick's last step.
+      await makeWorkstream();
+      const stderr: string[] = [];
+      const originalWrite = process.stderr.write;
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        stderr.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write;
+      try {
+        const release = await tryTickLock('test-ws');
+        assert.ok(release, 'first acquire must succeed');
+        const killed = await pgAdmin((c) =>
+          c.query(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'weaver-tick' AND datname = current_database() AND pid <> pg_backend_pid()",
+          ),
+        );
+        assert.ok((killed.rowCount ?? 0) >= 1, 'the lock session must be visible to terminate');
+        const lostLine = () => stderr.find((line) => line.includes("tick lock session for 'test-ws' lost"));
+        for (let i = 0; i < 200 && !lostLine(); i += 1) await new Promise((res) => setTimeout(res, 25));
+        assert.ok(lostLine(), `the loss must be traced on stderr; saw: ${JSON.stringify(stderr)}`);
+        const again = await tryTickLock('test-ws');
+        assert.ok(again, 'the lock must be free once its session is gone');
+        await release(); // a dead session is not asked to unlock; this must resolve
+        await again();
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+    });
+
     test('an unchanged document is re-read by its change token only; any row write moves the body again', async () => {
       // One tick reads its document twenty-odd times, and over a hosted
       // store's public proxy every body is billed. The cache may therefore
