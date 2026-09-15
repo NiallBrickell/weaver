@@ -30,6 +30,8 @@ service_user="${WEAVER_GCP_UPDATE_SERVICE_USER:-weaver}"
 unit_dir="${WEAVER_GCP_UPDATE_UNIT_DIR:-/etc/systemd/system}"
 self="${WEAVER_GCP_UPDATE_SELF:-/usr/local/sbin/weaver-gcp-update}"
 branch="${WEAVER_GCP_UPDATE_BRANCH:-main}"
+lock_dir="${WEAVER_GCP_UPDATE_LOCK:-/run/lock/weaver-gcp-update}"
+lock_wait="${WEAVER_GCP_UPDATE_LOCK_WAIT:-300}"
 
 fail() {
   printf '❌ weaver-gcp-update: %s\n' "$1" >&2
@@ -77,8 +79,30 @@ EOF
   echo "✓ weaver-update.timer enabled (every 5 minutes, from origin/$branch)"
 }
 
+# One updater at a time. `systemctl enable --now` fires the timer's first run
+# the instant it is installed, and on 2026-09-15 that run raced the operator's
+# own `weaver-gcp update` on the same fetch: one of them lost git's ref lock.
+# A mkdir lock is atomic and needs no flock binary (macOS tests run this too);
+# a holder that died is recognised by its dead pid and taken over.
+take_lock() {
+  local waited=0 holder
+  while ! mkdir "$lock_dir" 2>/dev/null; do
+    holder="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+      rm -rf "$lock_dir"
+      continue
+    fi
+    [ "$waited" -lt "$lock_wait" ] || fail "another update (pid ${holder:-unknown}) still holds $lock_dir after ${lock_wait}s"
+    sleep 1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' "$$" > "$lock_dir/pid"
+  trap 'rm -rf "$lock_dir"' EXIT
+}
+
 update() {
   [ -d "$repo/.git" ] || fail "$repo is not a git checkout"
+  take_lock
   as_service_user git -C "$repo" fetch --quiet origin "$branch"
   local before after
   before="$(as_service_user git -C "$repo" rev-parse HEAD)"

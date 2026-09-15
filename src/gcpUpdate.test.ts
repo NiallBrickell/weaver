@@ -63,6 +63,8 @@ function fixture(): { root: string; origin: string; checkout: string; calls: str
     WEAVER_GCP_UPDATE_UNIT_DIR: units,
     WEAVER_GCP_UPDATE_SELF: '/usr/local/sbin/weaver-gcp-update',
     WEAVER_GCP_UPDATE_TEST_CALLS: calls,
+    WEAVER_GCP_UPDATE_LOCK: path.join(root, 'lock'),
+    WEAVER_GCP_UPDATE_LOCK_WAIT: '2',
   };
   return { root, origin: seed, checkout, calls, units, env };
 }
@@ -148,4 +150,28 @@ test('an unknown subcommand and a non-checkout are refused before anything runs'
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /is not a git checkout/);
   assert.equal(calls(f.calls), '');
+});
+
+test('two updaters serialize on the lock; a dead holder is taken over, a live one is waited for', () => {
+  const f = fixture();
+  const lock = f.env.WEAVER_GCP_UPDATE_LOCK!;
+  // A holder that died mid-run (its pid is gone) must not block updates forever.
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, 'pid'), '999999999\n');
+  const stale = run(f.env);
+  assert.equal(stale.status, 0, stale.stderr);
+  assert.match(stale.stdout, /^up to date/);
+  assert.ok(!fs.existsSync(lock), 'the lock is released on exit');
+
+  // A live holder is waited for up to the configured window, then refused —
+  // never raced. This process is alive, so its pid holds the lock.
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, 'pid'), `${process.pid}\n`);
+  const started = Date.now();
+  const blocked = run(f.env);
+  assert.equal(blocked.status, 1);
+  assert.match(blocked.stderr, new RegExp(`another update \\(pid ${process.pid}\\) still holds .* after 2s`));
+  assert.ok(Date.now() - started >= 2_000, 'the updater waited for the window before giving up');
+  assert.equal(calls(f.calls), '', 'a blocked updater touches nothing');
+  assert.ok(fs.existsSync(lock), 'a live holder\'s lock is left alone');
 });
