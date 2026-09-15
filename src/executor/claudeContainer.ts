@@ -185,7 +185,10 @@ export function planContainerRun(
   }
   args.push('--env', `HOME=${CONTAINER_HOME}`, '--env', 'IS_SANDBOX=1');
   for (const name of forwardedNames) args.push('--env', name);
-  args.push(config.image, spawnOptions.command, ...spawnOptions.args);
+  // The worker image has an entrypoint of its own (the OpenHands agent server,
+  // a Python CLI that swallowed the binary path as its own arguments on the
+  // first live proof). The Claude Code binary IS the entrypoint here.
+  args.push('--entrypoint', spawnOptions.command, config.image, ...spawnOptions.args);
   return { command: config.dockerCommand, args, env: cliEnv, containerName };
 }
 

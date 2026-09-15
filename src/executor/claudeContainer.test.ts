@@ -71,12 +71,13 @@ test('the plan mounts only the SDK binary, the workspace and declared read dirs,
   assert.ok(plan.args.includes(`host.docker.internal:10.170.0.2`));
   assert.ok(plan.args.includes(CLAUDE_CONTAINER_LABEL));
   assert.match(plan.containerName, /^weaver-claude-asg_abc-123-[0-9a-f]{12}$/);
-  // The image is followed by the binary at its host path and the SDK's own args, untouched.
+  // The binary at its host path replaces the image's own entrypoint, and the
+  // SDK's own args follow the image untouched.
   const image = plan.args.indexOf('example.test/worker:1');
-  assert.deepEqual(plan.args.slice(image + 1), [
-    '/opt/weaver/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude',
-    '--output-format', 'stream-json', '--model', 'claude-opus-5',
+  assert.deepEqual(plan.args.slice(image - 2, image), [
+    '--entrypoint', '/opt/weaver/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude',
   ]);
+  assert.deepEqual(plan.args.slice(image + 1), ['--output-format', 'stream-json', '--model', 'claude-opus-5']);
 });
 
 test('only the Claude identity, SDK protocol names and declared secrets cross, by name, never a value in argv', () => {

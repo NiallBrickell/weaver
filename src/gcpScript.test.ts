@@ -804,7 +804,7 @@ test('GCP start proves the worker image can run the SDK binary from its read-onl
   const proven = run(['start'], undefined);
   assert.equal(proven.result.status, 0, proven.result.stderr);
   const dockerRun = fs.readFileSync(path.join(proven.root, 'calls', 'docker-run'), 'utf8').trim();
-  assert.match(dockerRun, /^run --rm --user 0 --volume \S+\/claude-agent-sdk-linux-x64:\S+\/claude-agent-sdk-linux-x64:ro ghcr\.io\/openhands\/agent-server:1\.41\.0-python \S+\/claude --version$/);
+  assert.match(dockerRun, /^run --rm --user 0 --volume \S+\/claude-agent-sdk-linux-x64:\S+\/claude-agent-sdk-linux-x64:ro --entrypoint \S+\/claude ghcr\.io\/openhands\/agent-server:1\.41\.0-python --version$/);
 
   process.env.WEAVER_GCP_TEST_CLAUDE_IMAGE_OK = '0';
   try {
