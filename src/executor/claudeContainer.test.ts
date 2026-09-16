@@ -109,6 +109,28 @@ test('only the Claude identity, SDK protocol names and declared secrets cross, b
   assert.ok(!plan.args.join(' ').includes('sntrys'), 'no secret value in argv');
 });
 
+test('an Anthropic-compatible provider run forwards its bearer and endpoint by name, and no Claude identity', () => {
+  // The z.ai coding-plan worker: localSdk.ts has already swapped the
+  // subscription identity for the provider bearer on the Anthropic protocol.
+  const plan = planContainerRun(spawnOptions({
+    env: {
+      ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
+      ANTHROPIC_AUTH_TOKEN: 'zai-bearer-value',
+      ANTHROPIC_API_KEY: '',
+      CLAUDE_CODE_ENTRYPOINT: 'sdk-ts',
+      ZAI_API_KEY: 'must-not-cross',
+      PATH: '/usr/bin',
+    },
+  }), { assignmentId: 'asg_z', cwd: '/w', additionalDirectories: [], workerVisibleEnv: {} }, config);
+  const forwarded = plan.args.filter((_, i) => plan.args[i - 1] === '--env');
+  assert.deepEqual(forwarded, ['HOME=/root', 'IS_SANDBOX=1', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_ENTRYPOINT']);
+  assert.equal(plan.env.ANTHROPIC_AUTH_TOKEN, 'zai-bearer-value');
+  assert.equal(plan.env.ANTHROPIC_BASE_URL, 'https://api.z.ai/api/anthropic');
+  assert.equal(plan.env.CLAUDE_CODE_OAUTH_TOKEN, undefined, 'the subscription identity stays on the host');
+  assert.equal(plan.env.ZAI_API_KEY, undefined, "the provider's own secret name never crosses");
+  assert.ok(!plan.args.join(' ').includes('zai-bearer-value'), 'no bearer value in argv');
+});
+
 test('a declared secret cannot impersonate the identity, and a non-native command or relative path is refused', () => {
   const run = { assignmentId: 'a', cwd: '/w', additionalDirectories: [], workerVisibleEnv: {} };
   assert.throws(

@@ -8,7 +8,7 @@ When Weaver dispatches an assignment, something has to choose which model runs i
 
 Every work assignment can carry `executionRequirements`:
 
-- **Profile** — *what kind of capability the work needs*: `general` (default), `bounded-code-repair` (a small, well-specified code fix with deterministic verification), `evidence-synthesis` (source-grounded analysis), `ui-build` (implementation whose acceptance depends on rendered UI quality).
+- **Profile** — *what kind of capability the work needs*: `general` (default), `bounded-code-repair` (a well-specified code change — a fix or a bounded feature — with deterministic verification), `evidence-synthesis` (source-grounded analysis), `ui-build` (implementation whose acceptance depends on rendered UI quality).
 - **Modalities** — what inputs the work must handle: `text`, or `text` + `image`. A text-only route can never take image work.
 - **Complexity** — *how demanding* the work is: `standard` (default) or `high`, where acceptance depends on deep multi-file reasoning, design judgment, or hard debugging.
 

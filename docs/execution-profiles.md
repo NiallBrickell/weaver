@@ -85,7 +85,7 @@ cost of removing them is foreclosing narrow future routes. Keep them.
 | Profile | Reviewed routes today | Effect if unmatched |
 | --- | --- | --- |
 | `general` | None, ever (the fallback must stay unrouted) | Configured seat |
-| `bounded-code-repair` | 3, text-only: `pi:zai-coding-plan/glm-5.3` (pref 110), `codex-sdk:gpt-5.6-sol`, `pi:openrouter/moonshotai/kimi-k3` — within the configured substrate only | Configured seat |
+| `bounded-code-repair` | 4, text-only: `local-sdk:zai-coding-plan/glm-5.3` (pref 110, the hosted fleet's implementation lane — Z.ai's Anthropic-compatible endpoint inside the Claude worker container), `pi:zai-coding-plan/glm-5.3` (pref 110), `codex-sdk:gpt-5.6-sol`, `pi:openrouter/moonshotai/kimi-k3` — within the configured substrate only | Configured seat |
 | `evidence-synthesis` | None yet; eval case exists | Declared fact; future route scope |
 | `ui-build` | None yet; eval case exists | Declared fact; future route scope |
 

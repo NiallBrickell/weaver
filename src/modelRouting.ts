@@ -59,6 +59,40 @@ export const DEFAULT_EXECUTION_REQUIREMENTS: AssignmentExecutionRequirements = {
  * append-only ledger in modelRouting.test.ts. */
 export const WORK_MODEL_ROUTES: readonly WorkModelRoute[] = [
   {
+    // The hosted fleet's implementation lane (Niall, 2026-09-16): the z.ai
+    // coding plan is the seat the founder pays for beside the Claude
+    // subscription, and it is licence-restricted to coding — so it appears
+    // only as a bounded-code-repair route, never a seat, a fallback or a
+    // coordinator. On the containerized Claude SDK substrate the run reaches
+    // z.ai through its Anthropic-compatible endpoint inside the same worker
+    // container, with the plan's bearer replacing the subscription identity
+    // for that one run (src/executor/localSdk.ts).
+    id: 'local-sdk-glm-5-3-bounded-code-repair',
+    preference: 110,
+    match: { profiles: ['bounded-code-repair'], modalities: ['text'] },
+    target: { executor: 'local-sdk', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
+    evidence: {
+      suiteRunId: 'SUITE_RUN_ID_PENDING',
+      executor: 'claude-sdk',
+      model: 'zai-coding-plan/glm-5.3',
+      harnessVersion: '@anthropic-ai/claude-agent-sdk@0.3.220',
+      cases: [{
+        id: 'code-repair',
+        version: 1,
+        requiredHardGates: [
+          'weaver-submission',
+          'artifact-integrity',
+          'adoption-separation',
+          'target-identity',
+          'runtime-completion',
+          'workspace-scope',
+        ],
+        requiredGrades: ['hidden-tests', 'verification-evidence'],
+      }],
+      minRuns: 10,
+    },
+  },
+  {
     // Preferred coding route (Niall, 2026-08-21): glm-5.3 outscored Kimi on
     // code-repair, so it leads the ladder above the Kimi/Codex routes (pref
     // 100). Fires only for the bounded-code-repair profile — the z.ai coding

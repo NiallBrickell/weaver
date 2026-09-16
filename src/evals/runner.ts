@@ -5,6 +5,8 @@ import { closeStore, load, verifyArtifact } from '../store.js';
 import { runWorker } from '../worker.js';
 import type { WorkstreamDoc } from '../types.js';
 import type { WorkerExecutionRequest } from '../executor/types.js';
+import { claudeContainerFromEnv } from '../executor/claudeContainer.js';
+import { LocalSdkExecutor } from '../executor/localSdk.js';
 import { ClaudeSdkEvalExecutor } from './executors/claude.js';
 import { CodexEvalExecutor } from './executors/codex.js';
 import { OpenCodeEvalExecutor } from './executors/openCode.js';
@@ -100,7 +102,18 @@ export function safeEvalSegment(value: string): string {
 
 export function createEvalExecutor(target: EvalTarget): EvalExecutor {
   switch (target.executor) {
-    case 'claude-sdk': return new ClaudeSdkEvalExecutor();
+    case 'claude-sdk': {
+      // A provider-qualified Claude SDK target reads its bearer from the
+      // operator's executor-only store; capture it before the throwaway
+      // WEAVER_HOME hides that store, exactly as the container adapters do.
+      const executorSecrets = loadExecutorSecrets();
+      // A host that runs its workers in the container seam evaluates there
+      // too, so the cohort proves the production shape, not a laptop's.
+      return new ClaudeSdkEvalExecutor(new LocalSdkExecutor({
+        loadExecutorSecrets: () => executorSecrets,
+        container: claudeContainerFromEnv(),
+      }));
+    }
     case 'codex-sdk': return new CodexEvalExecutor();
     case 'opencode': return new OpenCodeEvalExecutor();
     case 'openhands': {

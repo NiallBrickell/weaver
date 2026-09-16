@@ -87,6 +87,9 @@ const ACTIVE_PI_ROUTE = WORK_MODEL_ROUTES.find(
 const ACTIVE_GLM_ROUTE = WORK_MODEL_ROUTES.find(
   (route) => route.id === 'pi-glm-5-3-bounded-code-repair',
 )!;
+const ACTIVE_LOCAL_SDK_GLM_ROUTE = WORK_MODEL_ROUTES.find(
+  (route) => route.id === 'local-sdk-glm-5-3-bounded-code-repair',
+)!;
 
 function cleanResult(
   repetition: number,
@@ -187,17 +190,59 @@ describe('reviewed worker routes', () => {
   test('automatic routes cannot cross the configured worker substrate and strand a stock runner', () => {
     const previousExecutor = process.env.WEAVER_EXECUTOR;
     const previousModel = process.env.WEAVER_WORKER_MODEL;
-    process.env.WEAVER_EXECUTOR = 'local-sdk';
-    process.env.WEAVER_WORKER_MODEL = 'sonnet';
+    // No reviewed route names the OpenHands substrate: the Codex, Pi and
+    // local-sdk coding routes must all stay out of it.
+    process.env.WEAVER_EXECUTOR = 'openhands';
+    process.env.WEAVER_WORKER_MODEL = 'openrouter/moonshotai/kimi-k3';
     try {
       assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair')), [
-        { executor: 'local-sdk', provider: 'anthropic', model: 'sonnet' },
+        { executor: 'openhands', provider: 'openrouter', model: 'openrouter/moonshotai/kimi-k3' },
       ]);
     } finally {
       if (previousExecutor === undefined) delete process.env.WEAVER_EXECUTOR;
       else process.env.WEAVER_EXECUTOR = previousExecutor;
       if (previousModel === undefined) delete process.env.WEAVER_WORKER_MODEL;
       else process.env.WEAVER_WORKER_MODEL = previousModel;
+    }
+  });
+
+  test('on the containerized Claude substrate, coding work goes to the z.ai plan and everything else keeps the subscription seat', () => {
+    const previous = {
+      executor: process.env.WEAVER_EXECUTOR,
+      model: process.env.WEAVER_WORKER_MODEL,
+      complex: process.env.WEAVER_WORKER_MODEL_COMPLEX,
+      fallbacks: process.env.WEAVER_WORKER_FALLBACKS,
+    };
+    // The hosted fleet's shape: Claude-first workers in the container seam,
+    // OpenHands-on-OpenRouter as the operator's explicit ladder.
+    process.env.WEAVER_EXECUTOR = 'local-sdk';
+    process.env.WEAVER_WORKER_MODEL = 'claude-opus-5';
+    process.env.WEAVER_WORKER_MODEL_COMPLEX = 'claude-opus-5';
+    process.env.WEAVER_WORKER_FALLBACKS = 'openhands:openrouter/z-ai/glm-5.3';
+    try {
+      const zai = { executor: 'local-sdk', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' };
+      const opus = { executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5' };
+      const ladder = { executor: 'openhands', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.3' };
+      assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair')), [zai, opus, ladder]);
+      // The licence-restricted plan never serves general, evidence or UI work,
+      // and never an image-bearing repair (the route is text-only).
+      assert.deepEqual(workerTargetsForAssignment(assignment('general')), [opus, ladder]);
+      assert.deepEqual(workerTargetsForAssignment(assignment('evidence-synthesis')), [opus, ladder]);
+      assert.deepEqual(workerTargetsForAssignment(assignment('bounded-code-repair', ['text', 'image'])), [opus, ladder]);
+      // The Pi-substrate route for the same plan never crosses into this substrate.
+      assert.ok(!workerTargetsForAssignment(assignment('bounded-code-repair')).some((target) => target.executor === 'pi'));
+      assert.equal(ACTIVE_LOCAL_SDK_GLM_ROUTE.evidence.executor, 'claude-sdk');
+      assert.equal(ACTIVE_LOCAL_SDK_GLM_ROUTE.evidence.minRuns, 10);
+    } finally {
+      for (const [name, value] of [
+        ['WEAVER_EXECUTOR', previous.executor],
+        ['WEAVER_WORKER_MODEL', previous.model],
+        ['WEAVER_WORKER_MODEL_COMPLEX', previous.complex],
+        ['WEAVER_WORKER_FALLBACKS', previous.fallbacks],
+      ] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
     }
   });
 

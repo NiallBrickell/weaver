@@ -18,6 +18,7 @@ import {
   redactSecrets,
   stripClaudeCredentials,
 } from '../secrets.js';
+import { isolatedClaudeApiHome, type PreparedClaudeApiHome } from './claudeApiHome.js';
 import { startToolBridge, type BridgeToolDefinition, type ToolBridge } from './toolBridge.js';
 
 const CODEX_COORDINATOR_TOKEN_ENV = 'WEAVER_CODEX_COORDINATOR_TOKEN';
@@ -44,23 +45,10 @@ export interface CoordinatorExecutor {
   execute(req: CoordinatorExecutionRequest): Promise<CoordinatorExecutionOutcome>;
 }
 
-interface PreparedClaudeApiHome {
-  path: string;
-  cleanup(): void;
-}
-
 export interface ClaudeCoordinatorExecutorDependencies {
   runQuery?: typeof query;
   loadExecutorSecrets?: typeof loadExecutorSecrets;
   prepareApiHome?: () => PreparedClaudeApiHome;
-}
-
-function isolatedClaudeApiHome(): PreparedClaudeApiHome {
-  const path = mkdtempSync(join(tmpdir(), 'weaver-claude-api-coordinator-'));
-  return {
-    path,
-    cleanup() { rmSync(path, { recursive: true, force: true }); },
-  };
 }
 
 export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
@@ -73,7 +61,7 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
   constructor(dependencies: ClaudeCoordinatorExecutorDependencies = {}) {
     this.runQuery = dependencies.runQuery ?? query;
     this.executorSecretsLoader = dependencies.loadExecutorSecrets ?? loadExecutorSecrets;
-    this.prepareApiHome = dependencies.prepareApiHome ?? isolatedClaudeApiHome;
+    this.prepareApiHome = dependencies.prepareApiHome ?? (() => isolatedClaudeApiHome('weaver-claude-api-coordinator-'));
   }
 
   async execute(req: CoordinatorExecutionRequest): Promise<CoordinatorExecutionOutcome> {

@@ -73,6 +73,18 @@ auditor enforces each route's declared minimum, not a global count. The append-o
 ledger is evidence, not configuration: adding a result cannot silently change
 production routing.
 
+The registry also carries a text-only `bounded-code-repair` preference for
+`local-sdk:zai-coding-plan/glm-5.3`: on a Claude SDK substrate, a well-specified
+code change runs on Z.ai's coding plan through its Anthropic-compatible endpoint
+instead of the Claude subscription. The worker executor swaps the registered
+Claude identity for the plan's bearer (`ZAI_API_KEY`, or `ZHIPU_API_KEY`) for
+that one run — the subscription can never be billed for it — and on the hosted
+fleet the run stays inside the same worker container as the subscription seat,
+with only the Anthropic protocol variables crossing by name. The plan is
+licence-restricted to coding, which is why it is a route bound to that profile
+and never a seat, a fallback, or a coordinator: general, evidence, and UI work
+keep the configured seat.
+
 Capacity is scoped to that exact target. If a preferred pool is limited, the
 next reviewed target can take a fresh attempt; the exact executor/provider/model
 it used is pinned on that attempt while the earlier wait remains honest history.

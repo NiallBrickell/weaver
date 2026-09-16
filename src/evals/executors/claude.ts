@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { LocalSdkExecutor } from '../../executor/localSdk.js';
+import { providerForExecutor } from '../../modelConfig.js';
 import type { WorkerExecutionOutcome, WorkerExecutionRequest } from '../../executor/types.js';
 import type { EvalExecutionTelemetry, EvalExecutor, EvalUsage } from '../types.js';
 
@@ -16,8 +17,11 @@ export class ClaudeSdkEvalExecutor implements EvalExecutor {
   private readonly delegate: LocalSdkExecutor;
   private telemetry: EvalExecutionTelemetry | null = null;
 
-  constructor(delegate = new LocalSdkExecutor()) {
+  private readonly isolation: EvalExecutionTelemetry['isolation'];
+
+  constructor(delegate = new LocalSdkExecutor(), isolation: EvalExecutionTelemetry['isolation'] = delegate.isolation) {
     this.delegate = delegate;
+    this.isolation = isolation;
   }
 
   lastTelemetry(): EvalExecutionTelemetry | null {
@@ -43,10 +47,12 @@ export class ClaudeSdkEvalExecutor implements EvalExecutor {
     this.telemetry = {
       executor: this.id,
       modelRequested: req.model,
-      providerResolved: 'anthropic',
+      // A provider-qualified target (an Anthropic-compatible endpoint such as
+      // the z.ai coding plan) resolves to that provider, never to Anthropic.
+      providerResolved: providerForExecutor('local-sdk', req.model),
       modelResolved: req.model,
       harnessVersion: '@anthropic-ai/claude-agent-sdk@0.3.220',
-      isolation: 'host-process',
+      isolation: this.isolation,
       startedAt,
       endedAt: new Date().toISOString(),
       durationMs: endedMs - startedMs,
