@@ -110,24 +110,34 @@ export function coordinatorCancellableWakePage(
   };
 }
 
+/** The live work a course can be waiting on: an unsettled assignment, an
+ * interaction that was not rejected, or an open attention item. Undefined when
+ * `id` names none of them (or names one that has settled). Shared by wake
+ * courses and course progress so "live" means one thing. */
+export function liveOrganizationalItemLabel(doc: WorkstreamDoc, id: string): string | undefined {
+  const assignment = doc.assignments.find((candidate) =>
+    candidate.id === id && !['completed', 'failed', 'cancelled'].includes(candidate.state),
+  );
+  if (assignment) return `${id}: live assignment`;
+  const interaction = doc.interactions.find((candidate) =>
+    candidate.id === id && candidate.status !== 'rejected',
+  );
+  if (interaction) return `${id}: active interaction`;
+  const attention = doc.attention.find((candidate) =>
+    candidate.id === id && candidate.status === 'open',
+  );
+  if (attention) return `${id}: open attention item`;
+  return undefined;
+}
+
 /** A newly scheduled organizational wake must name one currently live course. */
 export function organizationalWakeCourseLabel(doc: WorkstreamDoc, courseId: string): string {
   const decision = doc.decisions.find((candidate) =>
     candidate.id === courseId && candidate.status === 'standing',
   );
   if (decision) return `${courseId}: standing decision`;
-  const assignment = doc.assignments.find((candidate) =>
-    candidate.id === courseId && !['completed', 'failed', 'cancelled'].includes(candidate.state),
-  );
-  if (assignment) return `${courseId}: live assignment`;
-  const interaction = doc.interactions.find((candidate) =>
-    candidate.id === courseId && candidate.status !== 'rejected',
-  );
-  if (interaction) return `${courseId}: active interaction`;
-  const attention = doc.attention.find((candidate) =>
-    candidate.id === courseId && candidate.status === 'open',
-  );
-  if (attention) return `${courseId}: open attention item`;
+  const live = liveOrganizationalItemLabel(doc, courseId);
+  if (live) return live;
   throw new Error(
     `${courseId} is not a standing decision, live assignment, active interaction, or open attention item`,
   );

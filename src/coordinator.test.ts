@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   COORDINATOR_SYSTEM_PROMPT,
+  COORDINATOR_TEXT_CAPS,
   FLEET_ATTENTION_STEWARD_COORDINATOR_CONTRACT,
   clearCoordinatorCapacityBackoff,
   passOutcome,
@@ -18,7 +19,9 @@ import { FLEET_ATTENTION_STEWARD_SOURCE_KEY } from './fleetHealth.js';
 import { createOrGetFleetAttentionStewardWorkstream } from './ingress.js';
 import { arrive, createWorkstream, findBySourceKey, heartbeatRunner, load, writeArtifact } from './store.js';
 import { setSecret } from './secrets.js';
-import { isCoordinatorCancellableWake, virtualNow, type CancellableWakePage } from './clock.js';
+import { advanceClock, isCoordinatorCancellableWake, virtualNow, type CancellableWakePage } from './clock.js';
+import { buildProjection } from './projection.js';
+import { proposePolicy } from './policies.js';
 import type { CapacityCategory, InfrastructureWait } from './types.js';
 import type { CoordinatorExecutor } from './executor/coordinator.js';
 
@@ -1355,4 +1358,269 @@ test('passOutcome: a conflicted finish is never recorded as completed', () => {
   assert.equal(passOutcome({ hadError: false, finishConflicted: false, finished: false }), 'no_finish');
   // An SDK/infra error dominates either way.
   assert.equal(passOutcome({ hadError: true, finishConflicted: true, finished: true }), 'error');
+});
+
+
+// ---------------------------------------------------------------------------
+// Course progress: a step is progress, not a decision.
+
+type ToolResult = { isError?: boolean; content: Array<{ type: string; text?: string }> };
+const resultText = (result: ToolResult): string => result.content.map((c) => c.text ?? '').join('');
+
+/** A standing course plus every kind of fact progress can and cannot cite. */
+async function seedProgressFixture(): Promise<void> {
+  const at = virtualNow().toISOString();
+  await arrive('coordinator-capacity', (doc) => {
+    doc.decisions.push(
+      { id: 'dec_course', title: 'Run the error sweep every cycle', rationale: 'The recurring commitment.', madeBy: 'coordinator', status: 'standing', decidedAtVirtual: at },
+      { id: 'dec_closed', title: 'A finished course', rationale: 'Done.', madeBy: 'coordinator', status: 'closed', closedReason: 'finished', decidedAtVirtual: at },
+      { id: 'dec_old', title: 'Replaced course', rationale: 'Old.', madeBy: 'coordinator', status: 'superseded', supersededBy: 'dec_course', decidedAtVirtual: at },
+    );
+    doc.assignments.push(
+      { id: 'asg_live', objective: 'sweep cycle work', briefing: 'b', kind: 'work', acceptanceCriteria: ['a'], dependsOn: [], state: 'queued', attempts: [], adoption: { state: 'none' }, createdAtVirtual: at },
+      { id: 'asg_done', objective: 'earlier work', briefing: 'b', kind: 'work', acceptanceCriteria: ['a'], dependsOn: [], state: 'completed', attempts: [], adoption: { state: 'accepted' }, createdAtVirtual: at },
+    );
+    doc.deliverables.push(
+      { id: 'del_adopted', title: 'baseline report', kind: 'report', path: 'a.md', contentHash: 'a'.repeat(64), producedByAssignment: 'asg_done', createdAtVirtual: at, adopted: { contentHash: 'a'.repeat(64), passId: 'pass_old', atVirtual: at } },
+      { id: 'del_candidate', title: 'unreviewed report', kind: 'report', path: 'b.md', contentHash: 'b'.repeat(64), createdAtVirtual: at },
+    );
+    doc.observations.push(
+      { id: 'obs_judged', source: 'monitor', summary: 'error rate fell', atVirtual: at, evaluation: { countsTowardObjective: true, note: 'real', passId: 'pass_old' } },
+      { id: 'obs_raw', source: 'monitor', summary: 'unjudged arrival', atVirtual: at },
+    );
+  });
+}
+
+test('record_progress advances a standing course in place, refuses what it cannot rest on, and creates no decision', async () => {
+  await seedProgressFixture();
+  const before = await load('coordinator-capacity');
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const progress = req.tools.find((definition) => definition.name === 'record_progress');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(progress && finish);
+      const record = async (args: Record<string, unknown>) => (await progress.handler(args, {})) as ToolResult;
+
+      const first = await record({
+        course_id: 'dec_course', cycle: 1, step: 1, label: 'baseline measured',
+        awaiting_ids: ['asg_live'], basis_ids: ['del_adopted', 'obs_judged'], next: 'Adopt the fix PR, then re-measure.',
+      });
+      assert.equal(first.isError, undefined, resultText(first));
+      assert.match(resultText(first), /no decision created/);
+      const afterFirst = await load('coordinator-capacity');
+      const firstProgress = afterFirst.decisions.find((d) => d.id === 'dec_course')!.progress!;
+      assert.equal(firstProgress.cycleStartedAtVirtual, firstProgress.atVirtual, 'a first cycle starts its own clock');
+
+      // Repeating the exact position writes nothing: no revision bump.
+      const repeat = await record({
+        course_id: 'dec_course', cycle: 1, step: 1, label: 'baseline measured',
+        awaiting_ids: ['asg_live'], basis_ids: ['del_adopted', 'obs_judged'], next: 'Adopt the fix PR, then re-measure.',
+      });
+      assert.equal(repeat.isError, undefined);
+      assert.match(resultText(repeat), /no change/);
+      assert.equal((await load('coordinator-capacity')).revision, afterFirst.revision);
+
+      advanceClock('2h');
+      const step2 = await record({ course_id: 'dec_course', cycle: 1, step: 2, label: 'fix dispatched', awaiting_ids: ['asg_live'] });
+      assert.equal(step2.isError, undefined, resultText(step2));
+      const sameCycle = (await load('coordinator-capacity')).decisions.find((d) => d.id === 'dec_course')!.progress!;
+      assert.equal(sameCycle.cycleStartedAtVirtual, firstProgress.cycleStartedAtVirtual, 'a step keeps the cycle clock');
+      assert.notEqual(sameCycle.atVirtual, firstProgress.atVirtual);
+
+      const refusals: Array<[Record<string, unknown>, RegExp]> = [
+        [{ course_id: 'dec_course', cycle: 1, step: 1, label: 'back a step' }, /never goes backwards/],
+        [{ course_id: 'dec_closed', cycle: 1, step: 1, label: 'retired course' }, /is closed, not standing/],
+        [{ course_id: 'dec_old', cycle: 1, step: 1, label: 'superseded course' }, /is superseded, not standing.*dec_course/],
+        [{ course_id: 'dec_missing', cycle: 1, step: 1, label: 'unknown course' }, /no decision dec_missing/],
+        [{ course_id: 'asg_live', cycle: 1, step: 3, label: 'not a decision' }, /no decision asg_live/],
+        [{ course_id: 'dec_course', cycle: 1, step: 3, label: 'waits on settled work', awaiting_ids: ['asg_done'] }, /asg_done is not a live assignment/],
+        [{ course_id: 'dec_course', cycle: 1, step: 3, label: 'waits on nothing real', awaiting_ids: ['asg_missing'] }, /asg_missing is not a live/],
+        [{ course_id: 'dec_course', cycle: 1, step: 3, label: 'unadopted basis', basis_ids: ['del_candidate'] }, /del_candidate is not an adopted deliverable/],
+        [{ course_id: 'dec_course', cycle: 1, step: 3, label: 'unjudged basis', basis_ids: ['obs_raw'] }, /obs_raw is not/],
+        [{ course_id: 'dec_course', cycle: 1, step: 3, label: 'self-cited basis', basis_ids: ['dec_course'] }, /dec_course is not/],
+        [{ course_id: 'dec_course', cycle: 1, step: 3, label: 'x'.repeat(COORDINATOR_TEXT_CAPS.progressLabel + 1) }, /label is 121 characters \(cap 120\)/],
+        [{ course_id: 'dec_course', cycle: 1, step: 3, label: 'long next', next: 'n'.repeat(COORDINATOR_TEXT_CAPS.progressNext + 1) }, /next is 401 characters/],
+        [{ course_id: 'dec_course', cycle: 1, step: 3, label: 'too many', awaiting_ids: Array.from({ length: 11 }, (_, i) => `asg_${i}`) }, /lists 11 ids \(cap 10\)/],
+        [{ course_id: 'dec_course', cycle: 0, step: 3, label: 'zero cycle' }, /integers ≥ 1/],
+        [{ course_id: 'dec_course', cycle: 1.5, step: 3, label: 'fractional cycle' }, /integers ≥ 1/],
+      ];
+      for (const [args, message] of refusals) {
+        const revision = (await load('coordinator-capacity')).revision;
+        const refused = await record(args);
+        assert.equal(refused.isError, true, `${JSON.stringify(args).slice(0, 80)} should be refused`);
+        assert.match(resultText(refused), message);
+        assert.equal((await load('coordinator-capacity')).revision, revision, 'a refusal writes nothing');
+      }
+
+      // A new cycle may restart its step count and starts a new cycle clock.
+      advanceClock('1d');
+      const cycle2 = await record({ course_id: 'dec_course', cycle: 2, step: 1, label: 'cycle 2 sweep', basis_ids: ['del_adopted'] });
+      assert.equal(cycle2.isError, undefined, resultText(cycle2));
+      const backwardCycle = await record({ course_id: 'dec_course', cycle: 1, step: 9, label: 'an older cycle' });
+      assert.equal(backwardCycle.isError, true);
+      assert.match(resultText(backwardCycle), /never goes backwards/);
+
+      await finish.handler({ summary: 'Advanced the sweep course to cycle 2.', acknowledged_steering: true }, {});
+      return { costUsd: 0 };
+    },
+  };
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const doc = await load('coordinator-capacity');
+  assert.equal(doc.decisions.length, before.decisions.length, 'progress never mints a decision');
+  assert.deepEqual(
+    doc.decisions.map(({ id, status, title, rationale, supersedes, supersededBy }) => ({ id, status, title, rationale, supersedes, supersededBy })),
+    before.decisions.map(({ id, status, title, rationale, supersedes, supersededBy }) => ({ id, status, title, rationale, supersedes, supersededBy })),
+    'the commitment itself is untouched',
+  );
+  const course = doc.decisions.find((d) => d.id === 'dec_course')!;
+  assert.equal(course.progress!.cycle, 2);
+  assert.equal(course.progress!.step, 1);
+  assert.equal(course.progress!.cycleStartedAtVirtual, course.progress!.atVirtual);
+  assert.deepEqual(course.progress!.basisIds, ['del_adopted']);
+  assert.equal(course.progress!.passId, outcome.passId);
+  assert.equal(doc.events.filter((e) => e.type === 'course.progress').length, 3);
+  assert.equal(doc.events.some((e) => e.type === 'decision.recorded'), false);
+  // Position, never authority: nothing else moved.
+  assert.equal(doc.assignments.find((a) => a.id === 'asg_live')!.state, 'queued');
+  assert.equal(doc.deliverables.find((d) => d.id === 'del_candidate')!.adopted, undefined);
+  assert.equal(doc.observations.find((o) => o.id === 'obs_raw')!.evaluation, undefined);
+  assert.equal(doc.workstream.status, 'active');
+  // A fresh coordinator sees where the course stands, typed.
+  assert.match(buildProjection(doc, []), /dec_course \[STANDING[^\n]*\n {2}progress: cycle 2 · step 1 "cycle 2 sweep" · awaiting \[\] · basis \[del_adopted\]/);
+});
+
+test('record_progress is revision-checked: an arrival mid-pass conflicts it', async () => {
+  await seedProgressFixture();
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const progress = req.tools.find((definition) => definition.name === 'record_progress')!;
+      await arrive('coordinator-capacity', (doc) => {
+        doc.steering.push({ id: 'steer_mid', body: 'a concurrent human steer', at: new Date().toISOString() });
+      });
+      const stale = (await progress.handler({ course_id: 'dec_course', cycle: 1, step: 1, label: 'stale write' }, {})) as ToolResult;
+      assert.equal(stale.isError, true);
+      assert.match(resultText(stale), /REVISION CONFLICT/);
+      return { costUsd: 0 };
+    },
+  };
+  await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  const doc = await load('coordinator-capacity');
+  assert.equal(doc.decisions.find((d) => d.id === 'dec_course')!.progress, undefined);
+  assert.equal(doc.events.some((e) => e.type === 'course.progress'), false);
+});
+
+test('coordinator decision text is capped at the schema AND the handler, with a corrective error', async () => {
+  await seedProgressFixture();
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const record = req.tools.find((definition) => definition.name === 'record_decision')!;
+      const close = req.tools.find((definition) => definition.name === 'close_decision')!;
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass')!;
+      // Schema: the model-facing surface refuses over-cap text…
+      assert.equal(record.inputSchema.rationale!.safeParse('r'.repeat(COORDINATOR_TEXT_CAPS.decisionRationale + 1)).success, false);
+      assert.equal(record.inputSchema.rationale!.safeParse('r'.repeat(COORDINATOR_TEXT_CAPS.decisionRationale)).success, true);
+      assert.equal(record.inputSchema.title!.safeParse('t'.repeat(COORDINATOR_TEXT_CAPS.decisionTitle + 1)).success, false);
+      assert.equal(record.inputSchema.review_when!.safeParse('w'.repeat(COORDINATOR_TEXT_CAPS.decisionReviewWhen + 1)).success, false);
+      assert.equal(close.inputSchema.reason!.safeParse('c'.repeat(COORDINATOR_TEXT_CAPS.closeReason + 1)).success, false);
+      // …and the handler, which a direct call reaches without zod, refuses too.
+      const cases: Array<[typeof record, Record<string, unknown>, RegExp]> = [
+        [record, { title: 'Keep the sweep', rationale: 'r'.repeat(1_501) }, /rationale is 1501 characters \(cap 1500\)/],
+        [record, { title: 't'.repeat(201), rationale: 'short' }, /title is 201 characters \(cap 200\)/],
+        [record, { title: 'Keep the sweep', rationale: 'short', review_when: 'w'.repeat(301) }, /review_when is 301 characters \(cap 300\)/],
+        [close, { decision_id: 'dec_course', reason: 'c'.repeat(601) }, /reason is 601 characters \(cap 600\)/],
+      ];
+      for (const [definition, args, message] of cases) {
+        const refused = (await definition.handler(args, {})) as ToolResult;
+        assert.equal(refused.isError, true);
+        assert.match(resultText(refused), message);
+        assert.match(resultText(refused), /deliverables you cite/);
+        assert.match(resultText(refused), /record_progress/);
+      }
+      const within = (await record.handler({ title: 'Keep the sweep weekly', rationale: 'r'.repeat(1_500), review_when: 'w'.repeat(300) }, {})) as ToolResult;
+      assert.equal(within.isError, undefined, resultText(within));
+      await finish.handler({ summary: 'Recorded one bounded commitment.' }, {});
+      return { costUsd: 0 };
+    },
+  };
+  await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  const doc = await load('coordinator-capacity');
+  assert.equal(doc.decisions.filter((d) => d.passId).length, 1, 'only the within-cap decision landed');
+  assert.equal(doc.decisions.find((d) => d.id === 'dec_course')!.status, 'standing', 'an over-cap close changed nothing');
+});
+
+test('pass boundary events carry an excerpt while the PassRecord keeps the full summary', async () => {
+  const summary = `Adopted the sweep result and advanced the course. ${'detail '.repeat(400)}END_OF_SUMMARY`;
+  const reason = `wake reason ${'r'.repeat(900)}`;
+  const outcome = await runCoordinatorPass('coordinator-capacity', [reason, 'second reason'], {
+    id: 'local-sdk',
+    async execute(req) {
+      await req.tools.find((definition) => definition.name === 'finish_pass')!.handler({ summary }, {});
+      return { costUsd: 0 };
+    },
+  });
+  const doc = await load('coordinator-capacity');
+  const pass = doc.passes.find((p) => p.id === outcome.passId)!;
+  assert.equal(pass.summary, summary, 'the PassRecord keeps the whole account');
+  const finished = doc.events.find((e) => e.type === 'pass.finished')!;
+  assert.ok(finished.summary.length <= 300 + outcome.passId.length + 3, `pass.finished is ${finished.summary.length} chars`);
+  assert.match(finished.summary, /^pass_\S+: Adopted the sweep result and advanced the course\./);
+  assert.doesNotMatch(finished.summary, /END_OF_SUMMARY/);
+  const started = doc.events.find((e) => e.type === 'pass.started')!;
+  assert.ok(started.summary.length < 400, `pass.started is ${started.summary.length} chars`);
+  assert.match(started.summary, /\) on local-sdk:/, 'the executor/model suffix survives the excerpt');
+  const projection = buildProjection(doc, []);
+  assert.doesNotMatch(projection, /END_OF_SUMMARY/);
+  assert.doesNotMatch(projection, /r{400}/);
+});
+
+test('read_policy returns the full record of a matching policy and nothing outside its scope', async () => {
+  await arrive('coordinator-capacity', (doc) => { doc.workstream.tags = ['acme']; });
+  const mechanism = `run the readback ${'step '.repeat(200)}MECHANISM_TAIL`;
+  const effect = `add a readback before adoption ${'because '.repeat(60)}EFFECT_TAIL`;
+  const matching = await proposePolicy({
+    statement: 'Confirm the rollout state by readback before adopting a rollout result',
+    mechanism, tags: ['acme'], effectKind: 'add_verification', effectDescription: effect,
+    workstreamSlug: 'ws-src', passId: 'pass_src', interventionSummary: 'the human asked for a readback',
+  });
+  const foreign = await proposePolicy({
+    statement: 'Draft the release note before tagging',
+    tags: ['other'], effectKind: 'advisory', effectDescription: 'x',
+    workstreamSlug: 'ws-src', passId: 'pass_src', interventionSummary: 'i',
+  });
+  await runCoordinatorPass('coordinator-capacity', ['manual'], {
+    id: 'local-sdk',
+    async execute(req) {
+      // The projection carries the statement whole and an excerpt of the prose.
+      assert.match(req.prompt, /Confirm the rollout state by readback before adopting a rollout result/);
+      assert.doesNotMatch(req.prompt, /MECHANISM_TAIL|EFFECT_TAIL/);
+      assert.match(req.prompt, /read_policy for the full text/);
+      const read = req.tools.find((definition) => definition.name === 'read_policy')!;
+      const full = (await read.handler({ policy_id: matching.id }, {})) as ToolResult;
+      assert.equal(full.isError, undefined, resultText(full));
+      const record = JSON.parse(resultText(full)) as { id: string; mechanism: string; effect: { description: string }; doctrine: boolean };
+      assert.equal(record.id, matching.id);
+      assert.equal(record.mechanism, mechanism);
+      assert.equal(record.effect.description, effect);
+      assert.equal(record.doctrine, false);
+      const outside = (await read.handler({ policy_id: foreign.id }, {})) as ToolResult;
+      assert.equal(outside.isError, true);
+      assert.match(resultText(outside), /no policy pol_\w+ matches this workstream's tags \[acme\]/);
+      const missing = (await read.handler({ policy_id: 'pol_missing' }, {})) as ToolResult;
+      assert.equal(missing.isError, true);
+      await req.tools.find((definition) => definition.name === 'finish_pass')!.handler({ summary: 'Read one policy.' }, {});
+      return { costUsd: 0 };
+    },
+  });
+});
+
+test('the prompt makes a step progress, not a decision', () => {
+  assert.match(COORDINATOR_SYSTEM_PROMPT, /A step or cycle advance is PROGRESS, not a decision: record_progress updates the standing course in place/);
+  assert.match(COORDINATOR_SYSTEM_PROMPT, /Supersede ONLY when the commitment itself/);
+  assert.match(COORDINATOR_SYSTEM_PROMPT, /its reason is one sentence saying what the check is for, not a handoff note/);
+  assert.doesNotMatch(COORDINATOR_SYSTEM_PROMPT, /Record a standing decision first when a periodic check has no narrower course/);
+  assert.doesNotMatch(COORDINATOR_SYSTEM_PROMPT, /the list of changes you made/);
 });

@@ -361,6 +361,14 @@ function latestFact(doc: WorkstreamDoc, organizationalNow: Date): LatestFact | u
   const facts: { label: string; summary: string; atVirtual: string }[] = [];
   for (const decision of doc.decisions) {
     facts.push({ label: 'Course updated', summary: decision.title, atVirtual: decision.decidedAtVirtual });
+    // A step or cycle advance moves the course's position, not its decision.
+    if (decision.progress) {
+      facts.push({
+        label: 'Course progressed',
+        summary: `${decision.progress.label} (cycle ${decision.progress.cycle}, step ${decision.progress.step})`,
+        atVirtual: decision.progress.atVirtual,
+      });
+    }
   }
   for (const assignment of doc.assignments) {
     facts.push({ label: 'Next step added', summary: assignment.objective, atVirtual: assignment.createdAtVirtual });

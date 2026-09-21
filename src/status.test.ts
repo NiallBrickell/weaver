@@ -348,3 +348,21 @@ test('an expired coordinator lease is shown as awaiting recovery instead of idle
   assert.match(status, /recovering: pass_expired lease expired — recovery pending/);
   assert.doesNotMatch(status, /idle — waiting on wakes/);
 });
+
+test('a course that advanced in place shows its position to the human, not just its decision', () => {
+  const d = doc([]);
+  const later = new Date(Date.parse(NOW) + 3 * 60 * 60_000).toISOString();
+  d.decisions.push({
+    id: 'dec_course', title: 'Run the error sweep every cycle', rationale: 'The recurring commitment.',
+    madeBy: 'coordinator', status: 'standing', decidedAtVirtual: NOW,
+    progress: {
+      cycle: 4, step: 2, label: 'fix PR under review', awaitingIds: [], basisIds: [],
+      passId: 'pass_4', atVirtual: later, cycleStartedAtVirtual: later,
+    },
+  });
+  assert.match(renderStatus(d), /decision dec_course: "Run the error sweep every cycle" — The recurring commitment\. · now at cycle 4, step 2: fix PR under review/);
+  const board = fleetBoard([d], [], new Map(), [], new Date(Date.parse(later) + 60_000), new Date(Date.parse(later) + 60_000));
+  const card = Object.values(board.lanes).flat().find((c) => c.slug === d.workstream.slug);
+  assert.equal(card?.latestFact?.label, 'Course progressed');
+  assert.match(card!.latestFact!.summary, /fix PR under review \(cycle 4, step 2\)/);
+});

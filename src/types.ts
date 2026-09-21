@@ -13,6 +13,23 @@ export type Iso = string;
 // ---------------------------------------------------------------------------
 // Direction
 
+/** Where a standing course is within its cycle. Position, never authority: cites typed facts; cannot adopt, complete, or conclude anything. */
+export interface CourseProgress {
+  cycle: number;
+  step: number;
+  label: string;
+  /** Live assignments, active interactions, or open attention items the
+   * course is waiting on — validated live when recorded. */
+  awaitingIds: Id[];
+  /** Adopted deliverables, readback-confirmed actions, or evaluated
+   * observations/replies the position rests on — validated when recorded. */
+  basisIds: Id[];
+  next?: string;
+  passId: Id;
+  atVirtual: Iso;
+  cycleStartedAtVirtual: Iso;
+}
+
 export interface Decision {
   id: Id;
   title: string;
@@ -20,11 +37,13 @@ export interface Decision {
   madeBy: 'coordinator' | 'human';
   passId?: Id;
   /** 'standing' = a live commitment. 'superseded' = replaced by a specific
-   * successor decision (supersededBy). 'closed' = retired without a successor
-   * — the honest state for a routine's per-cycle course once the cycle ends,
-   * so cycle history does not pile up forever as fake standing commitments.
-   * Only 'standing' decisions are authoritative or count as conclusion
-   * evidence; superseded/closed survive as inspectable lineage. */
+   * successor decision (supersededBy) because the commitment itself changed.
+   * 'closed' = retired without a successor — the honest state for a course
+   * whose work is finished and nothing replaces it. A step or cycle advance
+   * is neither: it is `progress` on the same standing course, updated in
+   * place, so a routine's decision log does not grow by one commitment per
+   * step. Only 'standing' decisions are authoritative; superseded/closed
+   * survive as inspectable lineage. */
   status: 'standing' | 'superseded' | 'closed';
   /** Lineage: which decision this one replaced, and which replaced it. */
   supersedes?: Id;
@@ -36,6 +55,10 @@ export interface Decision {
   /** Learned policies this decision applies (attributable learning). */
   appliedPolicyIds?: Id[];
   decidedAtVirtual: Iso;
+  /** Latest recorded position of this standing course (record_progress).
+   * Overwritten in place; each update is journaled in printouts and the
+   * `course.progress` event. Absent on courses that never recorded one. */
+  progress?: CourseProgress;
 }
 
 // ---------------------------------------------------------------------------
