@@ -640,9 +640,9 @@ export const TICK_MEMORY_RAMP_MS = 120_000;
  * the kernel thrashed page cache (disk reads ~100x) instead of killing
  * anything, the frozen host missed its DHCP renewal, and the fleet sat offline
  * for 3.4 days. A slot is therefore admitted only while available memory,
- * less the host reserve and the budget of every slot granted in the last
- * `TICK_MEMORY_RAMP_MS` (which has not grown into its memory yet), still
- * covers one more budget. Ticks already running keep going; an idle runner
+ * less the host reserve and the budget of every still-running slot granted in
+ * the last `TICK_MEMORY_RAMP_MS` (which has not grown into its memory yet),
+ * still covers one more budget. Ticks already running keep going; an idle runner
  * always takes one tick so the fleet makes progress; an unknown reading
  * applies no gate.
  */
@@ -839,8 +839,11 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   // only — never silently, and never once per iteration.
   let lastCap = opts.concurrency;
   let lastMemoryCap = opts.concurrency;
-  // When each still-ramping slot was granted; see memoryConcurrency.
-  let recentGrants: number[] = [];
+  // When each in-flight tick was granted; see memoryConcurrency. A tick that
+  // has settled no longer holds memory, so it leaves this map with its slot —
+  // counting finished coordinator passes as "ramping" throttled a fresh
+  // runner to one slot with 6 GB free (2026-09-21).
+  const grantedAt = new Map<string, number>();
   const inFlight = new Set<string>();
   // Fairness: slots are granted least-recently-ticked first. A stable
   // (alphabetical) scan with a concurrency break starves every stream ranked
@@ -991,10 +994,10 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
           : `[run] load eased (${load1.toFixed(1)} on ${cores} cores) — parallel ticks back to ${loadCap}`);
         lastCap = loadCap;
       }
-      const grantedAt = Date.now();
-      recentGrants = recentGrants.filter((at) => grantedAt - at < TICK_MEMORY_RAMP_MS);
+      const sampledAt = Date.now();
+      const ramping = [...grantedAt.values()].filter((at) => sampledAt - at < TICK_MEMORY_RAMP_MS).length;
       const availableMb = memorySample();
-      const memoryCap = memoryConcurrency(opts.concurrency, inFlight.size, availableMb, recentGrants.length);
+      const memoryCap = memoryConcurrency(opts.concurrency, inFlight.size, availableMb, ramping);
       if (memoryCap !== lastMemoryCap && availableMb !== undefined) {
         log(memoryCap < opts.concurrency
           ? `[run] ${availableMb} MB available with ${inFlight.size} tick(s) running — memory holds parallel ticks at ${memoryCap}`
@@ -1014,7 +1017,7 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
         if (inFlight.size >= cap) break;
         const dispatchSignature = dispatchSignatures.get(slug)!;
         inFlight.add(slug);
-        recentGrants.push(Date.now());
+        grantedAt.set(slug, Date.now());
         lastTickedAt.set(slug, Date.now());
         // A concurrency slot belongs to the tick until that exact promise
         // settles. The worker and coordinator own abortable, sleep-aware walls
@@ -1045,6 +1048,7 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
           })
           .finally(() => {
             inFlight.delete(slug);
+            grantedAt.delete(slug);
           });
       }
     } catch (e) {
