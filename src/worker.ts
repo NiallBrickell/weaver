@@ -37,6 +37,7 @@ import {
 } from './modelConfig.js';
 import { deterministicActionsOnly, runnerExecutorCapabilities, workerSeatModelForAssignment } from './modelRouting.js';
 import { loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv, selectNamedSecrets } from './secrets.js';
+import { workerGitIdentityEnv } from './githubApp.js';
 import {
   arrive,
   listWorkstreams,
@@ -745,6 +746,15 @@ export async function runWorker(
     // into) did not, so every such worker crashed cryptically before it could
     // create it.
     mkdirSync(workCwd, { recursive: true });
+    // Every committing substrate must author with the verifiable App bot rather
+    // than an unverifiable alias git would otherwise invent when the runtime
+    // ships no identity of its own — GitHub cannot attribute an @erdo.ai alias
+    // to an account, so Vercel refuses to build previews for such commits. The
+    // in-process executors (local-sdk, codex-sdk, pi) run the worker's git in
+    // this subprocess environment; GIT_AUTHOR_*/GIT_COMMITTER_* here override
+    // any on-disk user.* or ambient value. OpenHands ignores this and injects
+    // the same identity through its own container --env args.
+    const gitIdentityEnv = await workerGitIdentityEnv();
     const outcome = await executor.execute({
       workstreamSlug: slug,
       assignmentId,
@@ -757,11 +767,16 @@ export async function runWorker(
       model: capacityTarget.model,
       tools: { type: 'preset', preset: 'claude_code' },
       // Ephemeral MCP header credentials ride the subprocess env with the
-      // action secrets — never SDK process arguments, never durable state.
-      env: sdkEnv(
-        { ...secrets, ...operatorMcp.env },
-        isAction ? [] : Object.keys(applicableSecrets),
-      ),
+      // action secrets — never SDK process arguments, never durable state. The
+      // git identity is spread last so it wins over any ambient GIT_* the host
+      // environment carried into sdkEnv.
+      env: {
+        ...sdkEnv(
+          { ...secrets, ...operatorMcp.env },
+          isAction ? [] : Object.keys(applicableSecrets),
+        ),
+        ...gitIdentityEnv,
+      },
       // Container/sandbox adapters cannot inherit the host SDK environment:
       // doing so would cross ambient and executor-only identity into the
       // worker. Ordinary work gets its exact resolved Assignment selection;

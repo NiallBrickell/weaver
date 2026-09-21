@@ -491,6 +491,70 @@ export async function gitHubAppCommitIdentity(): Promise<GitCommitIdentity | nul
   return commitIdentityCache;
 }
 
+/**
+ * The git commit identity every fleet worker must author with. An explicit
+ * operator override (`WEAVER_GIT_AUTHOR_NAME` + `WEAVER_GIT_AUTHOR_EMAIL`, both
+ * required together — e.g. to name an identity a deploy-author guard accepts)
+ * wins; otherwise the verifiable GitHub App bot, so autonomous commits are
+ * attributed to the same principal that opens the PRs rather than to an
+ * unverifiable alias git would otherwise invent. Null only when neither
+ * resolves (App unconfigured and no override), leaving the runtime default.
+ */
+export async function resolveWorkerGitIdentity(): Promise<GitCommitIdentity | null> {
+  const name = process.env.WEAVER_GIT_AUTHOR_NAME?.trim();
+  const email = process.env.WEAVER_GIT_AUTHOR_EMAIL?.trim();
+  if (name || email) {
+    if (!name || !email) {
+      throw new Error(
+        'WEAVER_GIT_AUTHOR_NAME and WEAVER_GIT_AUTHOR_EMAIL must be set together',
+      );
+    }
+    return { name, email };
+  }
+  return gitHubAppCommitIdentity();
+}
+
+/**
+ * A resolved identity must be safe to inject as the GIT_AUTHOR and GIT_COMMITTER
+ * name/email environment values: non-empty, and free of the newline/NUL bytes
+ * that would let a value break out of its variable.
+ */
+export function assertGitIdentityInjectable(identity: GitCommitIdentity): void {
+  for (const [field, value] of Object.entries(identity)) {
+    if (value.length === 0) {
+      throw new Error(`git identity ${field} must not be empty`);
+    }
+    if (/[\r\n\0]/.test(value)) {
+      throw new Error(`git identity ${field} contains a newline or NUL byte`);
+    }
+  }
+}
+
+/**
+ * The GIT_AUTHOR and GIT_COMMITTER name/email environment fragment that fixes a
+ * worker's commit identity to {@link resolveWorkerGitIdentity}. These vars
+ * override any on-disk `user.*` config and any ambient value inside the worker
+ * process, so a worker can no longer fall back to an unverifiable alias when the
+ * runtime ships no git identity of its own. Every in-process executor that runs
+ * the worker's
+ * git directly (local-sdk, codex-sdk, pi) merges this — spread last — into the
+ * environment it hands the worker. Empty when no identity resolves, leaving the
+ * runtime default. The OpenHands container receives the same identity through
+ * its own `--env` args instead, because its worker runs in a separate container
+ * environment this fragment cannot reach.
+ */
+export async function workerGitIdentityEnv(): Promise<Record<string, string>> {
+  const identity = await resolveWorkerGitIdentity();
+  if (!identity) return {};
+  assertGitIdentityInjectable(identity);
+  return {
+    GIT_AUTHOR_NAME: identity.name,
+    GIT_AUTHOR_EMAIL: identity.email,
+    GIT_COMMITTER_NAME: identity.name,
+    GIT_COMMITTER_EMAIL: identity.email,
+  };
+}
+
 function extractString(payload: unknown, key: string): string | null {
   if (typeof payload !== 'object' || payload === null || !(key in payload)) return null;
   const value = (payload as Record<string, unknown>)[key];
