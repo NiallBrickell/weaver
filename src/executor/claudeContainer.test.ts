@@ -68,6 +68,10 @@ test('the plan mounts only the SDK binary, the workspace and declared read dirs,
   assert.ok(plan.args.includes('--workdir') && plan.args[plan.args.indexOf('--workdir') + 1] === '/home/weaver/workspaces/ws/work');
   assert.ok(plan.args.includes('--rm') && plan.args.includes('--interactive'));
   assert.deepEqual(plan.args.slice(plan.args.indexOf('--user'), plan.args.indexOf('--user') + 2), ['--user', '0']);
+  // No limit configured: the container still runs under the default ceiling.
+  assert.deepEqual(plan.args.slice(plan.args.indexOf('--memory'), plan.args.indexOf('--memory') + 4), [
+    '--memory', '4g', '--memory-swap', '4g',
+  ]);
   assert.ok(plan.args.includes(`host.docker.internal:10.170.0.2`));
   assert.ok(plan.args.includes(CLAUDE_CONTAINER_LABEL));
   assert.match(plan.containerName, /^weaver-claude-asg_abc-123-[0-9a-f]{12}$/);
@@ -136,6 +140,29 @@ test('container mode is an explicit host decision with the pinned worker image a
     claudeContainerFromEnv({ WEAVER_LOCAL_SDK_CONTAINER: '1', WEAVER_LOCAL_SDK_CONTAINER_IMAGE: 'x/y:2' })!.image,
     'x/y:2',
   );
+});
+
+test('the memory ceiling follows WEAVER_WORKER_MEMORY_LIMIT, opts out only explicitly, and refuses garbage at plan time', () => {
+  const run = { assignmentId: 'a', cwd: '/w', additionalDirectories: [], workerVisibleEnv: {} };
+  const planWith = (limit: string | undefined) => {
+    const hostConfig = claudeContainerFromEnv({
+      WEAVER_LOCAL_SDK_CONTAINER: '1',
+      ...(limit !== undefined ? { WEAVER_WORKER_MEMORY_LIMIT: limit } : {}),
+    })!;
+    return planContainerRun(spawnOptions(), run, hostConfig).args;
+  };
+  const memoryFlags = (args: string[]) => ({
+    memory: args.filter((_, i) => args[i - 1] === '--memory'),
+    swap: args.filter((_, i) => args[i - 1] === '--memory-swap'),
+  });
+  assert.deepEqual(memoryFlags(planWith(undefined)), { memory: ['4g'], swap: ['4g'] });
+  assert.deepEqual(memoryFlags(planWith('3072m')), { memory: ['3072m'], swap: ['3072m'] });
+  assert.deepEqual(memoryFlags(planWith('none')), { memory: [], swap: [] });
+  // The ceiling rides flags before the image; nothing after the image is Docker's.
+  const args = planWith('6g');
+  assert.ok(args.indexOf('--memory') < args.indexOf(OPENHANDS_AGENT_SERVER_IMAGE));
+  assert.throws(() => planWith('4 gigs'), /WEAVER_WORKER_MEMORY_LIMIT="4 gigs" is not a Docker memory size/);
+  assert.throws(() => planWith('4096'), /needs at least 512m/);
 });
 
 test('the spawner runs the docker CLI with the plan, relays stdio, and reaps the container after exit', async () => {

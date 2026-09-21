@@ -103,6 +103,7 @@ routes, then these configured seats — is covered in
 | `WEAVER_ACTION_MODEL` | `sonnet` | Model for declared action workers |
 | `WEAVER_DETERMINISTIC_ACTIONS_ONLY` | `0` | Set to `1` on credential-bearing hosted controllers: action assignments must supply an exact `exec_run`, and no same-UID action model starts |
 | `WEAVER_OPENHANDS_BASE_URL` | OpenRouter's official endpoint for `openrouter/*` | OpenAI-compatible upstream used by the host credential proxy; required for other OpenHands providers |
+| `WEAVER_WORKER_MEMORY_LIMIT` | `4g` | Memory ceiling for each worker container (OpenHands and containerized Claude), as a Docker size such as `4g` or `3072m`, at least `512m`. Swap is capped at the same value, so a runaway is OOM-killed inside its own container instead of pushing the host into swap thrash. `0`/`none`/`off` removes the ceiling; any other malformed value refuses the run. Under rootless Docker the ceiling needs the cgroup v2 memory controller delegated to the Docker user — without it Docker warns, drops the limit, and the run proceeds unbounded (`docker info` then prints `No memory limit support`) |
 | `WEAVER_PILOT_URL` | `http://localhost:9721` | The operator's pilot daemon that gates external actions |
 
 An unknown work or action executor fails hard before any attempt starts — a

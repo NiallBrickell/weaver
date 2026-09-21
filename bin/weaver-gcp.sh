@@ -179,11 +179,22 @@ cmd_create() {
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-# Swap: yarn install and concurrent worker processes spike past bare RAM
-if [ ! -f /swapfile ]; then
-  fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
-  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+# Swap: yarn install and concurrent worker processes spike past bare RAM, and
+# without it memory pressure freezes the host instead of paging out (see the
+# network guards below for what that cost on 2026-09-18). Checked, not just
+# created: an earlier revision made the file only when it was missing, so a
+# /swapfile left by a partial run was never activated or added to fstab and
+# the host ran swapless for weeks.
+if ! swapon --show=NAME --noheadings | grep -qx /swapfile; then
+  if [ "$(stat -c %s /swapfile 2>/dev/null || echo 0)" -ne 4294967296 ]; then
+    rm -f /swapfile
+    fallocate -l 4G /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null
+  fi
+  swapon /swapfile
 fi
+grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 # Base runtime
 apt-get update -q
@@ -263,6 +274,57 @@ install -o root -g root -m 644 /dev/stdin /etc/tmpfiles.d/tmp.conf <<'TMPFILES'
 D /tmp 1777 root root 7d
 TMPFILES
 systemd-tmpfiles --clean /etc/tmpfiles.d/tmp.conf || true
+
+# Network survival (2026-09-18: 3.4 days offline). Three worker containers took
+# the 8 GB, then-swapless VM from 3.5 GB to full in ten minutes; the kernel
+# thrashed page cache instead of killing anything, the frozen host missed its
+# one-hour DHCP renewal, systemd-networkd marked the NIC failed and never
+# retried, and the runner's preflight then refused every restart because the
+# VM no longer owned its private address. Keep the DHCP address when a renewal
+# is missed (GCE never reassigns an instance's private IP), and let a watchdog
+# reconfigure the NIC if it still ends up unrouted.
+for network_file in /run/systemd/network/*netplan*en*.network /etc/systemd/network/*.network; do
+  [ -e "$network_file" ] || continue
+  install -d "/etc/systemd/network/$(basename "$network_file").d"
+  install -o root -g root -m 644 /dev/stdin "/etc/systemd/network/$(basename "$network_file").d/10-weaver-keep-dhcp.conf" <<'NETCONF'
+# Managed by weaver-gcp.sh: never drop the DHCP address when a renewal is missed.
+[Network]
+KeepConfiguration=dhcp
+NETCONF
+done
+install -o root -g root -m 755 /dev/stdin /usr/local/sbin/weaver-net-watchdog <<'WATCHDOG'
+#!/bin/bash
+# Managed by weaver-gcp.sh: recover the primary NIC if it lost its address or
+# systemd-networkd gave up on it.
+iface="$(ip -4 route show default | awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+iface="${iface:-ens4}"
+state="$(networkctl status "$iface" --no-pager 2>/dev/null | awk -F': ' '/^ *State:/ { print $2; exit }')"
+if ip -4 -o addr show dev "$iface" scope global | grep -q inet && [[ "$state" == routable* ]]; then
+  exit 0
+fi
+echo "weaver-net-watchdog: $iface state='${state:-unknown}' without a routable IPv4 — reconfiguring"
+networkctl reconfigure "$iface"
+WATCHDOG
+install -o root -g root -m 644 /dev/stdin /etc/systemd/system/weaver-net-watchdog.service <<'UNIT'
+[Unit]
+Description=Recover the VM's primary network interface if it lost its address
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/weaver-net-watchdog
+UNIT
+install -o root -g root -m 644 /dev/stdin /etc/systemd/system/weaver-net-watchdog.timer <<'UNIT'
+[Unit]
+Description=Check the VM's primary network interface every minute
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now weaver-net-watchdog.timer
+networkctl reload
 
 # Base env. `push-env` merges portable credentials/config into this file and
 # preserves host-local settings instead of rebuilding it from two selected

@@ -575,6 +575,10 @@ export interface RunnerOptions {
   /** System-load sampler for load-aware slot throttling; injectable for tests.
    * Defaults to the OS 1-minute load average and logical core count. */
   loadSample?: () => { load1: number; cores: number };
+  /** Available-memory sampler (MB) for memory-aware slot admission; injectable
+   * for tests. Defaults to Linux MemAvailable, and to "unknown" (no memory
+   * gate) elsewhere — see availableMemoryMb. */
+  memorySample?: () => number | undefined;
   /** Exact substrates this process may claim. Defaults to the configured
    * seats; heterogeneous hosts opt into additional executors explicitly. */
   executorCapabilities?: ReadonlySet<string>;
@@ -618,6 +622,60 @@ export function effectiveConcurrency(configured: number, load1: number, cores: n
   if (load1 <= cores) return configured;
   const scaled = Math.floor((configured * cores) / load1);
   return Math.max(1, Math.min(configured, scaled));
+}
+
+/** Memory a granted slot is assumed to grow into: a worker container running
+ * an agent plus the build or test it starts, or a coordinator SDK process. */
+export const TICK_MEMORY_BUDGET_MB = 1536;
+/** Memory held back for the host itself — sshd, the network stack, the runner,
+ * the container daemon — so admission never spends the box's last headroom. */
+export const HOST_MEMORY_RESERVE_MB = 1024;
+/** How long a newly granted slot counts as not yet grown into its budget. */
+export const TICK_MEMORY_RAMP_MS = 120_000;
+
+/**
+ * Memory-aware slot cap. Load lags memory: on 2026-09-18 the hosted runner (2
+ * vCPU, 8 GB, no swap) granted three worker slots in under two minutes while
+ * about 4.5 GB was free; the containers then took RAM from 3.5 GB to all 8 GB,
+ * the kernel thrashed page cache (disk reads ~100x) instead of killing
+ * anything, the frozen host missed its DHCP renewal, and the fleet sat offline
+ * for 3.4 days. A slot is therefore admitted only while available memory,
+ * less the host reserve and the budget of every slot granted in the last
+ * `TICK_MEMORY_RAMP_MS` (which has not grown into its memory yet), still
+ * covers one more budget. Ticks already running keep going; an idle runner
+ * always takes one tick so the fleet makes progress; an unknown reading
+ * applies no gate.
+ */
+export function memoryConcurrency(
+  configured: number,
+  inFlight: number,
+  availableMb: number | undefined,
+  recentlyGranted: number,
+): number {
+  if (availableMb === undefined || !Number.isFinite(availableMb) || availableMb <= 0) return configured;
+  const headroom = availableMb - HOST_MEMORY_RESERVE_MB - recentlyGranted * TICK_MEMORY_BUDGET_MB;
+  const spare = Math.max(0, Math.floor(headroom / TICK_MEMORY_BUDGET_MB));
+  return Math.max(1, Math.min(configured, inFlight + spare));
+}
+
+/**
+ * MemAvailable from /proc/meminfo, in MB — memory the kernel can hand out
+ * without swapping, page cache included. Only Linux reports it: macOS's free
+ * page count excludes reclaimable cache and would starve the operator's
+ * workstation of slots, so other platforms return undefined (no memory gate).
+ */
+export function availableMemoryMb(meminfo?: string): number | undefined {
+  let text = meminfo;
+  if (text === undefined) {
+    if (process.platform !== 'linux') return undefined;
+    try {
+      text = fs.readFileSync('/proc/meminfo', 'utf8');
+    } catch {
+      return undefined;
+    }
+  }
+  const match = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(text);
+  return match ? Math.floor(Number(match[1]) / 1024) : undefined;
 }
 
 /**
@@ -767,6 +825,7 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   const log = opts.log ?? ((l: string) => process.stdout.write(l + '\n'));
   const logError = opts.logError ?? ((l: string) => process.stderr.write(l + '\n'));
   const loadSample = opts.loadSample ?? (() => ({ load1: os.loadavg()[0]!, cores: os.cpus().length }));
+  const memorySample = opts.memorySample ?? (() => availableMemoryMb());
   const executorCapabilities = opts.executorCapabilities ?? runnerExecutorCapabilities();
   const tickFn = opts.tickFn ?? tick;
   const sourceStale = opts.sourceStale ?? runnerSourceStale;
@@ -779,6 +838,9 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   // Last announced slot cap, so a throttle/recovery is logged on transition
   // only — never silently, and never once per iteration.
   let lastCap = opts.concurrency;
+  let lastMemoryCap = opts.concurrency;
+  // When each still-ramping slot was granted; see memoryConcurrency.
+  let recentGrants: number[] = [];
   const inFlight = new Set<string>();
   // Fairness: slots are granted least-recently-ticked first. A stable
   // (alphabetical) scan with a concurrency break starves every stream ranked
@@ -922,13 +984,24 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       // Load-aware cap: when the machine is oversubscribed, grant fewer slots
       // this iteration (in-flight ticks finish; none are added past the cap).
       const { load1, cores } = loadSample();
-      const cap = effectiveConcurrency(opts.concurrency, load1, cores);
-      if (cap !== lastCap) {
-        log(cap < opts.concurrency
-          ? `[run] load ${load1.toFixed(1)} on ${cores} cores — throttling parallel ticks ${opts.concurrency}→${cap}`
-          : `[run] load eased (${load1.toFixed(1)} on ${cores} cores) — parallel ticks back to ${cap}`);
-        lastCap = cap;
+      const loadCap = effectiveConcurrency(opts.concurrency, load1, cores);
+      if (loadCap !== lastCap) {
+        log(loadCap < opts.concurrency
+          ? `[run] load ${load1.toFixed(1)} on ${cores} cores — throttling parallel ticks ${opts.concurrency}→${loadCap}`
+          : `[run] load eased (${load1.toFixed(1)} on ${cores} cores) — parallel ticks back to ${loadCap}`);
+        lastCap = loadCap;
       }
+      const grantedAt = Date.now();
+      recentGrants = recentGrants.filter((at) => grantedAt - at < TICK_MEMORY_RAMP_MS);
+      const availableMb = memorySample();
+      const memoryCap = memoryConcurrency(opts.concurrency, inFlight.size, availableMb, recentGrants.length);
+      if (memoryCap !== lastMemoryCap && availableMb !== undefined) {
+        log(memoryCap < opts.concurrency
+          ? `[run] ${availableMb} MB available with ${inFlight.size} tick(s) running — memory holds parallel ticks at ${memoryCap}`
+          : `[run] memory eased (${availableMb} MB available) — parallel ticks back to ${memoryCap}`);
+        lastMemoryCap = memoryCap;
+      }
+      const cap = Math.min(loadCap, memoryCap);
       // Slots are granted from the allocation, not from the raw queue: when a
       // high stream is due, most of the budget is held for its band instead of
       // being filled first-come. The partition applies to what THIS iteration
@@ -941,6 +1014,7 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
         if (inFlight.size >= cap) break;
         const dispatchSignature = dispatchSignatures.get(slug)!;
         inFlight.add(slug);
+        recentGrants.push(Date.now());
         lastTickedAt.set(slug, Date.now());
         // A concurrency slot belongs to the tick until that exact promise
         // settles. The worker and coordinator own abortable, sleep-aware walls
