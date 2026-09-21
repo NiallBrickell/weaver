@@ -44,6 +44,16 @@ import type { CapacityTarget } from '../modelConfig.js';
 import type { PolicyStore } from '../policies.js';
 import type { EventRecord, WorkstreamCore, WorkstreamDoc } from '../types.js';
 
+/** What a runner last observed the fleet producing, derived from its
+ * revision-validated document cache after each scan (no extra store reads).
+ * An external monitor pages on these facts, not on heartbeat liveness alone. */
+export interface RunnerOutput {
+  observedAt: string;
+  lastCompletedPassAt?: string;
+  oldestUnservedDueAt?: string;
+  capacityBlocked: number;
+}
+
 /** Ephemeral execution-host liveness shared through the StateStore. This is
  * operational presence, not intended work or a persisted worker definition. */
 export interface RunnerPresence {
@@ -60,6 +70,10 @@ export interface RunnerPresence {
    * no seats; the reason is rendered wherever capacity is shown so a fresh
    * heartbeat can never read as a healthy fleet. */
   degraded?: string;
+  /** What this runner's last scan actually produced, published alongside a
+   * healthy heartbeat only — a degraded presence carries no output. Absent on
+   * presences from runners that predate the field. */
+  output?: RunnerOutput;
 }
 
 /** Cheap identity of a Workstream's current durable head. Runners use this

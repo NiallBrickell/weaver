@@ -21,6 +21,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { tick } from './engine.js';
 import { RUNNER_PRESENCE_TTL_MS, coordinatorRunnerEligibility } from './coordinatorRunner.js';
 import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
+import { runnerOutput } from './fleetHealth.js';
 import { sweepPrConflicts } from './prConflicts.js';
 import { sdkEnv } from './secrets.js';
 import {
@@ -30,6 +31,7 @@ import {
   listWorkstreamHeads,
   load,
   weaverHome,
+  type RunnerOutput,
   type RunnerPresence,
   type WorkstreamHead,
 } from './store.js';
@@ -595,8 +597,9 @@ export interface RunnerOptions {
    * behind a 40-minute worker wall. */
   drainMs?: number;
   /** Shared-presence publisher; injectable only for deterministic runner tests.
-   * `degraded` carries the reason this host can commit nothing right now. */
-  heartbeat?: (runnerId: string, degraded?: string) => Promise<void>;
+   * `degraded` carries the reason this host can commit nothing right now;
+   * `output` carries the latest scan's observed facts (absent while degraded). */
+  heartbeat?: (runnerId: string, degraded?: string, output?: RunnerOutput) => Promise<void>;
   /** State-directory probe; injectable only for deterministic runner tests.
    * Defaults to a write into WEAVER_HOME plus the free-space floor. */
   homeHealth?: () => RunnerHomeHealth;
@@ -869,9 +872,16 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       return [];
     }
   })();
-  const publishPresence = opts.heartbeat ?? ((runnerId: string, degraded?: string) =>
-    heartbeatRunner(runnerId, undefined, degraded === undefined ? coordinatorSeats : [], degraded));
+  const publishPresence = opts.heartbeat ?? ((runnerId: string, degraded?: string, output?: RunnerOutput) =>
+    heartbeatRunner(runnerId, undefined, degraded === undefined ? coordinatorSeats : [], degraded, output));
   const homeHealth = opts.homeHealth ?? runnerHomeHealth;
+  // What the previous scan actually produced. Presence is published before the
+  // scan below (so a preferred coordinator host is visible before a standby
+  // considers a claim), which means a healthy heartbeat always carries the
+  // PRIOR iteration's output rather than one not yet computed — fine, since an
+  // external monitor cares about staleness across many iterations, not which
+  // exact tick a fact was observed on.
+  let lastOutput: RunnerOutput | undefined;
   const outageExitMs = opts.storeOutageExitMs ?? RUNNER_STORE_OUTAGE_EXIT_MS;
   let outageSince: number | null = null;
   let outageFailures = 0;
@@ -924,7 +934,7 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       // Shared TTL presence is separate from Workstream truth and from the
       // machine-local pid heartbeat. Publish before scanning so a preferred
       // coordinator host is visible before any standby considers a claim.
-      await publishPresence(runner.id);
+      await publishPresence(runner.id, undefined, lastOutput);
       // Auth recovery: one probe (never concurrently) when credential-file
       // metadata changes. Usage/rate recovery waits for the stored wake or an
       // explicit `weaver capacity retry`; blind probes only consume capacity.
@@ -965,6 +975,7 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       const dispatchSignatures = new Map<string, string>();
       const docs = await workstreams.scan();
       dispatches.retain(new Set(docs.keys()));
+      lastOutput = runnerOutput(docs.values());
       const presences = await listRunnerPresence();
       // The store answered a full scan: any running outage clock stops here.
       outageSince = null;

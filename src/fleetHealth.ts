@@ -1,6 +1,7 @@
 import { actionHasLivePilotOutage, actionNeedsHuman, humanAttention } from './actionApproval.js';
 import { virtualNow } from './clock.js';
 import { isWakeDue } from './executionSafety.js';
+import type { RunnerOutput } from './store/types.js';
 import type { InfrastructureWait, WorkstreamDoc } from './types.js';
 
 export const FLEET_ATTENTION_STEWARD_SOURCE_KEY = 'weaver:fleet-attention-steward:v1';
@@ -282,5 +283,68 @@ export function fleetAttentionEvidence(
       approvalServiceWaits: workstreams.reduce((total, doc) => total + doc.approvalServiceWaits.length, 0),
     },
     workstreams,
+  };
+}
+
+/**
+ * What this runner's own scan actually produced this cycle — the evidence an
+ * external monitor pages on instead of heartbeat liveness (a runner can
+ * heartbeat while every tick fails before it dispatches anything; see
+ * AGENTS.md's "a fresh heartbeat is not health"). Derived entirely from the
+ * documents the runner already holds in its revision-validated cache: no
+ * extra store read, so this stays off the hot-path cost the fleet's `load()`
+ * rule guards.
+ */
+export function runnerOutput(
+  docs: Iterable<WorkstreamDoc>,
+  wallNow = new Date(),
+  nowVirtual = virtualNow(),
+): RunnerOutput {
+  // Iterated twice below (once for capacity, once for due wakes that depend
+  // on which workstreams capacity already explains) — materialize once so a
+  // one-shot Map iterator (e.g. `cache.scan().values()`) isn't exhausted.
+  const all = [...docs];
+
+  let lastCompletedPassAt: string | undefined;
+  const capacityBlockedSlugs = new Set<string>();
+  for (const doc of all) {
+    for (const pass of doc.passes) {
+      if (pass.outcome === 'completed' && !pass.infrastructure && pass.endedAt) {
+        if (!lastCompletedPassAt || pass.endedAt > lastCompletedPassAt) lastCompletedPassAt = pass.endedAt;
+      }
+    }
+    if (
+      doc.workstream.status === 'active' &&
+      Object.values(doc.capacity?.byModel ?? {}).some((backoff) => backoff.wait.retryAt > nowVirtual.toISOString())
+    ) {
+      capacityBlockedSlugs.add(doc.workstream.slug);
+    }
+  }
+
+  let oldestUnservedDueAt: string | undefined;
+  for (const doc of all) {
+    if (doc.workstream.status !== 'active') continue;
+    if (capacityBlockedSlugs.has(doc.workstream.slug)) continue;
+    // An unexpired lease means a pass is running right now — its work is being
+    // served, just not finished yet.
+    if (doc.lease && Date.parse(doc.lease.expiresAt) > wallNow.getTime()) continue;
+    for (const wake of doc.wakes) {
+      if (wake.status !== 'pending') continue;
+      if (wake.infrastructure || wake.executionSafety) continue;
+      if (!isWakeDue(wake.condition, wallNow, nowVirtual)) continue;
+      const dueAt = wake.condition.type === 'wall_time'
+        ? wake.condition.dueAt
+        : wake.condition.type === 'time'
+          ? wake.condition.dueAtVirtual
+          : wake.createdAt;
+      if (!oldestUnservedDueAt || dueAt < oldestUnservedDueAt) oldestUnservedDueAt = dueAt;
+    }
+  }
+
+  return {
+    observedAt: wallNow.toISOString(),
+    ...(lastCompletedPassAt ? { lastCompletedPassAt } : {}),
+    ...(oldestUnservedDueAt ? { oldestUnservedDueAt } : {}),
+    capacityBlocked: capacityBlockedSlugs.size,
   };
 }

@@ -21,7 +21,7 @@ import {
   type RunningOperatorUi,
 } from './operatorUi.js';
 import type { ClerkOperatorAuthenticator } from './clerkOperatorAuth.js';
-import { arrive, createWorkstream, heartbeatRunner, listWorkstreams, load, newId, writeArtifact } from './store.js';
+import { arrive, createWorkstream, heartbeatRunner, listWorkstreams, load, newId, writeArtifact, type RunnerOutput } from './store.js';
 import { OPERATOR_SCRIPT } from './ui/operator/render.js';
 import { recordCapacityBackoff } from './capacity.js';
 import { viewOf } from './watch.js';
@@ -948,6 +948,10 @@ interface FleetHealthProbeBody {
   runners?: Array<{ id: string; heartbeat_age_seconds: number; degraded: string | null }>;
   freshest_heartbeat_age_seconds?: number | null;
   healthy_runners?: number;
+  last_completed_pass_age_seconds?: number | null;
+  oldest_unserved_due_seconds?: number | null;
+  capacity_blocked_workstreams?: number;
+  problems?: string[];
   unhealthy: number;
   error?: string;
 }
@@ -1025,6 +1029,88 @@ test('healthz/fleet reports runner freshness to an external monitor, unauthentic
   // The auth gate still protects every other route on this same server.
   assert.equal((await fetch(`${base}/board`)).status, 401);
   assert.equal((await fetch(`${base}/fleet`)).status, 401);
+});
+
+test('healthz/fleet also pages on OUTPUT, not just liveness: unserved due work and a stalled fleet under capacity backoff', async () => {
+  const freshOutput = (overrides: Partial<RunnerOutput> = {}): RunnerOutput => ({
+    observedAt: new Date().toISOString(),
+    capacityBlocked: 0,
+    ...overrides,
+  });
+
+  // A healthy heartbeat with unremarkable output stays healthy.
+  await heartbeatRunner('gcp', new Date().toISOString(), undefined, undefined, freshOutput());
+  let response = await fetch(`${base}/healthz/fleet`);
+  let body = await response.json() as FleetHealthProbeBody;
+  assert.equal(body.unhealthy, 0);
+  assert.deepEqual(body.problems, []);
+  assert.equal(body.oldest_unserved_due_seconds, null);
+  assert.equal(body.last_completed_pass_age_seconds, null);
+  assert.equal(body.capacity_blocked_workstreams, 0);
+
+  // Due work unserved for just under the one-hour limit is not yet a problem.
+  await heartbeatRunner('gcp', new Date().toISOString(), undefined, undefined, freshOutput({
+    oldestUnservedDueAt: new Date(Date.now() - 3500_000).toISOString(),
+  }));
+  response = await fetch(`${base}/healthz/fleet`);
+  body = await response.json() as FleetHealthProbeBody;
+  assert.equal(body.unhealthy, 0);
+  assert.deepEqual(body.problems, []);
+
+  // Past the one-hour limit trips condition (b) even with a perfectly fresh
+  // heartbeat — a runner can tick every 5s while dispatching nothing.
+  await heartbeatRunner('gcp', new Date().toISOString(), undefined, undefined, freshOutput({
+    oldestUnservedDueAt: new Date(Date.now() - 3700_000).toISOString(),
+  }));
+  response = await fetch(`${base}/healthz/fleet`);
+  body = await response.json() as FleetHealthProbeBody;
+  assert.equal(body.unhealthy, 1);
+  assert.deepEqual(body.problems, ['due work has not been served for over an hour']);
+  assert.ok((body.oldest_unserved_due_seconds ?? 0) > 3600);
+
+  // 12h with no completed pass but NO live capacity backoff is a quiet fleet,
+  // not a stalled one — condition (c) needs both facts together.
+  await heartbeatRunner('gcp', new Date().toISOString(), undefined, undefined, freshOutput({
+    lastCompletedPassAt: new Date(Date.now() - 13 * 3600_000).toISOString(),
+  }));
+  response = await fetch(`${base}/healthz/fleet`);
+  body = await response.json() as FleetHealthProbeBody;
+  assert.equal(body.unhealthy, 0);
+  assert.deepEqual(body.problems, []);
+
+  // 12h with no completed pass WHILE capacity is blocked trips condition (c).
+  await heartbeatRunner('gcp', new Date().toISOString(), undefined, undefined, freshOutput({
+    lastCompletedPassAt: new Date(Date.now() - 13 * 3600_000).toISOString(),
+    capacityBlocked: 2,
+  }));
+  response = await fetch(`${base}/healthz/fleet`);
+  body = await response.json() as FleetHealthProbeBody;
+  assert.equal(body.unhealthy, 1);
+  assert.deepEqual(body.problems, ['no coordinator pass has completed in 12h while work is waiting on provider capacity']);
+  assert.equal(body.capacity_blocked_workstreams, 2);
+
+  // A degraded runner's cached output is never read as current fleet state —
+  // its own heartbeat clears output, and this monitor falls back to "no
+  // healthy runner" rather than reporting stale facts as current.
+  await heartbeatRunner('gcp', new Date().toISOString(), [], 'state directory below free-space floor');
+  response = await fetch(`${base}/healthz/fleet`);
+  body = await response.json() as FleetHealthProbeBody;
+  assert.equal(body.unhealthy, 1);
+  assert.deepEqual(body.problems, ['no runner has a healthy heartbeat']);
+  assert.equal(body.oldest_unserved_due_seconds, null);
+  assert.equal(body.last_completed_pass_age_seconds, null);
+  assert.equal(body.capacity_blocked_workstreams, 0);
+
+  // An older runner that never publishes output at all only ever trips
+  // condition (a) — the endpoint degrades gracefully, it never 500s on it.
+  await heartbeatRunner('legacy', new Date().toISOString());
+  response = await fetch(`${base}/healthz/fleet`);
+  body = await response.json() as FleetHealthProbeBody;
+  assert.equal(body.unhealthy, 0);
+  assert.deepEqual(body.problems, []);
+  assert.equal(body.oldest_unserved_due_seconds, null);
+  assert.equal(body.last_completed_pass_age_seconds, null);
+  assert.equal(body.capacity_blocked_workstreams, 0);
 });
 
 test('Clerk mode replaces the browser password and keeps identity, domain denial, redirects, and writes server-enforced', async () => {

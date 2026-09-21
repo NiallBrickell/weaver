@@ -1,8 +1,11 @@
 # Fleet health for external monitoring
 
 `weaver ui` exposes `GET /healthz/fleet`: an unauthenticated JSON endpoint an
-external monitor can poll on an interval and page on, answering one narrow
-question — *is any runner still dispatching work?*
+external monitor can poll on an interval and page on, answering the question
+that actually matters — *is any runner still dispatching work, and is that
+work actually being served?* A heartbeat alone answers only the first half:
+a runner can tick every few seconds while every pass fails before completing,
+so the endpoint also reads the freshest healthy runner's own observed output.
 
 This exists because every fleet-health signal Weaver builds in by default —
 the Fleet page, the attention steward — runs **on** a live runner. A runner
@@ -29,6 +32,10 @@ the runner, independent of any deploy.
   ],
   "freshest_heartbeat_age_seconds": 4,
   "healthy_runners": 1,
+  "last_completed_pass_age_seconds": 42,
+  "oldest_unserved_due_seconds": null,
+  "capacity_blocked_workstreams": 0,
+  "problems": [],
   "unhealthy": 0
 }
 ```
@@ -46,8 +53,31 @@ the runner, independent of any deploy.
   not publishing itself `degraded`. A degraded runner's state directory can't
   take a write, so it dispatches nothing even with a heartbeat published
   seconds ago (see [Hosting Weaver](./hosting.md)).
-- `unhealthy` is `1` exactly when `healthy_runners` is `0` — point an external
-  monitor at this one field. `ok` mirrors it (`ok == (unhealthy == 0)`).
+- A fresh heartbeat proves the poll loop is running, not that it is
+  accomplishing anything — a runner can tick every 5 seconds while every pass
+  fails before completing. `last_completed_pass_age_seconds`,
+  `oldest_unserved_due_seconds`, and `capacity_blocked_workstreams` are taken
+  from the freshest **healthy** runner's own last scan (its `RunnerOutput`,
+  published alongside its heartbeat) — never a separate store read, so this
+  endpoint stays a cheap presence-only poll. They are `null`/`0` when no
+  healthy runner has ever published output (an older runner version, or no
+  healthy runner at all).
+- `unhealthy` is `1` when `problems` is non-empty and `0` otherwise — point an
+  external monitor at this one field; its meaning is unchanged, only what can
+  set it has grown. `ok` mirrors it (`ok == (unhealthy == 0)`). `problems` is
+  a plain-English list of which condition(s) below are currently failing:
+  - **No healthy runner.** Same condition as before: `healthy_runners` is `0`.
+  - **Due work unserved for over an hour.** `oldest_unserved_due_seconds` is
+    over **3600** (`FLEET_UNSERVED_DUE_LIMIT_SECONDS`) — a due wake has sat
+    unclaimed well past ordinary dispatch latency, meaning dispatch itself has
+    stalled even though the runner is heartbeating.
+  - **No pass completed in 12h while capacity is blocked.**
+    `last_completed_pass_age_seconds` is over **43200** (12h,
+    `FLEET_STALLED_OUTPUT_SECONDS`) **and** `capacity_blocked_workstreams` is
+    greater than `0`. Either fact alone is not a problem — a quiet fleet with
+    nothing due is fine, and a coordinator pass can legitimately take hours
+    while a provider is in backoff — but together they mean the fleet is
+    stuck waiting on capacity, not just idle.
 
 The endpoint answers HTTP 200 for any completed check, healthy or not — the
 `unhealthy` field carries the verdict, not the status code. Only a failure to
@@ -66,4 +96,5 @@ your own — at `https://<your-ui-host>/healthz/fleet`, and page when
 `unhealthy == 1` or the request fails or times out. No credential is required:
 `/healthz/fleet` is exempt from the operator UI's Clerk/Basic auth gate,
 exactly like `/healthz`, because it exposes no workstream content — only
-runner ids and heartbeat freshness.
+runner ids, heartbeat freshness, and coarse counts/ages of what a runner
+observed (never a workstream slug, title, or any other identifying detail).

@@ -338,17 +338,37 @@ export interface FleetHealthSnapshot {
   runners: FleetHealthRunner[];
   freshest_heartbeat_age_seconds: number | null;
   healthy_runners: number;
+  last_completed_pass_age_seconds: number | null;
+  oldest_unserved_due_seconds: number | null;
+  capacity_blocked_workstreams: number;
+  problems: string[];
   unhealthy: 0 | 1;
 }
 
+// A runner can heartbeat while dispatching nothing (2026-09-21: a fleet
+// recorded 0 completed coordinator passes and 236 capacity backoffs in a day
+// with a heartbeat that never went stale). An hour past a wake's own due time
+// is well beyond ordinary dispatch latency (see fleetHealth.ts's
+// ROUTINE_WAKE_GRACE_MS), so it means dispatch itself has stalled.
+export const FLEET_UNSERVED_DUE_LIMIT_SECONDS = 3600;
+// A coordinator pass can legitimately take hours when providers are in
+// backoff; twelve hours of zero completions is only paired with a capacity
+// condition below so a fleet that is simply quiet (nothing due) never trips.
+export const FLEET_STALLED_OUTPUT_SECONDS = 12 * 60 * 60;
+
 /**
  * Reduce shared runner presence to what an external monitor (Alertee polling
- * `unhealthy`) needs to page on a dead fleet — derived from
+ * `unhealthy`) needs to page on a dead OR stalled fleet — derived from
  * `listRunnerPresence()` alone, never a `load()` loop over every Workstream
  * (see AGENTS.md's "never loop load() over the fleet on a hot path").
  * A degraded presence (state directory can't commit — see runner.ts) publishes
  * no seats and dispatches nothing, so it counts as unhealthy exactly like a
- * stale heartbeat regardless of how fresh its last publish was.
+ * stale heartbeat regardless of how fresh its last publish was. Liveness alone
+ * is not enough either (AGENTS.md's "a fresh heartbeat is not health"): a
+ * runner can tick every 5 seconds while every pass fails before completing, so
+ * this also reads the latest healthy runner's own observed OUTPUT — when due
+ * work has gone unserved, or nothing has completed while work waits on
+ * provider capacity.
  */
 export function fleetHealthSnapshot(presences: readonly RunnerPresence[], nowMs = Date.now()): FleetHealthSnapshot {
   const latestByRunner = new Map<string, RunnerPresence>();
@@ -369,8 +389,40 @@ export function fleetHealthSnapshot(presences: readonly RunnerPresence[], nowMs 
   const healthyRunners = runners.filter((runner) =>
     runner.degraded === null && runner.ageMs <= FLEET_HEALTH_STALE_SECONDS * 1000,
   ).length;
+
+  // A stale or degraded runner's cached output is not evidence of current
+  // fleet state — only the freshest HEALTHY presence's own last scan counts.
+  const freshestOutput = [...latestByRunner.values()]
+    .filter((presence) =>
+      !presence.degraded &&
+      Math.max(0, nowMs - Date.parse(presence.heartbeatAt)) <= FLEET_HEALTH_STALE_SECONDS * 1000 &&
+      presence.output,
+    )
+    .sort((a, b) => Date.parse(b.heartbeatAt) - Date.parse(a.heartbeatAt))[0]?.output;
+
+  const lastCompletedPassAgeSeconds = freshestOutput?.lastCompletedPassAt
+    ? Math.max(0, Math.round((nowMs - Date.parse(freshestOutput.lastCompletedPassAt)) / 1000))
+    : null;
+  const oldestUnservedDueSeconds = freshestOutput?.oldestUnservedDueAt
+    ? Math.max(0, Math.round((nowMs - Date.parse(freshestOutput.oldestUnservedDueAt)) / 1000))
+    : null;
+  const capacityBlockedWorkstreams = freshestOutput?.capacityBlocked ?? 0;
+
+  const problems: string[] = [];
+  if (healthyRunners === 0) problems.push('no runner has a healthy heartbeat');
+  if (oldestUnservedDueSeconds !== null && oldestUnservedDueSeconds > FLEET_UNSERVED_DUE_LIMIT_SECONDS) {
+    problems.push('due work has not been served for over an hour');
+  }
+  if (
+    lastCompletedPassAgeSeconds !== null &&
+    lastCompletedPassAgeSeconds > FLEET_STALLED_OUTPUT_SECONDS &&
+    capacityBlockedWorkstreams > 0
+  ) {
+    problems.push('no coordinator pass has completed in 12h while work is waiting on provider capacity');
+  }
+
   return {
-    ok: healthyRunners > 0,
+    ok: problems.length === 0,
     checked_at: new Date(nowMs).toISOString(),
     runners: runners.map((runner) => ({
       id: runner.id,
@@ -379,7 +431,11 @@ export function fleetHealthSnapshot(presences: readonly RunnerPresence[], nowMs 
     })),
     freshest_heartbeat_age_seconds: freshAges.length ? Math.round(Math.min(...freshAges) / 1000) : null,
     healthy_runners: healthyRunners,
-    unhealthy: healthyRunners > 0 ? 0 : 1,
+    last_completed_pass_age_seconds: lastCompletedPassAgeSeconds,
+    oldest_unserved_due_seconds: oldestUnservedDueSeconds,
+    capacity_blocked_workstreams: capacityBlockedWorkstreams,
+    problems,
+    unhealthy: problems.length ? 1 : 0,
   };
 }
 

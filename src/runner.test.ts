@@ -16,7 +16,7 @@ import {
   RunnerWorkstreamCache,
   runLoop,
 } from './runner.js';
-import { arrive, createWorkstream, listRunnerPresence, load } from './store.js';
+import { arrive, createWorkstream, listRunnerPresence, load, type RunnerOutput } from './store.js';
 import type { InfrastructureWait } from './types.js';
 
 let home: string;
@@ -706,6 +706,43 @@ test('a runner whose state directory cannot take a write publishes why, dispatch
   assert.ok(ticks >= 1, 'dispatch resumes once the directory is writable');
   assert.equal(beats.at(-1), undefined, 'a healthy heartbeat clears the reason');
   assert.ok(logs.some((l) => l.includes('writable again')), 'recovery is logged');
+});
+
+test('a healthy heartbeat published after a scan carries what that scan actually observed', async () => {
+  // AGENTS.md: "a fresh heartbeat is not health" — an external monitor needs
+  // what the runner's own scan produced, not just that it is still ticking.
+  await make('output-ws');
+  await arrive('output-ws', (doc) => {
+    doc.passes.push({
+      id: 'pass_done', startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T00:05:00.000Z',
+      baseRevision: 0, wakeReasons: [], changes: [], outcome: 'completed',
+    });
+  });
+  const abort = new AbortController();
+  const beats: (RunnerOutput | undefined)[] = [];
+  const loop = runLoop({
+    intervalMs: 5,
+    concurrency: 1,
+    signal: abort.signal,
+    sourceStale: () => false,
+    heartbeat: async (_runnerId, _degraded, output) => { beats.push(output); },
+    tickFn: async () => ({ cycles: 0, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] } as never),
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.ok(beats.length >= 2, 'at least two heartbeats were published');
+    // Presence publishes BEFORE the scan (so a preferred coordinator host is
+    // visible before a standby considers a claim), so the very first
+    // heartbeat of the process precedes any scan and carries no output yet.
+    assert.equal(beats[0], undefined, 'the first heartbeat precedes any scan');
+    assert.ok(
+      beats.slice(1).some((output) => output?.lastCompletedPassAt === '2026-01-01T00:05:00.000Z'),
+      `a later heartbeat must carry the previous scan's observed output: ${JSON.stringify(beats)}`,
+    );
+  } finally {
+    abort.abort();
+    await loop;
+  }
 });
 
 test('the default state-directory probe reports a read-only home and a breached free-space floor', async () => {
