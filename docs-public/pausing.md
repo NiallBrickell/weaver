@@ -43,6 +43,12 @@ moment no high stream is due, which is why ranking is worth reaching for before
 pausing: there is nothing to undo. Ranking is a human act — `weaver priority
 <slug> normal` returns a stream to the ordinary band.
 
+Within a band, slots go to the stream a runner served longest ago. That order
+is read from each stream's own recorded passes and worker attempts, so it
+survives a runner restart: a freshly started runner (the self-updater restarts
+it on every release) resumes where the fleet left off instead of starting over
+from the top of the alphabet.
+
 ## What pause preserves
 
 Pause changes the workstream's durable lifecycle state. It does not cancel or discard its assignments, submissions, decisions, waits, due wakes, or needs-you items. On resume, the runner reads that typed position and continues from it with fresh coordinator and worker runs. No model context, Agent SDK session, or sleeping process is retained to bridge the pause.

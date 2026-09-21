@@ -7,7 +7,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { allocateSlots, byPriorityThenFairness, priorityRank } from './runner.js';
+import { allocateSlots, byPriorityThenFairness, durableLastServedMs, priorityRank } from './runner.js';
+import type { WorkstreamDoc } from './types.js';
 
 type Stream = [slug: string, priority: 'high' | 'normal' | 'low' | undefined, lastTicked: number];
 
@@ -153,4 +154,29 @@ test('a saturated normal band cannot starve the low band — the floor rotates b
 test('when everyone fits, no floor arithmetic changes anything', () => {
   const granted = grant([['a', 'normal', 2], ['b', 'low', 1]], 5);
   assert.deepEqual([...granted].sort(), ['a', 'b']);
+});
+
+
+test('fairness survives a restart: the stream served longest ago goes first, not the first slug', () => {
+  // A fresh runner has no memory of ticks. Seeding from the documents' own
+  // pass/attempt starts keeps least-recently-served order instead of letting
+  // the store's alphabetical slug order decide who runs after every restart.
+  const doc = (passStarts: string[], attemptStarts: string[] = []) => ({
+    passes: passStarts.map((startedAt) => ({ startedAt })),
+    assignments: attemptStarts.length ? [{ attempts: attemptStarts.map((startedAt) => ({ startedAt })) }] : [],
+  }) as unknown as WorkstreamDoc;
+  const served = new Map<string, number>([
+    ['daily-engineering-update', durableLastServedMs(doc(['2026-09-21T14:40:00Z']))],
+    ['evals-health', durableLastServedMs(doc(['2026-09-21T13:30:00Z']))],
+    // Last pass on the 17th, but a worker attempt started on the 20th.
+    ['support-intake-routine', durableLastServedMs(doc(['2026-09-17T09:00:00Z'], ['2026-09-20T09:00:00Z']))],
+    ['thread-review-c15-agent-sql-composition', durableLastServedMs(doc(['2026-09-17T22:20:06Z']))],
+  ]);
+  const priority = new Map([...served.keys()].map((slug) => [slug, priorityRank('normal')]));
+  const alphabetical = [...served.keys()].sort();
+  assert.deepEqual(
+    alphabetical.sort(byPriorityThenFairness(priority, served)),
+    ['thread-review-c15-agent-sql-composition', 'support-intake-routine', 'evals-health', 'daily-engineering-update'],
+  );
+  assert.equal(durableLastServedMs(doc([])), 0, 'a stream never served ranks first');
 });
