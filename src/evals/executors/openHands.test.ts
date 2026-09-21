@@ -10,6 +10,7 @@ import {
   OPENHANDS_AGENT_SERVER_IMAGE,
   OpenHandsEvalExecutor,
   type CommandRunner,
+  type OpenHandsExecutorOptions,
 } from './openHands.js';
 
 interface SeenFetch {
@@ -170,6 +171,9 @@ describe('OpenHands eval executor', () => {
     assert.ok(dockerRun.args.includes('--rm'));
     assert.ok(dockerRun.args.includes('--detach'));
     assert.ok(dockerRun.args.includes(OPENHANDS_AGENT_SERVER_IMAGE));
+    // Container root is the runner's own uid under rootless Docker, so the
+    // workspace never collects files the runner cannot modify.
+    assert.deepEqual(valuesAfter(dockerRun.args, '--user'), ['0']);
     assert.ok(valuesAfter(dockerRun.args, '--label').includes('weaver.executor=openhands'));
     assert.ok(valuesAfter(dockerRun.args, '--label').includes(`weaver.owner_pid=${process.pid}`));
     assert.ok(valuesAfter(dockerRun.args, '--label').some((label) => label.startsWith('weaver.owner_host=')));
@@ -260,7 +264,7 @@ describe('OpenHands eval executor', () => {
       modelRequested: 'anthropic/claude-sonnet-4-5-20250929',
       providerResolved: 'anthropic',
       modelResolved: 'anthropic/claude-sonnet-4-5-20250929',
-      harnessVersion: 'openhands-agent-server-1.41.0-weaver.5',
+      harnessVersion: 'openhands-agent-server-1.41.0-weaver.6',
       isolation: 'agent-server',
       startedAt: '1970-01-01T00:00:01.000Z',
       endedAt: '1970-01-01T00:00:01.004Z',
@@ -278,6 +282,61 @@ describe('OpenHands eval executor', () => {
       terminalReason: 'completed',
       error: null,
     });
+  });
+
+  it('runs the agent server as container root under a memory ceiling from WEAVER_WORKER_MEMORY_LIMIT', async () => {
+    const saved = process.env.WEAVER_WORKER_MEMORY_LIMIT;
+    delete process.env.WEAVER_WORKER_MEMORY_LIMIT;
+    try {
+      const unset = await dockerRunArgs({});
+      assert.deepEqual(valuesAfter(unset, '--user'), ['0']);
+      assert.deepEqual(valuesAfter(unset, '--memory'), ['4g']);
+      assert.deepEqual(valuesAfter(unset, '--memory-swap'), ['4g']);
+      // Every Docker flag precedes the image; what follows it is the server's.
+      assert.ok(unset.indexOf('--memory-swap') < unset.indexOf(OPENHANDS_AGENT_SERVER_IMAGE));
+      assert.ok(unset.indexOf('--user') < unset.indexOf(OPENHANDS_AGENT_SERVER_IMAGE));
+
+      process.env.WEAVER_WORKER_MEMORY_LIMIT = '3072m';
+      const fromEnv = await dockerRunArgs({});
+      assert.deepEqual(valuesAfter(fromEnv, '--memory'), ['3072m']);
+      assert.deepEqual(valuesAfter(fromEnv, '--memory-swap'), ['3072m']);
+
+      const optedOut = await dockerRunArgs({ memoryLimit: 'off' });
+      assert.deepEqual(valuesAfter(optedOut, '--memory'), []);
+      assert.deepEqual(valuesAfter(optedOut, '--memory-swap'), []);
+      assert.deepEqual(valuesAfter(optedOut, '--user'), ['0']);
+    } finally {
+      if (saved === undefined) delete process.env.WEAVER_WORKER_MEMORY_LIMIT;
+      else process.env.WEAVER_WORKER_MEMORY_LIMIT = saved;
+    }
+  });
+
+  it('refuses an invalid memory limit before starting a bridge or container', async () => {
+    let sideEffects = 0;
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
+      memoryLimit: '4 gigs',
+      startSubmitBridge: async () => {
+        sideEffects += 1;
+        throw new Error('must not start');
+      },
+      startProviderProxy: async () => {
+        sideEffects += 1;
+        throw new Error('must not start');
+      },
+      runCommand: async () => {
+        sideEffects += 1;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+      now: () => 1_000,
+    });
+
+    const outcome = await executor.execute(request());
+
+    assert.equal(sideEffects, 0);
+    assert.match(outcome.error ?? '', /WEAVER_WORKER_MEMORY_LIMIT="4 gigs" is not a Docker memory size/);
+    assert.equal(executor.lastTelemetry()?.terminalReason, 'unsupported');
   });
 
   it('refuses a non-IPv4 host gateway before starting a bridge or container', async () => {
@@ -877,6 +936,43 @@ describe('OpenHands eval executor', () => {
     }
   });
 });
+
+/** The exact `docker run` argv of one otherwise-successful run. */
+async function dockerRunArgs(options: Partial<OpenHandsExecutorOptions>): Promise<string[]> {
+  const seen: string[][] = [];
+  const executor = new OpenHandsEvalExecutor({
+    apiKey: 'provider-secret',
+    baseUrl: 'https://provider.example/v1',
+    runCommand: async (_command, args) => {
+      seen.push([...args]);
+      return args[0] === 'port'
+        ? { exitCode: 0, stdout: '127.0.0.1:49160\n', stderr: '' }
+        : { exitCode: 0, stdout: '', stderr: '' };
+    },
+    fetch: (async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.endsWith('/health')) return response({ status: 'ok' });
+      if (url.endsWith('/api/conversations') && init.method === 'POST') return response({ id: 'conversation-limits' });
+      if (url.endsWith('/api/conversations/conversation-limits')) {
+        return response({ id: 'conversation-limits', execution_status: 'finished' });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof globalThis.fetch,
+    startSubmitBridge: async () => ({
+      url: 'http://host.docker.internal:41882/mcp', token: 'bridge-secret', async close() {},
+    }),
+    startProviderProxy: async () => fakeProviderProxy(),
+    gitIdentity: async () => null,
+    sleep: async () => undefined,
+    now: increasingClock(),
+    ...options,
+  });
+  const outcome = await executor.execute(request());
+  assert.equal(outcome.error, undefined);
+  const run = seen.find((args) => args[0] === 'run');
+  assert.ok(run, 'docker run was not issued');
+  return run;
+}
 
 function request(): WorkerExecutionRequest {
   return {

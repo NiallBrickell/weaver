@@ -23,6 +23,7 @@ import { hostname, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { gitHubAppCommitIdentity, type GitCommitIdentity } from '../githubApp.js';
 import { loadExecutorSecrets, redactSecrets } from '../secrets.js';
+import { WORKER_MEMORY_LIMIT_ENV, workerMemoryLimitArgs } from './containerLimits.js';
 import { startMcpRelay, type McpRelay } from './mcpRelay.js';
 import {
   startProviderProxy,
@@ -43,7 +44,7 @@ export const OPENHANDS_AGENT_SERVER_IMAGE =
   'ghcr.io/openhands/agent-server:1.41.0-python';
 
 const AGENT_SERVER_PORT = '8000/tcp';
-const HARNESS_VERSION = 'openhands-agent-server-1.41.0-weaver.5';
+const HARNESS_VERSION = 'openhands-agent-server-1.41.0-weaver.6';
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENHANDS_TOOL_MODULES = {
   terminal: 'openhands.tools.terminal.definition',
@@ -76,6 +77,11 @@ export interface OpenHandsExecutorOptions {
    * hosted runner installs its private interface address explicitly.
    */
   hostGatewayIp?: string;
+  /**
+   * The operator's raw `WEAVER_WORKER_MEMORY_LIMIT` (unset → the 4g default;
+   * see containerLimits.ts). Validated per run, before any side effect.
+   */
+  memoryLimit?: string;
   dockerCommand?: string;
   fetch?: typeof globalThis.fetch;
   runCommand?: CommandRunner;
@@ -156,6 +162,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
   private readonly apiKeyOverride: string | undefined;
   private readonly baseUrlOverride: string | undefined;
   private readonly hostGatewayIp: string | undefined;
+  private readonly memoryLimit: string | undefined;
   private readonly dockerCommand: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly runCommand: CommandRunner;
@@ -175,6 +182,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
     this.apiKeyOverride = options.apiKey;
     this.baseUrlOverride = options.baseUrl;
     this.hostGatewayIp = options.hostGatewayIp ?? process.env.WEAVER_OPENHANDS_HOST_GATEWAY_IP;
+    this.memoryLimit = options.memoryLimit ?? process.env[WORKER_MEMORY_LIMIT_ENV];
     this.dockerCommand = options.dockerCommand ?? 'docker';
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.runCommand = options.runCommand ?? runCommand;
@@ -229,6 +237,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
     let workspacePlan: WorkspaceMountPlan | null = null;
     let containerStarted = false;
     let containerAttempted = false;
+    let memoryArgs: string[] = [];
     let agentServerUrl: string | null = null;
     let sessionApiKey: string | null = null;
     let workerEnvFile: WorkerEnvFile | null = null;
@@ -245,6 +254,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
 
     try {
       this.validateRequest(req);
+      memoryArgs = this.memoryLimitArgs();
       workspacePlan = planWorkspaceMounts({
         cwd: resolve(req.cwd ?? process.cwd()),
         additionalDirectories: req.additionalDirectories,
@@ -368,6 +378,22 @@ export class OpenHandsExecutor implements WorkerExecutor {
             `weaver.owner_pid=${process.pid}`,
             '--label',
             `weaver.owner_host=${CONTAINER_OWNER_HOST}`,
+            // The image runs as its own `openhands` user (uid 10001). Under
+            // rootless Docker a non-root container uid maps into the runner's
+            // subordinate range (weaver's subuid 165536 + 10001 - 1 = host
+            // uid 175536), so everything the worker wrote into the
+            // bind-mounted workspace — commits, .git objects, whole checkouts
+            // — came out owned by a uid the runner cannot modify; by 2026-09
+            // the fleet's checkout held 367 such .git entries and git refused
+            // the repo. Container root IS the runner's own host uid, exactly
+            // as the Claude container runs. Nothing in the 1.41.0 image needs
+            // the openhands user: its home holds only shell dotfiles, HOME
+            // falls back to /root from the image's passwd, and the server's
+            // own state (~/.openhands, the OH_* paths under /tmp) is written
+            // there as root.
+            '--user',
+            '0',
+            ...memoryArgs,
             '--publish',
             `127.0.0.1::${AGENT_SERVER_PORT.split('/')[0]}`,
             '--add-host',
@@ -621,6 +647,15 @@ export class OpenHandsExecutor implements WorkerExecutor {
       );
     }
     validateWorkerVisibleEnv(req.workerVisibleEnv ?? {});
+  }
+
+  /** Host misconfiguration, like a bad gateway address: refuse the launch. */
+  private memoryLimitArgs(): string[] {
+    try {
+      return workerMemoryLimitArgs(this.memoryLimit);
+    } catch (caught) {
+      throw new UnsupportedOpenHandsRequest(caught instanceof Error ? caught.message : String(caught));
+    }
   }
 
   private providerConfiguration(model: string): ProviderConfiguration {

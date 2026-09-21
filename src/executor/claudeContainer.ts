@@ -43,6 +43,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import type { SpawnOptions, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
+import { WORKER_MEMORY_LIMIT_ENV, workerMemoryLimitArgs } from './containerLimits.js';
 import { OPENHANDS_AGENT_SERVER_IMAGE, rewriteLoopbackHostsForContainer } from './openHands.js';
 
 export interface ClaudeContainerConfig {
@@ -53,6 +54,11 @@ export interface ClaudeContainerConfig {
   /** The VM's private IPv4, advertised as host.docker.internal (same rule as
    * OpenHands: rootless Docker's generic host-gateway is its inner bridge). */
   hostGatewayIp?: string;
+  /** The operator's raw `WEAVER_WORKER_MEMORY_LIMIT` (unset → the 4g default).
+   * Kept raw here and validated when a run is planned, so a typo fails that
+   * run's launch with a clear error instead of the runner's executor
+   * selection (see containerLimits.ts). */
+  memoryLimit?: string;
 }
 
 export const CLAUDE_CONTAINER_LABEL = 'weaver.executor=local-sdk-container';
@@ -72,6 +78,7 @@ export function claudeContainerFromEnv(env: NodeJS.ProcessEnv = process.env): Cl
     image: env.WEAVER_LOCAL_SDK_CONTAINER_IMAGE || OPENHANDS_AGENT_SERVER_IMAGE,
     dockerCommand: env.WEAVER_LOCAL_SDK_CONTAINER_DOCKER || 'docker',
     ...(env.WEAVER_OPENHANDS_HOST_GATEWAY_IP ? { hostGatewayIp: env.WEAVER_OPENHANDS_HOST_GATEWAY_IP } : {}),
+    ...(env[WORKER_MEMORY_LIMIT_ENV] !== undefined ? { memoryLimit: env[WORKER_MEMORY_LIMIT_ENV] } : {}),
   };
 }
 
@@ -134,6 +141,7 @@ export function planContainerRun(
     );
   }
   if (!isAbsolute(run.cwd)) throw new Error(`container worker cwd must be absolute, got ${JSON.stringify(run.cwd)}`);
+  const memoryArgs = workerMemoryLimitArgs(config.memoryLimit);
 
   const env: Record<string, string> = {};
   const forwardedNames: string[] = [];
@@ -170,6 +178,9 @@ export function planContainerRun(
     '--label', CLAUDE_CONTAINER_LABEL,
     '--label', `weaver.owner_pid=${process.pid}`,
     '--user', '0',
+    // A runaway build is OOM-killed in this container's cgroup, never the
+    // host (the 2026-09-18 freeze; containerLimits.ts).
+    ...memoryArgs,
     '--add-host', `host.docker.internal:${config.hostGatewayIp ?? 'host-gateway'}`,
     '--volume', `${binaryDir}:${binaryDir}:ro`,
     '--volume', `${run.cwd}:${run.cwd}`,
