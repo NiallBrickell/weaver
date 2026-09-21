@@ -12,6 +12,7 @@ import {
   fleetRecoveredSlugs,
   infraBackoffSlugs,
   pendingManagerNoticeKeys,
+  probeHoldsToRelease,
   releaseFleetRecovered,
   RunnerDispatchTracker,
   runnerDispatchSignature,
@@ -21,6 +22,7 @@ import {
 import { arrive, createWorkstream, listRunnerPresence, listWorkstreamHeads, load, type RunnerOutput } from './store.js';
 import type { InfrastructureWait } from './types.js';
 import { tick } from './engine.js';
+import { __setWorkerExecutorFactoryForTests } from './worker.js';
 import { adoptFleetSeatWait, retryCapacityNow } from './capacity.js';
 import { readFleetCapacity } from './fleetCapacity.js';
 
@@ -820,7 +822,10 @@ const FLEET_ENV = ['WEAVER_COORDINATOR_MODEL', 'WEAVER_COORDINATOR_EXECUTOR', 'W
 async function withSingleSeatCoordinator<T>(fn: () => Promise<T>): Promise<T> {
   const saved = Object.fromEntries(FLEET_ENV.map((name) => [name, process.env[name]]));
   for (const name of FLEET_ENV) delete process.env[name];
-  process.env.WEAVER_COORDINATOR_MODEL = 'claude-fable-5';
+  // A Codex seat: the runner's credential probe is Claude-only by design, so
+  // no test here can ever send a real model call through it.
+  process.env.WEAVER_COORDINATOR_EXECUTOR = 'codex-sdk';
+  process.env.WEAVER_COORDINATOR_MODEL = 'gpt-5.5';
   process.env.WEAVER_COORDINATOR_FALLBACKS = '';
   try {
     return await fn();
@@ -832,7 +837,8 @@ async function withSingleSeatCoordinator<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-const FABLE = { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' } as const;
+const SEAT = { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5' } as const;
+const SEAT_KEY = 'codex-sdk:openai:gpt-5.5';
 const GLM = { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' } as const;
 
 function limitAt(target: { executor: string; provider: string; model: string }, detectedMs: number, retryMs: number, sourceId: string): InfrastructureWait {
@@ -874,7 +880,7 @@ function immediateWake(d: Awaited<ReturnType<typeof load>>, id: string): void {
 const quietLoop = {
   intervalMs: 5,
   concurrency: 8,
-  executorCapabilities: new Set(['local-sdk', 'pi']),
+  executorCapabilities: new Set(['local-sdk', 'codex-sdk', 'pi']),
   sourceStale: () => false,
   loadSample: () => ({ load1: 0.1, cores: 8 }),
   memorySample: () => undefined,
@@ -926,11 +932,17 @@ test('the deferral wake retriggers the dispatch signature exactly at the borrowe
   await withSingleSeatCoordinator(async () => {
     await make('deferred');
     await arrive('deferred', (d) => immediateWake(d, 'wake_org'));
-    const borrowed = { ...limitAt(FABLE, -60_000, 20 * 60_000, 'pass_elsewhere'), observedIn: 'limited-elsewhere' };
-    await tick('deferred', {
-      fleetCapacity: new Map([['local-sdk:anthropic:claude-fable-5', borrowed]]),
-      coordinatorExecutor: { id: 'local-sdk', async execute() { throw new Error('parked seat launched'); } },
-    });
+    const borrowed = { ...limitAt(SEAT, -60_000, 20 * 60_000, 'pass_elsewhere'), observedIn: 'limited-elsewhere' };
+    // Stub executors on both lanes: this real tick can never reach a model.
+    __setWorkerExecutorFactoryForTests(() => ({ async execute() { throw new Error('worker launched'); } }));
+    try {
+      await tick('deferred', {
+        fleetCapacity: new Map([[SEAT_KEY, borrowed]]),
+        coordinatorExecutor: { id: 'codex-sdk', async execute() { throw new Error('parked seat launched'); } },
+      });
+    } finally {
+      __setWorkerExecutorFactoryForTests();
+    }
     const doc = await load('deferred');
     assert.equal(doc.passes.length, 0);
     const runner = { id: 'mac-primary', placementOnly: false } as const;
@@ -978,7 +990,7 @@ test('a borrowed wait whose source retried at its origin is released for the one
 test('three streams due on an expired, unrefuted seat admit ONE probe tick until its outcome lands', async () => {
   await withSingleSeatCoordinator(async () => {
     await make('lapsed-source');
-    await arrive('lapsed-source', (d) => ownWait(d, limitAt(FABLE, -20 * 60_000, -60_000, 'pass_lapsed')));
+    await arrive('lapsed-source', (d) => ownWait(d, limitAt(SEAT, -20 * 60_000, -60_000, 'pass_lapsed')));
     for (const slug of ['probe-a', 'probe-b', 'probe-c']) {
       await make(slug);
       await arrive(slug, (d) => immediateWake(d, `wake_${slug}`));
@@ -1005,7 +1017,7 @@ test('three streams due on an expired, unrefuted seat admit ONE probe tick until
       const probe = probeCalls()[0]!;
 
       // The probe's pass got through: its success refutes the expired wait.
-      await arrive(probe, (d) => { d.passes.push(completedPass(FABLE, 'pass_probe')); });
+      await arrive(probe, (d) => { d.passes.push(completedPass(SEAT, 'pass_probe')); });
       releaseProbe();
       await waitFor(() => new Set(probeCalls()).size === 3, 'the held streams to dispatch');
       assert.deepEqual([...new Set(probeCalls())].sort(), ['probe-a', 'probe-b', 'probe-c'],
@@ -1016,4 +1028,97 @@ test('three streams due on an expired, unrefuted seat admit ONE probe tick until
       await loop;
     }
   });
+});
+
+async function probeHoldScenario(
+  duringHold: (probe: string) => Promise<void>,
+): Promise<{ probe: string; snapshots: Map<string, Array<ReadonlyMap<string, InfrastructureWait> | undefined>>; probeSettled: boolean }> {
+  await make('lapsed-source');
+  await arrive('lapsed-source', (d) => ownWait(d, limitAt(SEAT, -20 * 60_000, -60_000, 'pass_lapsed')));
+  for (const slug of ['probe-a', 'probe-b', 'probe-c']) {
+    await make(slug);
+    await arrive(slug, (d) => immediateWake(d, `wake_${slug}`));
+  }
+  const snapshots = new Map<string, Array<ReadonlyMap<string, InfrastructureWait> | undefined>>();
+  let probe: string | undefined;
+  let probeSettled = false;
+  let releaseProbe!: () => void;
+  const probeHeld = new Promise<void>((resolve) => { releaseProbe = resolve; });
+  const abort = new AbortController();
+  const loop = runLoop({
+    ...quietLoop,
+    probeHoldMs: 40,
+    signal: abort.signal,
+    tickFn: async (slug, opts) => {
+      snapshots.set(slug, [...(snapshots.get(slug) ?? []), opts?.fleetCapacity]);
+      if (slug.startsWith('probe-') && probe === undefined) {
+        // The probe's worker keeps running long past the hold window.
+        probe = slug;
+        await probeHeld;
+        probeSettled = true;
+      }
+      return { cycles: 1, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
+    },
+  });
+  try {
+    await waitFor(() => probe !== undefined, 'the probe tick');
+    await duringHold(probe!);
+    // Well past the 40ms hold window.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return { probe: probe!, snapshots, probeSettled };
+  } finally {
+    releaseProbe();
+    abort.abort();
+    await loop;
+  }
+}
+
+test('a probe still running past the hold window with no new limit releases the rest', async () => {
+  await withSingleSeatCoordinator(async () => {
+    const { probe, snapshots, probeSettled } = await probeHoldScenario(async () => {});
+    assert.equal(probeSettled, false, 'the probe tick is still in flight');
+    const others = ['probe-a', 'probe-b', 'probe-c'].filter((slug) => slug !== probe);
+    for (const slug of others) {
+      const handed = snapshots.get(slug);
+      assert.ok(handed?.length, `${slug} is admitted once the seat is treated as serving`);
+      assert.equal(handed![0]?.has(SEAT_KEY), false, 'and launches, holding no wait for the seat');
+    }
+  });
+});
+
+test('a newer limit recorded by the probe re-defers the rest instead of releasing them', async () => {
+  await withSingleSeatCoordinator(async () => {
+    const { probe, snapshots, probeSettled } = await probeHoldScenario(async (probing) => {
+      // The probe's launch was rejected: its backoff lands within seconds.
+      await arrive(probing, (d) => ownWait(d, limitAt(SEAT, 0, 30 * 60_000, 'pass_probe_rejected')));
+    });
+    assert.equal(probeSettled, false);
+    for (const slug of ['probe-a', 'probe-b', 'probe-c'].filter((candidate) => candidate !== probe)) {
+      for (const snapshot of snapshots.get(slug) ?? []) {
+        assert.equal(snapshot?.get(SEAT_KEY)?.sourceId, 'pass_probe_rejected',
+          `${slug} may only tick to re-defer on the probe's new limit, never with the seat treated as serving`);
+      }
+    }
+  });
+});
+
+test('a probe hold ends early only when its window passes with no newer limit on that exact seat', () => {
+  const key = SEAT_KEY;
+  const probed = { ...limitAt(SEAT, -20 * 60_000, -60_000, 'pass_lapsed'), observedIn: 'lapsed-source' };
+  const holds = new Map([[key, { slug: 'probe-a', admittedAt: 1_000, detectedAt: probed.detectedAt }]]);
+  const view = (active: InfrastructureWait[], expired: InfrastructureWait[]) => ({
+    active: new Map(active.map((wait) => [key, wait])),
+    expired: new Map(expired.map((wait) => [key, wait])),
+  });
+  // Inside the window nothing is released, whatever the fleet shows.
+  assert.deepEqual(probeHoldsToRelease(holds, view([], [probed]), 1_000 + 299_999, 300_000), []);
+  // Past it, silence on the same expired wait means the seat is serving...
+  assert.deepEqual(probeHoldsToRelease(holds, view([], [probed]), 1_000 + 300_000, 300_000), [key]);
+  // ...and so does a success that refuted it outright.
+  assert.deepEqual(probeHoldsToRelease(holds, view([], []), 1_000 + 300_000, 300_000), [key]);
+  // A newer limit — still active, or already expired — keeps the hold.
+  const rejected = { ...limitAt(SEAT, -1_000, 30 * 60_000, 'pass_probe_rejected'), observedIn: 'probe-a' };
+  assert.deepEqual(probeHoldsToRelease(holds, view([rejected], []), 1_000 + 300_000, 300_000), []);
+  const shortRejection = { ...rejected, retryAt: new Date(Date.now() - 1).toISOString() };
+  assert.deepEqual(probeHoldsToRelease(holds, view([], [shortRejection]), 1_000 + 300_000, 300_000), []);
 });

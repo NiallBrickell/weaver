@@ -27,7 +27,7 @@ import { runCoordinatorPass } from './coordinator.js';
 import { rejectSend } from './humanActs.js';
 import { providerSend, readLedger } from './world.js';
 import { arrive, createWorkstream, heartbeatRunner, load, newId, readArtifact, writeArtifact } from './store.js';
-import { runWorker } from './worker.js';
+import { __setWorkerExecutorFactoryForTests, runWorker } from './worker.js';
 import { setExecutorSecret, setSecret } from './secrets.js';
 import { virtualNow } from './clock.js';
 import type { Assignment, InfrastructureWait } from './types.js';
@@ -2024,16 +2024,35 @@ test('an orphaned running pass (no live lease) is swept to no_finish and the str
 const FLEET_ENV = [
   'WEAVER_COORDINATOR_MODEL', 'WEAVER_COORDINATOR_EXECUTOR', 'WEAVER_COORDINATOR_FALLBACK_MODEL',
   'WEAVER_COORDINATOR_FALLBACK_EXECUTOR', 'WEAVER_COORDINATOR_FALLBACKS', 'WEAVER_EXECUTOR',
-  'WEAVER_WORKER_MODEL', 'WEAVER_WORKER_FALLBACKS', 'WEAVER_RUNNER_EXECUTORS',
+  'WEAVER_WORKER_MODEL', 'WEAVER_WORKER_FALLBACKS', 'WEAVER_RUNNER_EXECUTORS', 'WEAVER_WORKSPACE_ROOT',
 ] as const;
 
-async function withFleetEnv<T>(vars: Partial<Record<typeof FLEET_ENV[number], string>>, fn: () => Promise<T>): Promise<T> {
+/** Every fleet test runs with STUB worker executors installed: a regression in
+ * the park under test can launch a worker, but never a real model. Each
+ * launch is recorded with the executor capacity routing chose for it. */
+async function withFleetEnv<T>(
+  vars: Partial<Record<typeof FLEET_ENV[number], string>>,
+  fn: (launches: Array<{ executor: string; model: string }>) => Promise<T>,
+): Promise<T> {
   const saved = Object.fromEntries(FLEET_ENV.map((name) => [name, process.env[name]]));
   for (const name of FLEET_ENV) delete process.env[name];
-  Object.assign(process.env, vars);
+  Object.assign(process.env, { WEAVER_WORKSPACE_ROOT: path.join(process.env.WEAVER_HOME!, 'workspaces') }, vars);
+  const launches: Array<{ executor: string; model: string }> = [];
+  __setWorkerExecutorFactoryForTests((name) => ({
+    id: name,
+    async execute(req) {
+      launches.push({ executor: name, model: req.model });
+      await req.submit.submitResult({
+        summary: 'Stub worker result.',
+        artifact: { title: 'Stub', kind: 'report', file_name: 'stub.md', content: '# Stub\n\nDeterministic stub output.' },
+      });
+      return { costUsd: 0 };
+    },
+  }));
   try {
-    return await fn();
+    return await fn(launches);
   } finally {
+    __setWorkerExecutorFactoryForTests();
     for (const name of FLEET_ENV) {
       if (saved[name] === undefined) delete process.env[name];
       else process.env[name] = saved[name];
@@ -2163,7 +2182,7 @@ test('a fleet-parked coordinator primary sends the pass straight to its fallback
 });
 
 test('queued work whose whole worker chain is fleet-parked is not launched and waits on ONE deferral wake', async () => {
-  await withFleetEnv({ WEAVER_WORKER_FALLBACKS: 'pi:zai-coding-plan/glm-5.3' }, async () => {
+  await withFleetEnv({ WEAVER_WORKER_FALLBACKS: 'codex-sdk:gpt-5.5' }, async (launches) => {
     const slug = 'fleet-parked-worker';
     const assignment = asg({ id: 'asg_fleet' });
     const chain = workerTargetsForAssignment(assignment);
@@ -2191,6 +2210,7 @@ test('queued work whose whole worker chain is fleet-parked is not launched and w
     });
 
     const report = await tick(slug, { fleetCapacity: fleet, coordinatorExecutor: NO_LAUNCH });
+    assert.deepEqual(launches, []);
     assert.deepEqual(report.workersRun, []);
     assert.equal(report.passes.length, 0, "the worker's own due permit is not coordinator work");
     const doc = await load(slug);
@@ -2212,13 +2232,13 @@ test('queued work whose whole worker chain is fleet-parked is not launched and w
   });
 });
 
-test('a fleet-parked worker primary routes queued work to the free fallback seat without a doomed attempt', async () => {
-  await withFleetEnv({ WEAVER_WORKER_FALLBACKS: 'pi:zai-coding-plan/glm-5.3' }, async () => {
+test('a fleet-parked worker primary launches queued work on the free fallback seat — no doomed attempt', async () => {
+  await withFleetEnv({ WEAVER_WORKER_FALLBACKS: 'codex-sdk:gpt-5.5' }, async (launches) => {
     const slug = 'fleet-parked-worker-primary';
     const assignment = asg({ id: 'asg_fleet' });
     const chain = workerTargetsForAssignment(assignment);
     const fallback = chain.at(-1)!;
-    assert.equal(fallback.executor, 'pi');
+    assert.deepEqual(fallback, { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5' });
     // Every seat before the operator's fallback is limited somewhere else.
     const fleet = fleetOf(...chain.slice(0, -1).map((target, index) => ({
       ...borrowed(target, 30, `run_limited_${index}`), source: 'worker' as const,
@@ -2227,14 +2247,16 @@ test('a fleet-parked worker primary routes queued work to the free fallback seat
     // Before the park this stream would launch its primary seat.
     assert.deepEqual(selectWorkerCapacityTarget(await load(slug), assignment, virtualNow().toISOString()), chain[0]);
 
-    // A host that can launch neither seat keeps the test model-free; the park
-    // alone decides which seat the next launch is routed to.
-    await tick(slug, { fleetCapacity: fleet, executorCapabilities: new Set(['openhands']), coordinatorExecutor: NO_LAUNCH });
+    const report = await tick(slug, { fleetCapacity: fleet, coordinatorExecutor: NO_LAUNCH, maxPasses: 0 });
+    assert.deepEqual(report.workersRun, ['asg_fleet']);
+    assert.deepEqual(launches, [{ executor: 'codex-sdk', model: 'gpt-5.5' }], 'exactly one launch, on the free fallback');
     const doc = await load(slug);
-    assert.deepEqual(selectWorkerCapacityTarget(doc, doc.assignments[0]!, virtualNow().toISOString()), fallback);
-    assert.deepEqual(runnableAssignments(doc, new Set(['pi'])), ['asg_fleet'], 'the fallback host launches it now');
-    assert.deepEqual(runnableAssignments(doc, new Set(['local-sdk'])), [], 'the primary host does not rediscover the limit');
-    assert.deepEqual(doc.assignments[0]!.attempts, []);
+    const attempts = doc.assignments[0]!.attempts;
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0]!.executor, 'codex-sdk');
+    assert.equal(attempts[0]!.model, 'gpt-5.5');
+    assert.equal(attempts[0]!.infrastructure, undefined, 'no backoff was spent rediscovering the primary limit');
+    assert.equal(doc.assignments[0]!.state, 'awaiting_review');
     assert.equal(deferralWakes(doc).length, 0, 'a free seat means nothing is deferred');
     assert.equal(capacityBackoffFor(doc, chain[0]!)!.wait.observedIn, 'limited-elsewhere');
   });

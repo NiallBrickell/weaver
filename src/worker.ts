@@ -111,11 +111,24 @@ export function workerExceptionReason(
  * routed through Pilot supervision.
  */
 export function selectExecutor(name = workerExecutorName()): WorkerExecutor {
+  if (testWorkerExecutorFactory) return testWorkerExecutorFactory(name);
   if (name === 'local-sdk') return new LocalSdkExecutor({ container: claudeContainerFromEnv() });
   if (name === 'codex-sdk') return new CodexExecutor();
   if (name === 'openhands') return new OpenHandsExecutor();
   if (name === 'pi') return new PiExecutor();
   throw new Error(`unknown worker executor '${name}' from WEAVER_EXECUTOR/WEAVER_ACTION_EXECUTOR — supported: local-sdk, codex-sdk, openhands, pi`);
+}
+
+let testWorkerExecutorFactory: ((name: string) => WorkerExecutor) | undefined;
+
+/** Test seam: while set, every routed worker launch gets this factory's
+ * executor instead of a real substrate, so a deterministic test that drives a
+ * full tick through capacity routing can never reach a model — structurally,
+ * not because the routing under test happens to hold the launch back. The
+ * routed executor name is passed through so the test can see which seat was
+ * chosen. Pass nothing to restore real executors. */
+export function __setWorkerExecutorFactoryForTests(factory?: (name: string) => WorkerExecutor): void {
+  testWorkerExecutorFactory = factory;
 }
 
 /**

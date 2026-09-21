@@ -44,6 +44,7 @@ import {
   clearCapacityBackoff,
   fleetSeatView,
   isClaudeSdkWait,
+  type FleetSeatView,
   resolveCapacityAttention,
   retryCapacityTargetNow,
 } from './capacity.js';
@@ -664,6 +665,9 @@ export interface RunnerOptions {
   /** Revision-keyed document cache; injectable only for deterministic runner
    * tests that count store reads. */
   workstreamCache?: RunnerWorkstreamCache;
+  /** Single-flight probe hold window; injectable only for deterministic
+   * runner tests. Defaults to PROBE_HOLD_MS. */
+  probeHoldMs?: number;
 }
 
 /**
@@ -880,6 +884,38 @@ export type RunLoopExit = 'aborted' | 'source-stale' | 'store-unreachable';
  */
 export const RUNNER_STORE_OUTAGE_EXIT_MS = 300_000;
 
+/** One in-flight probe tick's claim on an expired, unrefuted seat. */
+export interface SeatProbeHold {
+  slug: string;
+  /** Wall ms when the probe tick was admitted. */
+  admittedAt: number;
+  /** Detection time of the expired wait the probe is testing. */
+  detectedAt: string;
+}
+
+/** Probe holds to end early: the hold window has elapsed and the fleet shows
+ * no wait for that exact target detected after the one being probed. A newer
+ * wait means the probe was rejected — its hold stays until the tick settles,
+ * and the others re-defer to the new limit through their own park. */
+export function probeHoldsToRelease(
+  holds: ReadonlyMap<string, SeatProbeHold>,
+  seats: FleetSeatView,
+  nowMs: number,
+  holdMs: number,
+): string[] {
+  return [...holds].flatMap(([key, hold]) => {
+    if (nowMs - hold.admittedAt < holdMs) return [];
+    const latest = seats.active.get(key) ?? seats.expired.get(key);
+    return latest && latest.detectedAt > hold.detectedAt ? [] : [key];
+  });
+}
+
+/** How long one probe tick may hold an expired, unrefuted seat before the
+ * runner treats the seat as serving. A rejection on the limit error writes its
+ * new wait within seconds, so five quiet minutes is conclusive, while a worker
+ * probe that got through can otherwise hold the seat for its 40-minute wall. */
+export const PROBE_HOLD_MS = 5 * 60_000;
+
 /** The poll loop. Headless runners omit `signal`; embedded dashboards own one. */
 export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   assertRunnerEnabled();
@@ -914,7 +950,17 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   // success — lands in its document and decides the rest on a later poll.
   // Runner memory only: admission control, not truth. After a restart the
   // worst case is one herd bounded by the concurrency cap.
-  const seatProbes = new Map<string, string>();
+  //
+  // The hold ends when the probe's tick settles OR after probeHoldMs with no
+  // newer wait for that exact target, whichever is first. A rejected launch
+  // writes its backoff within seconds, as the attempt or pass ends on the
+  // limit error; a worker probe that got through can run for 40 minutes.
+  // So silence past the hold window means the seat is serving: the rest are
+  // admitted while the probe keeps running (`clearedSeats` remembers which
+  // expired wait that silence disproved). A newer wait instead re-defers them.
+  const probeHoldMs = opts.probeHoldMs ?? PROBE_HOLD_MS;
+  const seatProbes = new Map<string, SeatProbeHold>();
+  const clearedSeats = new Map<string, string>();
   // Fairness: slots are granted least-recently-ticked first. A stable
   // (alphabetical) scan with a concurrency break starves every stream ranked
   // below the cap the moment enough earlier streams exist — sentry-sweep sat
@@ -1069,6 +1115,19 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       // holds — zero extra store reads (never loop load() over the fleet).
       const seats = fleetSeatView(docs.values(), virtual.toISOString());
       const probeKeys = new Map<string, string[]>();
+      for (const key of probeHoldsToRelease(seatProbes, seats, Date.now(), probeHoldMs)) {
+        const hold = seatProbes.get(key)!;
+        seatProbes.delete(key);
+        clearedSeats.set(key, hold.detectedAt);
+        log(`[run] ${key}: probe ${hold.slug} recorded no new limit within ${Math.round(probeHoldMs / 1000)}s — seat treated as serving, releasing the rest`);
+      }
+      // A cleared seat stays cleared only for the exact expired wait its probe
+      // outlived; a newer wait, a refutation, or a recovery makes it moot.
+      for (const [key, detectedAt] of clearedSeats) {
+        if (seats.expired.get(key)?.detectedAt !== detectedAt) clearedSeats.delete(key);
+      }
+      const probeTargets = (keys: Iterable<string>): string[] =>
+        [...keys].filter((key) => seats.expired.has(key) && !clearedSeats.has(key));
       for (const [slug, doc] of docs) {
         if (inFlight.has(slug)) continue;
         const ws = doc.workstream;
@@ -1078,8 +1137,7 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
         const signature = runnerDispatchSignature(doc, runner, presences, wallNow, virtual, managerDoc);
         if (!dispatches.shouldDispatch(slug, signature)) continue;
         if (seats.expired.size) {
-          const probes = [...fleetLaunchTargetKeys(doc, seats.active, runner, executorCapabilities, wallNow, virtual)]
-            .filter((key) => seats.expired.has(key));
+          const probes = probeTargets(fleetLaunchTargetKeys(doc, seats.active, runner, executorCapabilities, wallNow, virtual));
           // Held, not dispatched: the signature stays unacknowledged, so the
           // next poll re-evaluates this stream once the probe has landed.
           if (probes.some((key) => seatProbes.has(key))) continue;
@@ -1127,7 +1185,9 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
         // granted takes it, the other waits unacknowledged for its outcome.
         const probes = probeKeys.get(slug) ?? [];
         if (probes.some((key) => seatProbes.has(key))) continue;
-        for (const key of probes) seatProbes.set(key, slug);
+        for (const key of probes) {
+          seatProbes.set(key, { slug, admittedAt: Date.now(), detectedAt: seats.expired.get(key)!.detectedAt });
+        }
         inFlight.add(slug);
         grantedAt.set(slug, Date.now());
         lastTickedAt.set(slug, Date.now());
@@ -1162,7 +1222,7 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
             inFlight.delete(slug);
             grantedAt.delete(slug);
             for (const key of probes) {
-              if (seatProbes.get(key) === slug) seatProbes.delete(key);
+              if (seatProbes.get(key)?.slug === slug) seatProbes.delete(key);
             }
           });
       }
