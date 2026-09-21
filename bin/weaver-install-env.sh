@@ -14,7 +14,40 @@ executor_secrets_file="${WEAVER_INSTALL_EXECUTOR_SECRETS_FILE:-/home/weaver/stat
 executor_secrets_owner="${WEAVER_INSTALL_EXECUTOR_SECRETS_OWNER:-weaver:weaver}"
 worker_secrets_file="${WEAVER_INSTALL_WORKER_SECRETS_FILE:-/home/weaver/state/secrets.env}"
 worker_secrets_owner="${WEAVER_INSTALL_WORKER_SECRETS_OWNER:-weaver:weaver}"
+# `user:` is the account plus its login group.
+pilot_config_owner="${WEAVER_INSTALL_PILOT_CONFIG_OWNER:-weaver-pilot:}"
 env_dir="$(dirname "$env_file")"
+
+# The file the hosted Pilot reads its rules from, resolved exactly as Pilot
+# resolves it: PILOT_CONFIG, else $PILOT_HOME/pilot.toml, else
+# ~/.pilot/pilot.toml of the weaver-pilot account — taking PILOT_* from the
+# unit's Environment= settings. bin/weaver-gcp-preflight.sh carries the same
+# resolver to refuse a runner whose Pilot has no rules file; the gcpScript
+# test installs through this one and launches through that one, so the two
+# cannot drift apart unnoticed.
+hosted_pilot_config_path() {
+  local unit_env assignment pilot_config='' pilot_home='' home
+  local -a assignments=()
+  unit_env="$(systemctl show --property=Environment --value weaver-pilot.service 2>/dev/null || true)"
+  read -r -a assignments <<< "$unit_env" || true
+  for assignment in ${assignments[@]+"${assignments[@]}"}; do
+    assignment="${assignment#\"}"; assignment="${assignment%\"}"
+    case "$assignment" in
+      PILOT_CONFIG=?*) pilot_config="${assignment#PILOT_CONFIG=}" ;;
+      PILOT_HOME=?*) pilot_home="${assignment#PILOT_HOME=}" ;;
+    esac
+  done
+  if [ -z "$pilot_config" ]; then
+    if [ -z "$pilot_home" ]; then
+      home="$(getent passwd weaver-pilot 2>/dev/null | cut -d: -f6)"
+      [ -n "$home" ] || return 1
+      pilot_home="$home/.pilot"
+    fi
+    pilot_config="$pilot_home/pilot.toml"
+  fi
+  case "$pilot_config" in /*) printf '%s\n' "$pilot_config" ;; *) return 1 ;; esac
+}
+
 mkdir -p "$env_dir"
 touch "$env_file"
 chmod 600 "$env_file"
@@ -155,7 +188,32 @@ case "$mode" in
     worker_candidate=""
     exit 0
     ;;
-  *) echo 'usage: weaver-install-env [merge|store|executor-secrets|worker-secrets]' >&2; exit 1 ;;
+  pilot-config)
+    # The hosted Pilot's rules file, replaced exactly with the operator's copy
+    # (weaver-gcp.sh push-pilot-config). An empty file would parse to no rules
+    # at all, so it is refused and the installed file is left untouched.
+    [ -s "$incoming" ] || { echo 'hosted Pilot config is empty' >&2; exit 1; }
+    pilot_config_file="$(hosted_pilot_config_path)" || {
+      echo 'cannot resolve the hosted Pilot config path (no weaver-pilot account home, or a relative PILOT_CONFIG/PILOT_HOME)' >&2; exit 1;
+    }
+    pilot_config_dir="$(dirname "$pilot_config_file")"
+    if [ ! -d "$pilot_config_dir" ]; then
+      mkdir -p "$pilot_config_dir"
+      chmod 700 "$pilot_config_dir"
+      if [ "$pilot_config_owner" != ':' ]; then chown "$pilot_config_owner" "$pilot_config_dir"; fi
+    fi
+    pilot_candidate="$(mktemp "$pilot_config_dir/.pilot-config-candidate.XXXXXX")"
+    trap 'rm -f "$incoming" "$candidate" "${pilot_candidate:-}"' EXIT
+    chmod 600 "$pilot_candidate"
+    cat "$incoming" > "$pilot_candidate"
+    if [ "$pilot_config_owner" != ':' ]; then chown "$pilot_config_owner" "$pilot_candidate"; fi
+    chmod 600 "$pilot_candidate"
+    mv "$pilot_candidate" "$pilot_config_file"
+    pilot_candidate=""
+    echo "installed hosted Pilot config at $pilot_config_file"
+    exit 0
+    ;;
+  *) echo 'usage: weaver-install-env [merge|store|executor-secrets|worker-secrets|pilot-config]' >&2; exit 1 ;;
 esac
 
 if [ "$owner" != ':' ]; then chown "$owner" "$candidate"; fi

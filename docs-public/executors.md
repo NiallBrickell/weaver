@@ -255,7 +255,9 @@ has authenticated ingress that an ordinary worker container cannot reach. A
 liveness probe alone is not an authority boundary. The gate requires a
 separate `weaver-pilot` service
 account, an active `weaver-pilot.service`, exactly one loopback listener owned
-by that unit, and an executor-only `WEAVER_PILOT_TOKEN`; an invalid bearer must
+by that unit, the operator's Pilot rules file (installed with
+`bin/weaver-gcp.sh push-pilot-config`; without it Pilot silently applies its
+built-in defaults), and an executor-only `WEAVER_PILOT_TOKEN`; an invalid bearer must
 receive 401 and the registered bearer 204. Finally, the installed
 `/usr/local/bin/weaver pilot-auth-check` must succeed as the service user. That
 last check exercises the exact shared bearer client used by engine and worker

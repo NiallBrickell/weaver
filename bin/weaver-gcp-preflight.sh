@@ -319,8 +319,37 @@ secure_claude_code_subscription_boundary() {
 
 secure_claude_code_subscription_boundary
 
+# The file the hosted Pilot reads its rules from, resolved exactly as Pilot
+# resolves it: PILOT_CONFIG, else $PILOT_HOME/pilot.toml, else
+# ~/.pilot/pilot.toml of the weaver-pilot account — taking PILOT_* from the
+# unit's Environment= settings. bin/weaver-install-env.sh (push-pilot-config)
+# carries the same resolver; the gcpScript test installs through that one and
+# launches through this one, so the two cannot drift apart unnoticed.
+hosted_pilot_config_path() {
+  local unit_env assignment pilot_config='' pilot_home='' home
+  local -a assignments=()
+  unit_env="$(systemctl show --property=Environment --value weaver-pilot.service 2>/dev/null || true)"
+  read -r -a assignments <<< "$unit_env" || true
+  for assignment in ${assignments[@]+"${assignments[@]}"}; do
+    assignment="${assignment#\"}"; assignment="${assignment%\"}"
+    case "$assignment" in
+      PILOT_CONFIG=?*) pilot_config="${assignment#PILOT_CONFIG=}" ;;
+      PILOT_HOME=?*) pilot_home="${assignment#PILOT_HOME=}" ;;
+    esac
+  done
+  if [ -z "$pilot_config" ]; then
+    if [ -z "$pilot_home" ]; then
+      home="$(getent passwd weaver-pilot 2>/dev/null | cut -d: -f6)"
+      [ -n "$home" ] || return 1
+      pilot_home="$home/.pilot"
+    fi
+    pilot_config="$pilot_home/pilot.toml"
+  fi
+  case "$pilot_config" in /*) printf '%s\n' "$pilot_config" ;; *) return 1 ;; esac
+}
+
 secure_pilot_boundary() {
-  local pilot_url token_count pilot_token pilot_user pilot_pid pilot_listeners
+  local pilot_url token_count pilot_token pilot_user pilot_pid pilot_listeners pilot_config
   local listener_count listener_address wrong_status correct_status auth_header
 
   pilot_url="$(env_value WEAVER_PILOT_URL)"
@@ -332,6 +361,17 @@ secure_pilot_boundary() {
   [ "$pilot_user" = weaver-pilot ] || fail 'weaver-pilot.service must run as the separate weaver-pilot user'
   pilot_pid="$(systemctl show --property=MainPID --value weaver-pilot.service 2>/dev/null)"
   case "$pilot_pid" in ''|0|*[!0-9]*) fail 'weaver-pilot.service has no live main process' ;; esac
+
+  # Pilot silently judges with its built-in default rules when its rules file
+  # is absent: the hosted fleet's approval policy once drifted from the
+  # operator's that way, with every gated action decided by rules nobody chose
+  # and nothing saying so. A file must exist before an action-capable runner
+  # does. (A Pilot able to write its home bootstraps a default file on first
+  # start; push-pilot-config is what makes the file the operator's.)
+  pilot_config="$(hosted_pilot_config_path)" || \
+    fail 'cannot resolve the hosted Pilot config path (no weaver-pilot account home, or a relative PILOT_CONFIG/PILOT_HOME)'
+  [ -s "$pilot_config" ] || \
+    fail "the hosted Pilot has no rules file at $pilot_config, so it judges actions by its built-in defaults instead of the operator's rules; install them with: bin/weaver-gcp.sh push-pilot-config <path/to/pilot.toml>"
 
   # The runner unit uses systemd's `+` ExecStartPre prefix so this root-owned
   # gate can see the other service's PID metadata. The runner process itself

@@ -68,6 +68,7 @@ test('render forwards registered provider keys and mirrors config, and flags cod
       WEAVER_WORKSPACE_ROOT: '/var/lib/weaver/workspaces',
       WEAVER_RUNNER_DISABLED: '1',
       WEAVER_PILOT_URL: 'http://127.0.0.1:9721',
+      WEAVER_UI_PUBLIC_ORIGIN: 'https://workspace.example',
       WEAVER_RUNNER_EXECUTORS: undefined, // unset locally → not mirrored
     },
   );
@@ -84,6 +85,8 @@ test('render forwards registered provider keys and mirrors config, and flags cod
   assert.ok(!lines.some((l) => l.startsWith('WEAVER_WORKSPACE_ROOT=')));
   assert.ok(!lines.some((l) => l.startsWith('WEAVER_RUNNER_DISABLED=')), 'the operator-only host must not disable its remote runners');
   assert.ok(lines.includes('WEAVER_PILOT_URL=http://127.0.0.1:9721'));
+  // The hosted digest links needs to the workspace, so its origin travels too.
+  assert.ok(lines.includes('WEAVER_UI_PUBLIC_ORIGIN=https://workspace.example'));
   assert.ok(!lines.some((l) => l.startsWith('WEAVER_RUNNER_EXECUTORS=')));
   assert.ok(warnings.some((w) => w.includes('remote rendering never copies personal auth.json')));
 });

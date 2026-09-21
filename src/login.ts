@@ -102,6 +102,9 @@ const OPTIONAL_CONFIG_NAMES = [
   'WEAVER_PILOT_URL',
   'WEAVER_WORKER_MAX_TURNS',
   'WEAVER_ATTEMPT_STALE_MS',
+  // The operator workspace's public origin: the hosted daily digest links
+  // each need to its Workstream page there.
+  'WEAVER_UI_PUBLIC_ORIGIN',
 ] as const;
 
 /**
@@ -289,6 +292,7 @@ function currentConfig(): Record<string, string | undefined> {
     WEAVER_PILOT_URL: process.env.WEAVER_PILOT_URL,
     WEAVER_WORKER_MAX_TURNS: process.env.WEAVER_WORKER_MAX_TURNS,
     WEAVER_ATTEMPT_STALE_MS: process.env.WEAVER_ATTEMPT_STALE_MS,
+    WEAVER_UI_PUBLIC_ORIGIN: process.env.WEAVER_UI_PUBLIC_ORIGIN,
   };
 }
 
@@ -560,7 +564,7 @@ function statusCommand(): void {
     if (value === undefined) continue;
     process.stdout.write(`  ${name.padEnd(37)} ${value}  (${configSource(name)})\n`);
   }
-  const registered = [...CLAUDE_IDENTITY_NAMES, ...PROVIDER_KEY_NAMES, ...GITHUB_APP_SECRET_NAMES, 'WEAVER_SERVE_TOKEN', 'WEAVER_PILOT_TOKEN', 'WEAVER_SENTRY_READ_TOKEN'].filter(
+  const registered = [...CLAUDE_IDENTITY_NAMES, ...PROVIDER_KEY_NAMES, ...GITHUB_APP_SECRET_NAMES, 'WEAVER_SERVE_TOKEN', 'WEAVER_PILOT_TOKEN', 'WEAVER_SENTRY_READ_TOKEN', 'WEAVER_DIGEST_SLACK_TOKEN', 'WEAVER_DIGEST_SLACK_CHANNEL'].filter(
     (n) => secrets[n],
   );
   process.stdout.write(

@@ -145,6 +145,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver watch --on <runner-id>              start or move the durable fleet attention steward onto one exact execution host, then exit; the resident runner keeps it alive
   weaver watch --plain                       legacy read-only raw dashboard; q quits (use 'weaver printout [slug]' to catch up)
   weaver printout [slug] [--text]            open an HTML catch-up page; --text writes the plain report instead
+  weaver digest [--post] [--dry-run]         daily needs-you digest as Slack mrkdwn (model-free); --post sends it to the operator-configured destination once per London day (readback-idempotent); --dry-run reads the destination back and says whether --post would send
   weaver inspect [slug]                      visual work board → self-contained HTML: Workstreams, Assignments, evidence, and history
   weaver stats                               outcome scoreboard → self-contained HTML: interventions per adopted work product, approval split, policy evidence, per-workstream stats
   weaver ui [--host H] [--port N]            browser operator workspace (default 127.0.0.1:9724); non-loopback requires Clerk or WEAVER_UI_TOKEN
@@ -1281,6 +1282,19 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
         const published = await publishPrintoutHtml(parsed.slug);
         process.stdout.write(`${published.path}\n`);
       }
+      break;
+    }
+
+    case 'digest': {
+      // Operator notification, not an outbound action: the destination is
+      // fixed in the executor-only secret store and the content is rendered
+      // from typed state with no model (see docs/harness.md).
+      const unknown = rest.find((flag) => flag !== '--post' && flag !== '--dry-run');
+      if (unknown !== undefined) fail(`usage: weaver digest [--post] [--dry-run] — unknown argument '${unknown}'`);
+      const { digestCommand } = await import('./digest.js');
+      const result = await digestCommand({ post: rest.includes('--post'), dryRun: rest.includes('--dry-run') });
+      if (!result.ok) fail(result.message);
+      process.stdout.write(`${result.message}\n`);
       break;
     }
 

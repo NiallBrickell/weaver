@@ -84,6 +84,12 @@ if printf '%s\n' "$@" | grep -q 'weaver-gcp-preflight'; then
     bash "$WEAVER_GCP_TEST_CALLS/$n.stdin"
   : > "$WEAVER_GCP_TEST_CALLS/$n.systemctl-executed"
 fi
+if printf '%s\n' "$@" | grep -q 'weaver-install-env pilot-config'; then
+  WEAVER_INSTALL_ENV_FILE="$WEAVER_GCP_TEST_CALLS/installer-env" \
+  WEAVER_INSTALL_ENV_OWNER=: \
+  WEAVER_INSTALL_PILOT_CONFIG_OWNER=: \
+    bash "$WEAVER_GCP_TEST_INSTALLER" pilot-config < "$WEAVER_GCP_TEST_CALLS/$n.stdin"
+fi
 if [ "\${WEAVER_GCP_TEST_STALE_INSTALLER:-0}" = 1 ]; then
   if printf '%s\n' "$@" | grep -q '/tmp/weaver-install-env.local'; then
     cp "$WEAVER_GCP_TEST_CALLS/$n.stdin" "$WEAVER_GCP_TEST_REMOTE_INSTALLER"
@@ -169,6 +175,7 @@ case "\${1:-}" in
     case "$*" in
       *--property=User*) printf '%s\n' weaver-pilot ;;
       *--property=MainPID*) printf '%s\n' 4242 ;;
+      *--property=Environment*) printf '%s\n' "\${WEAVER_GCP_TEST_PILOT_UNIT_ENV:-}" ;;
       *) exit 1 ;;
     esac
     ;;
@@ -177,6 +184,19 @@ esac
 `,
     { mode: 0o755 },
   );
+  fs.writeFileSync(
+    path.join(bin, 'getent'),
+    `#!/bin/bash
+set -euo pipefail
+[ "\${1:-}" = passwd ] && [ "\${2:-}" = weaver-pilot ] || exit 2
+printf 'weaver-pilot:x:998:998::%s:/usr/sbin/nologin\\n' "$WEAVER_GCP_TEST_PILOT_HOME"
+`,
+    { mode: 0o755 },
+  );
+  // The operator's rules file the hosted Pilot reads by default.
+  const pilotHome = path.join(root, 'pilot-home');
+  fs.mkdirSync(path.join(pilotHome, '.pilot'), { recursive: true });
+  fs.writeFileSync(path.join(pilotHome, '.pilot', 'pilot.toml'), '[general]\nsse_port = 9721\n', { mode: 0o600 });
   fs.writeFileSync(
     path.join(bin, 'ss'),
     `#!/bin/bash
@@ -315,6 +335,8 @@ printf '%s' "$WEAVER_GCP_TEST_REMOTE_ENV"
       WEAVER_GCP_TEST_WEAVER_BIN: weaverProbe,
       WEAVER_GCP_TEST_NODE: process.execPath,
       WEAVER_GCP_TEST_CHECKOUT: checkout,
+      WEAVER_GCP_TEST_PILOT_HOME: pilotHome,
+      WEAVER_GCP_TEST_INSTALLER: installer,
     },
   };
 }
@@ -1210,4 +1232,172 @@ test('provisioning keeps the host alive through memory pressure and missed DHCP 
     provision.indexOf('swapon /swapfile') < provision.indexOf('&& yarn install'),
     'swap exists before the first yarn install',
   );
+});
+
+test('provisioning installs the daily digest on its own timer, started only at the runner cutover', () => {
+  const text = fs.readFileSync(script, 'utf8');
+  const provision = text.slice(text.indexOf("<<'PROVISION'"), text.indexOf('\nPROVISION\n'));
+  const unitBlock = (name: string) => {
+    const start = provision.indexOf(`/etc/systemd/system/${name} <<'UNIT'`);
+    assert.ok(start >= 0, `${name} is installed during provisioning`);
+    return provision.slice(start, provision.indexOf('\nUNIT\n', start));
+  };
+  const service = unitBlock('weaver-digest.service');
+  assert.match(service, /Type=oneshot\nUser=weaver\nWorkingDirectory=\/opt\/weaver\nExecStart=\/usr\/local\/bin\/weaver digest --post\n/);
+  // Its own unit: no runner preflight to fail and no dependency on weaver-run,
+  // so the digest still arrives when the runner is down or refused.
+  assert.doesNotMatch(service, /ExecStartPre|weaver-run|Restart=/);
+  const timer = unitBlock('weaver-digest.timer');
+  assert.match(timer, /\[Timer\]\nOnCalendar=\*-\*-\* 07:30:00 Europe\/London\nPersistent=true\n\[Install\]\nWantedBy=timers\.target/);
+  assert.match(provision, /systemctl enable weaver-run weaver-serve weaver-digest\.timer/);
+  assert.match(provision, /systemctl disable --now weaver-run weaver-serve weaver-digest\.timer/);
+
+  const { result, root } = run(['start'], undefined);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(call(root, 1, 'args'), /sudo systemctl enable --now weaver-run weaver-digest\.timer$/m);
+});
+
+test('a refused preflight never reaches systemctl on the host', () => {
+  // `;` would run `systemctl restart` after a failed gate, stopping a live
+  // runner the unit's own preflight then refuses to start again.
+  for (const command of ['start', 'restart']) {
+    const { result, root } = run([command], undefined);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      call(root, 1, 'args'),
+      /cat > "\$preflight" && sudo install -o root -g root -m 755 "\$preflight" \/usr\/local\/sbin\/weaver-gcp-preflight && sudo \/usr\/local\/sbin\/weaver-gcp-preflight && sudo systemctl /,
+    );
+  }
+});
+
+test('push-env delivers the digest destination only into the executor-only store', () => {
+  const rendered = [
+    'WEAVER_EXECUTOR=pi',
+    'WEAVER_DIGEST_SLACK_TOKEN=xoxb-digest-secret',
+    'WEAVER_DIGEST_SLACK_CHANNEL=D0FOUNDER',
+    '',
+  ].join('\n');
+  const { result, root } = run(['push-env'], undefined, rendered);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(call(root, 2, 'args'), /weaver-install-env merge/);
+  assert.ok(!call(root, 2, 'stdin').includes('WEAVER_DIGEST_SLACK'), 'never the ambient service env');
+  assert.match(call(root, 3, 'args'), /weaver-install-env executor-secrets/);
+  assert.equal(call(root, 3, 'stdin'), 'WEAVER_DIGEST_SLACK_TOKEN=xoxb-digest-secret\nWEAVER_DIGEST_SLACK_CHANNEL=D0FOUNDER\n');
+  assert.ok(!allCallArgs(root).includes('xoxb-digest-secret'));
+});
+
+test('GCP start refuses a hosted Pilot with no rules file and names push-pilot-config', () => {
+  for (const contents of [undefined, '']) {
+    const f = fixture();
+    const config = path.join(String(f.env.WEAVER_GCP_TEST_PILOT_HOME), '.pilot', 'pilot.toml');
+    if (contents === undefined) fs.rmSync(config);
+    else fs.writeFileSync(config, contents);
+    const result = startExistingFixture(f);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /the hosted Pilot has no rules file at \S+\/pilot-home\/\.pilot\/pilot\.toml, so it judges actions by its built-in defaults/);
+    assert.match(result.stderr, /bin\/weaver-gcp\.sh push-pilot-config/);
+    assert.equal(fs.existsSync(path.join(f.root, 'calls', 'pilot-client-probe')), false);
+    assert.equal(fs.existsSync(path.join(f.root, 'calls', '1.systemctl-executed')), false);
+  }
+});
+
+test('push-pilot-config replaces the hosted Pilot rules file exactly, then the runner may start', () => {
+  const f = fixture();
+  const pilotDir = path.join(String(f.env.WEAVER_GCP_TEST_PILOT_HOME), '.pilot');
+  fs.rmSync(pilotDir, { recursive: true });
+  const refused = startExistingFixture(f);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /push-pilot-config/);
+
+  const rules = '[[rules]]\nname = "self-merge carve-out"\ncommand = "gh pr merge * --merge"\ndecision = "approve"\n';
+  const local = path.join(f.root, 'operator-pilot.toml');
+  fs.writeFileSync(local, rules);
+  const pushed = spawnSync('bash', [script, 'push-pilot-config', local], { env: f.env, encoding: 'utf8' });
+  assert.equal(pushed.status, 0, pushed.stderr);
+  // Call 1 was the refused start; the installer ships first, then the file.
+  assert.equal(call(f.root, 2, 'stdin'), fs.readFileSync(installer, 'utf8'));
+  assert.match(call(f.root, 3, 'args'), /sudo \/usr\/local\/sbin\/weaver-install-env pilot-config/);
+  assert.equal(call(f.root, 3, 'stdin'), rules, 'the rules travel only on SSH stdin');
+  assert.ok(!allCallArgs(f.root).includes('self-merge carve-out'), 'never in argv');
+  assert.ok(!allCallArgs(f.root).includes(local), 'the local path is not sent either');
+  const installed = path.join(pilotDir, 'pilot.toml');
+  assert.equal(fs.readFileSync(installed, 'utf8'), rules);
+  assert.equal(fs.statSync(installed).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(pilotDir).mode & 0o777, 0o700);
+  assert.match(pushed.stdout, /hosted Pilot config replaced exactly/);
+  assert.ok(!allCallArgs(f.root).includes('systemctl restart'));
+
+  const started = startExistingFixture(f);
+  assert.equal(started.status, 0, started.stderr);
+});
+
+test('push-pilot-config refuses a missing or empty file before contacting GCP', () => {
+  const f = fixture();
+  const empty = path.join(f.root, 'empty.toml');
+  fs.writeFileSync(empty, '');
+  for (const [args, error] of [
+    [[], /usage: weaver-gcp push-pilot-config FILE/],
+    [[path.join(f.root, 'absent.toml')], /is not a readable file/],
+    [[empty], /is empty/],
+  ] as const) {
+    const result = spawnSync('bash', [script, 'push-pilot-config', ...args], { env: f.env, encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, error);
+    assert.equal(fs.existsSync(path.join(f.root, 'calls', 'count')), false);
+  }
+  const installerRefusal = spawnSync('bash', [installer, 'pilot-config'], {
+    input: '',
+    encoding: 'utf8',
+    env: { ...f.env, WEAVER_INSTALL_ENV_FILE: path.join(f.root, 'env'), WEAVER_INSTALL_ENV_OWNER: ':', WEAVER_INSTALL_PILOT_CONFIG_OWNER: ':' },
+  });
+  assert.notEqual(installerRefusal.status, 0);
+  assert.match(installerRefusal.stderr, /hosted Pilot config is empty/);
+  assert.equal(
+    fs.readFileSync(path.join(String(f.env.WEAVER_GCP_TEST_PILOT_HOME), '.pilot', 'pilot.toml'), 'utf8'),
+    '[general]\nsse_port = 9721\n',
+    'a refused install leaves the existing rules in place',
+  );
+});
+
+test('install and launch resolve the hosted Pilot config path identically, honouring the unit env', () => {
+  const resolver = (file: string) => {
+    const text = fs.readFileSync(file, 'utf8');
+    const start = text.indexOf('hosted_pilot_config_path() {');
+    return text.slice(start, text.indexOf('\n}\n', start));
+  };
+  assert.ok(resolver(installer).length > 100);
+  assert.equal(resolver(installer), resolver(gcpPreflight));
+
+  for (const [unitEnv, relative] of [
+    ['LANG=C.UTF-8 PILOT_HOME=%ROOT%/custom-pilot', 'custom-pilot/pilot.toml'],
+    ['"PILOT_CONFIG=%ROOT%/etc/pilot-rules.toml" PILOT_HOME=%ROOT%/ignored', 'etc/pilot-rules.toml'],
+  ] as const) {
+    const f = fixture();
+    f.env.WEAVER_GCP_TEST_PILOT_UNIT_ENV = unitEnv.replaceAll('%ROOT%', f.root);
+    const expected = path.join(f.root, relative);
+    const refused = startExistingFixture(f);
+    assert.notEqual(refused.status, 0);
+    assert.ok(refused.stderr.includes(`no rules file at ${expected}`), refused.stderr);
+    const local = path.join(f.root, 'operator.toml');
+    fs.writeFileSync(local, 'rules = []\n');
+    const pushed = spawnSync('bash', [script, 'push-pilot-config', local], { env: f.env, encoding: 'utf8' });
+    assert.equal(pushed.status, 0, pushed.stderr);
+    assert.equal(fs.readFileSync(expected, 'utf8'), 'rules = []\n');
+    assert.equal(startExistingFixture(f).status, 0);
+  }
+
+  const relativeHome = fixture();
+  relativeHome.env.WEAVER_GCP_TEST_PILOT_UNIT_ENV = 'PILOT_HOME=relative/pilot';
+  const refused = startExistingFixture(relativeHome);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /cannot resolve the hosted Pilot config path/);
+});
+
+test('help lists every command, including the ones past the first screen', () => {
+  const result = spawnSync('bash', [script, '--help'], { encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  for (const command of ['push-pilot-config FILE', 'update [--restart]', 'destroy']) {
+    assert.ok(result.stdout.includes(`weaver-gcp ${command}`), command);
+  }
+  assert.doesNotMatch(result.stdout, /Design notes/);
 });
