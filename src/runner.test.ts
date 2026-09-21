@@ -636,6 +636,41 @@ test('a runner slot remains owned until its exact tick settles', async () => {
   }
 });
 
+test('a settled tick stops holding memory the moment it frees its slot', async () => {
+  // 2026-09-21: counting finished coordinator passes as still ramping held a
+  // fresh hosted runner to one slot with 6 GB free.
+  await make('mem-a');
+  await make('mem-b');
+  const abort = new AbortController();
+  const lines: string[] = [];
+  let calls = 0;
+  const loop = runLoop({
+    intervalMs: 5,
+    concurrency: 4,
+    signal: abort.signal,
+    log: (l) => lines.push(l),
+    logError: () => {},
+    loadSample: () => ({ load1: 0.1, cores: 8 }),
+    // Room for two budgets beside the host reserve, never three.
+    memorySample: () => 4200,
+    tickFn: async () => {
+      calls += 1;
+      return { cycles: 0, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
+    },
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.ok(calls >= 2, 'both due workstreams were ticked');
+    assert.ok(
+      !lines.some((l) => /memory holds parallel ticks at 1\b/.test(l)),
+      `finished ticks must not keep holding memory: ${JSON.stringify(lines)}`,
+    );
+  } finally {
+    abort.abort();
+    await loop;
+  }
+});
+
 test('a runner whose state directory cannot take a write publishes why, dispatches nothing, and resumes when it can', async () => {
   await make('degraded-home');
   const abort = new AbortController();
