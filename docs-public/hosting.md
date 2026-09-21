@@ -64,6 +64,13 @@ and every ten minutes. Size the boot disk for what workers leave behind: an
 OpenHands image is ~6 GB, each repository checkout a few hundred MB, and
 `bin/weaver-gcp.sh status` now shows disk usage beside the heartbeat.
 
+Every signal above — the Fleet page, `weaver status`, the attention steward —
+runs on the runner itself, so a host that goes fully dark (not degraded, just
+gone) reports nothing through any of them. Point an external monitor at
+[`/healthz/fleet`](./fleet-health.md) on `weaver ui` to catch that case: it is
+answered by the always-on UI process from shared runner presence, independent
+of whether any runner is alive to report on itself.
+
 ## Environment every hosted process needs
 
 ```bash

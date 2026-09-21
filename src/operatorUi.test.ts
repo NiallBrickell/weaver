@@ -943,6 +943,90 @@ test('non-loopback binding requires Basic auth and attributes requests to its us
   assert.equal(doc.observations[0]!.source, 'operator-ui:sales-alice');
 });
 
+interface FleetHealthProbeBody {
+  ok: boolean;
+  runners?: Array<{ id: string; heartbeat_age_seconds: number; degraded: string | null }>;
+  freshest_heartbeat_age_seconds?: number | null;
+  healthy_runners?: number;
+  unhealthy: number;
+  error?: string;
+}
+
+test('healthz/fleet reports runner freshness to an external monitor, unauthenticated, while other routes stay gated', async () => {
+  await running!.close();
+  running = await startOperatorUi({ token: 'shared-secret' });
+  base = `http://127.0.0.1:${running.port}`;
+
+  // No runner has ever published presence: an external monitor must not read
+  // silence as green — a dead fleet with nobody home is unhealthy too.
+  let response = await fetch(`${base}/healthz/fleet`);
+  assert.equal(response.status, 200, 'the probe never requires a credential');
+  let body = await response.json() as FleetHealthProbeBody;
+  assert.deepEqual(body.runners, []);
+  assert.equal(body.freshest_heartbeat_age_seconds, null);
+  assert.equal(body.healthy_runners, 0);
+  assert.equal(body.unhealthy, 1);
+  assert.equal(body.ok, false);
+
+  // A fresh heartbeat makes the fleet healthy.
+  await heartbeatRunner('gcp');
+  response = await fetch(`${base}/healthz/fleet`);
+  body = await response.json() as FleetHealthProbeBody;
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.unhealthy, 0);
+  assert.equal(body.healthy_runners, 1);
+  assert.equal(body.runners?.length, 1);
+  assert.equal(body.runners?.[0]!.id, 'gcp');
+  assert.equal(body.runners?.[0]!.degraded, null);
+  assert.ok((body.freshest_heartbeat_age_seconds ?? Infinity) <= 2);
+
+  // A heartbeat older than the 300s staleness threshold is unhealthy again —
+  // the runner is not "degraded", it simply stopped publishing.
+  await heartbeatRunner('gcp', new Date(Date.now() - 301_000).toISOString());
+  response = await fetch(`${base}/healthz/fleet`);
+  body = await response.json() as FleetHealthProbeBody;
+  assert.equal(body.unhealthy, 1);
+  assert.equal(body.healthy_runners, 0);
+  assert.ok((body.freshest_heartbeat_age_seconds ?? 0) >= 300);
+  assert.equal(body.runners?.[0]!.degraded, null);
+
+  // A degraded runner (its state directory can't commit — see runner.ts)
+  // dispatches nothing even with a heartbeat published seconds ago, so it
+  // counts as unhealthy and is excluded from freshest_heartbeat_age_seconds.
+  await heartbeatRunner('gcp', new Date().toISOString(), undefined, 'state directory below free-space floor');
+  response = await fetch(`${base}/healthz/fleet`);
+  body = await response.json() as FleetHealthProbeBody;
+  assert.equal(body.unhealthy, 1);
+  assert.equal(body.healthy_runners, 0);
+  assert.equal(body.freshest_heartbeat_age_seconds, null);
+  assert.equal(body.runners?.[0]!.degraded, 'state directory below free-space floor');
+
+  // A store read failure never 500s: it reports the same shape at 503, with
+  // no path or connection detail in the body.
+  const previousHome = process.env.WEAVER_HOME;
+  const notADirectory = `${fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-healthz-'))}-blocker`;
+  fs.writeFileSync(notADirectory, 'a file, not the state directory');
+  process.env.WEAVER_HOME = notADirectory;
+  try {
+    response = await fetch(`${base}/healthz/fleet`);
+    assert.equal(response.status, 503);
+    body = await response.json() as FleetHealthProbeBody;
+    assert.equal(body.ok, false);
+    assert.equal(body.unhealthy, 1);
+    assert.equal(body.error, 'store unreachable');
+    assert.doesNotMatch(JSON.stringify(body), /weaver-healthz-|ENOTDIR|no such file/i);
+  } finally {
+    fs.rmSync(notADirectory, { force: true });
+    if (previousHome === undefined) delete process.env.WEAVER_HOME;
+    else process.env.WEAVER_HOME = previousHome;
+  }
+
+  // The auth gate still protects every other route on this same server.
+  assert.equal((await fetch(`${base}/board`)).status, 401);
+  assert.equal((await fetch(`${base}/fleet`)).status, 401);
+});
+
 test('Clerk mode replaces the browser password and keeps identity, domain denial, redirects, and writes server-enforced', async () => {
   await running!.close();
   let authCalls = 0;

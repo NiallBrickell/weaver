@@ -120,6 +120,12 @@ const LIVE_HEARTBEAT_MS = 15_000;
 const LIVE_CONNECTION_MS = 5 * 60_000;
 const PRESENTATION_TICK_MS = 60_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+/** Runners heartbeat roughly every 5s (runner.ts's default poll interval). A
+ * fleet whose freshest non-degraded heartbeat is older than this — 60x that
+ * cadence, well past any GC pause or transient network blip — has genuinely
+ * stopped dispatching, not just missed one tick. Used only by the
+ * unauthenticated `/healthz/fleet` external-monitor probe below. */
+const FLEET_HEALTH_STALE_SECONDS = 300;
 export { FLEET_ATTENTION_STEWARD_SOURCE_KEY } from './fleetHealth.js';
 
 class OperatorUiHttpError extends Error {
@@ -314,6 +320,66 @@ function observeRunner(sharedLiveRunnerIds: string[], presences: readonly Runner
       seats: presences.filter((presence) => presence.runnerId === runnerId)
         .sort((a, b) => b.heartbeatAt.localeCompare(a.heartbeatAt))[0]?.coordinatorSeats,
     })),
+  };
+}
+
+/** Non-sensitive per-runner facts for the external-monitor probe: the id as
+ * published, how stale its freshest heartbeat is, and its degraded reason (if
+ * any) — never a host mapping, address, or anything beyond the id itself. */
+export interface FleetHealthRunner {
+  id: string;
+  heartbeat_age_seconds: number;
+  degraded: string | null;
+}
+
+export interface FleetHealthSnapshot {
+  ok: boolean;
+  checked_at: string;
+  runners: FleetHealthRunner[];
+  freshest_heartbeat_age_seconds: number | null;
+  healthy_runners: number;
+  unhealthy: 0 | 1;
+}
+
+/**
+ * Reduce shared runner presence to what an external monitor (Alertee polling
+ * `unhealthy`) needs to page on a dead fleet — derived from
+ * `listRunnerPresence()` alone, never a `load()` loop over every Workstream
+ * (see AGENTS.md's "never loop load() over the fleet on a hot path").
+ * A degraded presence (state directory can't commit — see runner.ts) publishes
+ * no seats and dispatches nothing, so it counts as unhealthy exactly like a
+ * stale heartbeat regardless of how fresh its last publish was.
+ */
+export function fleetHealthSnapshot(presences: readonly RunnerPresence[], nowMs = Date.now()): FleetHealthSnapshot {
+  const latestByRunner = new Map<string, RunnerPresence>();
+  for (const presence of presences) {
+    const current = latestByRunner.get(presence.runnerId);
+    if (!current || Date.parse(presence.heartbeatAt) > Date.parse(current.heartbeatAt)) {
+      latestByRunner.set(presence.runnerId, presence);
+    }
+  }
+  const runners = [...latestByRunner.values()]
+    .map((presence) => ({
+      id: presence.runnerId,
+      ageMs: Math.max(0, nowMs - Date.parse(presence.heartbeatAt)),
+      degraded: presence.degraded ?? null,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const freshAges = runners.filter((runner) => runner.degraded === null).map((runner) => runner.ageMs);
+  const healthyRunners = runners.filter((runner) =>
+    runner.degraded === null && runner.ageMs <= FLEET_HEALTH_STALE_SECONDS * 1000,
+  ).length;
+  return {
+    ok: healthyRunners > 0,
+    checked_at: new Date(nowMs).toISOString(),
+    runners: runners.map((runner) => ({
+      id: runner.id,
+      heartbeat_age_seconds: Math.round(runner.ageMs / 1000),
+      degraded: runner.degraded,
+    })),
+    freshest_heartbeat_age_seconds: freshAges.length ? Math.round(Math.min(...freshAges) / 1000) : null,
+    healthy_runners: healthyRunners,
+    unhealthy: healthyRunners > 0 ? 0 : 1,
   };
 }
 
@@ -864,6 +930,20 @@ async function handle(
       return sendHealth(res, 200);
     } catch {
       return sendHealth(res, 503);
+    }
+  }
+
+  // A second unauthenticated probe, deliberately exempted from the operator
+  // auth gate below like /healthz: an external monitor (e.g. Alertee) needs a
+  // fleet-liveness signal it can poll without a Basic/Clerk credential, and
+  // this exposes no workstream content — only runner ids and heartbeat
+  // freshness derived from shared presence. See docs-public for the contract.
+  if (method === 'GET' && url.pathname === '/healthz/fleet') {
+    try {
+      const snapshot = fleetHealthSnapshot(await listRunnerPresence());
+      return sendJson(res, 200, snapshot);
+    } catch {
+      return sendJson(res, 503, { ok: false, unhealthy: 1, error: 'store unreachable' });
     }
   }
 

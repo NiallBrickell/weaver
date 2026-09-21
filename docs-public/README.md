@@ -19,6 +19,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Hosting the team workspace on Railway](./railway.md) — shared Postgres + browser UI, with execution left on an honestly provisioned host
 - [The dashboard](./dashboard.md) — the terminal controls and visual Workstream/Assignment board
 - [Operator workspace](./operator-workspace.md) — create work, inspect one Workstream, and add follow-up from a browser
+- [Fleet health for external monitoring](./fleet-health.md) — an unauthenticated `/healthz/fleet` endpoint an outside monitor can page on when every runner goes dark
 - [Printouts](./printouts.md) — an exact, copyable account since the last delivered printout
 - [Does each outcome need you less often?](./stats.md) — recorded human interventions beside quality and authority signals
 - [Routines](./routines.md) — standing loops that wake with their decision log, constraints, and learned policies intact
