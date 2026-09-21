@@ -328,6 +328,13 @@ export function runnerOutput(
     // An unexpired lease means a pass is running right now — its work is being
     // served, just not finished yet.
     if (doc.lease && Date.parse(doc.lease.expiresAt) > wallNow.getTime()) continue;
+    // A runaway-guard park deliberately holds every due wake until its rolling
+    // window reopens (parkIfExecutionLimited leaves organizational wakes
+    // pending beside it). That is the harness pacing work, not failing to
+    // serve it, so the workstream's due wakes are not "unserved" while parked.
+    if (doc.wakes.some((wake) =>
+      wake.status === 'pending' && wake.executionSafety &&
+      Date.parse(wake.executionSafety.blockedUntil) > wallNow.getTime())) continue;
     for (const wake of doc.wakes) {
       if (wake.status !== 'pending') continue;
       if (wake.infrastructure || wake.executionSafety) continue;

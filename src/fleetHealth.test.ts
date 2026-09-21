@@ -542,6 +542,21 @@ test('runnerOutput finds the oldest due wake, skipping leased, capacity-blocked,
       executionSafety: { blockedUntil: '2026-09-21T13:00:00.000Z', observedStarts: 5, limit: 5, windowSeconds: 3600 },
     }));
 
+    // Earliest of all: an ordinary organizational wake that the runaway guard
+    // is deliberately holding until its window reopens. Paced, not unserved.
+    await makeActive('due-safety-parked');
+    await arrive('due-safety-parked', (doc) => {
+      doc.wakes.push({
+        id: 'wake_parked_org', reason: 'r', status: 'pending', createdAt: '2026-09-21T01:00:00.000Z',
+        condition: { type: 'wall_time', dueAt: '2026-09-21T02:00:00.000Z' },
+      });
+      doc.wakes.push({
+        id: 'wake_parked_guard', reason: 'r', status: 'pending', createdAt: '2026-09-21T11:00:00.000Z',
+        condition: { type: 'wall_time', dueAt: '2026-09-21T12:30:00.000Z' },
+        executionSafety: { blockedUntil: '2026-09-21T12:30:00.000Z', observedStarts: 5, limit: 5, windowSeconds: 3600 },
+      });
+    });
+
     // Not yet due at all.
     await makeActive('due-future');
     await arrive('due-future', (doc) => doc.wakes.push({
@@ -551,7 +566,7 @@ test('runnerOutput finds the oldest due wake, skipping leased, capacity-blocked,
 
     const slugs = [
       'due-winner', 'due-later', 'due-leased', 'due-capacity', 'due-paused',
-      'due-infra-wake', 'due-safety-wake', 'due-future',
+      'due-infra-wake', 'due-safety-wake', 'due-safety-parked', 'due-future',
     ];
     const docs = await Promise.all(slugs.map((slug) => load(slug)));
     const output = runnerOutput(docs, wallNow, wallNow);
