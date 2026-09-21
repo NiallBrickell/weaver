@@ -561,6 +561,14 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       if (preflightMode !== undefined && !run?.trim()) {
         fail('--preflight-mode requires --run');
       }
+      if (!run?.trim()) {
+        // Without --run a model worker executes the act in --cwd, so the same
+        // directory boundary as any worker applies. An exact --run command is
+        // executed by the engine and hands no directory to a model.
+        const { workerDirectoryRefusal } = await import('./executor/workspaceMounts.js');
+        const refusal = workerDirectoryRefusal(cwd);
+        if (refusal) fail(`--cwd '${cwd}' ${refusal} — a model-run action's directory is handed to its worker; use the repository checkout or a worktree, or give the exact command with --run`);
+      }
       const deps = optAll(rest, 'depends-on');
       {
         // Commands are stored in typed state forever — a pasted secret VALUE

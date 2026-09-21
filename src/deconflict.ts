@@ -45,6 +45,7 @@
 
 import { execFileSync } from 'node:child_process';
 
+import { engineCommandEnv } from './secrets.js';
 import type { Assignment } from './types.js';
 
 /** One open PR as reported by `gh pr list`, reduced to what deconfliction
@@ -109,7 +110,9 @@ function tryRun(
   try {
     return execFileSync(bin, args, {
       cwd,
-      env: { ...process.env, ...environment },
+      // Harness-authored, but it runs in a model-influenced checkout whose
+      // Git configuration can execute commands: never the runner's secrets.
+      env: engineCommandEnv(environment),
       encoding: 'utf8',
       timeout: 30_000,
       stdio: ['ignore', 'pipe', 'ignore'],

@@ -241,3 +241,32 @@ test('the local-sdk executor containerizes ordinary work only; a supervised acti
   await hostOnly.execute(base);
   assert.equal(seen[2]!.spawnClaudeCodeProcess, undefined, 'without container config the worker is a host process');
 });
+
+test('the plan refuses to mount Weaver state or a credential store, even through a symlink', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-claude-container-guard-')));
+  roots.push(root);
+  const previousHome = process.env.WEAVER_HOME;
+  const state = path.join(root, 'state');
+  const workspace = path.join(root, 'workspaces', 'erdo');
+  fs.mkdirSync(state, { recursive: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(path.join(state, 'executor-secrets.env'), 'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64=never-mounted\n');
+  fs.symlinkSync(state, path.join(root, 'workspaces', 'looks-harmless'));
+  process.env.WEAVER_HOME = state;
+  try {
+    const run = { assignmentId: 'asg_guard', cwd: workspace, additionalDirectories: [] as string[], workerVisibleEnv: {} };
+    assert.throws(() => planContainerRun(spawnOptions(), { ...run, cwd: path.join(state, 'stream') }, config), /sits under Weaver's state directory/);
+    assert.throws(() => planContainerRun(spawnOptions(), { ...run, cwd: root }, config), /contains Weaver's state directory/);
+    assert.throws(
+      () => planContainerRun(spawnOptions(), { ...run, additionalDirectories: [path.join(root, 'workspaces', 'looks-harmless')] }, config),
+      /is Weaver's state directory.*resolves to/,
+    );
+    assert.throws(() => planContainerRun(spawnOptions(), { ...run, additionalDirectories: ['/etc/weaver'] }, config), /hosted runner's service configuration/);
+    assert.throws(() => planContainerRun(spawnOptions(), { ...run, additionalDirectories: [path.join(os.homedir(), '.ssh')] }, config), /SSH keys/);
+    const allowed = planContainerRun(spawnOptions(), run, config);
+    assert.ok(allowed.args.includes(`${workspace}:${workspace}`));
+  } finally {
+    if (previousHome === undefined) delete process.env.WEAVER_HOME;
+    else process.env.WEAVER_HOME = previousHome;
+  }
+});

@@ -36,6 +36,7 @@ import {
 import { loadSecrets, sdkEnv, selectNamedSecrets } from './secrets.js';
 import { tailMessage } from './tail.js';
 import { armWall } from './wall.js';
+import { workerDirectoryRefusal, workerWorkspaceRoot } from './executor/workspaceMounts.js';
 import {
   assertExecutionStartAllowed,
   ExecutionSafetyLimitedError,
@@ -216,6 +217,26 @@ interface PassOutcome {
   outcome: PassRecord['outcome'];
   costUsd: number;
   summary?: string;
+}
+
+/** Worker directories are bind-mounted read-write into container workers, so
+ * a directory that is, contains, or sits under Weaver state or a credential
+ * store would hand the model the executor-only secrets. Refuse it when the
+ * assignment is recorded, and say what to name instead. */
+function refuseProtectedWorkerDirectory(field: string, directory: string): void {
+  const refusal = workerDirectoryRefusal(directory);
+  if (!refusal) return;
+  let workspaceRoot = 'WEAVER_WORKSPACE_ROOT';
+  try {
+    workspaceRoot = workerWorkspaceRoot();
+  } catch {
+    // A misconfigured root still gets the refusal; only the hint is generic.
+  }
+  throw new Error(
+    `${field} '${directory}' is refused: it ${refusal}. Worker directories are mounted into the worker read-write, so no assignment may name Weaver state, credential stores, or runner configuration. ` +
+      `Name the repository checkout itself, a git worktree, or a clone under the workspace root (${workspaceRoot}) instead, or omit read_dirs so the worker starts in its neutral workspace. ` +
+      'Weaver state is already in your projection; an exact host readback belongs in a kind "action" with exec_run, which the engine runs without handing any directory to a model.',
+  );
 }
 
 function excerptForTool(value: string, limit: number): string {
@@ -622,7 +643,7 @@ export async function runCoordinatorPass(
           credential_names: z.array(z.string()).optional().describe('For kind "work" only: exact names of applicable global/workstream credentials this assignment needs. Values remain outside typed state and are injected only into this disposable attempt. Omit for credential-free work; never request executor/model identity credentials.'),
           acceptance_criteria: z.array(z.string()).min(1),
           depends_on: z.array(z.string()).optional(),
-          read_dirs: z.array(z.string()).optional().describe('absolute project/source directories made available to the regular worker; the FIRST becomes its cwd and therefore decides which repository\'s own agent instructions, settings, and MCP servers apply to the session — for any repo-touching work, list the target repo (or its worktree) first. Omitted entirely, the worker starts in the workstream\'s neutral workspace directory with no repo context. (legacy field name retained for stored-state compatibility); only directories the workstream objective or human steering has named'),
+          read_dirs: z.array(z.string()).optional().describe('absolute project/source directories made available to the regular worker; the FIRST becomes its cwd and therefore decides which repository\'s own agent instructions, settings, and MCP servers apply to the session — for any repo-touching work, list the target repo (or its worktree) first. Omitted entirely, the worker starts in the workstream\'s neutral workspace directory with no repo context. (legacy field name retained for stored-state compatibility); only directories the workstream objective or human steering has named. They are mounted read-write into the worker, so Weaver\'s state directory, credential stores (~/.ssh, ~/.config, ~/.claude, ~/.codex), and any directory containing one are refused'),
           exec_cwd: z.string().optional().describe('REQUIRED for kind "action": absolute working directory the worker\'s Bash runs in'),
           exec_verify: z.string().optional().describe('REQUIRED for kind "action": shell command run by the harness (never the worker) whose exit 0 confirms the real-world effect happened, e.g. `gh pr list --head <branch> --json url --jq ".[0].url" | grep .`'),
           approval_ask: z.string().optional().describe('REQUIRED for kind "action": 1-3 plain sentences explaining what approval allows, why the workstream wants it, and the blast radius (what can and cannot change as a result). Product language, no file paths or jargon unless essential. Pilot evaluates this request first; it becomes the human card only after Pilot escalates or when approval_mode is explicitly human-only. The briefing is not shown on that card.'),
@@ -674,6 +695,13 @@ export async function runCoordinatorPass(
               if (!isAbsolute(dir)) {
                 throw new Error(`read_dirs must contain absolute paths, got '${dir}' — worker cwd/context cannot depend on where the engine happens to run`);
               }
+              refuseProtectedWorkerDirectory('read_dirs entry', dir);
+            }
+            // A model-driven action hands exec_cwd to its worker process; an
+            // exact exec_run command is executed by the engine instead, where
+            // no model process and no container mount ever receives the cwd.
+            if (a.kind === 'action' && a.exec_cwd && !a.exec_run?.trim()) {
+              refuseProtectedWorkerDirectory('exec_cwd', a.exec_cwd);
             }
             if (a.kind !== 'action' && (a.exec_cwd || a.exec_verify || a.exec_run || a.exec_preflight_mode)) {
               throw new Error('exec_cwd/exec_verify/exec_run/exec_preflight_mode are only valid on kind "action"');

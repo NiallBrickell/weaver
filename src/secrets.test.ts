@@ -11,9 +11,11 @@ import * as path from 'node:path';
 
 import { tick, verifyAction } from './engine.js';
 import {
+  engineCommandEnv,
   executorSecretNames,
   executorSecretsPath,
   globalSecretsPath,
+  isHarnessInternalEnvName,
   loadAllSecrets,
   loadExecutorSecrets,
   loadRedactionSecrets,
@@ -389,4 +391,52 @@ test('engine-executed exec.run gets secrets in env; the execution record never c
   assert.ok(content.includes('«secret:API_KEY»'));
   const raw = JSON.stringify(doc);
   assert.ok(!raw.includes('key-abcd-1234-efgh'), 'typed state leaked the secret value');
+});
+
+test('an engine command environment drops harness-internal names and a selection cannot put them back', () => {
+  const ambient: Record<string, string> = {
+    // Never a database URL: nothing here may reach a real store.
+    WEAVER_STORE: 'weaver-test-sentinel:store-write-secret',
+    WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64: 'ambient-app-key',
+    OPENAI_API_KEY: 'sk-ambient-openai',
+    OPENROUTER_API_KEY: 'sk-or-ambient',
+    ANTHROPIC_AUTH_TOKEN: 'ambient-anthropic',
+    CLAUDE_CODE_OAUTH_TOKEN: 'ambient-oauth',
+    CLAUDE_CONFIG_DIR: '/home/weaver/.claude',
+    CODEX_HOME: '/home/weaver/.codex',
+    Z_AI_API_KEY: 'ambient-zai',
+    REGISTERED_ONLY: 'ambient-copy-of-an-executor-secret',
+    GIT_AUTHOR_NAME: 'ordinary git configuration',
+  };
+  const previous = Object.fromEntries(Object.keys(ambient).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, ambient);
+  setExecutorSecret('REGISTERED_ONLY', 'executor-only-value');
+  try {
+    const env = engineCommandEnv({
+      WORKER_DEPLOY_TOKEN: 'selected',
+      // An operator-selected worker secret may carry a provider-looking name.
+      OPENAI_API_KEY: 'selected-worker-openai-key',
+      WEAVER_STORE: 'weaver-test-sentinel:reintroduced',
+      WEAVER_GITHUB_APP_ID: '1',
+      REGISTERED_ONLY: 'reintroduced',
+    });
+    for (const name of [
+      'WEAVER_STORE', 'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64', 'WEAVER_GITHUB_APP_ID', 'OPENROUTER_API_KEY',
+      'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'Z_AI_API_KEY', 'REGISTERED_ONLY',
+    ]) {
+      assert.equal(env[name], undefined, `${name} must not reach an engine command`);
+    }
+    assert.equal(env.OPENAI_API_KEY, 'selected-worker-openai-key', 'the selection wins over the stripped ambient value');
+    assert.equal(env.WORKER_DEPLOY_TOKEN, 'selected');
+    assert.equal(env.GIT_AUTHOR_NAME, 'ordinary git configuration');
+    assert.equal(env.PATH, process.env.PATH);
+    assert.equal(env.HOME, process.env.HOME);
+    assert.equal(isHarnessInternalEnvName('ANTHROPIC_BASE_URL'), true);
+    assert.equal(isHarnessInternalEnvName('GH_TOKEN'), false, 'a minted GitHub token is selected per action, never stripped');
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });

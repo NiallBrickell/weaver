@@ -69,9 +69,29 @@ is written into its URL, Git configuration, credential store, or command line.
 
 ## Runtime boundary
 
-- Ordinary OpenHands workers receive neither the App private key nor an
-  installation token. They work from the controller's mounted checkout and
-  cannot push to GitHub.
+- Ordinary workers — the OpenHands container and the containerized Claude
+  worker — receive neither the App private key nor an installation token.
+  They work from the controller's mounted checkout and cannot push to GitHub.
+- A worker is never given Weaver's state or a credential store as a
+  directory. Container executors mount worker directories read-write, so
+  Weaver refuses any working or source directory that is, contains, or sits
+  under `WEAVER_HOME` (which holds the executor-only secret store with the App
+  key), `/etc/weaver`, the running Weaver checkout itself, the runner user's
+  `~/.ssh`, `~/.config`, `~/.weaver`, `~/.claude` or `~/.codex`, the Docker
+  socket, or `/proc`, as well as `/` and the home directory themselves.
+  Symlinks are resolved first. The workspace
+  root (`WEAVER_WORKSPACE_ROOT`) stays usable even when it lives inside
+  `WEAVER_HOME`. The coordinator is refused when it records such an
+  assignment, and the execution host refuses it again before launch — an
+  older queued assignment fails with no attempt and wakes the coordinator to
+  re-dispatch it against a checkout, worktree, or clone.
+- Engine-run commands — an approved `exec_run`, its preflight and readback,
+  and Weaver's own `git`/`gh` probes in a checkout — run with the runner's
+  ordinary environment (`PATH`, `HOME`, Git and `gh` configuration) minus
+  `WEAVER_STORE`, the `WEAVER_GITHUB_APP_*` identity, every executor-only
+  secret name, and every model/provider credential. They then receive exactly
+  the action's applicable secrets and the token minted for that action, so an
+  approved command can push but can never write to the shared store directly.
 - Hosted runners set `WEAVER_DETERMINISTIC_ACTIONS_ONLY=1`. A model process
   sharing the controller Unix identity could otherwise read the App key, so
   hosted repo egress must be an exact `exec_run` command. After approval and
@@ -88,9 +108,14 @@ is written into its URL, Git configuration, credential store, or command line.
   command. Merely using `gh`, `git fetch`, or another Git remote read does not
   receive write scope. Readback cannot push even if its shell command is wrong.
 - Tokens are cached only by repository and permission scope, and never beyond
-  five minutes before GitHub's expiry. A fresh action run lasts at most forty
-  awake minutes; deterministic hosted commands are bounded to two minutes and
-  readback mints independently afterward.
+  five minutes before GitHub's expiry. An action's preflight, execution, and
+  readback additionally require at least fifteen minutes of remaining
+  lifetime and mint a fresh token otherwise, so a token cannot expire during a
+  deterministic command (bounded to two minutes) or a readback retrying
+  through a transient GitHub failure.
+- Only the installation token itself is scrubbed from captured action output.
+  The Git plumbing beside it (`GIT_CONFIG_*`, such as the literal `true` that
+  enables `useHttpPath`) is public configuration and is never redacted.
 - Failure never falls back to a static `GH_TOKEN`, `GITHUB_TOKEN`, a `gh`
   login, or another App. A proven checkout, credential, or installation-scope
   configuration failure durably fails the action before its one-shot claim

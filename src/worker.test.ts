@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { generateKeyPairSync } from 'node:crypto';
 import { describe, it, test } from 'node:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -18,6 +19,7 @@ import {
   workerExceptionReason,
 } from './worker.js';
 import { removeSecret, setExecutorSecret, setSecret } from './secrets.js';
+import { __resetGitHubAppForTests, __setGitHubAppTestDependencies, githubAppConfigured } from './githubApp.js';
 import { arrive, createWorkstream, load, readArtifact } from './store.js';
 import { virtualNow } from './clock.js';
 import type { InfrastructureWait } from './types.js';
@@ -1012,6 +1014,7 @@ function workerHome(): string {
 
 test('model-backed claims honor exact runner placement and keep unplaced work backward-compatible', async () => {
   const home = workerHome();
+  const checkout = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-runner-placement-checkout-'));
   process.env.WEAVER_RUNNER_ID = 'mac-studio';
   delete process.env.WEAVER_RUNNER_PLACEMENT_ONLY;
   const invoked: string[] = [];
@@ -1051,7 +1054,7 @@ test('model-backed claims honor exact runner placement and keep unplaced work ba
           briefing: `brief ${id}`,
           kind: 'work',
           ...(runnerId ? { runnerId } : {}),
-          readDirs: [home],
+          readDirs: [checkout],
           acceptanceCriteria: ['submit evidence'],
           dependsOn: [],
           state: 'queued',
@@ -1077,6 +1080,7 @@ test('model-backed claims honor exact runner placement and keep unplaced work ba
     delete process.env.WEAVER_RUNNER_PLACEMENT_ONLY;
     delete process.env.WEAVER_HOME;
     fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(checkout, { recursive: true, force: true });
   }
 });
 
@@ -1738,3 +1742,151 @@ test('WEAVER_WORKSPACE_ROOT places neutral workspaces on a persistent hosted vol
     fs.rmSync(volume, { recursive: true, force: true });
   }
 });
+
+test('a legacy assignment naming the state directory fails before launch with no Attempt', async () => {
+  const home = workerHome();
+  const opt = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-legacy-opt-'));
+  const alias = path.join(opt, 'state-alias');
+  fs.symlinkSync(home, alias);
+  fs.writeFileSync(path.join(home, 'executor-secrets.env'), 'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64=never-mounted\n');
+  let launches = 0;
+  const executor: WorkerExecutor = {
+    async execute() {
+      launches += 1;
+      return { costUsd: 0 };
+    },
+  };
+  try {
+    await createWorkstream({
+      slug: 'worker-refused-directory', title: 'Refused directory',
+      objective: 'fail closed before mounting state', tags: [], successCriteria: [],
+      constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    // The 2026-09-14 shape: recorded before the creation-time check existed,
+    // naming a harmless checkout first and the state directory after it.
+    await arrive('worker-refused-directory', (doc) => {
+      for (const [id, readDirs] of [['asg_state_dir', [opt, home]], ['asg_state_alias', [alias]]] as const) {
+        doc.assignments.push({
+          id, objective: 'inspect runner state', briefing: 'Read the runner state directory.',
+          kind: 'work', readDirs: [...readDirs], acceptanceCriteria: ['cite evidence'], dependsOn: [],
+          state: 'queued', attempts: [], adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+        });
+      }
+    });
+
+    assert.equal(await runWorker('worker-refused-directory', 'asg_state_dir', executor), false);
+    assert.equal(await runWorker('worker-refused-directory', 'asg_state_alias', executor), false);
+    assert.equal(launches, 0, 'no model process is launched');
+    const doc = await load('worker-refused-directory');
+    for (const id of ['asg_state_dir', 'asg_state_alias']) {
+      const assignment = doc.assignments.find((candidate) => candidate.id === id)!;
+      assert.equal(assignment.state, 'failed');
+      assert.equal(assignment.attempts.length, 0, 'no Attempt is started');
+    }
+    const refusals = doc.events.filter((event) => event.type === 'assignment.directory_refused');
+    assert.equal(refusals.length, 2);
+    assert.match(refusals[0]!.summary, new RegExp(`asg_state_dir failed closed before launch: its directory '${escapeRegExp(home)}' is Weaver's state directory`));
+    assert.match(refusals[1]!.summary, /asg_state_alias failed closed before launch: .* is Weaver's state directory .* \(it resolves to /);
+    const wakes = doc.wakes.filter((wake) => wake.reason.includes('refused before launch'));
+    assert.equal(wakes.length, 2);
+    assert.equal(wakes[0]!.condition.type, 'immediate');
+    assert.match(wakes[0]!.reason, /No model process or Attempt was started\. Dispatch replacement work that names the repository checkout/);
+    assert.deepEqual(doc.attention, [], 'a directory repair belongs to the coordinator, not Needs You');
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(opt, { recursive: true, force: true });
+  }
+});
+
+test('a work container on a GitHub App host receives no GitHub token, Git credential plumbing, or runner secret', async () => {
+  const home = workerHome();
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-app-host-work-'));
+  const logs = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-app-host-docker-'));
+  const fakeDocker = path.join(logs, 'docker');
+  fs.writeFileSync(fakeDocker, `#!/bin/bash
+if [ "$1" = run ]; then env > "${logs}/env.log"; printf '%s\\n' "$@" > "${logs}/args.log"; fi
+exit 0
+`, { mode: 0o755 });
+  const ambientNames = ['WEAVER_STORE', 'OPENROUTER_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN'] as const;
+  const previous = Object.fromEntries(ambientNames.map((name) => [name, process.env[name]]));
+  // Never a database URL: getStore() falls back to the fs backend for an
+  // unknown scheme, so this test cannot reach any real store.
+  process.env.WEAVER_STORE = 'weaver-test-sentinel:store-write-secret-9931';
+  process.env.OPENROUTER_API_KEY = 'sk-or-ambient-provider-key';
+  process.env.GH_TOKEN = 'ghp_ambient-operator-token';
+  process.env.GITHUB_TOKEN = 'ghp_ambient-operator-token-2';
+  const appKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
+    .export({ type: 'pkcs8', format: 'pem' }).toString();
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret('WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64', Buffer.from(appKey).toString('base64'));
+  let mints = 0;
+  __setGitHubAppTestDependencies({
+    fetch: (async () => {
+      mints += 1;
+      throw new Error('ordinary work must never mint a GitHub token');
+    }) as typeof globalThis.fetch,
+  });
+  const runQuery = (async function* (input: { options: Record<string, unknown> }) {
+    const spawnClaude = input.options.spawnClaudeCodeProcess as (options: Record<string, unknown>) => {
+      once(event: 'exit', listener: () => void): void;
+    };
+    const child = spawnClaude({
+      command: '/opt/weaver/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude',
+      args: ['--output-format', 'stream-json'],
+      cwd: input.options.cwd,
+      env: input.options.env,
+      signal: new AbortController().signal,
+    });
+    await new Promise<void>((resolve) => child.once('exit', resolve));
+    yield { type: 'result', subtype: 'success', session_id: 'container-session', total_cost_usd: 0 };
+  }) as never;
+  const executor = new LocalSdkExecutor({
+    container: { image: 'example.test/worker:1', dockerCommand: fakeDocker, hostGatewayIp: '10.170.0.2' },
+    runQuery,
+  });
+  try {
+    assert.equal(githubAppConfigured(), true, 'the host has a complete GitHub App identity');
+    await createWorkstream({
+      slug: 'worker-app-host', title: 'App host work', objective: 'prove the container boundary',
+      tags: [], successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    setSecret('READONLY_API_TOKEN', 'selected-container-value-6617', 'worker-app-host');
+    await arrive('worker-app-host', (doc) => doc.assignments.push({
+      id: 'asg_app_host', objective: 'fix a bug in the checkout',
+      briefing: 'Edit the checkout; pushing is a separate action.',
+      kind: 'work', credentialNames: ['READONLY_API_TOKEN'], readDirs: [workspace],
+      acceptanceCriteria: ['tests pass'], dependsOn: [], state: 'queued', attempts: [],
+      adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    }));
+
+    assert.equal(await runWorker('worker-app-host', 'asg_app_host', executor), true);
+
+    assert.equal(mints, 0, 'no GitHub token is minted for ordinary work');
+    const dockerEnv = fs.readFileSync(path.join(logs, 'env.log'), 'utf8');
+    const dockerArgs = fs.readFileSync(path.join(logs, 'args.log'), 'utf8').split('\n');
+    const forwarded = dockerArgs.filter((_, index) => dockerArgs[index - 1] === '--env');
+    assert.ok(forwarded.includes('READONLY_API_TOKEN'), 'the declared credential still crosses by name');
+    assert.match(dockerEnv, /^READONLY_API_TOKEN=selected-container-value-6617$/m);
+    for (const name of forwarded) {
+      assert.doesNotMatch(name, /^(GH_TOKEN|GITHUB_TOKEN|GIT_CONFIG_|GIT_TERMINAL_PROMPT|WEAVER_|OPENROUTER_)/, `${name} must not be forwarded`);
+    }
+    assert.doesNotMatch(dockerEnv, /^(GH_TOKEN|GITHUB_TOKEN|GIT_CONFIG_[A-Z0-9_]*|WEAVER_STORE|WEAVER_GITHUB_APP_[A-Z_]*|OPENROUTER_API_KEY)=/m);
+    assert.doesNotMatch(dockerArgs.join('\n'), /store-write-secret|ambient-operator-token|sk-or-ambient|PRIVATE KEY/);
+  } finally {
+    __resetGitHubAppForTests();
+    for (const name of ambientNames) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+    fs.rmSync(logs, { recursive: true, force: true });
+  }
+});
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

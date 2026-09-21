@@ -25,9 +25,11 @@
  * gateway, as OpenHands does), and the SDK's own CLAUDE_CODE_* / ANTHROPIC_*
  * protocol variables. Nothing else from the runner's environment (WEAVER_STORE,
  * DOCKER_HOST, OPENROUTER_API_KEY, the GitHub App identity) can reach it, and
- * /home/weaver/state is not mounted. The SDK's in-process `weaver` MCP server
- * (submit_result / append_section) and the harness's stdio control protocol
- * ride the container's stdin/stdout unchanged.
+ * no mounted directory may be, contain, or sit under WEAVER_HOME or another
+ * credential store (workspaceMounts.ts refuses it before the plan exists).
+ * The SDK's in-process `weaver` MCP server (submit_result / append_section)
+ * and the harness's stdio control protocol ride the container's stdin/stdout
+ * unchanged.
  *
  * Secret values never appear in the container's argv: they travel in the
  * docker CLI's own environment and are forwarded by NAME (`--env NAME`).
@@ -45,6 +47,7 @@ import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import type { SpawnOptions, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 import { WORKER_MEMORY_LIMIT_ENV, workerMemoryLimitArgs } from './containerLimits.js';
 import { OPENHANDS_AGENT_SERVER_IMAGE, rewriteLoopbackHostsForContainer } from './openHands.js';
+import { assertWorkerDirectoriesAllowed } from './workspaceMounts.js';
 
 export interface ClaudeContainerConfig {
   /** Image the worker runs in. Defaults to the pinned OpenHands worker image,
@@ -141,6 +144,13 @@ export function planContainerRun(
     );
   }
   if (!isAbsolute(run.cwd)) throw new Error(`container worker cwd must be absolute, got ${JSON.stringify(run.cwd)}`);
+  for (const directory of run.additionalDirectories) {
+    if (!isAbsolute(directory)) throw new Error(`container worker source directory must be absolute, got ${JSON.stringify(directory)}`);
+  }
+  // Defence in depth behind the assignment-creation and worker-launch checks:
+  // the workspace is bound read-write, so neither it nor a declared source
+  // may be (or contain, or sit under) Weaver state or a credential store.
+  assertWorkerDirectoriesAllowed([run.cwd, ...run.additionalDirectories]);
   const memoryArgs = workerMemoryLimitArgs(config.memoryLimit);
 
   const env: Record<string, string> = {};
@@ -188,7 +198,6 @@ export function planContainerRun(
   ];
   const mounted = new Set<string>([resolve(run.cwd)]);
   for (const directory of run.additionalDirectories) {
-    if (!isAbsolute(directory)) throw new Error(`container worker source directory must be absolute, got ${JSON.stringify(directory)}`);
     const canonical = resolve(directory);
     if (mounted.has(canonical) || isWithin(run.cwd, canonical)) continue;
     mounted.add(canonical);

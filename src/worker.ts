@@ -10,7 +10,7 @@
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { virtualNow } from './clock.js';
 import { claudeContainerFromEnv } from './executor/claudeContainer.js';
 import { LocalSdkExecutor } from './executor/localSdk.js';
@@ -18,6 +18,7 @@ import { OpenHandsExecutor } from './executor/openHands.js';
 import { CodexExecutor } from './executor/codex.js';
 import { PiExecutor } from './executor/pi.js';
 import type { SubmitReply, SubmitSurface, WorkerExecutor } from './executor/types.js';
+import { workerDirectoryRefusal, workerWorkspaceRoot } from './executor/workspaceMounts.js';
 import { armWall } from './wall.js';
 import {
   capacityTargetKey,
@@ -239,12 +240,7 @@ ${SHARED_RULES}`;
 /** A stable, repo-context-free cwd for workers with no declared directories.
  * Persistent per stream, so clones made there survive across assignments. */
 export function neutralWorkspace(slug: string): string {
-  const configuredRoot = process.env.WEAVER_WORKSPACE_ROOT?.trim();
-  if (configuredRoot && !isAbsolute(configuredRoot)) {
-    throw new Error('WEAVER_WORKSPACE_ROOT must be an absolute path');
-  }
-  const root = configuredRoot || join(homedir(), '.weaver', 'workspaces');
-  const dir = join(root, slug);
+  const dir = join(workerWorkspaceRoot(), slug);
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -531,6 +527,32 @@ export async function runWorker(
     : fleetSteward
       ? neutralWorkspace(slug)
       : (readDirs[0] ?? neutralWorkspace(slug));
+  // Every directory below reaches the worker: container executors bind-mount
+  // them read-write. The coordinator refuses protected directories when it
+  // records intended work, but legacy assignments predate that check and this
+  // execution host's state root may differ from the coordinator's, so the
+  // authoritative check runs here, on the host that would mount them, before
+  // any Attempt exists.
+  const refusedDirectory = [workCwd, ...readDirs]
+    .map((directory) => ({ directory, refusal: workerDirectoryRefusal(directory) }))
+    .find(({ refusal }) => refusal !== null);
+  if (refusedDirectory) {
+    const reason = `its directory '${refusedDirectory.directory}' ${refusedDirectory.refusal}`;
+    await arrive(slug, (d, event) => {
+      const refused = d.assignments.find((candidate) => candidate.id === assignmentId);
+      if (!refused || refused.state !== 'queued') return;
+      refused.state = 'failed';
+      d.wakes.push({
+        id: newId('wake'),
+        reason: `Assignment ${assignmentId} was refused before launch because ${reason}. Worker directories are mounted into the worker read-write, so Weaver state, credential stores, and runner configuration are never worker context. No model process or Attempt was started. Dispatch replacement work that names the repository checkout, a worktree, or a clone under the workspace root instead.`,
+        condition: { type: 'immediate' },
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      });
+      event('assignment.directory_refused', `${assignmentId} failed closed before launch: ${reason}`, [assignmentId]);
+    });
+    return false;
+  }
   const harnessInputs: string[] = [];
   if (fleetSteward) {
     const fleetDocs: WorkstreamDoc[] = [];
