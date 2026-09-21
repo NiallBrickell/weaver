@@ -23,8 +23,8 @@
 import { compactAge } from './activity.js';
 import { operatorPublicOrigin } from './clerkOperatorAuth.js';
 import { virtualNow } from './clock.js';
-import { liveRunnerIds } from './coordinatorRunner.js';
 import { fleetIncidents } from './fleetHealth.js';
+import { FLEET_HEALTH_STALE_SECONDS, fleetHealthSnapshot } from './operatorUi.js';
 import { loadAllSecrets, loadExecutorSecrets, redactSecrets } from './secrets.js';
 import { listRunnerPresence, listWorkstreams, load, type RunnerPresence } from './store.js';
 import type { WorkstreamDoc } from './types.js';
@@ -133,28 +133,35 @@ export function answerCommands(need: FleetNeed, doc: WorkstreamDoc | undefined):
   return [];
 }
 
+/**
+ * The fleet verdict is /healthz/fleet's own (`fleetHealthSnapshot`): derived
+ * from committed output, never heartbeat liveness alone — a runner can beat
+ * every five seconds while dispatching nothing. The digest adds only the
+ * detail a person acts on: which runner, how stale, why it is degraded.
+ */
 function healthLine(input: DigestInput, clean: (value: string) => string): string {
-  const latest = new Map<string, RunnerPresence>();
-  for (const presence of input.presences) {
-    const seen = latest.get(presence.runnerId);
-    if (!seen || presence.heartbeatAt > seen.heartbeatAt) latest.set(presence.runnerId, presence);
-  }
-  const live = liveRunnerIds(input.presences, input.wallNow.getTime());
+  const nowMs = input.wallNow.getTime();
+  const snapshot = fleetHealthSnapshot(input.presences, nowMs);
+  const ago = (seconds: number) => compactAge(new Date(nowMs - seconds * 1_000).toISOString(), input.wallNow);
+  const current = snapshot.runners.filter((runner) => runner.heartbeat_age_seconds <= FLEET_HEALTH_STALE_SECONDS);
+  const healthy = current.filter((runner) => runner.degraded === null);
   const parts: string[] = [];
-  if (!live.length) {
-    const newest = [...latest.values()].sort((a, b) => b.heartbeatAt.localeCompare(a.heartbeatAt))[0];
-    parts.push(newest
-      ? `:red_circle: *no live runner* — last heartbeat ${compactAge(newest.heartbeatAt, input.wallNow)} ago from \`${clean(newest.runnerId)}\``
-      : ':red_circle: *no live runner* — no runner has published a heartbeat');
+  if (snapshot.ok) {
+    const lastPass = snapshot.last_completed_pass_age_seconds !== null
+      ? ` · last pass completed ${ago(snapshot.last_completed_pass_age_seconds)} ago`
+      : '';
+    parts.push(`:large_green_circle: fleet healthy — runner${healthy.length === 1 ? '' : 's'} ${healthy.map((runner) => `\`${clean(runner.id)}\``).join(', ')} live${lastPass}`);
   } else {
-    const healthy = live.filter((runnerId) => !latest.get(runnerId)?.degraded);
-    if (healthy.length) {
-      parts.push(`:large_green_circle: runner${healthy.length === 1 ? '' : 's'} ${healthy.map((id) => `\`${clean(id)}\``).join(', ')} live`);
+    parts.push(`:red_circle: *fleet unhealthy* — ${snapshot.problems.map(clean).join('; ')}`);
+    if (!healthy.length) {
+      const newest = [...snapshot.runners].sort((a, b) => a.heartbeat_age_seconds - b.heartbeat_age_seconds)[0];
+      parts.push(newest
+        ? `last heartbeat ${ago(newest.heartbeat_age_seconds)} ago from \`${clean(newest.id)}\``
+        : 'no runner has ever published a heartbeat');
     }
-    for (const runnerId of live) {
-      const degraded = latest.get(runnerId)?.degraded;
-      if (degraded) parts.push(`:warning: runner \`${clean(runnerId)}\` is *degraded* and dispatches nothing: ${clean(firstLine(degraded, MAX_REASON_CHARS))}`);
-    }
+  }
+  for (const runner of current) {
+    if (runner.degraded) parts.push(`:warning: runner \`${clean(runner.id)}\` is *degraded* and dispatches nothing: ${clean(firstLine(runner.degraded, MAX_REASON_CHARS))}`);
   }
   const incidents = fleetIncidents(input.docs);
   for (const incident of incidents) parts.push(`:warning: *${clean(incident.title)}* — ${clean(firstLine(incident.detail, MAX_REASON_CHARS))}`);

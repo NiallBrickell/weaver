@@ -14,9 +14,11 @@ London time.
 The digest is rendered from Weaver's typed state with no model involved, so it
 can never contain a summary that is not backed by a record:
 
-- **Health** — whether a runner is live, whether it has published itself
-  degraded (for example a full disk), and any fleet-wide incident such as the
-  approval service being unreachable.
+- **Health** — the same verdict [`/healthz/fleet`](./fleet-health.md) pages
+  on, so a heartbeat alone never reads as healthy: whether a runner is live,
+  whether due work is actually being served, which runner has published
+  itself degraded (for example a full disk) and why, and any fleet-wide
+  incident such as the approval service being unreachable.
 - **Needs you** — the same queue, in the same order, as the workspace's fleet
   board: blockers first, then approvals, actions, and sends, oldest first.
   Paused Workstreams are left out, exactly as they are on the board. Each item

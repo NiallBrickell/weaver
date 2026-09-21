@@ -209,11 +209,22 @@ test('closed facts come from typed state inside the last 24 hours only', () => {
   assert.doesNotMatch(digest.text, /Concluded long ago|Ancient question|Unconfirmed push/);
 });
 
-test('health names a missing runner, a degraded runner, and fleet incidents', () => {
+test('health uses the /healthz/fleet verdict and names a missing runner, a degraded runner, stalled output, and incidents', () => {
   const dark = renderDigest(input(busyFleet(), {
     presences: [{ runnerId: 'weaver-fleet', heartbeatAt: ago(3) }],
   }));
-  assert.match(dark.text, /\*Health\* — :red_circle: \*no live runner\* — last heartbeat 3h ago from `weaver-fleet`/);
+  assert.match(dark.text, /\*Health\* — :red_circle: \*fleet unhealthy\* — no runner has a healthy heartbeat · last heartbeat 3h ago from `weaver-fleet`/);
+
+  // A fresh heartbeat is not health: the runner's own observed output decides.
+  const stalled = renderDigest(input(busyFleet(), {
+    presences: [{
+      runnerId: 'weaver-fleet',
+      heartbeatAt: NOW.toISOString(),
+      output: { observedAt: NOW.toISOString(), oldestUnservedDueAt: ago(2), capacityBlocked: 0 },
+    }],
+  }));
+  assert.match(stalled.text, /:red_circle: \*fleet unhealthy\* — due work has not been served for over an hour/);
+  assert.doesNotMatch(stalled.text, /fleet healthy/);
 
   const pilotOut = doc('pilot-out');
   pilotOut.assignments.push(gatedAction('asg_p', 'x', ago(2), {
@@ -222,11 +233,18 @@ test('health names a missing runner, a degraded runner, and fleet incidents', ()
   const degraded = renderDigest(input([...busyFleet(), pilotOut], {
     presences: [{ runnerId: 'weaver-fleet', heartbeatAt: NOW.toISOString(), degraded: 'state directory has 0 bytes free' }],
   }));
+  assert.match(degraded.text, /:red_circle: \*fleet unhealthy\* — no runner has a healthy heartbeat/);
   assert.match(degraded.text, /runner `weaver-fleet` is \*degraded\* and dispatches nothing: state directory has 0 bytes free/);
   assert.match(degraded.text, /:warning: \*Approval service unavailable\*/);
 
-  const healthy = renderDigest(input(busyFleet()));
-  assert.match(healthy.text, /\*Health\* — :large_green_circle: runner `weaver-fleet` live · no fleet incidents/);
+  const healthy = renderDigest(input(busyFleet(), {
+    presences: [{
+      runnerId: 'weaver-fleet',
+      heartbeatAt: NOW.toISOString(),
+      output: { observedAt: NOW.toISOString(), lastCompletedPassAt: ago(1), capacityBlocked: 0 },
+    }],
+  }));
+  assert.match(healthy.text, /\*Health\* — :large_green_circle: fleet healthy — runner `weaver-fleet` live · last pass completed 1h ago · no fleet incidents/);
 });
 
 test('an empty needs list with nothing closed skips posting without contacting Slack', async () => {
