@@ -23,6 +23,7 @@ import { RUNNER_PRESENCE_TTL_MS, coordinatorRunnerEligibility } from './coordina
 import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
 import { runnerOutput } from './fleetHealth.js';
 import { sweepPrConflicts } from './prConflicts.js';
+import { sweepAttentionReadbacks } from './attentionReadback.js';
 import { sdkEnv } from './secrets.js';
 import {
   arrive,
@@ -317,7 +318,11 @@ export async function fleetRecoveredSlugs(cache = new RunnerWorkstreamCache()): 
     if (d.workstream.status !== 'active') continue;
     const targets: CapacityTarget[] = [];
     for (const entry of Object.values(d.capacity?.byModel ?? {})) {
-      if (entry.wait.retryAt <= now) continue; // already due — its own tick retries
+      // Already due — its own tick retries, so routing needs no release. The
+      // capacity CARD is a separate question: the attention readback sweep
+      // closes it from the same ledger whether or not the wait is due, and
+      // for paused streams too (attentionReadback.ts).
+      if (entry.wait.retryAt <= now) continue;
       const target = targetOfWait(entry.wait);
       if (!target) continue; // ambiguous legacy wait: never guess a pool
       if (supersededByFleetRecovery(ledger, target, entry.wait.detectedAt)) targets.push(target);
@@ -884,6 +889,10 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   // Open-PR conflict watch throttle (see prConflicts.ts). Runner memory only.
   const prConflictProbedAt = new Map<string, number>();
   let prConflictSweepInFlight = false;
+  // Needs-you readback throttle (attention id → next external read; see
+  // attentionReadback.ts). Runner memory only: a restart checks once more.
+  const attentionNextCheckAt = new Map<string, number>();
+  let attentionSweepInFlight = false;
   let probing = false;
   let lastCredMtime = credentialsMtime();
   // Presence carries this host's coordinator seats so a standby can tell a
@@ -1003,6 +1012,17 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       const docs = await workstreams.scan();
       dispatches.retain(new Set(docs.keys()));
       lastOutput = runnerOutput(docs.values());
+      // Needs-you cards whose declared facts now hold (a PR merged, a Sentry
+      // issue resolved, a capacity ask made moot) close themselves. Provider
+      // reads run off the loop, one sweep at a time, over THIS scan's cached
+      // bodies — paused and idle streams included, since nothing ticks them —
+      // so no document is re-read for it.
+      if (!attentionSweepInFlight) {
+        attentionSweepInFlight = true;
+        void sweepAttentionReadbacks(docs, attentionNextCheckAt, log)
+          .catch((e) => logError(`[run] attention readback sweep failed: ${e instanceof Error ? e.message : e}`))
+          .finally(() => { attentionSweepInFlight = false; });
+      }
       const presences = await listRunnerPresence();
       // The store answered a full scan: any running outage clock stops here.
       outageSince = null;

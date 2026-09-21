@@ -1247,6 +1247,84 @@ test('runWorker refuses a legacy queued action that already has an attempt', asy
   }
 });
 
+test('a submitted worker attempt on any target closes open worker capacity cards only', async () => {
+  const home = workerHome();
+  try {
+    await runningWorker('worker-flowing');
+    await arrive('worker-flowing', (d) => {
+      const createdAt = new Date(Date.now() - 60 * 60_000).toISOString();
+      d.attention.push({
+        id: 'att_worker_pool', kind: 'capacity', status: 'open', createdAt,
+        summary: 'OpenRouter capacity via openhands (openrouter/z-ai/glm-5.3/usage_limit) has blocked work 12 times.',
+        resolvesWhen: { any: [{ kind: 'capacity_target_unblocked', role: 'worker', target: { executor: 'openhands', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.3' } }] },
+      }, {
+        id: 'att_coordinator_pool', kind: 'capacity', status: 'open', createdAt,
+        summary: 'Claude capacity via local-sdk (claude-fable-5/auth) has blocked work 1 times.',
+        resolvesWhen: { any: [{ kind: 'capacity_target_unblocked', role: 'coordinator', target: { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' } }] },
+      });
+    });
+    const before = await load('worker-flowing');
+    await finalizeWorkerRun('worker-flowing', 'asg_worker', 'run_worker', {
+      submitted: true,
+      costUsd: 0,
+      infrastructure: null,
+      capacityTarget: { executor: 'openhands', provider: 'moonshot', model: 'kimi-k3' },
+    });
+    const doc = await load('worker-flowing');
+    const worker = doc.attention.find((item) => item.id === 'att_worker_pool')!;
+    assert.equal(worker.status, 'resolved');
+    assert.equal(worker.resolvedBy, 'engine:capacity-recovered');
+    assert.match(worker.resolution!.evidence[0]!.observed, /worker attempt run_worker on asg_worker submitted on openhands:moonshot:kimi-k3/);
+    assert.equal(doc.attention.find((item) => item.id === 'att_coordinator_pool')!.status, 'open', 'worker progress never answers a coordinator pool');
+    assert.equal(doc.spend.humanInterventions, before.spend.humanInterventions);
+    assert.ok(doc.events.some((event) => event.type === 'attention.capacity_recovered'));
+  } finally {
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a worker target limit with a free fallback target opens no new capacity card', async () => {
+  const home = workerHome();
+  const saved = { WEAVER_EXECUTOR: process.env.WEAVER_EXECUTOR, WEAVER_WORKER_MODEL: process.env.WEAVER_WORKER_MODEL, WEAVER_WORKER_FALLBACKS: process.env.WEAVER_WORKER_FALLBACKS };
+  try {
+    process.env.WEAVER_EXECUTOR = 'local-sdk';
+    process.env.WEAVER_WORKER_MODEL = 'sonnet';
+    process.env.WEAVER_WORKER_FALLBACKS = 'local-sdk:claude-opus-5';
+    await runningWorker('worker-degraded');
+    const auth: InfrastructureWait = {
+      kind: 'auth', recovery: 'reauthenticate', source: 'worker', sourceId: 'run_worker',
+      model: 'sonnet', executor: 'local-sdk', provider: 'anthropic',
+      detectedAt: virtualNow().toISOString(),
+      retryAt: new Date(virtualNow().getTime() + 60_000).toISOString(),
+    };
+    await finalizeWorkerRun('worker-degraded', 'asg_worker', 'run_worker', {
+      submitted: false, costUsd: 0, infrastructure: auth,
+      capacityTarget: { executor: 'local-sdk', provider: 'anthropic', model: 'sonnet' },
+    });
+    const degraded = await load('worker-degraded');
+    assert.equal(Object.values(degraded.capacity!.byModel)[0]!.consecutiveBackoffs, 1);
+    assert.equal(degraded.attention.length, 0, 'the fallback target carries the assignment; no card');
+
+    process.env.WEAVER_WORKER_FALLBACKS = '';
+    await runningWorker('worker-blocked');
+    await finalizeWorkerRun('worker-blocked', 'asg_worker', 'run_worker', {
+      submitted: false, costUsd: 0, infrastructure: { ...auth },
+      capacityTarget: { executor: 'local-sdk', provider: 'anthropic', model: 'sonnet' },
+    });
+    const blocked = await load('worker-blocked');
+    assert.equal(blocked.attention.filter((item) => item.kind === 'capacity').length, 1, 'no fallback: the auth card opens at once');
+    assert.equal(blocked.attention[0]!.resolvesWhen!.any[0]!.kind, 'capacity_target_unblocked');
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('ordinary no-submission remains a failed assignment with immediate reconciliation', async () => {
   const home = workerHome();
   try {

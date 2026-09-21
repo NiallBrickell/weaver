@@ -16,6 +16,7 @@ import {
   runCoordinatorPass,
 } from './coordinator.js';
 import { FLEET_ATTENTION_STEWARD_SOURCE_KEY } from './fleetHealth.js';
+import { buildProjection } from './projection.js';
 import { createOrGetFleetAttentionStewardWorkstream } from './ingress.js';
 import { arrive, createWorkstream, findBySourceKey, heartbeatRunner, load, writeArtifact } from './store.js';
 import { setSecret } from './secrets.js';
@@ -609,6 +610,128 @@ for (const ending of ['no_finish', 'conflicted'] as const) {
     if (ending === 'conflicted') assert.equal(doc.wakes.find((wake) => wake.id === 'wake_concurrent')!.status, 'pending');
   });
 }
+
+test('a completed pass on any seat closes open coordinator capacity cards but keeps the pools\' backoff records', async () => {
+  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = 'claude-opus-5';
+  // Twelve primary usage limits raise the card while no fallback is free.
+  await backoff('usage_limit', 12);
+  // A worker capacity card on the same workstream must NOT be closed by
+  // coordinator progress — rule (ii) is role-scoped.
+  await arrive('coordinator-capacity', (doc) => {
+    doc.attention.push({
+      id: 'att_worker_capacity', kind: 'capacity', summary: 'OpenRouter capacity via openhands (m/usage_limit) has blocked work 12 times.',
+      status: 'open', createdAt: new Date().toISOString(),
+      resolvesWhen: { any: [{ kind: 'capacity_target_unblocked', role: 'worker', target: { executor: 'openhands', provider: 'openrouter', model: 'm' } }] },
+    });
+  });
+  const parked = await load('coordinator-capacity');
+  const card = parked.attention.find((item) => item.kind === 'capacity' && item.id !== 'att_worker_capacity')!;
+  assert.deepEqual(card.resolvesWhen, { any: [{
+    kind: 'capacity_target_unblocked', role: 'coordinator',
+    target: { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' },
+  }] }, 'new capacity cards declare their typed fact');
+  const interventionsBefore = parked.spend.humanInterventions;
+
+  const result = await runCoordinatorPass('coordinator-capacity', ['continue on fallback'], {
+    id: 'local-sdk', async execute(req) {
+      assert.equal(req.model, 'claude-opus-5', 'the limited primary is still skipped');
+      await req.tools.find((tool) => tool.name === 'finish_pass')!.handler({ summary: 'Reconciled on the fallback.' }, {});
+      return { costUsd: 0 };
+    },
+  });
+  assert.equal(result.outcome, 'completed');
+  const doc = await load('coordinator-capacity');
+  const closed = doc.attention.find((item) => item.id === card.id)!;
+  assert.equal(closed.status, 'resolved');
+  assert.equal(closed.resolvedBy, 'engine:capacity-recovered');
+  assert.match(closed.resolution!.evidence[0]!.observed, new RegExp(`coordinator pass ${result.passId} completed on local-sdk:anthropic:claude-opus-5`));
+  assert.equal(doc.attention.find((item) => item.id === 'att_worker_capacity')!.status, 'open');
+  assert.deepEqual(doc.capacity, parked.capacity, 'the primary pool is still limited for routing');
+  assert.equal(doc.spend.humanInterventions, interventionsBefore);
+  assert.ok(doc.events.some((event) => event.type === 'attention.capacity_recovered'));
+});
+
+test('a limited seat with a free fallback opens no new capacity card; an open one is still refreshed', async () => {
+  for (let index = 1; index <= 13; index++) {
+    await arrive('coordinator-capacity', (doc) => {
+      recordCoordinatorCapacityBackoff(doc, wait('usage_limit', index), `wake_${index}`, { fallbackAvailable: true });
+    });
+  }
+  let doc = await load('coordinator-capacity');
+  assert.equal(Object.values(doc.capacity!.byModel)[0]!.consecutiveBackoffs, 13, 'the typed backoff streak is still recorded');
+  assert.equal(doc.attention.length, 0, 'degradation onto a free fallback is not a needs-you card');
+
+  // Chain exhausted → the card opens; a later failure with a free fallback
+  // refreshes that open card rather than hiding it.
+  await arrive('coordinator-capacity', (d) => recordCoordinatorCapacityBackoff(d, wait('usage_limit', 14), 'wake_14'));
+  await arrive('coordinator-capacity', (d) => recordCoordinatorCapacityBackoff(d, wait('usage_limit', 15), 'wake_15', { fallbackAvailable: true }));
+  doc = await load('coordinator-capacity');
+  assert.equal(doc.attention.length, 1);
+  assert.equal(doc.attention[0]!.refId, 'wake_15');
+  assert.match(doc.attention[0]!.summary, /blocked work 15 times/);
+});
+
+test('raise_attention stores validated resolves_when facts and refuses unknown or malformed ones', async () => {
+  const replies: Array<{ label: string; isError?: boolean; text: string }> = [];
+  let description = '';
+  await runCoordinatorPass('coordinator-capacity', ['manual'], {
+    id: 'local-sdk',
+    async execute(req) {
+      const raise = req.tools.find((tool) => tool.name === 'raise_attention')!;
+      description = raise.description;
+      const call = async (label: string, args: Record<string, unknown>) => {
+        const reply = await raise.handler(args, {});
+        replies.push({ label, isError: reply.isError, text: JSON.stringify(reply.content) });
+      };
+      await call('valid', {
+        kind: 'review',
+        summary: 'Merge erdoai/erdo#2686, or clear the Vercel block first?',
+        resolves_when: [
+          { kind: 'github_pr_state', repo: 'erdoai/erdo', number: 2686, states: ['MERGED', 'CLOSED'] },
+          { kind: 'sentry_issue_status', org: 'erdo', shortId: 'go-zx', statuses: ['resolved'] },
+        ],
+      });
+      await call('unknown kind', { kind: 'blocker', summary: 'x', resolves_when: [{ kind: 'linear_issue_state', id: 'ENG-1' }] });
+      await call('bad repo', { kind: 'blocker', summary: 'x', resolves_when: [{ kind: 'github_pr_state', repo: 'erdo', number: 1, states: ['MERGED'] }] });
+      await call('bad number', { kind: 'blocker', summary: 'x', resolves_when: [{ kind: 'github_pr_state', repo: 'erdoai/erdo', number: -3, states: ['MERGED'] }] });
+      await call('bad short id', { kind: 'blocker', summary: 'x', resolves_when: [{ kind: 'sentry_issue_status', org: 'erdo', shortId: 'nope nope', statuses: ['resolved'] }] });
+      await call('capacity is harness-owned', { kind: 'blocker', summary: 'x', resolves_when: [{ kind: 'capacity_target_unblocked', role: 'worker', target: { executor: 'a', provider: 'b', model: 'c' } }] });
+      await call('too many', { kind: 'blocker', summary: 'x', resolves_when: Array.from({ length: 6 }, (_, i) => ({ kind: 'github_pr_state', repo: 'erdoai/erdo', number: i + 1, states: ['MERGED'] })) });
+      await call('plain', { kind: 'blocker', summary: 'A plain card that mentions PR #2686 in prose only.' });
+      await req.tools.find((tool) => tool.name === 'finish_pass')!.handler({ summary: 'Raised cards.' }, {});
+      return { costUsd: 0 };
+    },
+  });
+  assert.match(description, /declare it in resolves_when so the card closes itself/);
+  assert.equal(replies.find((r) => r.label === 'valid')!.isError, undefined);
+  assert.match(replies.find((r) => r.label === 'valid')!.text, /closes itself when erdoai\/erdo#2686 is MERGED or CLOSED or Sentry erdo\/GO-ZX is resolved/);
+  for (const [label, message] of [
+    ['unknown kind', /not a known fact/],
+    ['bad repo', /owner\/name/],
+    ['bad number', /positive integer/],
+    ['bad short id', /short id/],
+    ['capacity is harness-owned', /harness-owned/],
+    ['too many', /at most 5/],
+  ] as const) {
+    const reply = replies.find((r) => r.label === label)!;
+    assert.equal(reply.isError, true, label);
+    assert.match(reply.text, message, label);
+    assert.match(reply.text, /nothing was raised/, label);
+  }
+  const doc = await load('coordinator-capacity');
+  assert.equal(doc.attention.length, 2, 'refused declarations raise nothing');
+  const declared = doc.attention.find((item) => item.kind === 'review')!;
+  assert.deepEqual(declared.resolvesWhen, { any: [
+    { kind: 'github_pr_state', repo: 'erdoai/erdo', number: 2686, states: ['MERGED', 'CLOSED'] },
+    { kind: 'sentry_issue_status', org: 'erdo', shortId: 'GO-ZX', statuses: ['resolved'] },
+  ] });
+  const plain = doc.attention.find((item) => item.kind === 'blocker')!;
+  assert.equal(plain.resolvesWhen, undefined, 'prose mentioning a PR binds nothing');
+
+  const projection = buildProjection(doc, ['manual'], []);
+  assert.match(projection, new RegExp(`${declared.id} \\[review\\] .* — closes itself when erdoai/erdo#2686 is MERGED or CLOSED or Sentry erdo/GO-ZX is resolved`));
+  assert.doesNotMatch(projection, new RegExp(`${plain.id} \\[blocker\\] .*closes itself`));
+});
 
 test('an SDK limit after a successful finish keeps its new retry wake', async () => {
   await runCoordinatorPass('coordinator-capacity', ['real work'], {

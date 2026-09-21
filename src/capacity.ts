@@ -15,8 +15,10 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import type {
   Assignment,
+  AttentionItem,
   CapacityBackoff,
   CapacityCategory,
+  ExternalFact,
   InfrastructureRecovery,
   InfrastructureWait,
   ProviderCapacityObservation,
@@ -844,22 +846,68 @@ export function retryCapacityTargetNow(
   return true;
 }
 
+/** `resolvedBy` for a capacity card closed because typed state proves its ask
+ * moot. A system actor: never a human intervention (stats.ts). */
+export const CAPACITY_RECOVERED_ACTOR = 'engine:capacity-recovered';
+
+type CapacityFact = Extract<ExternalFact, { kind: 'capacity_target_unblocked' }>;
+
+/** The typed fact a capacity wait makes a card wait on, or null for an
+ * ambiguous legacy wait whose pool cannot be named exactly. */
+export function capacityFactOfWait(wait: InfrastructureWait): CapacityFact | null {
+  const target = targetOfWait(wait);
+  return target
+    ? { kind: 'capacity_target_unblocked', role: wait.source, target: { ...target } }
+    : null;
+}
+
+/**
+ * Which role and exact target a card's capacity ask is about. Cards raised
+ * since typed facts declare it in `resolvesWhen`; older capacity cards carry
+ * it only through `refId` → the backoff wake's typed `InfrastructureWait`.
+ * Never derived from the card's prose.
+ */
+export function capacityCardFact(doc: WorkstreamDoc, item: AttentionItem): CapacityFact | null {
+  const declared = item.resolvesWhen?.any.find(
+    (fact): fact is CapacityFact => fact.kind === 'capacity_target_unblocked',
+  );
+  if (declared) return declared;
+  if (item.kind !== 'capacity' || !item.refId) return null;
+  const wait = doc.wakes.find((wake) => wake.id === item.refId)?.infrastructure;
+  return wait ? capacityFactOfWait(wait) : null;
+}
+
+/**
+ * Raise (or refresh) the one capacity card for a target that keeps failing.
+ *
+ * `roleContinues` is the caller's typed knowledge that another seat can carry
+ * the same role's work right now (the coordinator's degrade-don't-park
+ * fallback, or a worker target without an active wait). Then the failing
+ * target is degradation, not a blocked workstream, and a NEW card would be
+ * moot the moment that fallback completes — it would only flicker onto the
+ * needs-you queue and pile a resolved card into the document on every retry
+ * of the limited pool. An already-open card is still refreshed.
+ */
 export function ensureCapacityAttention(
   doc: WorkstreamDoc,
   entry: CapacityBackoff,
   refId: string,
   makeId: () => string,
+  options: { roleContinues?: boolean } = {},
 ): void {
   if (entry.consecutiveBackoffs < capacityAttentionThreshold(entry.wait.kind)) return;
   const key = capacityAttentionPrefix(entry.wait);
+  const fact = capacityFactOfWait(entry.wait);
   const existing = doc.attention.find(
     (item) => item.status === 'open' && item.kind === 'capacity' && item.summary.startsWith(key),
   );
   if (existing) {
     existing.summary = capacityAttentionSummary(entry, doc.workstream.slug);
     existing.refId = refId;
+    if (fact) existing.resolvesWhen = { any: [fact] };
     return;
   }
+  if (options.roleContinues) return;
   doc.attention.push({
     id: makeId(),
     kind: 'capacity',
@@ -867,7 +915,12 @@ export function ensureCapacityAttention(
     refId,
     status: 'open',
     createdAt: new Date().toISOString(),
+    ...(fact ? { resolvesWhen: { any: [fact] } } : {}),
   });
+}
+
+function sameCapacityTarget(a: CapacityTarget, b: CapacityTarget): boolean {
+  return a.executor === b.executor && a.provider === b.provider && a.model === b.model;
 }
 
 export function resolveCapacityAttention(
@@ -880,14 +933,42 @@ export function resolveCapacityAttention(
     ...(target.provider === 'anthropic' ? [`Claude capacity (${target.model}/`] : []),
   ]);
   for (const item of doc.attention) {
-    if (
-      item.status === 'open' &&
-      item.kind === 'capacity' &&
-      [...keys].some((key) => item.summary.startsWith(key))
-    ) {
+    if (item.status !== 'open' || item.kind !== 'capacity') continue;
+    const fact = capacityCardFact(doc, item);
+    const matches = fact
+      ? sameCapacityTarget(fact.target, target)
+      : [...keys].some((key) => item.summary.startsWith(key));
+    if (matches) {
       item.status = 'resolved';
       item.resolvedAt = new Date().toISOString();
       item.resolvedBy = resolvedBy;
     }
   }
+}
+
+/**
+ * Rule (ii) at the success site: this workstream just moved the role's work
+ * (a completed coordinator pass, a submitted worker attempt) on SOME target,
+ * so every open capacity card asking a human to restore that role's capacity
+ * is moot — whichever target it names. Backoff records are left untouched:
+ * routing still knows the limited pool is limited. Returns the closed ids.
+ */
+export function resolveCapacityAttentionForRole(
+  doc: WorkstreamDoc,
+  role: 'coordinator' | 'worker',
+  observed: string,
+): string[] {
+  const closed: string[] = [];
+  const at = new Date().toISOString();
+  for (const item of doc.attention) {
+    if (item.status !== 'open' || item.kind !== 'capacity') continue;
+    const fact = capacityCardFact(doc, item);
+    if (!fact || fact.role !== role) continue;
+    item.status = 'resolved';
+    item.resolvedAt = at;
+    item.resolvedBy = CAPACITY_RECOVERED_ACTOR;
+    item.resolution = { by: CAPACITY_RECOVERED_ACTOR, evidence: [{ fact, observed, at }] };
+    closed.push(item.id);
+  }
+  return closed;
 }
