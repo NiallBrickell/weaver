@@ -1195,3 +1195,19 @@ test('external-store provisioning selects execution-only mode and never starts s
   assert.ok(!provisionArgs.includes('systemctl restart'));
   assert.match(result.stdout, /provisioned without starting/);
 });
+
+test('provisioning keeps the host alive through memory pressure and missed DHCP renewals', () => {
+  // 2026-09-18: a swapless host froze under worker memory, missed its DHCP
+  // renewal, networkd gave up on the NIC and the fleet sat offline 3.4 days.
+  const text = fs.readFileSync(script, 'utf8');
+  const provision = text.slice(text.indexOf("<<'PROVISION'"), text.indexOf('\nPROVISION\n'));
+  assert.match(provision, /swapon --show=NAME --noheadings \| grep -qx \/swapfile/, 'swap is checked active, not just created');
+  assert.match(provision, /grep -q '\^\/swapfile ' \/etc\/fstab \|\| echo '\/swapfile none swap sw 0 0' >> \/etc\/fstab/);
+  assert.match(provision, /\[Network\]\nKeepConfiguration=dhcp/, 'a missed renewal keeps the address');
+  assert.match(provision, /networkctl reconfigure "\$iface"/, 'the watchdog reconfigures an unrouted NIC');
+  assert.match(provision, /systemctl enable --now weaver-net-watchdog\.timer/);
+  assert.ok(
+    provision.indexOf('swapon /swapfile') < provision.indexOf('&& yarn install'),
+    'swap exists before the first yarn install',
+  );
+});

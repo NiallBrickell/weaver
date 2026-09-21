@@ -6,6 +6,8 @@ import * as path from 'node:path';
 import { advanceClock, virtualNow } from './clock.js';
 import {
   effectiveConcurrency,
+  memoryConcurrency,
+  availableMemoryMb,
   expediteBackoffWakes,
   infraBackoffSlugs,
   pendingManagerNoticeKeys,
@@ -538,6 +540,46 @@ test('load-aware concurrency runs full width with headroom and throttles toward 
   assert.equal(effectiveConcurrency(10, 0, 14), 10, 'a zero/absent load reading is not a throttle signal');
   assert.equal(effectiveConcurrency(10, Number.NaN, 14), 10, 'an unreadable load average fails open');
   assert.equal(effectiveConcurrency(10, 50, 0), 10, 'an unknown core count fails open');
+});
+
+test('memory admission replays the 2026-09-18 freeze: the third fast worker waits', () => {
+  // ~4.5 GB free, nothing running: two budgets fit beside the host reserve.
+  assert.equal(memoryConcurrency(4, 0, 4600, 0), 2);
+  // Two slots granted seconds ago have not grown yet — their budgets are held.
+  assert.equal(memoryConcurrency(4, 2, 4400, 2), 2, 'no third slot while the first two are ramping');
+  assert.equal(memoryConcurrency(4, 2, 7800, 0), 4, 'plenty of memory keeps the configured width');
+  assert.equal(memoryConcurrency(4, 3, 900, 0), 3, 'running ticks are never revoked, only not added');
+  assert.equal(memoryConcurrency(4, 0, 200, 0), 1, 'an idle runner always takes one tick');
+  assert.equal(memoryConcurrency(4, 1, undefined, 3), 4, 'an unknown reading applies no gate');
+  assert.equal(memoryConcurrency(4, 1, Number.NaN, 0), 4, 'an unreadable reading applies no gate');
+});
+
+test('available memory is read from MemAvailable, not MemFree', () => {
+  const meminfo = 'MemTotal:        8141312 kB\nMemFree:          412000 kB\nMemAvailable:    6172672 kB\n';
+  assert.equal(availableMemoryMb(meminfo), 6028);
+  assert.equal(availableMemoryMb('MemTotal: 1 kB\n'), undefined);
+});
+
+test('the poll loop holds its slot cap when available memory is short', async () => {
+  const { runLoop } = await import('./runner.js');
+  const lines: string[] = [];
+  const abort = new AbortController();
+  const loop = runLoop({
+    intervalMs: 10,
+    concurrency: 4,
+    signal: abort.signal,
+    log: (l) => lines.push(l),
+    logError: () => {},
+    loadSample: () => ({ load1: 0.1, cores: 2 }),
+    memorySample: () => 1500,
+  });
+  await new Promise((r) => setTimeout(r, 60));
+  abort.abort();
+  await loop;
+  assert.ok(
+    lines.some((l) => /1500 MB available with 0 tick\(s\) running — memory holds parallel ticks at 1\b/.test(l)),
+    `expected a memory hold line, got: ${JSON.stringify(lines)}`,
+  );
 });
 
 test('the poll loop throttles its slot cap when the injected load sampler reports oversubscription', async () => {
