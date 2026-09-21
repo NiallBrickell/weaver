@@ -33,7 +33,7 @@ import { FsStore, artifactsDir, newId, printoutJournalDir, sha256, weaverHome, w
 import { PgStore } from './store/pg.js';
 import { SqliteStore } from './store/sqlite.js';
 import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './store/types.js';
-import type { ManagedWorkstreamHead, RunnerPresence, WorkstreamHead } from './store/types.js';
+import type { ManagedWorkstreamHead, RunnerOutput, RunnerPresence, WorkstreamHead } from './store/types.js';
 import type { WorkstreamCore, WorkstreamDoc } from './types.js';
 import { assertRunnerId } from './runnerIdentity.js';
 
@@ -41,6 +41,7 @@ export { artifactsDir, newId, printoutJournalDir, sha256, weaverHome, workstream
 export { RevisionConflictError, SourceKeyConflictError };
 export type { StateStore };
 export type { RunnerPresence };
+export type { RunnerOutput };
 export type { WorkstreamHead };
 
 let activeStore: StateStore | undefined;
@@ -89,6 +90,7 @@ export async function heartbeatRunner(
   heartbeatAt = new Date().toISOString(),
   coordinatorSeats?: readonly CapacityTarget[],
   degraded?: string,
+  output?: RunnerOutput,
 ): Promise<void> {
   assertRunnerId(runnerId);
   if (!Number.isFinite(Date.parse(heartbeatAt))) throw new Error(`invalid runner heartbeat timestamp '${heartbeatAt}'`);
@@ -100,6 +102,7 @@ export async function heartbeatRunner(
       ? { coordinatorSeats: coordinatorSeats.map(({ executor, provider, model }) => ({ executor, provider, model })) }
       : {}),
     ...(degraded !== undefined ? { degraded } : {}),
+    ...(output !== undefined ? { output } : {}),
   });
 }
 

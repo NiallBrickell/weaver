@@ -539,6 +539,26 @@ function contractSuite(backend: Backend): void {
       { runnerId: 'gcp-standby', heartbeatAt: '2026-08-29T10:00:05.000Z', coordinatorSeats: seats },
     );
     await assert.rejects(heartbeatRunner('gcp-standby', '2026-08-29T10:00:06.000Z', [], '  '), /must carry a reason/);
+    // A runner's observed output round-trips exactly — the fields an external
+    // monitor pages on (see fleetHealthSnapshot), not just liveness.
+    const output = {
+      observedAt: '2026-08-29T10:00:07.000Z',
+      lastCompletedPassAt: '2026-08-29T09:45:00.000Z',
+      oldestUnservedDueAt: '2026-08-29T09:50:00.000Z',
+      capacityBlocked: 3,
+    };
+    await heartbeatRunner('mac-primary', '2026-08-29T10:00:07.000Z', seats, undefined, output);
+    assert.deepEqual(
+      (await listRunnerPresence()).find((presence) => presence.runnerId === 'mac-primary'),
+      { runnerId: 'mac-primary', heartbeatAt: '2026-08-29T10:00:07.000Z', coordinatorSeats: seats, output },
+    );
+    // A later heartbeat that omits output produced nothing new (or predates
+    // the field) — stale facts must not outlive it, exactly like stale seats.
+    await heartbeatRunner('mac-primary', '2026-08-29T10:00:08.000Z', seats);
+    assert.deepEqual(
+      (await listRunnerPresence()).find((presence) => presence.runnerId === 'mac-primary'),
+      { runnerId: 'mac-primary', heartbeatAt: '2026-08-29T10:00:08.000Z', coordinatorSeats: seats },
+    );
     assert.equal((await load('test-ws')).revision, revision);
   });
 

@@ -45,7 +45,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type RunnerOutput, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 /**
  * Idempotent, run on first use of every process. The `revision` COLUMN is the
@@ -81,7 +81,8 @@ const SCHEMA = `
     runner_id         text        PRIMARY KEY,
     heartbeat_at      timestamptz NOT NULL,
     coordinator_seats json,
-    degraded          text
+    degraded          text,
+    output            json
   );
 
   -- Existing fleets used jsonb. Convert once, without decoding and rewriting
@@ -150,6 +151,7 @@ const SCHEMA = `
     ON workstreams (managed_by_slug) WHERE managed_by_slug IS NOT NULL;
   ALTER TABLE runner_presence ADD COLUMN IF NOT EXISTS coordinator_seats json;
   ALTER TABLE runner_presence ADD COLUMN IF NOT EXISTS degraded text;
+  ALTER TABLE runner_presence ADD COLUMN IF NOT EXISTS output json;
   INSERT INTO policies (singleton, revision, store)
     VALUES (true, 0, '{"schemaVersion":1,"revision":0,"policies":[]}'::json)
     ON CONFLICT DO NOTHING;
@@ -330,6 +332,9 @@ export class PgStore implements StateStore {
                    AND NOT attisdropped)
          AND EXISTS (SELECT 1 FROM pg_attribute
                  WHERE attrelid = to_regclass('runner_presence') AND attname = 'degraded'
+                   AND NOT attisdropped)
+         AND EXISTS (SELECT 1 FROM pg_attribute
+                 WHERE attrelid = to_regclass('runner_presence') AND attname = 'output'
                    AND NOT attisdropped)
          AND EXISTS (SELECT 1 FROM pg_attribute
                  WHERE attrelid = to_regclass('workstreams') AND attname = 'managed_by_slug'
@@ -820,17 +825,19 @@ export class PgStore implements StateStore {
   async heartbeatRunner(presence: RunnerPresence): Promise<void> {
     await this.ensureReady();
     await this.pool.query(
-      `INSERT INTO runner_presence (runner_id, heartbeat_at, coordinator_seats, degraded)
-       VALUES ($1, $2::timestamptz, $3::json, $4)
+      `INSERT INTO runner_presence (runner_id, heartbeat_at, coordinator_seats, degraded, output)
+       VALUES ($1, $2::timestamptz, $3::json, $4, $5::json)
        ON CONFLICT (runner_id) DO UPDATE
          SET heartbeat_at = EXCLUDED.heartbeat_at,
              coordinator_seats = EXCLUDED.coordinator_seats,
-             degraded = EXCLUDED.degraded`,
+             degraded = EXCLUDED.degraded,
+             output = EXCLUDED.output`,
       [
         presence.runnerId,
         presence.heartbeatAt,
         presence.coordinatorSeats === undefined ? null : JSON.stringify(presence.coordinatorSeats),
         presence.degraded ?? null,
+        presence.output === undefined ? null : JSON.stringify(presence.output),
       ],
     );
   }
@@ -841,7 +848,8 @@ export class PgStore implements StateStore {
       `SELECT runner_id,
               to_char(heartbeat_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS heartbeat_at,
               coordinator_seats,
-              degraded
+              degraded,
+              output
        FROM runner_presence ORDER BY runner_id`,
     );
     return result.rows.map((row) => ({
@@ -849,6 +857,7 @@ export class PgStore implements StateStore {
       heartbeatAt: row.heartbeat_at as string,
       ...(row.coordinator_seats ? { coordinatorSeats: row.coordinator_seats as CapacityTarget[] } : {}),
       ...(typeof row.degraded === 'string' ? { degraded: row.degraded } : {}),
+      ...(row.output ? { output: row.output as RunnerOutput } : {}),
     }));
   }
 
