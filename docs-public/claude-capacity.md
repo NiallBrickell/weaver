@@ -29,6 +29,20 @@ A usage, session, rate-limit, overload, or authentication failure is infrastruct
 5. Weaver retries the limited execution target at the earliest future reset reported by its provider. If the provider supplies no usable reset, Weaver uses a bounded fallback delay.
 6. A fresh process continues from the stored projection when the wake becomes due. Another rejection parks it again; a successful real run clears the matching capacity state and restores the primary when it is available.
 
+A limit belongs to the account behind a model seat, not to the workstream that
+happened to hit it. So when one workstream records an active usage, session, or
+rate limit on an exact executor/provider/model, every other workstream about to
+launch on that seat parks on the same wait instead of spending a launch to
+rediscover it: a coordinator goes straight to its first free fallback, queued
+work routes to a free worker seat, and a workstream whose whole chain is parked
+waits for the shared retry time with its due work intact. The borrowed wait is
+not a failure of that workstream — it counts no backoff, opens no card, and
+status says where it was observed. A later successful call on that seat by any
+workstream, on any runner, releases it; when it simply expires, one workstream
+is let through first to test the seat, and the rest follow its result.
+Network drops, local safety walls, and login failures stay with the machine that
+saw them, so one host's outage never parks another host.
+
 Once a coordinator successfully reconciles the work, including on a fallback,
 Weaver retires the earlier coordinator retry timers that pass covered. The
 failed pools' capacity records remain: the next genuine work wake after their

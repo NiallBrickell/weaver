@@ -5,6 +5,7 @@ import {
   type SetAssignmentPlacementResult,
   type SetPausedResult,
 } from './humanActs.js';
+import { isFleetDeferralWake } from './capacity.js';
 import { liveRunnerIds } from './coordinatorRunner.js';
 import { recordObservation } from './ingress.js';
 import { createFleetAttentionSteward } from './operatorUi.js';
@@ -38,7 +39,7 @@ export async function runFleetAttentionSteward(
   const activation = await setPaused(created.slug, false);
 
   const current = await load(created.slug);
-  const hasPendingWake = current.wakes.some((wake) => wake.status === 'pending');
+  const hasPendingWake = current.wakes.some((wake) => wake.status === 'pending' && !isFleetDeferralWake(wake));
   const hasLiveWork = current.assignments.some((assignment) =>
     assignment.state === 'queued' || assignment.state === 'running' || assignment.state === 'gated',
   );

@@ -18,7 +18,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { tick } from './engine.js';
+import { fleetLaunchTargetKeys, tick } from './engine.js';
 import { RUNNER_PRESENCE_TTL_MS, coordinatorRunnerEligibility } from './coordinatorRunner.js';
 import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
 import { runnerOutput } from './fleetHealth.js';
@@ -39,7 +39,10 @@ import {
 import { virtualNow } from './clock.js';
 import {
   capacityBackoffFor,
+  capacitySuccessEvidence,
+  capacityTargetKey,
   clearCapacityBackoff,
+  fleetSeatView,
   isClaudeSdkWait,
   resolveCapacityAttention,
   retryCapacityTargetNow,
@@ -308,13 +311,23 @@ export async function infraBackoffSlugs(cache = new RunnerWorkstreamCache()): Pr
  * limit that demonstrably ended. Comparing against the wait's DETECTION time
  * (not its retry time) is what makes the release safe: a limit recorded after
  * the recovery is a new one, and holds.
+ *
+ * Recovery evidence is this host's ledger PLUS the successes recorded in the
+ * cached documents themselves, so a success any host recorded releases parks
+ * everywhere. A borrowed wait (`observedIn`) is released by exactly the view
+ * that lent it: once the fleet no longer holds that wait or a newer one —
+ * refuted by a success, cleared, or retried at its source — the copy goes.
+ * Using the host ledger for copies instead would release a copy the fleet
+ * view still lends, and the next tick would borrow it straight back.
  */
 export async function fleetRecoveredSlugs(cache = new RunnerWorkstreamCache()): Promise<Map<string, CapacityTarget[]>> {
   const ledger = readFleetCapacity();
   const out = new Map<string, CapacityTarget[]>();
-  if (!Object.keys(ledger.recovered).length) return out;
   const now = virtualNow().toISOString();
-  for (const [slug, d] of await cache.scan()) {
+  const docs = await cache.scan();
+  const proved = capacitySuccessEvidence(docs.values());
+  const lent = fleetSeatView(docs.values(), now, proved).active;
+  for (const [slug, d] of docs) {
     if (d.workstream.status !== 'active') continue;
     const targets: CapacityTarget[] = [];
     for (const entry of Object.values(d.capacity?.byModel ?? {})) {
@@ -325,7 +338,18 @@ export async function fleetRecoveredSlugs(cache = new RunnerWorkstreamCache()): 
       if (entry.wait.retryAt <= now) continue;
       const target = targetOfWait(entry.wait);
       if (!target) continue; // ambiguous legacy wait: never guess a pool
-      if (supersededByFleetRecovery(ledger, target, entry.wait.detectedAt)) targets.push(target);
+      if (entry.wait.observedIn !== undefined) {
+        const holding = lent.get(capacityTargetKey(target));
+        if (!holding || holding.detectedAt < entry.wait.detectedAt) targets.push(target);
+        continue;
+      }
+      const provedAt = proved.get(capacityTargetKey(target));
+      if (
+        supersededByFleetRecovery(ledger, target, entry.wait.detectedAt) ||
+        (provedAt !== undefined && provedAt > entry.wait.detectedAt)
+      ) {
+        targets.push(target);
+      }
     }
     if (targets.length) out.set(slug, targets);
   }
@@ -579,12 +603,12 @@ export async function releaseFleetRecovered(
         if (released.length) {
           event(
             'capacity.fleet_recovered',
-            `park released for ${[...new Set(released)].sort().join(', ')} — another workstream's call proved the pool recovered`,
+            `park released for ${[...new Set(released)].sort().join(', ')} — a later successful call proved the pool recovered, or the fleet no longer holds the borrowed limit`,
             [],
           );
         }
       });
-      log(`[run] ${slug}: park released — fleet proved ${targets.map((t) => t.model).join(', ')} recovered`);
+      log(`[run] ${slug}: park released — fleet evidence no longer holds ${targets.map((t) => t.model).join(', ')}`);
     } catch (e) {
       // Never silent: a release that fails leaves the stream parked behind a
       // limit the fleet has disproved, and the whole point of this sweep is
@@ -637,6 +661,9 @@ export interface RunnerOptions {
   /** How long an unbroken run of failed iterations may last before the loop
    * exits for its supervisor; see RUNNER_STORE_OUTAGE_EXIT_MS. */
   storeOutageExitMs?: number;
+  /** Revision-keyed document cache; injectable only for deterministic runner
+   * tests that count store reads. */
+  workstreamCache?: RunnerWorkstreamCache;
 }
 
 /**
@@ -864,7 +891,7 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   const tickFn = opts.tickFn ?? tick;
   const sourceStale = opts.sourceStale ?? runnerSourceStale;
   const runner = runnerClaimIdentity();
-  const workstreams = new RunnerWorkstreamCache();
+  const workstreams = opts.workstreamCache ?? new RunnerWorkstreamCache();
   const dispatches = new RunnerDispatchTracker();
   if (runner.placementOnly) {
     throw new Error('WEAVER_RUNNER_PLACEMENT_ONLY=1 is only for bounded `weaver tick <slug> --engine-only` invocations, not a resident runner');
@@ -879,6 +906,15 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   // runner to one slot with 6 GB free (2026-09-21).
   const grantedAt = new Map<string, number>();
   const inFlight = new Set<string>();
+  // Single-flight probe: capacityTargetKey → the one in-flight tick allowed to
+  // launch on a target whose fleet wait has expired with nothing proving it
+  // recovered. Every stream deferred on that wait falls due at the same
+  // instant; admitting all of them would re-run the herd of doomed launches
+  // the shared wait exists to prevent. The probe's outcome — a new wait, or a
+  // success — lands in its document and decides the rest on a later poll.
+  // Runner memory only: admission control, not truth. After a restart the
+  // worst case is one herd bounded by the concurrency cap.
+  const seatProbes = new Map<string, string>();
   // Fairness: slots are granted least-recently-ticked first. A stable
   // (alphabetical) scan with a concurrency break starves every stream ranked
   // below the cap the moment enough earlier streams exist — sentry-sweep sat
@@ -1029,6 +1065,10 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       outageFailures = 0;
       const wallNow = new Date();
       const virtual = virtualNow();
+      // Fleet-shared seat waits, derived from the documents this scan already
+      // holds — zero extra store reads (never loop load() over the fleet).
+      const seats = fleetSeatView(docs.values(), virtual.toISOString());
+      const probeKeys = new Map<string, string[]>();
       for (const [slug, doc] of docs) {
         if (inFlight.has(slug)) continue;
         const ws = doc.workstream;
@@ -1037,6 +1077,14 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
         if (ws.status !== 'active' && !(ws.status === 'done' && missingManagerNotices.length)) continue;
         const signature = runnerDispatchSignature(doc, runner, presences, wallNow, virtual, managerDoc);
         if (!dispatches.shouldDispatch(slug, signature)) continue;
+        if (seats.expired.size) {
+          const probes = [...fleetLaunchTargetKeys(doc, seats.active, runner, executorCapabilities, wallNow, virtual)]
+            .filter((key) => seats.expired.has(key));
+          // Held, not dispatched: the signature stays unacknowledged, so the
+          // next poll re-evaluates this stream once the probe has landed.
+          if (probes.some((key) => seatProbes.has(key))) continue;
+          if (probes.length) probeKeys.set(slug, probes);
+        }
         if (!lastTickedAt.has(slug)) lastTickedAt.set(slug, durableLastServedMs(doc));
         due.push(slug);
         dispatchSignatures.set(slug, signature);
@@ -1075,6 +1123,11 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       for (const slug of allocateSlots(due, priority, cap, fairnessDue)) {
         if (inFlight.size >= cap) break;
         const dispatchSignature = dispatchSignatures.get(slug)!;
+        // Two streams due in one poll may need the same probe: the first
+        // granted takes it, the other waits unacknowledged for its outcome.
+        const probes = probeKeys.get(slug) ?? [];
+        if (probes.some((key) => seatProbes.has(key))) continue;
+        for (const key of probes) seatProbes.set(key, slug);
         inFlight.add(slug);
         grantedAt.set(slug, Date.now());
         lastTickedAt.set(slug, Date.now());
@@ -1084,7 +1137,7 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
         // stop the underlying tick. Reclaiming only the Set entry used to make
         // accounting lie, allowing another tick to exceed the configured cap
         // while the first process and its cross-process lock were still live.
-        void tickFn(slug, { executorCapabilities })
+        void tickFn(slug, { executorCapabilities, fleetCapacity: seats.active })
           .then((report) => {
             if (report.skipped === 'another process is ticking this workstream') {
               // A competing tick has not yet proved this observed revision
@@ -1108,6 +1161,9 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
           .finally(() => {
             inFlight.delete(slug);
             grantedAt.delete(slug);
+            for (const key of probes) {
+              if (seatProbes.get(key) === slug) seatProbes.delete(key);
+            }
           });
       }
     } catch (e) {

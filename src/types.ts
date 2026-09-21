@@ -360,6 +360,14 @@ export interface InfrastructureWait {
   retryAt: Iso;
   resetAt?: Iso;
   rateLimitType?: string;
+  /** Present only on a wait this workstream BORROWED from the fleet: the slug
+   * of the workstream whose own pass/attempt (`source`/`sourceId`) hit the
+   * limit. A seat parked for one workstream is parked for every workstream,
+   * so a stream about to launch on that exact target copies the active wait
+   * instead of spending a doomed launch to rediscover it. The copy keeps the
+   * source's detectedAt/retryAt, never counts as this stream's backoff, raises
+   * no attention, and is released when the fleet no longer holds the wait. */
+  observedIn?: string;
 }
 
 export interface CapacityBackoff {

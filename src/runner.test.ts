@@ -9,15 +9,20 @@ import {
   memoryConcurrency,
   availableMemoryMb,
   expediteBackoffWakes,
+  fleetRecoveredSlugs,
   infraBackoffSlugs,
   pendingManagerNoticeKeys,
+  releaseFleetRecovered,
   RunnerDispatchTracker,
   runnerDispatchSignature,
   RunnerWorkstreamCache,
   runLoop,
 } from './runner.js';
-import { arrive, createWorkstream, listRunnerPresence, load, type RunnerOutput } from './store.js';
+import { arrive, createWorkstream, listRunnerPresence, listWorkstreamHeads, load, type RunnerOutput } from './store.js';
 import type { InfrastructureWait } from './types.js';
+import { tick } from './engine.js';
+import { adoptFleetSeatWait, retryCapacityNow } from './capacity.js';
+import { readFleetCapacity } from './fleetCapacity.js';
 
 let home: string;
 
@@ -803,4 +808,212 @@ test('one iteration that reaches the store again resets the outage clock', async
   abort.abort();
   assert.equal(await loop, 'aborted', 'intermittent failures with a success between them never trip the outage exit');
   assert.ok(attempts >= 8, 'the loop kept polling through the transient failures');
+});
+
+// ---------------------------------------------------------------------------
+// Fleet-shared seat waits at the runner: derived from the cache, retriggered by
+// the deferral wake, released by shared success evidence, and probed by ONE
+// tick when they expire unrefuted.
+
+const FLEET_ENV = ['WEAVER_COORDINATOR_MODEL', 'WEAVER_COORDINATOR_EXECUTOR', 'WEAVER_COORDINATOR_FALLBACK_MODEL', 'WEAVER_COORDINATOR_FALLBACKS'] as const;
+
+async function withSingleSeatCoordinator<T>(fn: () => Promise<T>): Promise<T> {
+  const saved = Object.fromEntries(FLEET_ENV.map((name) => [name, process.env[name]]));
+  for (const name of FLEET_ENV) delete process.env[name];
+  process.env.WEAVER_COORDINATOR_MODEL = 'claude-fable-5';
+  process.env.WEAVER_COORDINATOR_FALLBACKS = '';
+  try {
+    return await fn();
+  } finally {
+    for (const name of FLEET_ENV) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  }
+}
+
+const FABLE = { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' } as const;
+const GLM = { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' } as const;
+
+function limitAt(target: { executor: string; provider: string; model: string }, detectedMs: number, retryMs: number, sourceId: string): InfrastructureWait {
+  return {
+    kind: 'usage_limit', recovery: 'wait_or_enable_usage_credits', source: 'coordinator', sourceId, ...target,
+    detectedAt: new Date(Date.now() + detectedMs).toISOString(),
+    retryAt: new Date(Date.now() + retryMs).toISOString(),
+  };
+}
+
+function ownWait(d: Awaited<ReturnType<typeof load>>, wait: InfrastructureWait): void {
+  d.capacity = {
+    state: 'backoff',
+    byModel: {
+      [`${wait.executor}:${wait.provider}:${wait.model}`]: {
+        wait, consecutiveBackoffs: 1, firstBackoffAtVirtual: wait.detectedAt, lastBackoffAtVirtual: wait.detectedAt,
+      },
+    },
+  };
+}
+
+function completedPass(target: { executor: string; provider: string; model: string }, id: string) {
+  const at = new Date().toISOString();
+  return { id, startedAt: at, endedAt: at, baseRevision: 1, wakeReasons: [], changes: [], outcome: 'completed' as const, ...target };
+}
+
+async function waitFor(condition: () => boolean, what: string, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function immediateWake(d: Awaited<ReturnType<typeof load>>, id: string): void {
+  d.wakes.push({ id, reason: 'due organizational work', condition: { type: 'immediate' }, status: 'pending', createdAt: new Date().toISOString() });
+}
+
+const quietLoop = {
+  intervalMs: 5,
+  concurrency: 8,
+  executorCapabilities: new Set(['local-sdk', 'pi']),
+  sourceStale: () => false,
+  loadSample: () => ({ load1: 0.1, cores: 8 }),
+  memorySample: () => undefined,
+  log: () => {},
+  logError: () => {},
+};
+
+test('the fleet snapshot comes from the runner cache with no extra document reads', async () => {
+  await make('glm-limited');
+  await make('bystander');
+  const wait = limitAt(GLM, -60_000, 30 * 60_000, 'run_glm');
+  await arrive('glm-limited', (d) => ownWait(d, { ...wait, source: 'worker' }));
+
+  const loads: string[] = [];
+  const cache = new RunnerWorkstreamCache(listWorkstreamHeads, async (slug) => {
+    loads.push(slug);
+    return load(slug);
+  });
+  const snapshots: Array<ReadonlyMap<string, InfrastructureWait> | undefined> = [];
+  const abort = new AbortController();
+  const loop = runLoop({
+    ...quietLoop,
+    signal: abort.signal,
+    workstreamCache: cache,
+    tickFn: async (_slug, opts) => {
+      snapshots.push(opts?.fleetCapacity);
+      return { cycles: 1, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
+    },
+  });
+  try {
+    await waitFor(() => snapshots.length >= 2, 'both streams to be reconciled');
+    // Several more polls, each running three cache scans.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  } finally {
+    abort.abort();
+    await loop;
+  }
+  assert.deepEqual(loads.sort(), ['bystander', 'glm-limited'],
+    'several polls and three scans each still read every document exactly once');
+  assert.equal(snapshots.length, 2, 'one reconciliation per unchanged stream');
+  for (const snapshot of snapshots) {
+    const shared = snapshot?.get('pi:zai-coding-plan:zai-coding-plan/glm-5.3');
+    assert.equal(shared?.observedIn, 'glm-limited');
+    assert.equal(shared?.retryAt, wait.retryAt);
+  }
+});
+
+test('the deferral wake retriggers the dispatch signature exactly at the borrowed retry', async () => {
+  await withSingleSeatCoordinator(async () => {
+    await make('deferred');
+    await arrive('deferred', (d) => immediateWake(d, 'wake_org'));
+    const borrowed = { ...limitAt(FABLE, -60_000, 20 * 60_000, 'pass_elsewhere'), observedIn: 'limited-elsewhere' };
+    await tick('deferred', {
+      fleetCapacity: new Map([['local-sdk:anthropic:claude-fable-5', borrowed]]),
+      coordinatorExecutor: { id: 'local-sdk', async execute() { throw new Error('parked seat launched'); } },
+    });
+    const doc = await load('deferred');
+    assert.equal(doc.passes.length, 0);
+    const runner = { id: 'mac-primary', placementOnly: false } as const;
+    const now = virtualNow();
+    const before = runnerDispatchSignature(doc, runner, [], now, now);
+    const later = new Date(now.getTime() + 60_000);
+    assert.equal(runnerDispatchSignature(doc, runner, [], later, later), before,
+      'waiting on a borrowed retry is quiescent: no tight dispatch loop');
+    const retryAt = new Date(borrowed.retryAt);
+    assert.notEqual(runnerDispatchSignature(doc, runner, [], retryAt, retryAt), before,
+      'the stored deferral wake falls due at the borrowed retry without any write');
+  });
+});
+
+test('a success recorded in another workstream releases a borrowed wait on every host', async () => {
+  await make('limited-source');
+  await make('borrower');
+  await make('proving');
+  const wait = limitAt(GLM, -60_000, 45 * 60_000, 'run_limited');
+  await arrive('limited-source', (d) => ownWait(d, wait));
+  await arrive('borrower', (d) => { adoptFleetSeatWait(d, { ...wait, observedIn: 'limited-source' }); });
+
+  assert.equal((await fleetRecoveredSlugs()).size, 0, 'the fleet still holds the wait it lent');
+
+  await arrive('proving', (d) => { d.passes.push(completedPass(GLM, 'pass_proof')); });
+  const recovered = await fleetRecoveredSlugs();
+  assert.deepEqual([...recovered.keys()].sort(), ['borrower', 'limited-source']);
+  await releaseFleetRecovered(recovered, () => {});
+  assert.equal((await load('borrower')).capacity, null);
+  assert.equal((await load('limited-source')).capacity, null);
+  assert.deepEqual(readFleetCapacity().recovered, {},
+    "the evidence was the shared documents, not this host's ledger");
+});
+
+test('a borrowed wait whose source retried at its origin is released for the one probe to test', async () => {
+  await make('limited-source');
+  await make('borrower');
+  const wait = limitAt(GLM, -60_000, 45 * 60_000, 'run_limited');
+  await arrive('limited-source', (d) => ownWait(d, wait));
+  await arrive('borrower', (d) => { adoptFleetSeatWait(d, { ...wait, observedIn: 'limited-source' }); });
+  await arrive('limited-source', (d) => { retryCapacityNow(d, virtualNow().toISOString()); });
+  assert.deepEqual([...(await fleetRecoveredSlugs()).keys()], ['borrower']);
+});
+
+test('three streams due on an expired, unrefuted seat admit ONE probe tick until its outcome lands', async () => {
+  await withSingleSeatCoordinator(async () => {
+    await make('lapsed-source');
+    await arrive('lapsed-source', (d) => ownWait(d, limitAt(FABLE, -20 * 60_000, -60_000, 'pass_lapsed')));
+    for (const slug of ['probe-a', 'probe-b', 'probe-c']) {
+      await make(slug);
+      await arrive(slug, (d) => immediateWake(d, `wake_${slug}`));
+    }
+    const calls: string[] = [];
+    let releaseProbe!: () => void;
+    const probeHeld = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const abort = new AbortController();
+    const loop = runLoop({
+      ...quietLoop,
+      signal: abort.signal,
+      tickFn: async (slug) => {
+        calls.push(slug);
+        if (slug !== 'lapsed-source' && calls.filter((c) => c !== 'lapsed-source').length === 1) await probeHeld;
+        return { cycles: 1, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
+      },
+    });
+    const probeCalls = () => calls.filter((slug) => slug.startsWith('probe-'));
+    try {
+      await waitFor(() => probeCalls().length >= 1, 'the probe tick');
+      // Give the loop many polls in which it could (wrongly) admit the others.
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      assert.equal(probeCalls().length, 1, `only one probe may be in flight, got ${JSON.stringify(calls)}`);
+      const probe = probeCalls()[0]!;
+
+      // The probe's pass got through: its success refutes the expired wait.
+      await arrive(probe, (d) => { d.passes.push(completedPass(FABLE, 'pass_probe')); });
+      releaseProbe();
+      await waitFor(() => new Set(probeCalls()).size === 3, 'the held streams to dispatch');
+      assert.deepEqual([...new Set(probeCalls())].sort(), ['probe-a', 'probe-b', 'probe-c'],
+        'held streams were never acknowledged, so they dispatch once the outcome lands');
+    } finally {
+      releaseProbe();
+      abort.abort();
+      await loop;
+    }
+  });
 });

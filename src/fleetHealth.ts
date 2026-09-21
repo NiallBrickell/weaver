@@ -1,5 +1,6 @@
 import { actionHasLivePilotOutage, actionNeedsHuman, humanAttention } from './actionApproval.js';
 import { virtualNow } from './clock.js';
+import { isFleetDeferralWake } from './capacity.js';
 import { isWakeDue } from './executionSafety.js';
 import type { RunnerOutput } from './store/types.js';
 import type { InfrastructureWait, WorkstreamDoc } from './types.js';
@@ -123,7 +124,11 @@ function routineHealth(doc: WorkstreamDoc, wallNow: Date, nowVirtual: Date) {
             : {}
       ),
     }));
-  const hasDueReconciliationWake = pendingWakes.some((wake) =>
+  // A fleet deferral wake only re-dispatches the runner at a borrowed retry;
+  // it is never a pass, so it neither reconciles a review nor keeps a routine
+  // from being dormant. A stuck one still shows as overdue above.
+  const reconcilingWakes = pendingWakes.filter((wake) => !isFleetDeferralWake(wake));
+  const hasDueReconciliationWake = reconcilingWakes.some((wake) =>
     isWakeDue(wake.condition, wallNow, nowVirtual),
   );
   const awaitingReviewAssignmentIds = coordinating || hasDueReconciliationWake ? [] : liveAssignments
@@ -137,7 +142,7 @@ function routineHealth(doc: WorkstreamDoc, wallNow: Date, nowVirtual: Date) {
     })
     .map((assignment) => assignment.id);
   return {
-    dormant: !pendingWakes.length && !liveAssignments.length && !coordinating,
+    dormant: !reconcilingWakes.length && !liveAssignments.length && !coordinating,
     overdueWakes,
     awaitingReviewAssignmentIds,
   };
@@ -258,6 +263,9 @@ export function fleetAttentionEvidence(
               retryAt: backoff.wait.retryAt,
               resetAt: backoff.wait.resetAt,
               consecutiveBackoffs: backoff.consecutiveBackoffs,
+              // A borrowed wait is the SAME cause as its source workstream's
+              // backoff: one root cause, never one repair per parked stream.
+              ...(backoff.wait.observedIn ? { observedIn: backoff.wait.observedIn } : {}),
             }))
             .sort((a, b) => a.retryAt.localeCompare(b.retryAt) || a.sourceId.localeCompare(b.sourceId))
           : [],
