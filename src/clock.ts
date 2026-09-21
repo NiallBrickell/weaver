@@ -53,7 +53,9 @@ export function inVirtual(msFromNow: number): Date {
   return new Date(virtualNow().getTime() + msFromNow);
 }
 
-/** Linked ordinary future checks are the only wakes a coordinator may retire.
+/** Linked ordinary future checks are the only wakes a coordinator may retire:
+ * a future organizational time wake, or a probe that is still watching (a
+ * satisfied probe is already due and is consumed by the pass it wakes).
  * Infrastructure recovery, execution-safety guards, immediate arrivals, and
  * wall-clock containment belong to the harness and cannot be retired
  * individually here. */
@@ -62,19 +64,30 @@ export function isCoordinatorCancellableWake(
   nowVirtual = virtualNow().toISOString(),
 ): wake is Wake & {
   status: 'pending';
-  condition: Extract<Wake['condition'], { type: 'time' }>;
+  condition: Extract<Wake['condition'], { type: 'time' | 'probe' }>;
 } {
-  return wake.status === 'pending' &&
-    wake.condition.type === 'time' &&
-    wake.condition.dueAtVirtual > nowVirtual &&
-    wake.infrastructure === undefined &&
-    wake.executionSafety === undefined &&
-    wake.organizationalCourseId !== undefined;
+  if (
+    wake.status !== 'pending' ||
+    wake.infrastructure !== undefined ||
+    wake.executionSafety !== undefined ||
+    wake.organizationalCourseId === undefined
+  ) return false;
+  if (wake.condition.type === 'probe') return !wake.condition.satisfiedBy;
+  return wake.condition.type === 'time' && wake.condition.dueAtVirtual > nowVirtual;
 }
 
 export interface CancellableWakePage {
   total: number;
-  wakes: Array<{ id: string; dueAtVirtual: string; reason: string; organizationalCourseId: string }>;
+  wakes: Array<{
+    id: string;
+    kind: 'time' | 'probe';
+    /** Organizational due time of a time wake; a probe has none. */
+    dueAtVirtual?: string;
+    /** Cadence of a watching probe. */
+    everySeconds?: number;
+    reason: string;
+    organizationalCourseId: string;
+  }>;
   nextAfterWakeId?: string;
 }
 
@@ -102,7 +115,10 @@ export function coordinatorCancellableWakePage(
     total: all.length,
     wakes: page.map((wake) => ({
       id: wake.id,
-      dueAtVirtual: wake.condition.dueAtVirtual,
+      kind: wake.condition.type,
+      ...(wake.condition.type === 'time'
+        ? { dueAtVirtual: wake.condition.dueAtVirtual }
+        : { everySeconds: wake.condition.spec.everySeconds }),
       reason: wake.reason,
       organizationalCourseId: wake.organizationalCourseId!,
     })),
@@ -164,6 +180,12 @@ export function wakeCancellationBasisLabels(
     throw new Error(`${wake.id} names missing organizational course ${courseId}`);
   }
   return basisIds.map((id) => {
+    // A probe the engine has recorded as failing is its own typed basis: the
+    // stored `error` says this exact check cannot serve its course as written,
+    // so retiring it for a corrected spec needs no unrelated closure fact.
+    if (id === wake.id && wake.condition.type === 'probe' && wake.condition.error) {
+      return `${id}: probe recorded as failing since ${wake.condition.error.since}`;
+    }
     if (courseDecision) {
       if (id === courseDecision.id && courseDecision.status === 'closed') {
         return `${id}: the scheduled decision course is closed`;

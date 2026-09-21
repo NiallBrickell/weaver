@@ -45,7 +45,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type RunnerOutput, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type ProbeCursor, type ProbeCursorState, type RunnerOutput, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 /**
  * Idempotent, run on first use of every process. The `revision` COLUMN is the
@@ -83,6 +83,19 @@ const SCHEMA = `
     coordinator_seats json,
     degraded          text,
     output            json
+  );
+  -- Probe scheduling state, deliberately beside (never inside) the document:
+  -- an unchanged check advances this narrow row, so it neither bumps the
+  -- Workstream revision nor forces every runner to re-transfer the body.
+  CREATE TABLE IF NOT EXISTS probe_cursors (
+    slug          text        NOT NULL,
+    wake_id       text        NOT NULL,
+    next_check_at timestamptz NOT NULL,
+    checked_at    timestamptz,
+    claimed_by    text,
+    failures      integer     NOT NULL DEFAULT 0,
+    last_error    text,
+    PRIMARY KEY (slug, wake_id)
   );
 
   -- Existing fleets used jsonb. Convert once, without decoding and rewriting
@@ -306,7 +319,8 @@ export class PgStore implements StateStore {
       `SELECT to_regclass('workstreams') IS NOT NULL
           AND to_regclass('artifacts') IS NOT NULL
           AND to_regclass('policies') IS NOT NULL
-          AND to_regclass('runner_presence') IS NOT NULL AS present`,
+          AND to_regclass('runner_presence') IS NOT NULL
+          AND to_regclass('probe_cursors') IS NOT NULL AS present`,
     );
     if (tables.rows[0]?.present !== true) return false;
     const shape = await client.query(
@@ -861,6 +875,83 @@ export class PgStore implements StateStore {
     }));
   }
 
+  async listProbeCursors(slug?: string): Promise<ProbeCursor[]> {
+    await this.ensureReady();
+    const result = await this.pool.query(
+      `SELECT slug, wake_id,
+              to_char(next_check_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS next_check_at,
+              to_char(checked_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS checked_at,
+              claimed_by, failures, last_error
+       FROM probe_cursors
+       WHERE $1::text IS NULL OR slug = $1
+       ORDER BY slug, wake_id`,
+      [slug ?? null],
+    );
+    return result.rows.map((row) => ({
+      slug: row.slug as string,
+      wakeId: row.wake_id as string,
+      nextCheckAt: row.next_check_at as string,
+      ...(typeof row.checked_at === 'string' ? { checkedAt: row.checked_at } : {}),
+      ...(typeof row.claimed_by === 'string' ? { claimedBy: row.claimed_by } : {}),
+      failures: Number(row.failures),
+      ...(typeof row.last_error === 'string' ? { lastError: row.last_error } : {}),
+    }));
+  }
+
+  /**
+   * One statement per transition, each conditioned on the expected
+   * `next_check_at`: under READ COMMITTED a concurrent committed change makes
+   * the losing statement re-check its WHERE against the new row and affect
+   * nothing, so two machines racing one due probe claim it exactly once.
+   * Timestamps arrive canonicalized by the shared layer (millisecond ISO),
+   * which timestamptz stores and returns exactly.
+   */
+  async casProbeCursor(
+    slug: string,
+    wakeId: string,
+    expectedNextCheckAt: string | null,
+    next: ProbeCursorState | null,
+  ): Promise<boolean> {
+    await this.ensureReady();
+    if (next === null) {
+      if (expectedNextCheckAt === null) {
+        const absent = await this.pool.query('SELECT 1 FROM probe_cursors WHERE slug = $1 AND wake_id = $2', [slug, wakeId]);
+        return absent.rowCount === 0;
+      }
+      const deleted = await this.pool.query(
+        'DELETE FROM probe_cursors WHERE slug = $1 AND wake_id = $2 AND next_check_at = $3::timestamptz',
+        [slug, wakeId, expectedNextCheckAt],
+      );
+      return deleted.rowCount === 1;
+    }
+    const values = [
+      slug,
+      wakeId,
+      next.nextCheckAt,
+      next.checkedAt ?? null,
+      next.claimedBy ?? null,
+      next.failures,
+      next.lastError ?? null,
+    ];
+    if (expectedNextCheckAt === null) {
+      const inserted = await this.pool.query(
+        `INSERT INTO probe_cursors (slug, wake_id, next_check_at, checked_at, claimed_by, failures, last_error)
+         VALUES ($1, $2, $3::timestamptz, $4::timestamptz, $5, $6, $7)
+         ON CONFLICT (slug, wake_id) DO NOTHING`,
+        values,
+      );
+      return inserted.rowCount === 1;
+    }
+    const updated = await this.pool.query(
+      `UPDATE probe_cursors
+       SET next_check_at = $3::timestamptz, checked_at = $4::timestamptz, claimed_by = $5,
+           failures = $6, last_error = $7
+       WHERE slug = $1 AND wake_id = $2 AND next_check_at = $8::timestamptz`,
+      [...values, expectedNextCheckAt],
+    );
+    return updated.rowCount === 1;
+  }
+
   /**
    * Cross-process (here: cross-MACHINE) tick exclusion via a session-scoped
    * advisory lock on a dedicated pooled connection, held until release. There
@@ -975,6 +1066,10 @@ export class PgStore implements StateStore {
         [newSlug, JSON.stringify(doc), sourceKeyJson(doc), oldSlug, head.managedBySlug, head.status],
       );
       await client.query('UPDATE artifacts SET slug = $1 WHERE slug = $2', [newSlug, oldSlug]);
+      // Probe cursors hold no truth; carrying them keeps an unchanged probe's
+      // cadence. A stale row left under the target name belongs to no wake.
+      await client.query('DELETE FROM probe_cursors WHERE slug = $1', [newSlug]);
+      await client.query('UPDATE probe_cursors SET slug = $1 WHERE slug = $2', [newSlug, oldSlug]);
       // Receipt before COMMIT, into the OLD slug's machine-local journal — the
       // sidecar directory moves to the new name after commit.
       writeJournalReceipt(printoutJournalDir(oldSlug), {

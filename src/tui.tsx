@@ -23,8 +23,10 @@ import { isWakeDue } from './executionSafety.js';
 import { virtualNow } from './clock.js';
 import {
   approveAction,
+  approveProbe,
   approveSend,
   rejectAction,
+  rejectProbe,
   rejectSend,
   resolveAttention,
   addSteering,
@@ -41,6 +43,7 @@ import type { Assignment, ProviderCapacityObservation, WorkstreamDoc } from './t
 import { actionAwaitingPilot, actionIsLivePilotWait, humanAttention, humanAttentionCanInterrupt } from './actionApproval.js';
 import { liveRunnerIds, operatorCapacityPresentation } from './coordinatorRunner.js';
 import { runnerClaimIdentity, runnerDisabled } from './runnerIdentity.js';
+import { probeNeedsHuman } from './probe.js';
 import { storeDisplayLabel } from './link.js';
 
 const STALE_ATTEMPT_MS = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_000);
@@ -51,7 +54,7 @@ const STALE_ATTEMPT_MS = Number(process.env.WEAVER_ATTEMPT_STALE_MS ?? 45 * 60_0
 interface NeedsYouItem {
   key: string;
   slug: string;
-  kind: 'action' | 'send' | 'attention';
+  kind: 'action' | 'send' | 'probe' | 'attention';
   refId: string;
   title: string;
   body: string;
@@ -319,7 +322,12 @@ export async function snapshot(): Promise<Snapshot> {
     let needsYou = 0;
     const gated = doc.assignments.filter((x) => x.state === 'gated');
     const pendingSends = doc.interactions.filter((x) => x.status === 'awaiting_approval');
-    const approvableIds = new Set<string>([...gated.map((a) => a.id), ...pendingSends.map((i) => i.id)]);
+    const probesForHuman = doc.wakes.filter(probeNeedsHuman);
+    const approvableIds = new Set<string>([
+      ...gated.map((a) => a.id),
+      ...pendingSends.map((i) => i.id),
+      ...probesForHuman.map((w) => w.id),
+    ]);
     const commentary = new Map<string, string[]>();
     const seenRefs = new Set<string>();
     const seenSummaries = new Set<string>();
@@ -387,6 +395,27 @@ export async function snapshot(): Promise<Snapshot> {
           ``,
           `full worker briefing:`,
           a.briefing,
+        ].join('\n'),
+      });
+    }
+    for (const w of humanAttentionCanInterrupt(doc) ? probesForHuman : []) {
+      needsYou++;
+      const notes = commentary.get(w.id);
+      const spec = w.condition.spec;
+      items.push({
+        key: `${slug}:${w.id}`, slug, kind: 'probe', refId: w.id,
+        rank: 1,
+        at: w.createdAt,
+        title: `approve probe? ${w.reason.slice(0, 110)}`,
+        body: [
+          `pilot said ${w.condition.pilotVerdict!.decision}: ${w.condition.pilotVerdict!.reason}`,
+          ``,
+          `the engine would run, every ${spec.everySeconds}s in ${spec.cwd}:`,
+          ...spec.command.split('\n').map((l) => `  $ ${l}`),
+          ``,
+          `credentials: ${spec.credentialNames?.length ? spec.credentialNames.join(', ') : 'none'}${spec.githubRead ? ' · GitHub read token' : ''}`,
+          `approval pins spec ${w.condition.specHash.slice(0, 12)}; output only ever wakes the workstream as untrusted evidence`,
+          ...(notes ? [``, `coordinator notes:`, ...notes] : []),
         ].join('\n'),
       });
     }
@@ -781,9 +810,11 @@ function App({ embeddedRunner }: { embeddedRunner: boolean }): React.JSX.Element
       if (input === 'a') {
         if (it.kind === 'action') act(() => approveAction(it.slug, it.refId), `approved ${it.refId} — runner will execute + verify`);
         else if (it.kind === 'send') act(() => approveSend(it.slug, it.refId), `approved ${it.refId} — runner will send`);
+        else if (it.kind === 'probe') act(() => approveProbe(it.slug, it.refId), `approved ${it.refId} — runner starts checking it`);
       } else if (input === 'x') {
         if (it.kind === 'action') act(() => rejectAction(it.slug, it.refId), `rejected ${it.refId}`);
         else if (it.kind === 'send') act(() => rejectSend(it.slug, it.refId), `rejected ${it.refId}`);
+        else if (it.kind === 'probe') act(() => rejectProbe(it.slug, it.refId), `rejected ${it.refId}`);
       } else if (input === 'd' && it.kind === 'attention') {
         // A bare dismiss is ambiguous to the next coordinator pass ("seen" vs
         // "declined"), so d asks for an optional one-line answer first.

@@ -48,7 +48,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type RunnerOutput, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type ProbeCursor, type ProbeCursorState, type RunnerOutput, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 /**
  * Idempotent, run once per process at construction. TEXT for doc JSON (SQLite
@@ -87,6 +87,16 @@ const SCHEMA = `
     coordinator_seats TEXT,
     degraded          TEXT,
     output            TEXT
+  );
+  CREATE TABLE IF NOT EXISTS probe_cursors (
+    slug          TEXT    NOT NULL,
+    wake_id       TEXT    NOT NULL,
+    next_check_at TEXT    NOT NULL,
+    checked_at    TEXT,
+    claimed_by    TEXT,
+    failures      INTEGER NOT NULL DEFAULT 0,
+    last_error    TEXT,
+    PRIMARY KEY (slug, wake_id)
   );
 `;
 
@@ -398,6 +408,70 @@ export class SqliteStore implements StateStore {
       });
   }
 
+  async listProbeCursors(slug?: string): Promise<ProbeCursor[]> {
+    const rows = slug === undefined
+      ? this.db.prepare(
+        'SELECT slug, wake_id, next_check_at, checked_at, claimed_by, failures, last_error FROM probe_cursors ORDER BY slug, wake_id',
+      ).all()
+      : this.db.prepare(
+        'SELECT slug, wake_id, next_check_at, checked_at, claimed_by, failures, last_error FROM probe_cursors WHERE slug = ? ORDER BY wake_id',
+      ).all(slug);
+    return rows.map((row) => {
+      const r = row as {
+        slug: string; wake_id: string; next_check_at: string; checked_at: string | null;
+        claimed_by: string | null; failures: number; last_error: string | null;
+      };
+      return {
+        slug: r.slug,
+        wakeId: r.wake_id,
+        nextCheckAt: r.next_check_at,
+        ...(r.checked_at !== null ? { checkedAt: r.checked_at } : {}),
+        ...(r.claimed_by !== null ? { claimedBy: r.claimed_by } : {}),
+        failures: Number(r.failures),
+        ...(r.last_error !== null ? { lastError: r.last_error } : {}),
+      };
+    });
+  }
+
+  /** The whole compare-and-set is one IMMEDIATE transaction, so two runner
+   * processes racing one due probe serialize on the write lock and exactly
+   * one sees its expected `next_check_at`. */
+  async casProbeCursor(
+    slug: string,
+    wakeId: string,
+    expectedNextCheckAt: string | null,
+    next: ProbeCursorState | null,
+  ): Promise<boolean> {
+    return this.txn(() => {
+      const row = this.db.prepare('SELECT next_check_at FROM probe_cursors WHERE slug = ? AND wake_id = ?')
+        .get(slug, wakeId) as { next_check_at: string } | undefined;
+      if ((row?.next_check_at ?? null) !== expectedNextCheckAt) return false;
+      if (next === null) {
+        this.db.prepare('DELETE FROM probe_cursors WHERE slug = ? AND wake_id = ?').run(slug, wakeId);
+        return true;
+      }
+      this.db.prepare(
+        `INSERT INTO probe_cursors (slug, wake_id, next_check_at, checked_at, claimed_by, failures, last_error)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (slug, wake_id) DO UPDATE
+           SET next_check_at = excluded.next_check_at,
+               checked_at = excluded.checked_at,
+               claimed_by = excluded.claimed_by,
+               failures = excluded.failures,
+               last_error = excluded.last_error`,
+      ).run(
+        slug,
+        wakeId,
+        next.nextCheckAt,
+        next.checkedAt ?? null,
+        next.claimedBy ?? null,
+        next.failures,
+        next.lastError ?? null,
+      );
+      return true;
+    });
+  }
+
   /**
    * Cross-process tick exclusion via a tick_locks row. Liveness is a pid
    * probe (`process.kill(pid, 0)`), which is only meaningful for processes on
@@ -469,6 +543,9 @@ export class SqliteStore implements StateStore {
       this.db.prepare('UPDATE workstreams SET slug = ?, doc = ?, revision = ? WHERE slug = ?')
         .run(newSlug, JSON.stringify(d), d.revision, oldSlug);
       this.db.prepare('UPDATE artifacts SET slug = ? WHERE slug = ?').run(newSlug, oldSlug);
+      // A stale cursor left under the target name belongs to no live wake.
+      this.db.prepare('DELETE FROM probe_cursors WHERE slug = ?').run(newSlug);
+      this.db.prepare('UPDATE probe_cursors SET slug = ? WHERE slug = ?').run(newSlug, oldSlug);
       // Receipt before COMMIT, into the OLD slug's machine-local journal — the
       // whole sidecar directory moves to the new name after commit.
       writeJournalReceipt(printoutJournalDir(oldSlug), {

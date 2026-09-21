@@ -58,9 +58,15 @@ import {
 } from './capacity.js';
 import { coordinatorTargets, type CapacityTarget } from './modelConfig.js';
 import { runnerExecutorCapabilities, workerTargetsForAssignment } from './modelRouting.js';
-import type { Assignment, InfrastructureWait, WorkstreamDoc } from './types.js';
-import { ensureActionApprovalAttention, isPilotUnavailableApprovalAttention } from './actionApproval.js';
-import { pilotFetch, readPilotVerdict } from './pilot.js';
+import type { Assignment, InfrastructureWait, Wake, WorkstreamDoc } from './types.js';
+import { ensureActionApprovalAttention, ensureApprovalAttention, isPilotUnavailableApprovalAttention } from './actionApproval.js';
+import { pilotFetch, readPilotVerdict, type PilotVerdict } from './pilot.js';
+import {
+  PROBE_PILOT_RETRY_MS,
+  isWatchingProbe,
+  probeAwaitingPilot,
+  probeSpecHash,
+} from './probe.js';
 import {
   actionUsesGitHub,
   GitHubAppPreparationError,
@@ -529,6 +535,31 @@ export async function deliverManagerNotices(slug: string): Promise<number> {
   return delivered;
 }
 
+/** One Pilot evaluation of one tool call. Throws when Pilot is unreachable or
+ * answers non-2xx: callers treat that as the typed unavailable wait, never as
+ * a verdict. */
+async function pilotEvaluate(
+  slug: string,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  cwd: string,
+): Promise<PilotVerdict> {
+  const res = await pilotFetch('/internal/evaluate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      runtime: 'claude',
+      tool_name: toolName,
+      tool_input: JSON.stringify(toolInput),
+      cwd,
+      session_id: `weaver-${slug}`,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`pilot HTTP ${res.status}`);
+  return readPilotVerdict(res);
+}
+
 /**
  * Route gated actions through the operator's PILOT daemon — their existing,
  * human-owned approval policy engine (settings replay → deterministic rules →
@@ -563,20 +594,7 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
         // happens here.
         const commands = [asg.exec!.run, asg.exec!.verify].filter(Boolean);
         for (const command of commands) {
-          const res = await pilotFetch('/internal/evaluate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              runtime: 'claude',
-              tool_name: 'Bash',
-              tool_input: JSON.stringify({ command }),
-              cwd: asg.exec!.cwd,
-              session_id: `weaver-${slug}`,
-            }),
-            signal: AbortSignal.timeout(30_000),
-          });
-          if (!res.ok) throw new Error(`pilot HTTP ${res.status}`);
-          const body = await readPilotVerdict(res);
+          const body = await pilotEvaluate(slug, 'Bash', { command }, asg.exec!.cwd);
           // 'passthrough' is pilot reporting the operator's own Claude Code
           // settings ALLOW this exact command (settings deny/ask arrive as
           // 'deny'). Same authority source as a pilot rule — the operator
@@ -602,20 +620,12 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
         // what a human would have read on the card, and pilot's rules are
         // written about effects — publishing a package, deleting hosted
         // resources — which is exactly the level a single command hides.
-        const res = await pilotFetch('/internal/evaluate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            runtime: 'claude',
-            tool_name: 'WeaverAction',
-            tool_input: JSON.stringify({ objective: asg.objective, cwd: asg.exec!.cwd }),
-            cwd: asg.exec!.cwd,
-            session_id: `weaver-${slug}`,
-          }),
-          signal: AbortSignal.timeout(30_000),
-        });
-        if (!res.ok) throw new Error(`pilot HTTP ${res.status}`);
-        const body = await readPilotVerdict(res);
+        const body = await pilotEvaluate(
+          slug,
+          'WeaverAction',
+          { objective: asg.objective, cwd: asg.exec!.cwd },
+          asg.exec!.cwd,
+        );
         if (body.decision === 'deny' || body.decision === 'ask') {
           verdict = { decision: body.decision, reason: `${body.reason ?? ''} (action: ${asg.objective.slice(0, 70)})` };
         } else {
@@ -699,6 +709,98 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
       throw error;
     }
     if (verdict.decision === 'approve') approved++;
+  }
+  return approved;
+}
+
+/**
+ * Route inert probes through Pilot exactly as gated engine commands are
+ * routed: a probe is model-written shell the ENGINE will run repeatedly with
+ * credentials, the authority class of an action's `exec.run`. Pilot judges the
+ * literal command (Bash — must be approve or the operator's own settings
+ * passthrough, as for exec.run) and then the probe as a whole (WeaverProbe:
+ * command, cwd, cadence, credential names, GitHub read) so its rules can speak
+ * about repeated credentialed execution. Approval pins the spec hash; a
+ * deny/ask raises the same human approval card a gated action gets; an
+ * unreachable Pilot sets a bounded retry and never manufactures authority.
+ */
+async function pilotApproveProbes(slug: string): Promise<number> {
+  const doc = await load(slug);
+  if (doc.workstream.status !== 'active') return 0;
+  const wallNowIso = new Date().toISOString();
+  let approved = 0;
+  for (const wake of doc.wakes.filter((candidate) => probeAwaitingPilot(candidate, wallNowIso))) {
+    const condition = wake.condition as Extract<Wake['condition'], { type: 'probe' }>;
+    const specHash = probeSpecHash(condition.spec);
+    // A stored hash that does not describe the stored spec is never put to
+    // Pilot: approving it would pin an authority nobody evaluated.
+    if (specHash !== condition.specHash) continue;
+    const { command, cwd, everySeconds } = condition.spec;
+    let verdict: { decision: string; reason: string };
+    try {
+      const literal = await pilotEvaluate(slug, 'Bash', { command }, cwd);
+      if (literal.decision !== 'approve' && literal.decision !== 'passthrough') {
+        verdict = { decision: literal.decision ?? 'unknown', reason: `${literal.reason ?? ''} (probe command: ${command.slice(0, 60)})` };
+      } else {
+        const whole = await pilotEvaluate(slug, 'WeaverProbe', {
+          command,
+          cwd,
+          credentialNames: condition.spec.credentialNames ?? [],
+          everySeconds,
+          githubRead: condition.spec.githubRead === true,
+        }, cwd);
+        verdict = whole.decision === 'deny' || whole.decision === 'ask'
+          ? { decision: whole.decision, reason: `${whole.reason ?? ''} (probe: ${wake.reason.slice(0, 70)})` }
+          : {
+              decision: 'approve',
+              reason: literal.decision === 'passthrough' ? 'operator Claude Code settings allow' : literal.source ?? 'pilot',
+            };
+      }
+    } catch {
+      const retryAt = new Date(Date.now() + PROBE_PILOT_RETRY_MS).toISOString();
+      await arrive(slug, (d, event) => {
+        const current = d.wakes.find((candidate) => candidate.id === wake.id);
+        if (!current || !probeAwaitingPilot(current, wallNowIso)) return;
+        current.condition.pilotRetryAt = retryAt;
+        event('probe.pilot_unavailable', `${current.id} stays inert — Pilot is unavailable; retry at ${retryAt}`, [current.id]);
+      });
+      continue;
+    }
+    const at = new Date().toISOString();
+    let pinned = false;
+    await arrive(slug, (d, event) => {
+      pinned = false;
+      if (d.workstream.status !== 'active') return;
+      const current = d.wakes.find((candidate) => candidate.id === wake.id);
+      if (!current || !isWatchingProbe(current)) return;
+      const c = current.condition;
+      if (c.specHash !== specHash || probeSpecHash(c.spec) !== specHash || c.approval || c.pilotVerdict) return;
+      c.pilotVerdict = { ...verdict, at };
+      delete c.pilotRetryAt;
+      if (verdict.decision === 'approve') {
+        c.approval = { by: 'pilot', at, specHash };
+        for (const attention of d.attention) {
+          if (attention.refId === current.id && attention.status === 'open') {
+            attention.status = 'resolved';
+            attention.resolvedAt = at;
+            attention.resolvedBy = 'pilot'; // system actor — never a human intervention
+          }
+        }
+        event('probe.auto_approved', `${current.id} approved via pilot for spec ${specHash.slice(0, 12)} — ${verdict.reason}`, [current.id]);
+        pinned = true;
+      } else {
+        const decision = verdict.decision === 'deny' ? 'denied this probe' : 'requires your judgment';
+        const credentials = c.spec.credentialNames?.length ? ` with credentials ${c.spec.credentialNames.join(', ')}` : '';
+        ensureApprovalAttention(
+          d,
+          current.id,
+          `Pilot ${decision}: ${verdict.reason}. Decide whether to approve this recurring probe: "${current.reason.slice(0, 200)}" — the engine would run \`${command.slice(0, 200)}\` every ${everySeconds}s in ${cwd}${credentials}${c.spec.githubRead ? ' with a GitHub read token' : ''}. Approve with \`weaver approve-action ${slug} ${current.id}\`, or reject with \`weaver reject-action ${slug} ${current.id}\`.`,
+          () => newId('att'),
+        );
+        event('probe.pilot_escalated', `${current.id} stays inert for the human — pilot said ${verdict.decision}: ${verdict.reason.slice(0, 120)}`, [current.id]);
+      }
+    });
+    if (pinned) approved++;
   }
   return approved;
 }
@@ -1681,6 +1783,7 @@ async function tickLocked(
     // old lifetime-dollar card cannot remain a false human blocker.
     if (await retireLegacyDollarBudgetCard(slug)) progressed = true;
     if ((await pilotApproveGatedActions(slug)) > 0) progressed = true;
+    if ((await pilotApproveProbes(slug)) > 0) progressed = true;
     if ((await deliverManagerNotices(slug)) > 0) progressed = true;
     report.unknownsResolved += await resolveUnknownSends(slug);
     const sent = await executeApprovedSends(slug);

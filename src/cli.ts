@@ -111,8 +111,8 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver rename <slug> <new-slug>            move a workstream to a better name — history, artifacts, manager links, and policy attribution all follow; refused mid-tick
   weaver approve <slug> <interactionId>      approve a pending send
   weaver reject-send <slug> <interactionId>  reject a pending send
-  weaver approve-action <slug> <asgId>       approve a gated real-world action (runs on next tick, confirmed by readback)
-  weaver reject-action <slug> <asgId> [why]  reject a gated action
+  weaver approve-action <slug> <asgId|wakeId>  approve a gated real-world action (runs on next tick, confirmed by readback), or an inert probe (the engine starts checking it)
+  weaver reject-action <slug> <asgId|wakeId> [why]  reject a gated action, or retire a probe
   weaver assign-action <slug> --objective <o> --briefing <b> --cwd <dir> --verify <cmd> [--run <cmd>] [--runner-id <id>] [--preflight-mode <postcondition|always-execute>] [--depends-on id]...   author a real-world action yourself (pre-approved; --run = engine executes the exact command deterministically, no model)
   weaver constraint <slug> add <text>        add a hard constraint (human-owned direction)
   weaver constraint <slug> remove <match>    remove the constraint containing <match>
@@ -645,7 +645,12 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       const slug = rest[0] ?? fail('slug required');
       const asgId = rest[1] ?? fail('assignment id required');
       {
-        const { approveAction } = await import('./humanActs.js');
+        const { approveAction, approveProbe, isProbeWakeId } = await import('./humanActs.js');
+        if (await isProbeWakeId(slug, asgId)) {
+          await approveProbe(slug, asgId);
+          process.stdout.write(`approved — the runner starts checking probe ${asgId} on its cadence\n`);
+          break;
+        }
         await approveAction(slug, asgId);
       }
       process.stdout.write(`approved — the action will run on the next tick and be confirmed by readback\n`);
@@ -656,8 +661,9 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       const slug = rest[0] ?? fail('slug required');
       const asgId = rest[1] ?? fail('assignment id required');
       const reason = rest.slice(2).join(' ') || 'rejected by human';
-      const { rejectAction } = await import('./humanActs.js');
-      await rejectAction(slug, asgId, reason);
+      const { rejectAction, rejectProbe, isProbeWakeId } = await import('./humanActs.js');
+      if (await isProbeWakeId(slug, asgId)) await rejectProbe(slug, asgId, reason);
+      else await rejectAction(slug, asgId, reason);
       process.stdout.write(`rejected — the coordinator will reconcile on the next tick\n`);
       break;
     }

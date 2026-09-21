@@ -65,6 +65,28 @@ export function humanAttentionCanInterrupt(doc: WorkstreamDoc): boolean {
   return doc.workstream.status !== 'paused';
 }
 
+/** Idempotently materialise the durable needs-you approval item for one
+ * gated thing (an action assignment or an inert probe wake). */
+export function ensureApprovalAttention(
+  doc: WorkstreamDoc,
+  refId: string,
+  summary: string,
+  id: () => string,
+): boolean {
+  if (doc.attention.some((attention) =>
+    attention.kind === 'approval' && attention.refId === refId && attention.status === 'open'
+  )) return false;
+  doc.attention.push({
+    id: id(),
+    kind: 'approval',
+    summary,
+    refId,
+    status: 'open',
+    createdAt: new Date().toISOString(),
+  });
+  return true;
+}
+
 /** Idempotently materialise the durable needs-you item for an action. */
 export function ensureActionApprovalAttention(
   doc: WorkstreamDoc,
@@ -72,16 +94,10 @@ export function ensureActionApprovalAttention(
   id: () => string,
   reason?: string,
 ): boolean {
-  if (doc.attention.some((attention) =>
-    attention.kind === 'approval' && attention.refId === asg.id && attention.status === 'open'
-  )) return false;
-  doc.attention.push({
-    id: id(),
-    kind: 'approval',
-    summary: reason ?? `Action ${asg.id} awaits your approval: "${asg.objective}" (cwd ${asg.exec?.cwd ?? '?'}) — approve with \`weaver approve-action\``,
-    refId: asg.id,
-    status: 'open',
-    createdAt: new Date().toISOString(),
-  });
-  return true;
+  return ensureApprovalAttention(
+    doc,
+    asg.id,
+    reason ?? `Action ${asg.id} awaits your approval: "${asg.objective}" (cwd ${asg.exec?.cwd ?? '?'}) — approve with \`weaver approve-action\``,
+    id,
+  );
 }

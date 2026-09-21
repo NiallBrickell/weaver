@@ -27,7 +27,7 @@ import { acquireProcessLock } from '../processLock.js';
 import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc, newId, sha256 } from './doc.js';
-import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type ProbeCursor, type ProbeCursorState, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 export { newId, sha256 };
 
@@ -66,6 +66,43 @@ function policiesPath(): string {
 
 function runnerPresencePath(): string {
   return path.join(weaverHome(), '.runner-presence.json');
+}
+
+function probeCursorsPath(): string {
+  return path.join(weaverHome(), '.probe-cursors.json');
+}
+
+function readProbeCursors(): ProbeCursor[] {
+  try {
+    return JSON.parse(fs.readFileSync(probeCursorsPath(), 'utf8')) as ProbeCursor[];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw new Error(`cannot read probe cursors: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+function sortProbeCursors(cursors: ProbeCursor[]): ProbeCursor[] {
+  return cursors.sort((a, b) => a.slug.localeCompare(b.slug) || a.wakeId.localeCompare(b.wakeId));
+}
+
+/** Serialized read-modify-write of the cursor file. Synchronous inside the
+ * lock, so in-process callers cannot interleave either. */
+function withProbeCursors<T>(fn: (cursors: ProbeCursor[]) => { result: T; write: boolean }): T {
+  fs.mkdirSync(weaverHome(), { recursive: true });
+  const release = acquireProcessLock(`${probeCursorsPath()}.lock`, { timeoutMs: 10_000, pollMs: 25 });
+  if (!release) throw new Error('probe cursor lock timeout');
+  try {
+    const cursors = readProbeCursors();
+    const { result, write } = fn(cursors);
+    if (write) {
+      const tmp = `${probeCursorsPath()}.tmp-${process.pid}`;
+      fs.writeFileSync(tmp, `${JSON.stringify(sortProbeCursors(cursors), null, 2)}\n`);
+      fs.renameSync(tmp, probeCursorsPath());
+    }
+    return result;
+  } finally {
+    release();
+  }
 }
 
 /** Serialize the actual read/check/write region across local processes. */
@@ -328,6 +365,31 @@ export class FsStore implements StateStore {
     }
   }
 
+  async listProbeCursors(slug?: string): Promise<ProbeCursor[]> {
+    return sortProbeCursors(readProbeCursors().filter((cursor) => slug === undefined || cursor.slug === slug));
+  }
+
+  async casProbeCursor(
+    slug: string,
+    wakeId: string,
+    expectedNextCheckAt: string | null,
+    next: ProbeCursorState | null,
+  ): Promise<boolean> {
+    return withProbeCursors((cursors) => {
+      const index = cursors.findIndex((cursor) => cursor.slug === slug && cursor.wakeId === wakeId);
+      const current = index >= 0 ? cursors[index]! : undefined;
+      if ((current?.nextCheckAt ?? null) !== expectedNextCheckAt) return { result: false, write: false };
+      if (next === null) {
+        if (index >= 0) cursors.splice(index, 1);
+        return { result: true, write: index >= 0 };
+      }
+      const row: ProbeCursor = { slug, wakeId, ...next };
+      if (index >= 0) cursors[index] = row;
+      else cursors.push(row);
+      return { result: true, write: true };
+    });
+  }
+
   /**
    * Cross-PROCESS tick exclusion (the doc's revision check guards logical
    * conflicts, not two OS processes dispatching the same real-world act in the
@@ -379,6 +441,22 @@ export class FsStore implements StateStore {
         // heals — the reverse order would strand a directory whose contents
         // still answer to a name that no longer loads.
         fs.renameSync(workstreamDir(oldSlug), workstreamDir(newSlug));
+        // Probe cursors hold no truth, but carrying them keeps an unchanged
+        // probe's cadence instead of re-checking it immediately.
+        withProbeCursors((cursors) => {
+          const before = cursors.length;
+          // A stale cursor left under the target name belongs to no live wake.
+          for (let i = cursors.length - 1; i >= 0; i--) {
+            if (cursors[i]!.slug === newSlug) cursors.splice(i, 1);
+          }
+          let moved = cursors.length !== before;
+          for (const cursor of cursors) {
+            if (cursor.slug !== oldSlug) continue;
+            cursor.slug = newSlug;
+            moved = true;
+          }
+          return { result: undefined, write: moved };
+        });
         return doc;
       } finally {
         // The directory rename carried our held tick lock into the new

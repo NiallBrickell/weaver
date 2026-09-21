@@ -16,6 +16,7 @@ import {
   isWakeDue,
 } from './executionSafety.js';
 import { actionHasLivePilotOutage, humanAttention } from './actionApproval.js';
+import { probeApprovalLabel } from './probe.js';
 
 const MANAGES_SHOWN_MAX = 5;
 
@@ -181,7 +182,11 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
         ? `wake at ${w.condition.dueAtVirtual.slice(0, 16)}: ${w.reason}`
         : w.condition.type === 'wall_time'
           ? `wake at wall time ${w.condition.dueAt.slice(0, 16)}: ${w.reason}`
-          : `wake (immediate): ${w.reason}`,
+          : w.condition.type === 'probe'
+            ? w.condition.satisfiedBy
+              ? `probe ${w.id} saw new output (${w.condition.satisfiedBy}) — reconciliation is due now: ${w.reason}`
+              : `probe ${w.id} every ${Math.round(w.condition.spec.everySeconds / 60)}m (${probeApprovalLabel(w.condition)})${w.condition.error ? ` FAILING: ${w.condition.error.excerpt}` : ''}: ${w.reason}`
+            : `wake (immediate): ${w.reason}`,
     ),
     ...(capacity.executorUnavailable
       ? [`waiting for executor: ${capacity.executorUnavailable.summary}`]

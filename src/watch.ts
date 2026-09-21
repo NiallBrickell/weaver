@@ -197,6 +197,8 @@ export async function viewOf(slug: string, presences?: readonly RunnerPresence[]
       (a.condition.type === 'wall_time' ? a.condition.dueAt : a.condition.type === 'time' ? a.condition.dueAtVirtual : '')
         .localeCompare(b.condition.type === 'wall_time' ? b.condition.dueAt : b.condition.type === 'time' ? b.condition.dueAtVirtual : ''),
     )[0];
+  const watchingProbes = normalWakes.filter((w) => w.condition.type === 'probe' && !w.condition.satisfiedBy).length;
+  if (watchingProbes && !working) details.push(`${DIM}  ◌ ${watchingProbes} probe(s) watching external state${R}`);
   if (dueNow && !working && !queued) details.push(`${BLUE}▸ ${dueNow} wake(s) due — runner will pick up${R}`);
   else if (nextWake && !working)
     details.push(

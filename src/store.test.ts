@@ -25,11 +25,13 @@ import {
   SourceKeyConflictError,
   arrive,
   artifactsDir,
+  casProbeCursor,
   closeStore,
   createWorkstream,
   findBySourceKey,
   heartbeatRunner,
   listManagedBy,
+  listProbeCursors,
   listRunnerPresence,
   listWorkstreamHeads,
   listWorkstreams,
@@ -141,11 +143,13 @@ const pgBackend: Backend = {
     await closeStore();
     process.env.WEAVER_STORE = PG_URL;
     freshHome(); // secrets and machine-local locks still live under WEAVER_HOME
-    try {
-      await pgAdmin((c) => c.query('TRUNCATE workstreams, artifacts, policies, runner_presence'));
-    } catch (e) {
-      // 42P01 undefined_table: first-ever run, migration hasn't created them.
-      if ((e as { code?: string }).code !== '42P01') throw e;
+    for (const tables of ['workstreams, artifacts, policies, runner_presence', 'probe_cursors']) {
+      try {
+        await pgAdmin((c) => c.query(`TRUNCATE ${tables}`));
+      } catch (e) {
+        // 42P01 undefined_table: first-ever run, migration hasn't created them.
+        if ((e as { code?: string }).code !== '42P01') throw e;
+      }
     }
   },
   async tamper(slug, relPath, content) {
@@ -560,6 +564,42 @@ function contractSuite(backend: Backend): void {
       { runnerId: 'mac-primary', heartbeatAt: '2026-08-29T10:00:08.000Z', coordinatorSeats: seats },
     );
     assert.equal((await load('test-ws')).revision, revision);
+  });
+
+  test('probe cursors CAS on next_check_at, never bump a Workstream revision, and follow rename', async () => {
+    await makeWorkstream('probe-a');
+    await makeWorkstream('probe-b');
+    const revision = (await load('probe-a')).revision;
+    const t0 = '2026-09-21T06:00:00.000Z';
+    const t1 = '2026-09-21T06:05:00.000Z';
+    const t2 = '2026-09-21T06:10:00.000Z';
+    // Insert-if-absent: exactly one of two racing claims lands.
+    assert.equal(await casProbeCursor('probe-a', 'wake_2', null, { nextCheckAt: t0, failures: 0 }), true);
+    assert.equal(await casProbeCursor('probe-a', 'wake_2', null, { nextCheckAt: t1, failures: 0 }), false);
+    assert.equal(await casProbeCursor('probe-a', 'wake_1', null, {
+      nextCheckAt: t1, claimedBy: 'runner-a', failures: 2, lastError: 'boom', checkedAt: t0,
+    }), true);
+    assert.equal(await casProbeCursor('probe-b', 'wake_9', null, { nextCheckAt: t2, failures: 0 }), true);
+    assert.deepEqual(await listProbeCursors('probe-a'), [
+      { slug: 'probe-a', wakeId: 'wake_1', nextCheckAt: t1, checkedAt: t0, claimedBy: 'runner-a', failures: 2, lastError: 'boom' },
+      { slug: 'probe-a', wakeId: 'wake_2', nextCheckAt: t0, failures: 0 },
+    ]);
+    assert.deepEqual((await listProbeCursors()).map((c) => `${c.slug}/${c.wakeId}`), ['probe-a/wake_1', 'probe-a/wake_2', 'probe-b/wake_9']);
+    // A stale expectation changes nothing; the matching one replaces the row.
+    assert.equal(await casProbeCursor('probe-a', 'wake_2', t1, { nextCheckAt: t2, failures: 0 }), false);
+    // Non-canonical spellings of the same instant compare equal.
+    assert.equal(await casProbeCursor('probe-a', 'wake_2', '2026-09-21T06:00:00Z', { nextCheckAt: t2, checkedAt: t1, failures: 0 }), true);
+    assert.deepEqual((await listProbeCursors('probe-a')).find((c) => c.wakeId === 'wake_2'),
+      { slug: 'probe-a', wakeId: 'wake_2', nextCheckAt: t2, checkedAt: t1, failures: 0 });
+    // Delete is conditional too.
+    assert.equal(await casProbeCursor('probe-a', 'wake_2', t0, null), false);
+    assert.equal(await casProbeCursor('probe-a', 'wake_2', t2, null), true);
+    assert.deepEqual((await listProbeCursors('probe-a')).map((c) => c.wakeId), ['wake_1']);
+    assert.equal((await load('probe-a')).revision, revision, 'cursor writes never touch the document');
+    // A renamed stream keeps its cursors.
+    await rename('probe-a', 'probe-renamed');
+    assert.deepEqual(await listProbeCursors('probe-a'), []);
+    assert.deepEqual((await listProbeCursors('probe-renamed')).map((c) => c.wakeId), ['wake_1']);
   });
 
   test('a second workstream for the same source key is refused, naming the holder', async () => {

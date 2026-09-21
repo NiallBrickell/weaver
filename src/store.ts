@@ -33,7 +33,7 @@ import { FsStore, artifactsDir, newId, printoutJournalDir, sha256, weaverHome, w
 import { PgStore } from './store/pg.js';
 import { SqliteStore } from './store/sqlite.js';
 import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './store/types.js';
-import type { ManagedWorkstreamHead, RunnerOutput, RunnerPresence, WorkstreamHead } from './store/types.js';
+import type { ManagedWorkstreamHead, ProbeCursor, ProbeCursorState, RunnerOutput, RunnerPresence, WorkstreamHead } from './store/types.js';
 import type { WorkstreamCore, WorkstreamDoc } from './types.js';
 import { assertRunnerId } from './runnerIdentity.js';
 
@@ -43,6 +43,7 @@ export type { StateStore };
 export type { RunnerPresence };
 export type { RunnerOutput };
 export type { WorkstreamHead };
+export type { ProbeCursor, ProbeCursorState };
 
 let activeStore: StateStore | undefined;
 
@@ -108,6 +109,42 @@ export async function heartbeatRunner(
 
 export async function listRunnerPresence(): Promise<RunnerPresence[]> {
   return getStore().listRunnerPresence();
+}
+
+/** Probe scheduling state, outside every Workstream document (see ProbeCursor). */
+export async function listProbeCursors(slug?: string): Promise<ProbeCursor[]> {
+  return getStore().listProbeCursors(slug);
+}
+
+/** One canonical spelling per instant, so every backend's CAS compares the
+ * same string (Postgres hands timestamps back in exactly this form). */
+function canonicalInstant(value: string, field: string): string {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) throw new Error(`invalid probe cursor ${field} '${value}'`);
+  return new Date(ms).toISOString();
+}
+
+/** Compare-and-set one probe cursor; never touches a Workstream revision. */
+export async function casProbeCursor(
+  slug: string,
+  wakeId: string,
+  expectedNextCheckAt: string | null,
+  next: ProbeCursorState | null,
+): Promise<boolean> {
+  const expected = expectedNextCheckAt === null ? null : canonicalInstant(expectedNextCheckAt, 'expected nextCheckAt');
+  let state: ProbeCursorState | null = null;
+  if (next) {
+    if (!Number.isInteger(next.failures) || next.failures < 0) throw new Error('probe cursor failures must be a non-negative integer');
+    if (next.claimedBy !== undefined) assertRunnerId(next.claimedBy, 'probe cursor claimant');
+    state = {
+      nextCheckAt: canonicalInstant(next.nextCheckAt, 'nextCheckAt'),
+      ...(next.checkedAt !== undefined ? { checkedAt: canonicalInstant(next.checkedAt, 'checkedAt') } : {}),
+      ...(next.claimedBy !== undefined ? { claimedBy: next.claimedBy } : {}),
+      failures: next.failures,
+      ...(next.lastError !== undefined ? { lastError: next.lastError } : {}),
+    };
+  }
+  return getStore().casProbeCursor(slug, wakeId, expected, state);
 }
 
 export async function load(slug: string): Promise<WorkstreamDoc> {

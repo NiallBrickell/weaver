@@ -322,6 +322,9 @@ function soonestWake(
   let soonest: { remaining: number; reason: string; blocking: boolean; providerRetry: boolean; createdAt: string } | undefined;
   for (const wake of doc.wakes) {
     if (wake.status !== 'pending') continue;
+    // A watching probe has no due time — it fires only when output changes —
+    // so it is never the "next wake"; a satisfied one is due now.
+    if (wake.condition.type === 'probe' && !wake.condition.satisfiedBy) continue;
     const remaining =
       wake.condition.type === 'time'
         ? Date.parse(wake.condition.dueAtVirtual) - organizationalNow.getTime()
