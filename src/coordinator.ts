@@ -50,6 +50,7 @@ import {
   clearCapacityBackoff,
   ensureCapacityAttention,
   infrastructureWaitSummary,
+  isFleetDeferralWake,
   recordCapacityBackoff,
   recordProviderCapacityObservations,
   resolveCapacityAttention,
@@ -1735,9 +1736,11 @@ export async function runCoordinatorPass(
     // rendering as innocently idle. The coordinator should have concluded the
     // stream or scheduled its next check; when it did neither, a delayed wake
     // forces that decision instead of letting silence become abandonment.
+    // A fleet deferral wake only re-dispatches the runner; it never becomes a
+    // pass reason, so it cannot stand in for the stream's next real check.
     if (
       d.workstream.status === 'active' &&
-      !d.wakes.some((w) => w.status === 'pending') &&
+      !d.wakes.some((w) => w.status === 'pending' && !isFleetDeferralWake(w)) &&
       !d.assignments.some((a) => !['completed', 'failed', 'cancelled'].includes(a.state)) &&
       !d.attention.some((a) => a.status === 'open' && !isLegacyDollarBudgetAttention(a)) &&
       !d.interactions.some((i) => i.status === 'awaiting_approval')

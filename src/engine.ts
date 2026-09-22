@@ -43,14 +43,22 @@ import {
   type StrandedPushIO,
 } from './deconflict.js';
 import {
+  adoptFleetSeatWait,
   assignmentCannotBecomeAccepted,
   assignmentDependenciesSatisfied,
   capacityBackoffFor,
+  capacitySuccessEvidence,
+  capacityTargetKey,
+  infrastructureWaitSummary,
+  isFleetDeferralWake,
   isTransientInfrastructureText,
   selectWorkerCapacityTarget,
+  wakeHeldByFleetCapacity,
+  type FleetSeatWaits,
 } from './capacity.js';
-import { runnerExecutorCapabilities } from './modelRouting.js';
-import type { Assignment, WorkstreamDoc } from './types.js';
+import { coordinatorTargets, type CapacityTarget } from './modelConfig.js';
+import { runnerExecutorCapabilities, workerTargetsForAssignment } from './modelRouting.js';
+import type { Assignment, InfrastructureWait, WorkstreamDoc } from './types.js';
 import { ensureActionApprovalAttention, isPilotUnavailableApprovalAttention } from './actionApproval.js';
 import { pilotFetch, readPilotVerdict } from './pilot.js';
 import {
@@ -306,10 +314,19 @@ function holdActionForUnknownReadback(
 }
 
 
-function dueWakes(doc: WorkstreamDoc): typeof doc.wakes {
-  const wallNow = new Date();
-  const virtual = virtualNow();
-  return doc.wakes.filter((wake) => wake.status === 'pending' && isWakeDue(wake.condition, wallNow, virtual));
+/** The due wakes a coordinator pass would fire. Wakes that fleet capacity
+ * already answers (the deferral signal, a worker permit on a borrowed park)
+ * stay pending and are never pass reasons. */
+function dueWakes(
+  doc: WorkstreamDoc,
+  wallNow = new Date(),
+  virtual = virtualNow(),
+): typeof doc.wakes {
+  const nowIso = virtual.toISOString();
+  return doc.wakes.filter((wake) =>
+    wake.status === 'pending' &&
+    isWakeDue(wake.condition, wallNow, virtual) &&
+    !wakeHeldByFleetCapacity(doc, wake, nowIso));
 }
 
 /** Pause is typed lifecycle state, not merely a runner filter. Every
@@ -1186,13 +1203,11 @@ async function holdLegacyQueuedActionRetries(slug: string, runner: RunnerClaimId
   return held;
 }
 
-export function runnableAssignments(
-  doc: WorkstreamDoc,
-  executorCapabilities?: ReadonlySet<string>,
-  runner: RunnerClaimIdentity = runnerClaimIdentity(),
-): string[] {
+/** Queued model work this runner could launch but for provider capacity. The
+ * capacity gate is applied separately (runnableAssignments), so a fleet park
+ * can reason about exactly the work a launch would otherwise have spent. */
+function workerLaunchCandidates(doc: WorkstreamDoc, runner: RunnerClaimIdentity): Assignment[] {
   if (doc.workstream.status !== 'active') return [];
-  const now = virtualNow().toISOString();
   return doc.assignments
     .filter((a) => a.state === 'queued')
     .filter((a) => assignmentMatchesRunner(a, runner))
@@ -1203,6 +1218,18 @@ export function runnableAssignments(
     // re-queued under the old bounded-retry policy; never replay it under the
     // same assignment and approval.
     .filter((a) => a.kind !== 'action' || a.attempts.length === 0)
+    // exec.run actions belong to the engine, never to a model worker
+    .filter((a) => !a.exec?.run)
+    .filter((a) => assignmentDependenciesSatisfied(doc, a));
+}
+
+export function runnableAssignments(
+  doc: WorkstreamDoc,
+  executorCapabilities?: ReadonlySet<string>,
+  runner: RunnerClaimIdentity = runnerClaimIdentity(),
+): string[] {
+  const now = virtualNow().toISOString();
+  return workerLaunchCandidates(doc, runner)
     // A provider outage never erases intended work, but it must defer the
     // next disposable attempt on that exact target. A reviewed fallback is
     // selected only when earlier pools are backed off; host capability then
@@ -1217,10 +1244,213 @@ export function runnableAssignments(
         wait.provider !== target.provider ||
         wait.retryAt <= now;
     })
-    // exec.run actions belong to the engine, never to a model worker
-    .filter((a) => !a.exec?.run)
-    .filter((a) => assignmentDependenciesSatisfied(doc, a))
     .map((a) => a.id);
+}
+
+export interface FleetCapacityParkChange {
+  /** Borrowed waits written into this workstream's capacity state. */
+  adopted: InfrastructureWait[];
+  /** What happened to the single deferral wake, when anything did. */
+  deferral?: { action: 'created' | 'moved' | 'retired'; wakeId: string; dueAt?: string };
+}
+
+/**
+ * Re-derive this workstream's fleet park from typed state plus the runner's
+ * fleet snapshot, mutating `doc` in place. Idempotent: returns null when the
+ * stored state already matches, so callers can skip the write entirely.
+ *
+ * 1. Adopt: every seat a launch would use — each queued candidate's worker
+ *    chain, and the coordinator chain while a pass is due — that the fleet
+ *    holds an active wait for and this stream does not. Never over this
+ *    stream's own active wait, never an observation it already holds (or a
+ *    newer one — so an explicit `weaver capacity retry` of a borrowed wait is
+ *    honoured), and never one its own later success already refutes.
+ * 2. Defer: when a role's WHOLE chain is parked and a borrowed wait is part of
+ *    it, keep exactly one pending deferral wake at the earliest active
+ *    borrowed retry, moved rather than duplicated, and retire it once no
+ *    borrowed wait is active. Due organizational wakes stay pending; nothing
+ *    is fired, no PassRecord or Attempt is written, no spend is counted and no
+ *    attention is raised.
+ */
+export function applyFleetCapacityPark(
+  doc: WorkstreamDoc,
+  fleet: FleetSeatWaits,
+  runner: RunnerClaimIdentity,
+  newWakeId: () => string,
+  wallNow = new Date(),
+  virtual = virtualNow(),
+): FleetCapacityParkChange | null {
+  if (doc.workstream.status !== 'active') return null;
+  const nowIso = virtual.toISOString();
+  const slug = doc.workstream.slug;
+  const adopted: InfrastructureWait[] = [];
+  let ownSuccess: Map<string, string> | undefined;
+  const consider = (target: CapacityTarget): void => {
+    const key = capacityTargetKey(target);
+    const wait = fleet.get(key);
+    if (!wait || wait.observedIn === undefined || wait.observedIn === slug || wait.retryAt <= nowIso) return;
+    const entry = capacityBackoffFor(doc, target);
+    if (entry) {
+      if (entry.wait.detectedAt >= wait.detectedAt) return;
+      if (entry.wait.retryAt > nowIso && entry.wait.observedIn === undefined) return;
+    }
+    // The snapshot predates this tick: a success this stream recorded since
+    // (earlier in the same tick) is fresher proof than the borrowed wait.
+    ownSuccess ??= capacitySuccessEvidence([doc]);
+    const provedAt = ownSuccess.get(key);
+    if (provedAt && provedAt > wait.detectedAt) return;
+    adoptFleetSeatWait(doc, wait);
+    adopted.push(wait);
+  };
+
+  const candidates = workerLaunchCandidates(doc, runner);
+  if (fleet.size) {
+    for (const assignment of candidates) {
+      for (const target of workerTargetsForAssignment(assignment)) consider(target);
+    }
+  }
+  // Coordinator intent is read after worker adoption: a worker's own retry
+  // permit on a now-borrowed park is not coordinator work (dueWakes).
+  const coordinatorDue = dueWakes(doc, wallNow, virtual).length > 0;
+  const chain = coordinatorDue ? coordinatorTargets() : [];
+  if (fleet.size) for (const target of chain) consider(target);
+
+  const activeWait = (target: CapacityTarget): InfrastructureWait | undefined => {
+    const wait = capacityBackoffFor(doc, target)?.wait;
+    return wait && wait.retryAt > nowIso ? wait : undefined;
+  };
+  // A role is deferred only when EVERY seat it could use is parked and at
+  // least one of those parks is borrowed; a stream parked purely on its own
+  // waits keeps the retry wakes its own backoffs scheduled.
+  const deferred = (targets: readonly CapacityTarget[]): boolean => {
+    const waits = targets.map(activeWait);
+    return waits.length > 0 &&
+      waits.every((wait) => wait !== undefined) &&
+      waits.some((wait) => wait!.observedIn !== undefined);
+  };
+  const needed = (coordinatorDue && deferred(chain)) ||
+    candidates.some((assignment) => deferred(workerTargetsForAssignment(assignment)));
+  // WHETHER to create the wake depends on this host's chains; WHEN it fires
+  // and when it retires must not. Runners with different configured chains
+  // share this document: if one retired a wake another had just created (or
+  // moved it to a different instant), each write would re-dispatch the other
+  // host forever. So the wake always sits at the earliest borrowed retry in
+  // the document — every seat's expiry is a moment something may unblock —
+  // and it retires only when no borrowed wait is active at all.
+  const next = Object.values(doc.capacity?.byModel ?? {})
+    .map((entry) => entry.wait)
+    .filter((wait) => wait.observedIn !== undefined && wait.retryAt > nowIso)
+    .sort((a, b) => a.retryAt.localeCompare(b.retryAt) || a.detectedAt.localeCompare(b.detectedAt))[0];
+
+  const change: FleetCapacityParkChange = { adopted };
+  const pending = doc.wakes.filter((wake) => wake.status === 'pending' && isFleetDeferralWake(wake));
+  if (!next) {
+    for (const wake of pending) wake.status = 'cancelled';
+    if (pending.length) change.deferral = { action: 'retired', wakeId: pending[0]!.id };
+  } else if (needed || pending.length) {
+    const [keep, ...duplicates] = pending;
+    for (const wake of duplicates) wake.status = 'cancelled';
+    const reason = `fleet capacity: ${infrastructureWaitSummary(next, slug)} Due work resumes at ${next.retryAt} without a launch until then.`;
+    if (!keep) {
+      const id = newWakeId();
+      doc.wakes.push({
+        id,
+        reason,
+        condition: { type: 'time', dueAtVirtual: next.retryAt },
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        infrastructure: { ...next },
+      });
+      change.deferral = { action: 'created', wakeId: id, dueAt: next.retryAt };
+    } else if (
+      keep.condition.type !== 'time' ||
+      keep.condition.dueAtVirtual !== next.retryAt ||
+      keep.infrastructure?.observedIn !== next.observedIn ||
+      keep.infrastructure?.sourceId !== next.sourceId ||
+      duplicates.length
+    ) {
+      keep.condition = { type: 'time', dueAtVirtual: next.retryAt };
+      keep.infrastructure = { ...next };
+      keep.reason = reason;
+      change.deferral = { action: 'moved', wakeId: keep.id, dueAt: next.retryAt };
+    }
+  }
+  return adopted.length || change.deferral ? change : null;
+}
+
+/** Revision-checked application of `applyFleetCapacityPark`, modelled on
+ * parkIfExecutionLimited: a cheap dry run on a copy decides whether anything
+ * would change, then the real change is re-derived inside the serialized
+ * arrival against whatever revision it sees. Returns whether it wrote. */
+export async function parkOnFleetCapacity(
+  slug: string,
+  fleet: FleetSeatWaits,
+  runner: RunnerClaimIdentity = runnerClaimIdentity(),
+): Promise<boolean> {
+  const before = await load(slug);
+  if (!applyFleetCapacityPark(fleetParkDryRunCopy(before), fleet, runner, () => 'wake_dry_run')) return false;
+  let wrote = false;
+  await arrive(slug, (doc, event) => {
+    const change = applyFleetCapacityPark(doc, fleet, runner, () => newId('wake'));
+    if (!change) return;
+    wrote = true;
+    for (const wait of change.adopted) {
+      event(
+        'capacity.fleet_parked',
+        `${wait.executor}:${wait.model} ${wait.kind} observed in ${wait.observedIn} — parked here until ${wait.retryAt} without spending a launch`,
+      );
+    }
+    if (change.deferral?.action === 'retired') {
+      event('capacity.fleet_deferral_retired', `no intended work is held by a borrowed capacity wait any more — ${change.deferral.wakeId} retired`, [change.deferral.wakeId]);
+    } else if (change.deferral) {
+      event('capacity.fleet_deferred', `due work waits for a borrowed capacity retry — ${change.deferral.wakeId} ${change.deferral.action} for ${change.deferral.dueAt}`, [change.deferral.wakeId]);
+    }
+  });
+  return wrote;
+}
+
+/** A disposable view for dry runs: capacity and wakes are the only state the
+ * park touches, so only they are copied. */
+function fleetParkDryRunCopy(doc: WorkstreamDoc): WorkstreamDoc {
+  return {
+    ...doc,
+    capacity: doc.capacity ? structuredClone(doc.capacity) : null,
+    wakes: doc.wakes.map((wake) => ({ ...wake })),
+  };
+}
+
+/**
+ * The exact targets this workstream's next tick would launch on, given the
+ * fleet snapshot — the runner's single-flight probe uses it to admit one tick
+ * per expired, unrefuted target. Derived with the same park and seat choice
+ * the tick uses, on a copy; nothing is written.
+ */
+export function fleetLaunchTargetKeys(
+  doc: WorkstreamDoc,
+  fleet: FleetSeatWaits,
+  runner: RunnerClaimIdentity,
+  executorCapabilities?: ReadonlySet<string>,
+  wallNow = new Date(),
+  virtual = virtualNow(),
+): Set<string> {
+  const keys = new Set<string>();
+  if (doc.workstream.status !== 'active') return keys;
+  const view = fleetParkDryRunCopy(doc);
+  applyFleetCapacityPark(view, fleet, runner, () => 'wake_dry_run', wallNow, virtual);
+  const nowIso = virtual.toISOString();
+  for (const assignment of workerLaunchCandidates(view, runner)) {
+    const target = selectWorkerCapacityTarget(view, assignment, nowIso, executorCapabilities);
+    if (target) keys.add(capacityTargetKey(target));
+  }
+  const leaseLive = view.lease && Date.parse(view.lease.expiresAt) > wallNow.getTime();
+  if (!leaseLive && dueWakes(view, wallNow, virtual).length) {
+    const target = executorCapabilities
+      ? pickCoordinatorTargetForExecutors(view, nowIso, executorCapabilities)
+      : pickCoordinatorTarget(view, nowIso);
+    const retryAt = target ? capacityBackoffFor(view, target)?.wait.retryAt : undefined;
+    if (target && !(retryAt && retryAt > nowIso)) keys.add(capacityTargetKey(target));
+  }
+  return keys;
 }
 
 /**
@@ -1361,6 +1591,11 @@ export async function tick(
      * deterministic test can drive a FULL tick — including coordinator
      * mutations — without a model call. */
     coordinatorExecutor?: CoordinatorExecutor;
+    /** The resident runner's fleet-wide seat waits, derived from the cached
+     * documents it already holds (no extra store reads). With it, a seat any
+     * workstream has found limited is parked here before a launch is spent;
+     * without it (a direct `weaver tick`), capacity is this stream's own. */
+    fleetCapacity?: FleetSeatWaits;
   } = {},
 ): Promise<TickReport> {
   assertRunnerEnabled();
@@ -1403,7 +1638,9 @@ export async function tick(
       return { ...report, skipped: `workstream is ${status}` };
     }
     if (opts.engineOnly) return await tickEngineOnlyLocked(slug, runner, report);
-    return await tickLocked(slug, maxPasses, report, executorCapabilities, runner, coordinatorExecutor);
+    return await tickLocked(
+      slug, maxPasses, report, executorCapabilities, runner, coordinatorExecutor, opts.fleetCapacity,
+    );
   } finally {
     await releaseTick();
   }
@@ -1416,6 +1653,7 @@ async function tickLocked(
   executorCapabilities?: ReadonlySet<string>,
   runner: RunnerClaimIdentity = runnerClaimIdentity(),
   coordinatorExecutor?: CoordinatorExecutor,
+  fleetCapacity?: FleetSeatWaits,
 ): Promise<TickReport> {
 
   cycles: for (let cycle = 0; cycle < 12; cycle++) {
@@ -1476,6 +1714,12 @@ async function tickLocked(
     // acceptance. Raising the signal is deliberately NOT progress: dedup keeps
     // it from re-raising, so it must not spin the cycle loop.
     await flagImpossibleDependencies(slug);
+
+    // A seat another workstream has already found limited is parked here
+    // BEFORE any launch is spent on it: the borrowed wait routes queued work
+    // to a free fallback or holds it behind one deferral wake. Like the
+    // execution-safety park, this is re-derived state, never progress.
+    if (fleetCapacity) await parkOnFleetCapacity(slug, fleetCapacity, runner);
 
     const runnable = runnableAssignments(await load(slug), executorCapabilities, runner);
     for (const id of runnable) {
@@ -1629,7 +1873,9 @@ async function tickLocked(
             p.summary = p.summary ?? 'orphaned running pass (no live lease) — swept by recovery';
             event('pass.orphan_swept', `${p.id} was 'running' with no live lease — marked no_finish`, [p.id]);
           }
-          if (d.workstream.status === 'active' && !d.wakes.some((w) => w.status === 'pending')) {
+          // A fleet deferral wake is never a pass reason, so it cannot carry
+          // the swept pass's reconciliation.
+          if (d.workstream.status === 'active' && !d.wakes.some((w) => w.status === 'pending' && !isFleetDeferralWake(w))) {
             d.wakes.push({
               id: newId('wake'),
               reason: 'orphaned running pass swept — reconcile from current state',
@@ -1643,6 +1889,10 @@ async function tickLocked(
       }
     }
 
+    // Same fleet park before the coordinator gate: a parked primary sends the
+    // pass straight to a free fallback, and a fully parked chain leaves the
+    // due wakes pending behind one deferral wake instead of a doomed pass.
+    if (fleetCapacity) await parkOnFleetCapacity(slug, fleetCapacity, runner);
     const preDoc = await load(slug);
     const due = dueWakes(preDoc);
     const coordinatorTarget = executorCapabilities

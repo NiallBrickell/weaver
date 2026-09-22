@@ -16,6 +16,7 @@ import {
   coordinatorBackoffActive,
   flagImpossibleDependencies,
   guardRepoEgress,
+  parkOnFleetCapacity,
   runnableAssignments,
   tick,
   preflightApprovedAction,
@@ -26,10 +27,14 @@ import { runCoordinatorPass } from './coordinator.js';
 import { rejectSend } from './humanActs.js';
 import { providerSend, readLedger } from './world.js';
 import { arrive, createWorkstream, heartbeatRunner, load, newId, readArtifact, writeArtifact } from './store.js';
-import { runWorker } from './worker.js';
+import { __setWorkerExecutorFactoryForTests, runWorker } from './worker.js';
 import { setExecutorSecret, setSecret } from './secrets.js';
 import { virtualNow } from './clock.js';
-import type { Assignment } from './types.js';
+import type { Assignment, InfrastructureWait } from './types.js';
+import type { CoordinatorExecutor } from './executor/coordinator.js';
+import { adoptFleetSeatWait, capacityBackoffFor, capacityTargetKey, retryCapacityNow, selectWorkerCapacityTarget } from './capacity.js';
+import { coordinatorCapacityTarget, targetOfWait, type CapacityTarget } from './modelConfig.js';
+import { workerTargetsForAssignment } from './modelRouting.js';
 import {
   __resetGitHubAppForTests,
   __setGitHubAppTestDependencies,
@@ -2009,4 +2014,321 @@ test('an orphaned running pass (no live lease) is swept to no_finish and the str
   const doc = await load(slug);
   assert.equal(doc.passes.find((p) => p.id === 'pass_orphan')!.outcome, 'no_finish');
   assert.ok(doc.wakes.some((w) => w.status === 'pending'), 'a reconciliation wake was restored');
+});
+
+// ---------------------------------------------------------------------------
+// Fleet-shared seat waits: a seat another workstream has already found limited
+// is parked here before a launch is spent on it. The runner hands the tick its
+// fleet snapshot; these tests hand it one directly.
+
+const FLEET_ENV = [
+  'WEAVER_COORDINATOR_MODEL', 'WEAVER_COORDINATOR_EXECUTOR', 'WEAVER_COORDINATOR_FALLBACK_MODEL',
+  'WEAVER_COORDINATOR_FALLBACK_EXECUTOR', 'WEAVER_COORDINATOR_FALLBACKS', 'WEAVER_EXECUTOR',
+  'WEAVER_WORKER_MODEL', 'WEAVER_WORKER_FALLBACKS', 'WEAVER_RUNNER_EXECUTORS', 'WEAVER_WORKSPACE_ROOT',
+] as const;
+
+/** Every fleet test runs with STUB worker executors installed: a regression in
+ * the park under test can launch a worker, but never a real model. Each
+ * launch is recorded with the executor capacity routing chose for it. */
+async function withFleetEnv<T>(
+  vars: Partial<Record<typeof FLEET_ENV[number], string>>,
+  fn: (launches: Array<{ executor: string; model: string }>) => Promise<T>,
+): Promise<T> {
+  const saved = Object.fromEntries(FLEET_ENV.map((name) => [name, process.env[name]]));
+  for (const name of FLEET_ENV) delete process.env[name];
+  Object.assign(process.env, { WEAVER_WORKSPACE_ROOT: path.join(process.env.WEAVER_HOME!, 'workspaces') }, vars);
+  const launches: Array<{ executor: string; model: string }> = [];
+  __setWorkerExecutorFactoryForTests((name) => ({
+    id: name,
+    async execute(req) {
+      launches.push({ executor: name, model: req.model });
+      await req.submit.submitResult({
+        summary: 'Stub worker result.',
+        artifact: { title: 'Stub', kind: 'report', file_name: 'stub.md', content: '# Stub\n\nDeterministic stub output.' },
+      });
+      return { costUsd: 0 };
+    },
+  }));
+  try {
+    return await fn(launches);
+  } finally {
+    __setWorkerExecutorFactoryForTests();
+    for (const name of FLEET_ENV) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  }
+}
+
+function borrowed(target: CapacityTarget, minutes: number, sourceId: string): InfrastructureWait {
+  return {
+    kind: 'usage_limit',
+    recovery: 'wait_or_enable_usage_credits',
+    source: 'coordinator',
+    sourceId,
+    ...target,
+    detectedAt: new Date(virtualNow().getTime() - 60_000).toISOString(),
+    retryAt: new Date(virtualNow().getTime() + minutes * 60_000).toISOString(),
+    observedIn: 'limited-elsewhere',
+  };
+}
+
+function fleetOf(...waits: InfrastructureWait[]): Map<string, InfrastructureWait> {
+  return new Map(waits.map((wait) => [capacityTargetKey(targetOfWait(wait)!), wait]));
+}
+
+async function makeFleetStream(slug: string, setup: (doc: Awaited<ReturnType<typeof load>>) => void): Promise<void> {
+  await createWorkstream({
+    slug, title: slug, objective: 'reach a limited seat', tags: [], successCriteria: [], constraints: [],
+    autonomy: { sendsRequireApproval: true },
+  });
+  await arrive(slug, setup);
+}
+
+const NO_LAUNCH: CoordinatorExecutor = {
+  id: 'local-sdk',
+  async execute() { throw new Error('a fleet-parked seat must not be launched'); },
+};
+
+function deferralWakes(doc: Awaited<ReturnType<typeof load>>) {
+  return doc.wakes.filter((wake) => wake.status === 'pending' && wake.infrastructure?.observedIn !== undefined);
+}
+
+test('a coordinator chain parked by the fleet spends no pass and holds its due work behind ONE deferral wake', async () => {
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-4-8' }, async () => {
+    const slug = 'fleet-parked-coordinator';
+    await makeFleetStream(slug, (d) => d.wakes.push({
+      id: 'wake_org', reason: 'review the new evidence', condition: { type: 'immediate' },
+      status: 'pending', createdAt: new Date().toISOString(),
+    }));
+    const primary = coordinatorCapacityTarget('claude-fable-5');
+    const fallback = coordinatorCapacityTarget('claude-opus-4-8');
+    const fleet = fleetOf(borrowed(primary, 45, 'pass_primary'), borrowed(fallback, 20, 'pass_fallback'));
+
+    const report = await tick(slug, { fleetCapacity: fleet, coordinatorExecutor: NO_LAUNCH });
+    assert.equal(report.passes.length, 0);
+    const doc = await load(slug);
+    assert.deepEqual(doc.passes, [], 'no PassRecord: nothing was launched, so nothing backed off');
+    assert.equal(doc.spend.coordinatorPasses, 0);
+    assert.equal(doc.spend.totalCostUsd, 0);
+    assert.deepEqual(doc.attention, [], 'a borrowed park is waiting, never a human ask');
+    assert.equal(doc.wakes.find((wake) => wake.id === 'wake_org')!.status, 'pending', 'the organizational wake is held, not fired');
+    const [deferral, ...extra] = deferralWakes(doc);
+    assert.equal(extra.length, 0);
+    assert.deepEqual(deferral!.condition, { type: 'time', dueAtVirtual: fleet.get(capacityTargetKey(fallback))!.retryAt },
+      'the deferral resumes at the EARLIEST borrowed retry');
+    for (const target of [primary, fallback]) {
+      const entry = capacityBackoffFor(doc, target)!;
+      assert.equal(entry.wait.observedIn, 'limited-elsewhere');
+      assert.equal(entry.consecutiveBackoffs, 0);
+    }
+
+    // Idempotent: a second tick on the same snapshot writes nothing at all.
+    await tick(slug, { fleetCapacity: fleet, coordinatorExecutor: NO_LAUNCH });
+    const again = await load(slug);
+    assert.equal(again.revision, doc.revision);
+    assert.equal(deferralWakes(again).length, 1);
+
+    // The primary's source retried and failed again, later: the one wake is
+    // MOVED to the new earliest retry, never duplicated.
+    const later = fleetOf(
+      { ...borrowed(primary, 10, 'pass_primary_again'), detectedAt: new Date(virtualNow().getTime() - 1_000).toISOString() },
+      borrowed(fallback, 20, 'pass_fallback'),
+    );
+    await tick(slug, { fleetCapacity: later, coordinatorExecutor: NO_LAUNCH });
+    const moved = await load(slug);
+    assert.equal(deferralWakes(moved).length, 1);
+    assert.equal(deferralWakes(moved)[0]!.id, deferral!.id);
+    assert.deepEqual(deferralWakes(moved)[0]!.condition, {
+      type: 'time', dueAtVirtual: later.get(capacityTargetKey(primary))!.retryAt,
+    });
+    assert.equal(moved.passes.length, 0);
+  });
+});
+
+test('a fleet-parked coordinator primary sends the pass straight to its fallback — no doomed primary pass', async () => {
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-4-8' }, async () => {
+    const slug = 'fleet-parked-primary';
+    await makeFleetStream(slug, (d) => d.wakes.push({
+      id: 'wake_org', reason: 'reconcile', condition: { type: 'immediate' },
+      status: 'pending', createdAt: new Date().toISOString(),
+    }));
+    const primary = coordinatorCapacityTarget('claude-fable-5');
+    const models: string[] = [];
+    const report = await tick(slug, {
+      fleetCapacity: fleetOf(borrowed(primary, 45, 'pass_primary')),
+      coordinatorExecutor: {
+        id: 'local-sdk',
+        async execute(req) {
+          models.push(req.model);
+          await req.tools.find((tool) => tool.name === 'finish_pass')!.handler({ summary: 'Reconciled on the fallback.' }, {});
+          return { costUsd: 0 };
+        },
+      },
+    });
+    assert.deepEqual(models, ['claude-opus-4-8']);
+    assert.equal(report.passes.length, 1);
+    const doc = await load(slug);
+    assert.equal(doc.passes.length, 1);
+    assert.equal(doc.passes[0]!.model, 'claude-opus-4-8');
+    assert.equal(doc.passes[0]!.outcome, 'completed');
+    assert.equal(doc.passes.filter((pass) => pass.infrastructure).length, 0, 'no backoff pass on the parked primary');
+    assert.equal(doc.wakes.filter((wake) => /continue on fallback/.test(wake.reason)).length, 0,
+      'no separate continue-on-fallback pass is needed');
+    assert.equal(deferralWakes(doc).length, 0, 'a free seat means nothing is deferred');
+    assert.equal(capacityBackoffFor(doc, primary)!.wait.observedIn, 'limited-elsewhere');
+    assert.equal(doc.wakes.find((wake) => wake.id === 'wake_org')!.status, 'fired');
+  });
+});
+
+test('queued work whose whole worker chain is fleet-parked is not launched and waits on ONE deferral wake', async () => {
+  await withFleetEnv({ WEAVER_WORKER_FALLBACKS: 'codex-sdk:gpt-5.5' }, async (launches) => {
+    const slug = 'fleet-parked-worker';
+    const assignment = asg({ id: 'asg_fleet' });
+    const chain = workerTargetsForAssignment(assignment);
+    assert.ok(chain.length >= 2, 'the configured seat plus the operator ladder');
+    const fleet = fleetOf(...chain.map((target, index) => ({
+      ...borrowed(target, 30 + index * 10, `run_limited_${index}`), source: 'worker' as const,
+    })));
+    // This stream's own earlier permit on the primary seat is due now. It
+    // must not turn into a coordinator pass while the seat is borrowed-parked.
+    const ownPermit: InfrastructureWait = {
+      kind: 'usage_limit', recovery: 'wait_or_enable_usage_credits', source: 'worker', sourceId: 'run_own',
+      ...chain[0]!,
+      detectedAt: new Date(virtualNow().getTime() - 3_600_000).toISOString(),
+      retryAt: new Date(virtualNow().getTime() - 1_000).toISOString(),
+    };
+    await makeFleetStream(slug, (d) => {
+      d.assignments.push({ ...assignment, attempts: [{ runId: 'run_own', ...chain[0]!, startedAt: ownPermit.detectedAt, endedAt: ownPermit.detectedAt, infrastructure: ownPermit }] });
+      d.wakes.push({
+        id: 'wake_own_permit', reason: 'worker retry', condition: { type: 'time', dueAtVirtual: ownPermit.retryAt },
+        status: 'pending', createdAt: new Date().toISOString(), infrastructure: ownPermit,
+      });
+      d.capacity = { state: 'backoff', byModel: { own: {
+        wait: ownPermit, consecutiveBackoffs: 3, firstBackoffAtVirtual: ownPermit.detectedAt, lastBackoffAtVirtual: ownPermit.detectedAt,
+      } } };
+    });
+
+    const report = await tick(slug, { fleetCapacity: fleet, coordinatorExecutor: NO_LAUNCH });
+    assert.deepEqual(launches, []);
+    assert.deepEqual(report.workersRun, []);
+    assert.equal(report.passes.length, 0, "the worker's own due permit is not coordinator work");
+    const doc = await load(slug);
+    assert.equal(doc.assignments[0]!.state, 'queued');
+    assert.equal(doc.assignments[0]!.attempts.length, 1, 'no new Attempt');
+    assert.deepEqual(doc.passes, []);
+    assert.deepEqual(doc.attention, []);
+    assert.equal(doc.wakes.find((wake) => wake.id === 'wake_own_permit')!.status, 'pending');
+    const deferrals = deferralWakes(doc);
+    assert.equal(deferrals.length, 1);
+    assert.deepEqual(deferrals[0]!.condition, { type: 'time', dueAtVirtual: fleet.get(capacityTargetKey(chain[0]!))!.retryAt });
+    assert.equal(capacityBackoffFor(doc, chain[0]!)!.consecutiveBackoffs, 3, "the stream's own count is kept, not incremented");
+    assert.deepEqual(runnableAssignments(doc), []);
+
+    await tick(slug, { fleetCapacity: fleet, coordinatorExecutor: NO_LAUNCH });
+    const again = await load(slug);
+    assert.equal(again.revision, doc.revision, 'a second tick is a no-op');
+    assert.equal(deferralWakes(again).length, 1);
+  });
+});
+
+test('a fleet-parked worker primary launches queued work on the free fallback seat — no doomed attempt', async () => {
+  await withFleetEnv({ WEAVER_WORKER_FALLBACKS: 'codex-sdk:gpt-5.5' }, async (launches) => {
+    const slug = 'fleet-parked-worker-primary';
+    const assignment = asg({ id: 'asg_fleet' });
+    const chain = workerTargetsForAssignment(assignment);
+    const fallback = chain.at(-1)!;
+    assert.deepEqual(fallback, { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.5' });
+    // Every seat before the operator's fallback is limited somewhere else.
+    const fleet = fleetOf(...chain.slice(0, -1).map((target, index) => ({
+      ...borrowed(target, 30, `run_limited_${index}`), source: 'worker' as const,
+    })));
+    await makeFleetStream(slug, (d) => d.assignments.push(assignment));
+    // Before the park this stream would launch its primary seat.
+    assert.deepEqual(selectWorkerCapacityTarget(await load(slug), assignment, virtualNow().toISOString()), chain[0]);
+
+    const report = await tick(slug, { fleetCapacity: fleet, coordinatorExecutor: NO_LAUNCH, maxPasses: 0 });
+    assert.deepEqual(report.workersRun, ['asg_fleet']);
+    assert.deepEqual(launches, [{ executor: 'codex-sdk', model: 'gpt-5.5' }], 'exactly one launch, on the free fallback');
+    const doc = await load(slug);
+    const attempts = doc.assignments[0]!.attempts;
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0]!.executor, 'codex-sdk');
+    assert.equal(attempts[0]!.model, 'gpt-5.5');
+    assert.equal(attempts[0]!.infrastructure, undefined, 'no backoff was spent rediscovering the primary limit');
+    assert.equal(doc.assignments[0]!.state, 'awaiting_review');
+    assert.equal(deferralWakes(doc).length, 0, 'a free seat means nothing is deferred');
+    assert.equal(capacityBackoffFor(doc, chain[0]!)!.wait.observedIn, 'limited-elsewhere');
+  });
+});
+
+test('an explicit retry of a borrowed wait is honoured, and a stream never borrows its own wait back', async () => {
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACKS: '' }, async () => {
+    const slug = 'fleet-retry-honoured';
+    await makeFleetStream(slug, (d) => d.wakes.push({
+      id: 'wake_org', reason: 'reconcile', condition: { type: 'immediate' },
+      status: 'pending', createdAt: new Date().toISOString(),
+    }));
+    const primary = coordinatorCapacityTarget('claude-fable-5');
+    const fleet = fleetOf(borrowed(primary, 45, 'pass_primary'));
+    assert.equal(await parkOnFleetCapacity(slug, fleet), true);
+    assert.equal(await parkOnFleetCapacity(slug, fleet), false, 'idempotent');
+    // The operator makes this stream's borrowed wait due.
+    await arrive(slug, (d) => { retryCapacityNow(d, virtualNow().toISOString()); });
+    assert.equal(await parkOnFleetCapacity(slug, fleet), true, 'only the now-pointless deferral wake is retired');
+    const doc = await load(slug);
+    assert.ok(capacityBackoffFor(doc, primary)!.wait.retryAt <= virtualNow().toISOString(), 'the same observation is not borrowed again');
+    assert.equal(deferralWakes(doc).length, 0);
+    assert.equal(await parkOnFleetCapacity(slug, fleet), false);
+
+    // A wait this stream observed itself is never borrowed back from the snapshot.
+    const own = fleetOf({ ...borrowed(primary, 45, 'pass_primary'), observedIn: slug, detectedAt: new Date(virtualNow().getTime() + 1_000).toISOString() });
+    assert.equal(await parkOnFleetCapacity(slug, own), false);
+  });
+});
+
+test('runners with different chains never ping-pong the deferral wake', async () => {
+  const slug = 'fleet-two-hosts';
+  const primary = coordinatorCapacityTarget('claude-fable-5');
+  const fleet = fleetOf(borrowed(primary, 45, 'pass_primary'));
+  // Host A's chain is the primary alone: fully parked, so it defers.
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACKS: '' }, async () => {
+    await makeFleetStream(slug, (d) => d.wakes.push({
+      id: 'wake_org', reason: 'reconcile', condition: { type: 'immediate' },
+      status: 'pending', createdAt: new Date().toISOString(),
+    }));
+    assert.equal(await parkOnFleetCapacity(slug, fleet), true);
+  });
+  const deferred = await load(slug);
+  assert.equal(deferralWakes(deferred).length, 1);
+  // Host B has a free fallback seat, so it would not defer — but it must not
+  // retire or move host A's wake either, or every write re-dispatches A.
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-4-8' }, async () => {
+    assert.equal(await parkOnFleetCapacity(slug, fleet), false);
+  });
+  assert.equal((await load(slug)).revision, deferred.revision);
+});
+
+test('a lingering deferral wake never stands in for the quiescence backstop', async () => {
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-4-8' }, async () => {
+    const slug = 'fleet-backstop';
+    const wait = borrowed(coordinatorCapacityTarget('claude-fable-5'), 45, 'pass_primary');
+    await makeFleetStream(slug, (d) => {
+      adoptFleetSeatWait(d, wait);
+      d.wakes.push({
+        id: 'wake_deferral', reason: 'fleet capacity', condition: { type: 'time', dueAtVirtual: wait.retryAt },
+        status: 'pending', createdAt: new Date().toISOString(), infrastructure: { ...wait },
+      });
+    });
+    await runCoordinatorPass(slug, ['reconcile'], {
+      id: 'local-sdk',
+      async execute(req) {
+        await req.tools.find((tool) => tool.name === 'finish_pass')!.handler({ summary: 'Nothing scheduled.' }, {});
+        return { costUsd: 0 };
+      },
+    });
+    const doc = await load(slug);
+    assert.ok(doc.wakes.some((wake) => wake.status === 'pending' && /^quiescence backstop/.test(wake.reason)),
+      'the deferral only re-dispatches the runner; the stream still needs its next real check');
+  });
 });

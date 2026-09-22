@@ -8,6 +8,7 @@
  * records. Hitting it stores a typed physical-time wake and resumes automatically.
  */
 
+import { isFleetDeferralWake } from './capacity.js';
 import { arrive, load, newId } from './store.js';
 import type { WorkstreamCore, WorkstreamDoc } from './types.js';
 
@@ -209,7 +210,7 @@ export async function retireLegacyDollarBudgetCard(slug: string): Promise<boolea
       retired += 1;
     }
     if (!retired) return;
-    if (doc.workstream.status === 'active' && !doc.wakes.some((wake) => wake.status === 'pending')) {
+    if (doc.workstream.status === 'active' && !doc.wakes.some((wake) => wake.status === 'pending' && !isFleetDeferralWake(wake))) {
       doc.wakes.push({
         id: newId('wake'),
         reason: 'legacy lifetime dollar cap retired — reconcile under rolling execution safety',

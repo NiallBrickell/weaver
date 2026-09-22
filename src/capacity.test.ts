@@ -2,11 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import {
+  adoptFleetSeatWait,
   capacityAttentionThreshold,
   capacityBackoffFor,
   capacityPresentation,
   classifyCapacityFailure,
   clearCapacityBackoff,
+  ensureCapacityAttention,
+  fleetSeatView,
+  fleetSeatWaits,
   infrastructureWaitSummary,
   isTransientInfrastructureText,
   providerCapacityHeadline,
@@ -15,7 +19,7 @@ import {
   SdkFailureTracker,
 } from './capacity.js';
 import { coordinatorCapacityTarget, workerCapacityTarget } from './modelConfig.js';
-import type { WorkstreamDoc } from './types.js';
+import type { Attempt, InfrastructureWait, PassRecord, WorkstreamDoc } from './types.js';
 
 function observe(tracker: SdkFailureTracker, message: unknown): void {
   tracker.observe(message as SDKMessage);
@@ -652,4 +656,162 @@ test('transient infrastructure text covers the observed GitHub-edge and network 
   for (const text of verdicts) {
     assert.equal(isTransientInfrastructureText(text), false, text);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Fleet-shared seat waits: a seat parked for one workstream is parked for the
+// fleet. Pure over documents, so the rule is proved without a runner or store.
+
+const FLEET_NOW = '2026-09-21T10:00:00.000Z';
+const glm = { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' };
+
+function seatWait(overrides: Partial<InfrastructureWait> = {}): InfrastructureWait {
+  return {
+    kind: 'usage_limit',
+    recovery: 'wait_or_enable_usage_credits',
+    source: 'worker',
+    sourceId: 'run_limited',
+    ...glm,
+    detectedAt: '2026-09-21T09:50:00.000Z',
+    retryAt: '2026-09-21T10:50:00.000Z',
+    ...overrides,
+  };
+}
+
+function fleetDoc(
+  slug: string,
+  opts: {
+    status?: 'active' | 'paused' | 'done';
+    waits?: InfrastructureWait[];
+    passes?: Partial<PassRecord>[];
+    attempts?: Partial<Attempt>[];
+  } = {},
+): WorkstreamDoc {
+  return {
+    workstream: { slug, status: opts.status ?? 'active' },
+    capacity: opts.waits?.length
+      ? {
+          state: 'backoff',
+          byModel: Object.fromEntries(opts.waits.map((wait) => [
+            `${wait.executor}:${wait.provider}:${wait.model}`,
+            {
+              wait,
+              consecutiveBackoffs: 1,
+              firstBackoffAtVirtual: wait.detectedAt,
+              lastBackoffAtVirtual: wait.detectedAt,
+            },
+          ])),
+        }
+      : null,
+    passes: (opts.passes ?? []).map((pass, index) => ({
+      id: `pass_${slug}_${index}`, startedAt: FLEET_NOW, baseRevision: 1, wakeReasons: [], changes: [],
+      outcome: 'completed', ...pass,
+    })),
+    assignments: opts.attempts?.length
+      ? [{ id: `asg_${slug}`, attempts: opts.attempts.map((attempt, index) => ({
+          runId: `run_${slug}_${index}`, startedAt: FLEET_NOW, ...attempt,
+        })) }]
+      : [],
+    attention: [],
+    wakes: [],
+  } as unknown as WorkstreamDoc;
+}
+
+test("another workstream's active usage limit becomes the fleet's wait for that exact seat", () => {
+  const waits = fleetSeatWaits([
+    fleetDoc('limited-b', { waits: [seatWait()] }),
+    fleetDoc('idle-c'),
+  ], FLEET_NOW);
+  assert.deepEqual([...waits.keys()], ['pi:zai-coding-plan:zai-coding-plan/glm-5.3']);
+  const wait = waits.get('pi:zai-coding-plan:zai-coding-plan/glm-5.3')!;
+  assert.equal(wait.observedIn, 'limited-b');
+  assert.equal(wait.retryAt, '2026-09-21T10:50:00.000Z');
+  assert.equal(wait.detectedAt, '2026-09-21T09:50:00.000Z', 'a borrowed wait keeps its source detection time');
+
+  // The latest-detected active wait wins; an expired one only marks a probe.
+  const view = fleetSeatView([
+    fleetDoc('earlier', { waits: [seatWait({ detectedAt: '2026-09-21T09:40:00.000Z', sourceId: 'run_early' })] }),
+    fleetDoc('later', { waits: [seatWait({ detectedAt: '2026-09-21T09:55:00.000Z', sourceId: 'run_late' })] }),
+  ], FLEET_NOW);
+  assert.equal(view.active.get('pi:zai-coding-plan:zai-coding-plan/glm-5.3')!.observedIn, 'later');
+  assert.equal(view.expired.size, 0);
+  const expired = fleetSeatView([
+    fleetDoc('lapsed', { waits: [seatWait({ retryAt: '2026-09-21T09:59:00.000Z' })] }),
+  ], FLEET_NOW);
+  assert.equal(expired.active.size, 0);
+  assert.equal(expired.expired.get('pi:zai-coding-plan:zai-coding-plan/glm-5.3')!.observedIn, 'lapsed');
+});
+
+test('a later success on the same seat in ANY workstream refutes the fleet wait', () => {
+  const limited = fleetDoc('limited-b', { waits: [seatWait()] });
+  // Completed coordinator pass on the exact target, in a paused stream.
+  assert.equal(fleetSeatWaits([limited, fleetDoc('paused-pass', {
+    status: 'paused',
+    passes: [{ ...glm, startedAt: '2026-09-21T09:52:00.000Z', endedAt: '2026-09-21T09:58:00.000Z' }],
+  })], FLEET_NOW).size, 0);
+  // Ended worker attempt without infrastructure, in a concluded stream.
+  const view = fleetSeatView([limited, fleetDoc('done-attempt', {
+    status: 'done',
+    attempts: [{ ...glm, startedAt: '2026-09-21T09:30:00.000Z', endedAt: '2026-09-21T09:51:00.000Z' }],
+  })], FLEET_NOW);
+  assert.equal(view.active.size, 0);
+  assert.equal(view.expired.size, 0, 'a refuted wait is not a probe either');
+
+  // None of these prove the pool: an earlier success, another seat, a failed
+  // pass, a backed-off attempt, a crash-recovered attempt, a legacy record.
+  const unproven = fleetSeatWaits([limited, fleetDoc('noise', {
+    passes: [
+      { ...glm, endedAt: '2026-09-21T09:45:00.000Z' },
+      { ...glm, model: 'zai-coding-plan/glm-5.2', endedAt: '2026-09-21T09:58:00.000Z' },
+      { ...glm, outcome: 'error', endedAt: '2026-09-21T09:58:00.000Z' },
+      { endedAt: '2026-09-21T09:58:00.000Z' },
+    ],
+    attempts: [
+      { ...glm, endedAt: '2026-09-21T09:58:00.000Z', infrastructure: seatWait({ sourceId: 'run_again' }) },
+      { ...glm, endedAt: '2026-09-21T09:58:00.000Z', terminalReason: 'crashed' },
+      { ...glm, startedAt: '2026-09-21T09:56:00.000Z' },
+    ],
+  })], FLEET_NOW);
+  assert.equal(unproven.size, 1);
+});
+
+test('host-local, legacy, borrowed, and paused-stream waits never park the fleet', () => {
+  const waits = fleetSeatWaits([
+    // A wall, a DNS drop, or a provider 5xx is a fact about the host that saw it.
+    fleetDoc('network', { waits: [seatWait({ kind: 'other', recovery: 'automatic_retry' })] }),
+    // So is this host's login.
+    fleetDoc('login', { waits: [seatWait({ ...coordinatorCapacityTarget('claude-opus-5'), kind: 'auth', recovery: 'reauthenticate' })] }),
+    // A legacy worker wait names no exact pool.
+    fleetDoc('legacy', { waits: [seatWait({ model: 'sonnet', executor: undefined, provider: undefined })] }),
+    // A copy is never a source: only first-hand observations are.
+    fleetDoc('borrower', { waits: [seatWait({ ...workerCapacityTarget('sonnet', 'local-sdk'), observedIn: 'someone-else' })] }),
+    // A paused stream's wait is never re-tested or released by the runner.
+    fleetDoc('paused', { status: 'paused', waits: [seatWait({ ...coordinatorCapacityTarget('claude-fable-5') })] }),
+  ], FLEET_NOW);
+  assert.equal(waits.size, 0);
+});
+
+test('adopting a fleet wait neither counts as a backoff nor raises attention', () => {
+  const borrowed = { ...seatWait(), observedIn: 'limited-b' };
+  const fresh = fleetDoc('fresh');
+  const entry = adoptFleetSeatWait(fresh, borrowed);
+  assert.equal(entry.consecutiveBackoffs, 0);
+  assert.equal(entry.wait.observedIn, 'limited-b');
+  assert.equal(entry.wait.retryAt, borrowed.retryAt);
+  assert.equal(capacityBackoffFor(fresh, glm)!.wait.sourceId, 'run_limited');
+  // A borrowed entry carries no backoff of this stream, so the attention rule
+  // has nothing to count.
+  ensureCapacityAttention(fresh, entry, 'wake_x', () => 'att_x');
+  assert.deepEqual(fresh.attention, []);
+
+  // A stream with its own history keeps its own count — never incremented.
+  const own = seatWait({ detectedAt: '2026-09-21T09:00:00.000Z', retryAt: '2026-09-21T09:30:00.000Z', sourceId: 'run_own' });
+  const veteran = fleetDoc('veteran', { waits: [own] });
+  veteran.capacity!.byModel['pi:zai-coding-plan:zai-coding-plan/glm-5.3']!.consecutiveBackoffs = 7;
+  assert.equal(adoptFleetSeatWait(veteran, borrowed).consecutiveBackoffs, 7);
+  assert.equal(Object.keys(veteran.capacity!.byModel).length, 1, 'one entry per exact target');
+  // Its next REAL backoff continues its own lineage from there.
+  assert.equal(recordCapacityBackoff(veteran, seatWait({ sourceId: 'run_next', detectedAt: FLEET_NOW })).consecutiveBackoffs, 8);
+  assert.equal(capacityBackoffFor(veteran, glm)!.wait.observedIn, undefined);
+  assert.throws(() => adoptFleetSeatWait(fresh, seatWait()), /observed in another workstream/);
 });

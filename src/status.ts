@@ -168,7 +168,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
       .filter((wake) => wake.infrastructure && hasCapacityBackoffForWait(doc, wake.infrastructure))
       .map((wake) => wake.condition.type === 'time'
         ? wake.condition.dueAtVirtual > nowVirtual
-          ? `provider retry ${wake.infrastructure!.executor ?? 'executor'}/${wake.infrastructure!.provider ?? 'provider'} ${wake.infrastructure!.model} scheduled at ${wake.condition.dueAtVirtual.slice(0, 16)}`
+          ? `provider retry ${wake.infrastructure!.executor ?? 'executor'}/${wake.infrastructure!.provider ?? 'provider'} ${wake.infrastructure!.model} scheduled at ${wake.condition.dueAtVirtual.slice(0, 16)}${wake.infrastructure!.observedIn ? ` (limit observed in ${wake.infrastructure!.observedIn})` : ''}`
           : 'provider retry reconciliation is due now'
         : 'provider retry reconciliation is scheduled'))],
     ...recoveredCapacityWakes.map((wake) =>

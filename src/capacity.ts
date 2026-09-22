@@ -22,6 +22,7 @@ import type {
   InfrastructureRecovery,
   InfrastructureWait,
   ProviderCapacityObservation,
+  Wake,
   WorkstreamDoc,
 } from './types.js';
 import { isPendingSteering } from './steering.js';
@@ -525,7 +526,8 @@ function waitPosition(wait: InfrastructureWait, role: string, now: Date): string
       : wait.kind === 'auth' ? 'login required'
         : wait.kind === 'rate_limit' ? 'rate limited'
           : 'temporarily unavailable';
-  return `${role} ${waitProviderName(wait)} ${wait.model} ${category} · retry in ${relativeUntil(wait.retryAt, now)}`;
+  const observed = wait.observedIn ? ` · observed in ${wait.observedIn}` : '';
+  return `${role} ${waitProviderName(wait)} ${wait.model} ${category} · retry in ${relativeUntil(wait.retryAt, now)}${observed}`;
 }
 
 /** Role-aware projection shared by status and both dashboards. Historical,
@@ -559,6 +561,10 @@ export function capacityPresentation(
     doc.assignments.some((assignment) => assignment.state === 'awaiting_review') ||
     doc.wakes.some((wake) => {
       if (wake.status !== 'pending') return false;
+      // The fleet deferral wake is a scheduling signal, not coordinator work:
+      // a worker-only deferral must not render the coordinator as blocked.
+      // A deferred coordinator already shows intent through its due wakes.
+      if (isFleetDeferralWake(wake)) return false;
       if (wake.infrastructure) {
         if (context?.coordinatorUnknown) return wake.infrastructure.source === 'coordinator';
         return currentCoordinatorTargets.some((target) => waitMatchesTarget(wake.infrastructure!, target));
@@ -700,6 +706,16 @@ export function infrastructureWaitSummary(
   wait: InfrastructureWait,
   slug?: string,
 ): string {
+  const summary = ownInfrastructureWaitSummary(wait, slug);
+  return wait.observedIn
+    ? `${summary} The limit was observed in ${wait.observedIn}; this workstream holds the same seat rather than spending a launch to rediscover it.`
+    : summary;
+}
+
+function ownInfrastructureWaitSummary(
+  wait: InfrastructureWait,
+  slug?: string,
+): string {
   const retry = `weaver capacity retry ${slug ?? '<slug>'}`;
   const provider = waitProviderName(wait);
   const claude = provider === 'Claude';
@@ -761,6 +777,177 @@ export function clearCapacityBackoff(doc: WorkstreamDoc, target: CapacityTarget)
     if (waitMatchesTarget(entry.wait, target)) delete byModel[key];
   }
   doc.capacity = Object.keys(byModel).length ? { state: 'backoff', byModel } : null;
+}
+
+// ---------------------------------------------------------------------------
+// Fleet-shared seat waits. A limit on one exact executor/provider/model target
+// is a fact about the account behind that target, not about the workstream
+// that happened to discover it. Measured on the production store (30 days to
+// 2026-09-21): 62% of coordinator passes were capacity backoffs, and 96.4% of
+// those started while another workstream already held an active wait on the
+// same target — 91.6% with no success in between. Launching anyway only
+// rediscovers the limit. See docs/harness.md ("A seat parked for one
+// workstream is parked for the fleet").
+
+/** One fleet-wide wait per exact capacity target key, each carrying the slug
+ * of the workstream that observed it (`observedIn`). */
+export type FleetSeatWaits = ReadonlyMap<string, InfrastructureWait>;
+
+export interface FleetSeatView {
+  /** Latest-detected unrefuted wait whose retry is still in the future. */
+  active: Map<string, InfrastructureWait>;
+  /** Targets with no active wait whose latest unrefuted wait has expired and
+   * nothing has proved recovered: the next launch there is a probe. */
+  expired: Map<string, InfrastructureWait>;
+}
+
+/** Whether a stored wait is evidence about a shared provider pool.
+ * - `other` (a local safety wall, a DNS/network drop, a 5xx blip) and `auth`
+ *   (this host's credential) describe the host that saw them, not the pool:
+ *   a laptop that lost its network or login must not park a healthy VM.
+ * - A legacy wait without executor/provider names no exact pool.
+ * - A borrowed copy is never re-shared: only first-hand observations are
+ *   sources, so copies cannot keep each other alive after the source clears. */
+function isFleetShareableWait(wait: InfrastructureWait): boolean {
+  return wait.kind !== 'other' &&
+    wait.kind !== 'auth' &&
+    !!wait.executor &&
+    !!wait.provider &&
+    wait.observedIn === undefined;
+}
+
+/** Latest proof per exact target that a real call got through: a completed
+ * coordinator pass or an ended worker attempt with no infrastructure wait. A
+ * crash-recovered attempt proves nothing about the provider and is ignored,
+ * as are legacy records that name no executor/provider. Time is the record's
+ * end (falling back to its start): if either is after a wait's detection, the
+ * pool accepted work after that rejection. */
+export function capacitySuccessEvidence(docs: Iterable<WorkstreamDoc>): Map<string, string> {
+  const out = new Map<string, string>();
+  const note = (
+    record: { executor?: string; provider?: string; model?: string },
+    at: string | undefined,
+  ): void => {
+    if (!record.executor || !record.provider || !record.model || !at) return;
+    const key = capacityTargetKey({ executor: record.executor, provider: record.provider, model: record.model });
+    const previous = out.get(key);
+    if (!previous || previous < at) out.set(key, at);
+  };
+  for (const doc of docs) {
+    for (const pass of doc.passes) {
+      if (pass.outcome === 'completed' && !pass.infrastructure) note(pass, pass.endedAt ?? pass.startedAt);
+    }
+    for (const assignment of doc.assignments) {
+      for (const attempt of assignment.attempts) {
+        if (attempt.endedAt && !attempt.infrastructure && attempt.terminalReason !== 'crashed') {
+          note(attempt, attempt.endedAt);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function laterWait(a: InfrastructureWait, b: InfrastructureWait): boolean {
+  return a.detectedAt !== b.detectedAt
+    ? a.detectedAt > b.detectedAt
+    : a.retryAt !== b.retryAt
+      ? a.retryAt > b.retryAt
+      : (a.observedIn ?? '') < (b.observedIn ?? '');
+}
+
+/** Pure over the runner's cached documents — no store reads. Per exact target:
+ * the latest-detected ACTIVE first-hand wait from any active workstream,
+ * unless a later success anywhere (any status) refutes it; otherwise, the
+ * latest expired unrefuted wait, which marks the target's next launch as a
+ * probe. Each returned wait is a copy carrying `observedIn`. */
+export function fleetSeatView(
+  docs: Iterable<WorkstreamDoc>,
+  nowIso: string,
+  success?: ReadonlyMap<string, string>,
+): FleetSeatView {
+  const all = [...docs];
+  success ??= capacitySuccessEvidence(all);
+  const active = new Map<string, InfrastructureWait>();
+  const expired = new Map<string, InfrastructureWait>();
+  for (const doc of all) {
+    // A paused or concluded stream's wait is never re-tested or released by
+    // the runner, so it cannot stand as live fleet evidence.
+    if (doc.workstream.status !== 'active') continue;
+    for (const entry of Object.values(doc.capacity?.byModel ?? {})) {
+      const wait = entry.wait;
+      if (!isFleetShareableWait(wait)) continue;
+      const target = targetOfWait(wait);
+      if (!target) continue;
+      const key = capacityTargetKey(target);
+      const provedAt = success.get(key);
+      if (provedAt && provedAt > wait.detectedAt) continue;
+      const candidate: InfrastructureWait = { ...wait, observedIn: doc.workstream.slug };
+      const bucket = wait.retryAt > nowIso ? active : expired;
+      const current = bucket.get(key);
+      if (!current || laterWait(candidate, current)) bucket.set(key, candidate);
+    }
+  }
+  for (const key of active.keys()) expired.delete(key);
+  return { active, expired };
+}
+
+export function fleetSeatWaits(docs: Iterable<WorkstreamDoc>, nowIso: string): Map<string, InfrastructureWait> {
+  return fleetSeatView(docs, nowIso).active;
+}
+
+/** Copy a fleet wait into this workstream's capacity state so every existing
+ * reader — coordinator seat choice, worker routing, presentation, runner
+ * failover — treats the seat as parked here too. The copy keeps the source's
+ * detectedAt/retryAt (a borrowed wait is never later than its source) and the
+ * stream's own backoff count in the same family: it is not a backoff of this
+ * stream, so it neither increments the count nor raises attention. */
+export function adoptFleetSeatWait(doc: WorkstreamDoc, wait: InfrastructureWait): CapacityBackoff {
+  const target = targetOfWait(wait);
+  if (!target || wait.observedIn === undefined) {
+    throw new Error('only an exact-target wait observed in another workstream can be adopted');
+  }
+  const previous = capacityBackoffFor(doc, target);
+  const previousInFamily = previous &&
+    capacityFamily(previous.wait.kind) === capacityFamily(wait.kind)
+    ? previous
+    : undefined;
+  const entry: CapacityBackoff = {
+    wait: { ...wait },
+    consecutiveBackoffs: previousInFamily?.consecutiveBackoffs ?? 0,
+    firstBackoffAtVirtual: previousInFamily?.firstBackoffAtVirtual ?? wait.detectedAt,
+    lastBackoffAtVirtual: previousInFamily?.lastBackoffAtVirtual ?? wait.detectedAt,
+  };
+  const byModel = { ...(doc.capacity?.byModel ?? {}) };
+  for (const [storedKey, stored] of Object.entries(byModel)) {
+    if (waitMatchesTarget(stored.wait, target)) delete byModel[storedKey];
+  }
+  doc.capacity = {
+    state: 'backoff',
+    byModel: { ...byModel, [capacityTargetKey(target)]: entry },
+  };
+  return entry;
+}
+
+/** The single harness-owned deferral wake a fleet park keeps per workstream.
+ * It exists only so the runner's dispatch signature changes at the borrowed
+ * retry time; it is never a coordinator pass reason. */
+export function isFleetDeferralWake(wake: Wake): boolean {
+  return wake.infrastructure?.observedIn !== undefined;
+}
+
+/** A pending wake that fleet capacity already answers, so it must not launch
+ * a coordinator pass: the deferral wake itself, or this stream's own worker
+ * retry permit whose exact target is parked on a borrowed wait (the worker
+ * cannot use the permit yet, and the coordinator has no work in it). */
+export function wakeHeldByFleetCapacity(doc: WorkstreamDoc, wake: Wake, nowIso: string): boolean {
+  if (isFleetDeferralWake(wake)) return true;
+  const wait = wake.infrastructure;
+  if (!wait || wait.source !== 'worker') return false;
+  const target = targetOfWait(wait);
+  if (!target) return false;
+  const entry = capacityBackoffFor(doc, target);
+  return entry?.wait.observedIn !== undefined && entry.wait.retryAt > nowIso;
 }
 
 export function capacityAttentionThreshold(category: CapacityCategory): number {

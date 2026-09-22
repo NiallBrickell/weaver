@@ -16,11 +16,30 @@
  * but a record predating the fleet's latest recovery for the same target is
  * spent, and the runner releases it without waiting for that stream's timer.
  *
- * Deliberately NOT here: anything that would let one stream's failure park
- * another. Discovery stays per-stream because a single rejection is not proof
- * the pool is empty for everyone, and a shared park would let one bad call
- * freeze the fleet. Recovery generalizes safely (a successful call IS proof of
- * capacity); a rejection does not.
+ * This ledger is still recovery-only and host-local. Discovery is now shared
+ * too, but NOT here: it is derived from the workstream documents themselves
+ * (`fleetSeatView` in capacity.ts), so every host sees the same parks and the
+ * same successes. The rule used to be that one stream's rejection never parks
+ * another, because "a single rejection is not proof the pool is empty for
+ * everyone". The production store disproved that for ACTIVE waits on a known
+ * executor/provider/model: over 30 days to 2026-09-21, 96.4% of 5,411
+ * coordinator capacity backoffs started while another workstream already held
+ * an active wait on the same target, and 91.6% had no success in between —
+ * the launch only rediscovered the limit. The cost of trusting the shared wait
+ * is small: 2% of successful passes (66 of 3,252) started under such a wait,
+ * and the median one would have waited 13 minutes. So a seat parked for one
+ * workstream is parked for the fleet, with three guards against the frozen
+ * fleet the old rule feared: the wait expires at its own retryAt, any later
+ * success anywhere refutes it, and when it expires unrefuted the runner admits
+ * exactly one probe launch instead of the whole deferred herd.
+ *
+ * What stays per host: waits of kind `other` (a local safety wall, a network
+ * or DNS drop, a provider 5xx) and `auth` (this host's credential). They are
+ * facts about the machine that saw them, and a laptop that lost its network or
+ * login must never park a healthy VM. A successful call, by contrast, is proof
+ * of capacity wherever it happened — which is why this ledger may release any
+ * stream's own wait, while borrowed copies are released only by the shared
+ * document view that lent them (see fleetRecoveredSlugs in runner.ts).
  */
 
 import * as fs from 'node:fs';
