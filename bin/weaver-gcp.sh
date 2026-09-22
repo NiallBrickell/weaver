@@ -441,7 +441,9 @@ WantedBy=multi-user.target
 EOF
 
 # The digest's unit and timer are written by the updater's `install` below,
-# so provisioning and `weaver-gcp update` install the same units.
+# so provisioning and `weaver-gcp update` install the same units. The timer
+# stays off until the operator opts in on the host; nothing here or in
+# `start` turns it on.
 
 systemctl daemon-reload
 /usr/local/sbin/weaver-gcp-update install
@@ -451,7 +453,7 @@ if [ "$WEAVER_GCP_STORE_MODE" = "external" ]; then
   systemctl disable --now weaver-run weaver-serve weaver-digest.timer >/dev/null 2>&1 || true
   echo "✓ provisioned (units installed but disabled; no service started)"
 else
-  systemctl enable weaver-run weaver-serve weaver-digest.timer
+  systemctl enable weaver-run weaver-serve
   echo "✓ provisioned (units enabled; no service started)"
 fi
 PROVISION
@@ -788,9 +790,9 @@ run_after_execution_preflight() {
   local action="$1" remote_systemctl
   [ -r "$PREFLIGHT" ] || { echo "❌ missing GCP execution preflight: $PREFLIGHT" >&2; exit 1; }
   case "$action" in
-    # The digest timer starts at the same cutover as the runner, never before
-    # the operator has pointed this host at the store it should report on.
-    start) remote_systemctl='enable --now weaver-run weaver-digest.timer' ;;
+    # The cutover starts execution only. The digest timer is opt-in on the
+    # host and is never switched on by a fleet command.
+    start) remote_systemctl='enable --now weaver-run' ;;
     restart) remote_systemctl='restart weaver-run weaver-serve' ;;
     *) echo "❌ internal error: unknown post-preflight action" >&2; exit 1 ;;
   esac

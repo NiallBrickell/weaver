@@ -85,6 +85,10 @@ EOF
   # destination (see docs/harness.md), so it carries no execution preflight.
   # Persistent=true posts a missed 07:30 on the next boot; the command reads the
   # channel back first, so a late or repeated run never posts twice.
+  # The units are written but never enabled here: the timer is opt-in, turned
+  # on by the operator once (`systemctl enable --now weaver-digest.timer`) on
+  # a fleet that wants the push. An operator who has switched it off must not
+  # find it back on after the next self-update or cutover.
   cat > "$unit_dir/weaver-digest.service" <<'EOF'
 [Unit]
 Description=Weaver daily needs-you digest (model-free, readback-idempotent)
@@ -109,13 +113,7 @@ EOF
   systemctl daemon-reload
   systemctl enable --now weaver-update.timer
   echo "✓ weaver-update.timer enabled (every 5 minutes, from origin/$branch)"
-  # A live fleet gets its digest now. A host still waiting for its cutover
-  # (weaver-run not enabled yet) leaves it to `weaver-gcp start`, which
-  # enables both together.
-  if systemctl is-enabled --quiet weaver-run; then
-    systemctl enable --now weaver-digest.timer
-    echo "✓ weaver-digest.timer enabled (07:30 Europe/London)"
-  fi
+  echo "· weaver-digest.timer installed, not enabled (opt in: systemctl enable --now weaver-digest.timer)"
 }
 
 # One updater at a time. `systemctl enable --now` fires the timer's first run
