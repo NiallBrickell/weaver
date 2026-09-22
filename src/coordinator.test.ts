@@ -16,7 +16,6 @@ import {
   runCoordinatorPass,
 } from './coordinator.js';
 import { FLEET_ATTENTION_STEWARD_SOURCE_KEY } from './fleetHealth.js';
-import { buildProjection } from './projection.js';
 import { createOrGetFleetAttentionStewardWorkstream } from './ingress.js';
 import { arrive, createWorkstream, findBySourceKey, heartbeatRunner, load, writeArtifact } from './store.js';
 import { setSecret } from './secrets.js';
