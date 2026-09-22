@@ -485,7 +485,7 @@ async function slackCall(
     // Slack errors are short codes, but a transport error must never be able
     // to carry the bearer onward into a journal line.
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Slack ${method.split('?')[0]} failed: ${message.split(config.token).join('«secret:WEAVER_DIGEST_SLACK_TOKEN»')}`);
+    throw new Error(`Slack ${method.split('?')[0]} failed: ${message.split(config.token).join('«secret:slack-bot-token»')}`);
   }
 }
 
@@ -575,7 +575,7 @@ export async function digestCommand(
   if (!config) {
     return {
       ok: true,
-      message: `digest ${digest.date} not sent: no destination configured (set WEAVER_DIGEST_SLACK_TOKEN and WEAVER_DIGEST_SLACK_CHANNEL with weaver secret set <NAME> --executor)`,
+      message: `digest ${digest.date} not sent: no destination configured (set the channel once: weaver secret set WEAVER_DIGEST_SLACK_CHANNEL --executor; it posts with the fleet's SLACK_BOT_TOKEN)`,
     };
   }
   let delivery: DigestDelivery;

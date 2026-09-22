@@ -53,36 +53,36 @@ without proving today's digest is absent.
 
 ## Setting up Slack
 
-1. Create a Slack app for your workspace and give its bot token the scopes
-   `chat:write` plus the history scope for the conversation it posts to:
-   `im:history` for a direct message with the app, `channels:history` for a
-   public channel, or `groups:history` for a private one. The history scope is
-   what makes the digest idempotent; without it every `--post` fails before
-   sending.
-2. Install the app and copy its bot token (`xoxb-…`).
-3. Choose where it goes and copy that conversation's ID: `D…` for the app's
-   direct message with you (open the app's **Messages** tab and copy the ID
-   from the conversation details), or `C…`/`G…` for a channel only you read
-   (invite the app with `/invite @your-app`). A `#name` is refused.
-4. Store both values in the executor-only secret store on the machine that
-   will send the digest. They never enter process environments, worker runs,
-   or Workstream state:
+A fleet that already posts to Slack needs nothing new: the digest uses the
+fleet's existing bot token (`SLACK_BOT_TOKEN`, the one your workstreams post
+with). Tell it where to go once, on the machine that sends it:
 
-   ```bash
-   weaver secret set WEAVER_DIGEST_SLACK_TOKEN --executor    # hidden prompt
-   weaver secret set WEAVER_DIGEST_SLACK_CHANNEL --executor
-   weaver login --status                                     # names only, never values
-   ```
+```bash
+weaver secret set WEAVER_DIGEST_SLACK_CHANNEL --executor   # C…, G… or D… id; a #name is refused
+weaver login --status                                      # names only, never values
+```
+
+The bot must be in that conversation and hold the history scope for it
+(`channels:history`, `groups:history` or `im:history`) as well as `chat:write`:
+the history read is what makes the digest idempotent, and without it every
+`--post` fails before sending.
+
+To post with a different bot, store its token as the executor-only override;
+it never enters process environments, worker runs, or Workstream state:
+
+```bash
+weaver secret set WEAVER_DIGEST_SLACK_TOKEN --executor     # hidden prompt
+```
 
 For links, set `WEAVER_UI_PUBLIC_ORIGIN` to your operator workspace's public
 origin (on Railway the assigned domain is used automatically). Without it the
 digest still lists every answering command, just without links.
 
-**Point it at yourself.** The digest counts as operator notification rather
-than an outbound message because its destination is yours, fixed by you,
-outside anything a Workstream can read or change. Aim it at a shared team
-channel and it becomes a message to other people, which in Weaver is always a
-gated, approved action — so don't.
+**You choose who reads it.** The digest counts as operator notification rather
+than an outbound message because its destination is fixed by you, outside
+anything a Workstream can read or change. Posting it to a team channel is your
+standing decision about who sees the queue, not something a Workstream can
+widen or redirect.
 
 ## On a hosted GCP runner
 
