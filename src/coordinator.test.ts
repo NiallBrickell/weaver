@@ -1261,6 +1261,85 @@ test('create_assignment persists declared high complexity without choosing a mod
   assert.equal(assignment.attempts.length, 0, 'durable requirements do not preselect a disposable target');
 });
 
+test('create_assignment refuses worker directories that are, contain, or lead to Weaver state', async () => {
+  const checkout = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-coordinator-checkout-'));
+  const alias = path.join(checkout, 'state-alias');
+  fs.symlinkSync(home, alias);
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      const create = req.tools.find((definition) => definition.name === 'create_assignment');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(create && finish);
+      const work = (readDirs: string[]) => create.handler({
+        objective: 'inspect the runner',
+        briefing: 'Read the named directories.',
+        kind: 'work',
+        read_dirs: readDirs,
+        acceptance_criteria: ['cite evidence'],
+      }, {});
+      const text = (result: { content: unknown[] }) => (result.content[0] as { text: string }).text;
+
+      const state = await work([checkout, home]);
+      assert.equal(state.isError, true);
+      assert.match(text(state), /read_dirs entry '.*' is refused: it is Weaver's state directory/);
+      assert.match(text(state), /Name the repository checkout itself, a git worktree, or a clone under the workspace root .* or omit read_dirs/);
+      const nested = await work([path.join(home, 'coordinator-capacity')]);
+      assert.equal(nested.isError, true);
+      assert.match(text(nested), /it sits under Weaver's state directory/);
+      const parent = await work([path.dirname(home)]);
+      assert.equal(parent.isError, true);
+      assert.match(text(parent), /it contains Weaver's state directory/);
+      const linked = await work([alias]);
+      assert.equal(linked.isError, true);
+      assert.match(text(linked), /it is Weaver's state directory.*\(it resolves to /);
+      const ssh = await work([path.join(os.homedir(), '.ssh')]);
+      assert.equal(ssh.isError, true);
+      assert.match(text(ssh), /SSH keys/);
+
+      const modelAction = await create.handler({
+        objective: 'model-run act inside state',
+        briefing: 'Must be refused.',
+        kind: 'action',
+        acceptance_criteria: ['never launched'],
+        exec_cwd: home,
+        exec_verify: 'true',
+        approval_ask: 'Approve nothing; this declaration is invalid.',
+      }, {});
+      assert.equal(modelAction.isError, true);
+      assert.match(text(modelAction), /exec_cwd '.*' is refused: it is Weaver's state directory/);
+
+      // The engine lane hands no directory to a model: an exact command may
+      // still run where the operator's readback needs it.
+      const engineAction = await create.handler({
+        objective: 'exact host readback',
+        briefing: 'Engine-run exact command.',
+        kind: 'action',
+        acceptance_criteria: ['readback recorded'],
+        exec_cwd: home,
+        exec_run: 'true',
+        exec_verify: 'true',
+        approval_ask: 'Approve one exact read-only host command.',
+      }, {});
+      assert.equal(engineAction.isError, undefined);
+      const legitimate = await work([checkout]);
+      assert.equal(legitimate.isError, undefined);
+      await finish.handler({ summary: 'Only safe directories were dispatched.', acknowledged_steering: true }, {});
+      return { costUsd: 0 };
+    },
+  };
+
+  try {
+    const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+    assert.equal(outcome.outcome, 'completed');
+    const assignments = (await load('coordinator-capacity')).assignments;
+    assert.equal(assignments.length, 2, 'no refused directory was ever persisted');
+    assert.deepEqual(assignments.map((assignment) => assignment.readDirs ?? assignment.exec?.cwd), [home, [checkout]]);
+  } finally {
+    fs.rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
 test('create_assignment persists a human-reserved action as human-only', async () => {
   const executor: CoordinatorExecutor = {
     id: 'local-sdk',
@@ -1273,7 +1352,9 @@ test('create_assignment persists a human-reserved action as human-only', async (
         briefing: 'Fail closed unless the exact row and revision preconditions match.',
         kind: 'action',
         acceptance_criteria: ['exact row absent and every sibling row unchanged'],
-        exec_cwd: home,
+        // A model-run action's cwd is handed to its worker, so it names a
+        // checkout outside Weaver state.
+        exec_cwd: path.join(os.tmpdir(), 'weaver-coordinator-action-checkout'),
         exec_verify: 'test ! -f exact-row',
         approval_ask: 'Approve deletion of exactly one named test row. No other row may change.',
         approval_mode: 'human-only',
@@ -1304,7 +1385,9 @@ test('a routine PR action defaults to Pilot review without opening a human card'
         briefing: 'Push the exact clean branch head and open one PR with that head.',
         kind: 'action',
         acceptance_criteria: ['the remote PR exists at the exact local head'],
-        exec_cwd: home,
+        // A model-run action's cwd is handed to its worker, so it names a
+        // checkout outside Weaver state.
+        exec_cwd: path.join(os.tmpdir(), 'weaver-coordinator-action-checkout'),
         exec_verify: 'gh pr list --head fix/routine --json url --jq ".[0].url" | grep .',
         approval_ask: 'Approve pushing the reviewed branch and opening its pull request. Only that branch and one PR may be created.',
       }, {});

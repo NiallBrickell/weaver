@@ -250,24 +250,30 @@ export function stripClaudeCredentials(env: Record<string, string | undefined>):
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
 }
 
+/** Executor identities belong only to the adapter that explicitly selects
+ * them. Strip every registered name so an OpenRouter/App credential cannot
+ * ride into another process merely because the service manager exported it. */
+function stripExecutorSecretNames(
+  env: Record<string, string | undefined>,
+  registered: Record<string, string>,
+): void {
+  for (const name of Object.keys(registered)) delete env[name];
+}
+
 export function sdkEnv(
   extra: Record<string, string> = {},
   stripAmbientNames: Iterable<string> = [],
 ): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
   const registered = loadExecutorSecrets();
-  // Executor identities belong only to the adapter that explicitly selects
-  // them. Strip every registered name from ambient state and caller extras so
-  // an OpenRouter/App credential cannot ride into a Claude or Codex process
-  // merely because the service manager exported it.
-  for (const name of Object.keys(registered)) delete env[name];
+  stripExecutorSecretNames(env, registered);
   // A service manager may happen to expose a worker credential in the
   // controller's ambient environment. Ordinary work still receives only its
   // declared subset: remove every applicable worker-secret name first, then
   // add the exact selected values supplied by the caller.
   for (const name of stripAmbientNames) delete env[name];
   Object.assign(env, extra);
-  for (const name of Object.keys(registered)) delete env[name];
+  stripExecutorSecretNames(env, registered);
   stripClaudeCredentials(env);
   if (registered.CLAUDE_CODE_OAUTH_TOKEN) {
     env.CLAUDE_CODE_OAUTH_TOKEN = registered.CLAUDE_CODE_OAUTH_TOKEN;
@@ -275,6 +281,46 @@ export function sdkEnv(
     env.ANTHROPIC_API_KEY = registered.ANTHROPIC_API_KEY;
   }
   return env;
+}
+
+/**
+ * Harness-internal names no engine-run shell may inherit from the runner's
+ * own environment: the shared store's write credentials, the GitHub App
+ * identity, and every model/provider credential or login selector. The
+ * runner needs them; an approved command never does, and one that could read
+ * WEAVER_STORE could write the shared store directly, around the
+ * revision-checked write path.
+ */
+const HARNESS_INTERNAL_ENV = /^(?:WEAVER_STORE|WEAVER_GITHUB_APP_.*|WEAVER_MODEL_API_KEY|WEAVER_SERVE_TOKEN|WEAVER_PILOT_TOKEN|LLM_API_KEY|ANTHROPIC_.*|OPENAI_.*|OPENROUTER_.*|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CONFIG_DIR|CODEX_.*|ZAI_.*|Z_AI_.*|ZHIPU_.*|PRIME_API_KEY)$/;
+
+export function isHarnessInternalEnvName(name: string): boolean {
+  return HARNESS_INTERNAL_ENV.test(name);
+}
+
+/**
+ * Environment for a command the ENGINE runs — an approved action's exact
+ * `exec.run`, its preflight/readback verifier, and the harness's own git/gh
+ * probes in an assignment checkout. It starts from the runner's environment
+ * so PATH, HOME, locale, and ordinary git/gh configuration keep working, minus
+ * every harness-internal name above and every name in the executor-only
+ * store, then adds exactly the values the caller selected (the action's
+ * applicable worker secrets and the GitHub App environment minted for it).
+ * A selected value can never reintroduce the store URL, the App identity, or
+ * an executor-registered credential.
+ */
+export function engineCommandEnv(selected: Record<string, string> = {}): Record<string, string> {
+  const registered = loadExecutorSecrets();
+  const env: Record<string, string | undefined> = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value !== undefined && !isHarnessInternalEnvName(name)) env[name] = value;
+  }
+  stripExecutorSecretNames(env, registered);
+  Object.assign(env, selected);
+  stripExecutorSecretNames(env, registered);
+  for (const name of Object.keys(env)) {
+    if (name === 'WEAVER_STORE' || name.startsWith('WEAVER_GITHUB_APP_')) delete env[name];
+  }
+  return env as Record<string, string>;
 }
 
 /**

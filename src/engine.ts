@@ -26,7 +26,7 @@ import {
   parkIfExecutionLimited,
   retireLegacyDollarBudgetCard,
 } from './executionSafety.js';
-import { loadRedactionSecrets, loadSecrets, redactSecrets } from './secrets.js';
+import { engineCommandEnv, loadRedactionSecrets, loadSecrets, redactSecrets } from './secrets.js';
 import { runWorker } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
 import { arrive, listRunnerPresence, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
@@ -57,6 +57,7 @@ import {
   actionUsesGitHub,
   GitHubAppPreparationError,
   githubAppEnvironment,
+  githubAppRedactionSecrets,
   type GitHubAppAccess,
 } from './githubApp.js';
 import {
@@ -85,6 +86,29 @@ function actionShell(): string | undefined {
 }
 
 const ACTION_COMMAND_OUTPUT_LIMIT = 1024 * 1024;
+
+/** Hard bound on one engine execution of an approved exact command. */
+const ACTION_RUN_TIMEOUT_MS = 120_000;
+/** Hard bound on one verifier invocation; execActionVerifier may retry it. */
+const ACTION_VERIFY_TIMEOUT_MS = 60_000;
+const ACTION_VERIFY_ATTEMPTS = 3;
+const ACTION_VERIFY_RETRY_PAUSE_MS = 10_000;
+/** Worst case for one verifier lifecycle: every attempt times out and every
+ * transient-failure pause is taken. */
+const ACTION_VERIFY_WORST_CASE_MS = ACTION_VERIFY_ATTEMPTS * ACTION_VERIFY_TIMEOUT_MS
+  + ACTION_VERIFY_RETRY_PAUSE_MS * ((ACTION_VERIFY_ATTEMPTS - 1) * ACTION_VERIFY_ATTEMPTS / 2);
+/**
+ * A cached installation token is handed to an action only when it will
+ * outlive the command it is minted for. The mint otherwise reuses a token
+ * until five minutes before expiry, so a two-minute command — or a verifier
+ * that retries through a GitHub 503 — could start with a token that dies
+ * mid-push. Fifteen minutes, or the longest bounded command plus a
+ * five-minute margin if that is ever longer.
+ */
+const ACTION_GITHUB_TOKEN_MIN_REMAINING_MS = Math.max(
+  15 * 60_000,
+  Math.max(ACTION_RUN_TIMEOUT_MS, ACTION_VERIFY_WORST_CASE_MS) + 5 * 60_000,
+);
 
 /**
  * Run one deterministic action shell in its own process group.
@@ -202,12 +226,21 @@ async function actionExecutionSecrets(
     ? 'write'
     : 'read';
   const githubEnvironment = actionUsesGitHub(asg) && asg.exec
-    ? await githubAppEnvironment(asg.exec.cwd, githubAccess)
+    ? await githubAppEnvironment(asg.exec.cwd, githubAccess, {
+        minRemainingMs: ACTION_GITHUB_TOKEN_MIN_REMAINING_MS,
+      })
     : {};
-  const secrets = { ...loadSecrets(slug), ...githubEnvironment };
+  const workerSecrets = loadSecrets(slug);
   return {
-    secrets,
-    redactionSecrets: { ...loadRedactionSecrets(slug), ...secrets },
+    secrets: { ...workerSecrets, ...githubEnvironment },
+    // Only the installation token is a credential. The Git plumbing beside it
+    // is public configuration; its literal `true` once masked every `true` in
+    // action output as «secret:GIT_CONFIG_VALUE_3».
+    redactionSecrets: {
+      ...loadRedactionSecrets(slug),
+      ...workerSecrets,
+      ...githubAppRedactionSecrets(githubEnvironment),
+    },
   };
 }
 
@@ -674,11 +707,11 @@ async function execActionVerifier(
 ): Promise<{ ok: boolean; output: string }> {
   let ok = false;
   let output = '';
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    ({ ok, output } = await runActionCommand(verify, cwd, { ...process.env, ...secrets }, 60_000));
+  for (let attempt = 1; attempt <= ACTION_VERIFY_ATTEMPTS; attempt += 1) {
+    ({ ok, output } = await runActionCommand(verify, cwd, engineCommandEnv(secrets), ACTION_VERIFY_TIMEOUT_MS));
     if (ok) break;
-    if (attempt < 3 && isTransientInfrastructureText(output)) {
-      await new Promise((resolve) => setTimeout(resolve, 10_000 * attempt));
+    if (attempt < ACTION_VERIFY_ATTEMPTS && isTransientInfrastructureText(output)) {
+      await new Promise((resolve) => setTimeout(resolve, ACTION_VERIFY_RETRY_PAUSE_MS * attempt));
       continue;
     }
     break;
@@ -966,11 +999,14 @@ async function executeHumanActions(
       // escape would strand the action as running and invite crash recovery
       // to treat a known pre-execution failure as an unknown external result.
       mkdirSync(asg.exec!.cwd, { recursive: true });
+      // The command sees the runner's ordinary environment minus every
+      // harness-internal credential (WEAVER_STORE, the App key, model
+      // identities), plus exactly its applicable secrets and minted token.
       ({ ok, output } = await runActionCommand(
         asg.exec!.run!,
         asg.exec!.cwd,
-        { ...process.env, ...secrets },
-        120_000,
+        engineCommandEnv(secrets),
+        ACTION_RUN_TIMEOUT_MS,
       ));
     } catch (e) {
       output = e instanceof Error ? e.message : String(e);

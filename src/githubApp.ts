@@ -13,7 +13,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { loadExecutorSecrets } from './secrets.js';
+import { engineCommandEnv, loadExecutorSecrets } from './secrets.js';
 import type { Assignment } from './types.js';
 
 export type GitHubAppAccess = 'read' | 'write';
@@ -42,6 +42,37 @@ const PRIVATE_KEY = 'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64';
 const API_VERSION = '2026-03-10';
 const TOKEN_LIFETIME_MS = 60 * 60 * 1_000;
 const CACHE_MARGIN_MS = 5 * 60 * 1_000;
+
+/** The one credential in a GitHub App action environment. */
+export const GITHUB_APP_TOKEN_ENV = 'GH_TOKEN';
+
+/**
+ * The non-secret Git plumbing githubAppEnvironment sets beside the token: a
+ * prompt switch and a process-local credential helper that only REFERENCES
+ * $GH_TOKEN. None of these values is a secret — `GIT_CONFIG_VALUE_3` is the
+ * literal `true` — so they must never join a redaction set, where they would
+ * rewrite every ordinary `true` in captured output.
+ */
+export const GITHUB_APP_GIT_PLUMBING_ENV = [
+  'GIT_TERMINAL_PROMPT',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_KEY_0',
+  'GIT_CONFIG_VALUE_0',
+  'GIT_CONFIG_KEY_1',
+  'GIT_CONFIG_VALUE_1',
+  'GIT_CONFIG_KEY_2',
+  'GIT_CONFIG_VALUE_2',
+  'GIT_CONFIG_KEY_3',
+  'GIT_CONFIG_VALUE_3',
+] as const;
+
+export interface GitHubAppMintOptions {
+  /** Reuse a cached token only while at least this long remains before its
+   * expiry (never less than the five-minute cache margin). A caller about to
+   * run a bounded command asks for its whole runtime plus slack, so a token
+   * cannot expire mid-command. */
+  minRemainingMs?: number;
+}
 
 const tokenCache = new Map<string, CachedToken>();
 let nowImpl = Date.now;
@@ -203,9 +234,14 @@ async function githubFetch(
 export async function mintGitHubAppToken(
   repository?: string,
   access: GitHubAppAccess = 'read',
+  options: GitHubAppMintOptions = {},
 ): Promise<string> {
   if (access !== 'read' && access !== 'write') {
     throw new Error('GitHub App access must be read or write');
+  }
+  const minRemainingMs = options.minRemainingMs ?? 0;
+  if (!Number.isFinite(minRemainingMs) || minRemainingMs < 0 || minRemainingMs >= TOKEN_LIFETIME_MS) {
+    throw new Error('GitHub App token minRemainingMs must be a non-negative duration shorter than the token lifetime');
   }
   if (repository !== undefined) repositoryName(repository);
 
@@ -217,7 +253,7 @@ export async function mintGitHubAppToken(
   const cacheKey = `${access}\u0000${repository ?? ''}`;
   const now = nowImpl();
   const cached = tokenCache.get(cacheKey);
-  if (cached && now < cached.expiresAt - CACHE_MARGIN_MS) return cached.token;
+  if (cached && now < cached.expiresAt - Math.max(CACHE_MARGIN_MS, minRemainingMs)) return cached.token;
 
   const jwt = appJwt(config, now);
   const response = await githubFetch(
@@ -328,6 +364,9 @@ export function githubRepositoryFromCwd(cwd: string): string {
   try {
     remote = execFileSyncImpl('git', ['remote', 'get-url', 'origin'], {
       cwd,
+      // The checkout is model-influenced; its Git configuration must not see
+      // the runner's store URL or credentials.
+      env: engineCommandEnv(),
       encoding: 'utf8',
       timeout: 10_000,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -395,11 +434,12 @@ esac
 export async function githubAppEnvironment(
   cwd: string,
   access: GitHubAppAccess = 'read',
+  options: GitHubAppMintOptions = {},
 ): Promise<Record<string, string>> {
   if (!githubAppConfigured()) return {};
   const repository = githubRepositoryFromCwd(cwd);
-  const token = await mintGitHubAppToken(repository, access);
-  return {
+  const token = await mintGitHubAppToken(repository, access, options);
+  const environment: Record<(typeof GITHUB_APP_GIT_PLUMBING_ENV)[number] | typeof GITHUB_APP_TOKEN_ENV, string> = {
     // gh reads the token directly. Git receives the same value only through a
     // process-local credential helper configured below; no argv, repository
     // config, credential store, or temporary file contains it.
@@ -416,6 +456,17 @@ export async function githubAppEnvironment(
     GIT_CONFIG_KEY_3: 'credential.https://github.com.useHttpPath',
     GIT_CONFIG_VALUE_3: 'true',
   };
+  return environment;
+}
+
+/**
+ * The values of a GitHub App environment that must be scrubbed from captured
+ * output: the installation token and nothing else. The Git plumbing beside it
+ * is public configuration (GITHUB_APP_GIT_PLUMBING_ENV).
+ */
+export function githubAppRedactionSecrets(environment: Record<string, string>): Record<string, string> {
+  const token = environment[GITHUB_APP_TOKEN_ENV];
+  return token ? { [GITHUB_APP_TOKEN_ENV]: token } : {};
 }
 
 export interface GitCommitIdentity {

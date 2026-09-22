@@ -882,6 +882,68 @@ describe('OpenHands eval executor', () => {
     assert.equal(bridgeClosed, 1);
   });
 
+  it('never lets the runner store, provider keys, the App key, or a GitHub token reach the container', async () => {
+    const hostOnly: Record<string, string> = {
+      WEAVER_STORE: 'postgres://weaver:store-write-secret@127.0.0.1:5432/weaver',
+      OPENROUTER_API_KEY: 'sk-or-host-only-provider-key',
+      ANTHROPIC_API_KEY: 'sk-ant-host-only-key',
+      CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-host-only-token',
+      WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64: 'host-only-app-private-key',
+      WEAVER_GITHUB_APP_ID: '8812345',
+      GH_TOKEN: 'ghs_host-only-installation-token',
+      GIT_CONFIG_COUNT: '4',
+      GIT_CONFIG_KEY_0: 'credential.helper',
+      GIT_CONFIG_VALUE_3: 'true',
+    };
+    const selectedValue = 'selected-worker-secret-5531';
+    let workerEnvFileContent = '';
+    const seen: string[][] = [];
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
+      runCommand: async (_command, args) => {
+        seen.push([...args]);
+        if (args[0] === 'run') workerEnvFileContent = fs.readFileSync(valueAfter(args, '--env-file'), 'utf8');
+        return args[0] === 'port'
+          ? { exitCode: 0, stdout: '127.0.0.1:49163\n', stderr: '' }
+          : { exitCode: 0, stdout: '', stderr: '' };
+      },
+      fetch: (async (input: string | URL | Request, init: RequestInit = {}) => {
+        const url = String(input);
+        if (url.endsWith('/health')) return response({ status: 'ok' });
+        if (url.endsWith('/api/conversations') && init.method === 'POST') return response({ id: 'conversation-env' });
+        if (url.endsWith('/api/conversations/conversation-env')) {
+          return response({ id: 'conversation-env', execution_status: 'finished' });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      }) as typeof globalThis.fetch,
+      startSubmitBridge: async () => ({
+        url: 'http://host.docker.internal:41883/mcp', token: 'bridge-secret', async close() {},
+      }),
+      startProviderProxy: async () => fakeProviderProxy(),
+      gitIdentity: async () => null,
+      sleep: async () => undefined,
+      now: increasingClock(),
+    });
+    const req = request();
+    // The harness's host-side env (sdkEnv output) may carry anything the
+    // runner process does; only workerVisibleEnv is the container's.
+    req.env = { ...hostOnly, READONLY_API_TOKEN: selectedValue };
+    req.workerVisibleEnv = { READONLY_API_TOKEN: selectedValue };
+
+    const outcome = await executor.execute(req);
+    assert.equal(outcome.error, undefined);
+    assert.equal(workerEnvFileContent, `READONLY_API_TOKEN=${selectedValue}\n`);
+    const dockerRun = seen.find((args) => args[0] === 'run');
+    assert.ok(dockerRun);
+    const crossing = `${JSON.stringify(dockerRun)}\n${workerEnvFileContent}`;
+    for (const [name, value] of Object.entries(hostOnly)) {
+      assert.ok(!crossing.includes(`${name}=`), `${name} must not be set in the container`);
+      if (value.length > 8) assert.ok(!crossing.includes(value), `${name}'s value must not cross into the container`);
+    }
+    assert.ok(!valuesAfter(dockerRun, '--env').some((pair) => /^(GH_TOKEN|GITHUB_TOKEN|GIT_CONFIG_)/.test(pair)));
+  });
+
   it('mounts distinct additional directories and rewrites their prompt paths', async () => {
     const additional = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-openhands-additional-'));
     const seenCommands: string[][] = [];

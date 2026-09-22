@@ -27,12 +27,13 @@ import { rejectSend } from './humanActs.js';
 import { providerSend, readLedger } from './world.js';
 import { arrive, createWorkstream, heartbeatRunner, load, newId, readArtifact, writeArtifact } from './store.js';
 import { runWorker } from './worker.js';
-import { setExecutorSecret } from './secrets.js';
+import { setExecutorSecret, setSecret } from './secrets.js';
 import { virtualNow } from './clock.js';
 import type { Assignment } from './types.js';
 import {
   __resetGitHubAppForTests,
   __setGitHubAppTestDependencies,
+  mintGitHubAppToken,
 } from './githubApp.js';
 
 const githubTestPrivateKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
@@ -1354,6 +1355,160 @@ test('a repo engine action gets write scope only for execution and read scope fo
     ]);
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+/** A checkout whose origin is one exact github.com repository, on a host with
+ * a complete GitHub App identity whose mint returns `token` (counted). */
+function githubAppActionHost(token: () => string): { cwd: string; mints: () => number; setNow: (now: number) => void } {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-action-env-'));
+  execFileSync('git', ['init', '--quiet'], { cwd });
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/octo/repo.git'], { cwd });
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret('WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64', Buffer.from(githubTestPrivateKey).toString('base64'));
+  let now = Date.parse('2026-09-21T12:00:00.000Z');
+  let mints = 0;
+  __setGitHubAppTestDependencies({
+    now: () => now,
+    fetch: (async () => {
+      mints += 1;
+      return Response.json({
+        token: token(),
+        expires_at: new Date(now + 60 * 60_000).toISOString(),
+        repositories: [{ full_name: 'octo/repo' }],
+      }, { status: 201 });
+    }) as typeof globalThis.fetch,
+  });
+  return { cwd, mints: () => mints, setNow: (value) => { now = value; } };
+}
+
+function envFile(file: string): Map<string, string> {
+  const entries = new Map<string, string>();
+  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq > 0) entries.set(line.slice(0, eq), line.slice(eq + 1));
+  }
+  return entries;
+}
+
+test('engine-run commands never inherit WEAVER_STORE or model credentials, yet keep PATH, HOME, their secrets and the minted token', async () => {
+  const host = githubAppActionHost(() => 'ghs_minted-action-token-4410');
+  const ambient: Record<string, string> = {
+    // Never a database URL: getStore() falls back to the fs backend for an
+    // unknown scheme, so this test cannot reach any real store.
+    WEAVER_STORE: 'weaver-test-sentinel:store-write-secret-9931',
+    OPENROUTER_API_KEY: 'sk-or-ambient-provider-key',
+    ANTHROPIC_API_KEY: 'sk-ant-ambient-key',
+    CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-ambient-token',
+    CODEX_HOME: '/home/weaver/.codex',
+    ZAI_API_KEY: 'zai-ambient-key',
+    WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64: 'ambient-app-key',
+    EXECUTOR_ONLY_BEARER: 'registered-executor-bearer',
+    ORDINARY_TOOL_SETTING: 'kept-for-the-command',
+  };
+  const previous = Object.fromEntries(Object.keys(ambient).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, ambient);
+  // A name registered in the executor-only store is stripped even though the
+  // denylist does not name it.
+  setExecutorSecret('EXECUTOR_ONLY_BEARER', 'registered-executor-bearer');
+  try {
+    await makeActionWorkstream('engine-action-env-ws', {
+      state: 'queued',
+      exec: {
+        cwd: host.cwd,
+        run: 'if false; then gh pr merge 1; fi; env > run.env',
+        verify: 'if false; then gh pr view 1; fi; test -f run.env && env > verify.env',
+        approval: { by: 'human', at: new Date().toISOString() },
+      },
+    });
+    setSecret('DEPLOY_HOOK_TOKEN', 'selected-action-secret-8802', 'engine-action-env-ws');
+
+    await tick('engine-action-env-ws', { maxPasses: 0 });
+
+    const action = (await load('engine-action-env-ws')).assignments[0]!;
+    assert.equal(action.state, 'awaiting_review');
+    assert.equal(action.exec!.verified!.ok, true);
+    for (const file of ['run.env', 'verify.env']) {
+      const seen = envFile(path.join(host.cwd, file));
+      for (const name of ['WEAVER_STORE', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_HOME', 'ZAI_API_KEY', 'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64', 'WEAVER_GITHUB_APP_ID', 'EXECUTOR_ONLY_BEARER']) {
+        assert.equal(seen.has(name), false, `${file}: ${name} must not reach an engine-run command`);
+      }
+      assert.equal(seen.get('PATH'), process.env.PATH, `${file}: PATH is kept`);
+      assert.equal(seen.get('HOME'), process.env.HOME, `${file}: HOME is kept`);
+      assert.equal(seen.get('ORDINARY_TOOL_SETTING'), 'kept-for-the-command');
+      assert.equal(seen.get('DEPLOY_HOOK_TOKEN'), 'selected-action-secret-8802');
+      assert.equal(seen.get('GH_TOKEN'), 'ghs_minted-action-token-4410');
+      assert.equal(seen.get('GIT_CONFIG_COUNT'), '4', `${file}: Git still authenticates through the App helper`);
+    }
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    fs.rmSync(host.cwd, { recursive: true, force: true });
+  }
+});
+
+test('action output keeps every literal true while the installation token stays masked', async () => {
+  const host = githubAppActionHost(() => 'ghs_masked-installation-token-7713');
+  try {
+    await makeActionWorkstream('engine-action-redaction-ws', {
+      state: 'queued',
+      exec: {
+        cwd: host.cwd,
+        run: 'if false; then gh pr merge 1; fi; printf "merged: true\\nuseHttpPath=%s\\ntoken=%s\\n" "$GIT_CONFIG_VALUE_3" "$GH_TOKEN"; touch effect.txt',
+        verify: 'if false; then gh pr view 1; fi; test -f effect.txt && printf "state: true\\ntoken=%s\\n" "$GH_TOKEN"',
+        approval: { by: 'human', at: new Date().toISOString() },
+      },
+    });
+
+    await tick('engine-action-redaction-ws', { maxPasses: 0 });
+
+    const doc = await load('engine-action-redaction-ws');
+    const action = doc.assignments[0]!;
+    assert.equal(action.exec!.verified!.ok, true);
+    const record = await readArtifact('engine-action-redaction-ws', doc.deliverables.find((d) => d.kind === 'execution_record')!.path);
+    assert.match(record, /^merged: true$/m);
+    assert.match(record, /^useHttpPath=true$/m);
+    assert.match(record, /^token=«secret:GH_TOKEN»$/m);
+    assert.doesNotMatch(record, /ghs_masked-installation-token-7713|«secret:GIT_/);
+    assert.match(action.exec!.verified!.output, /^state: true$/m);
+    assert.match(action.exec!.verified!.output, /^token=«secret:GH_TOKEN»$/m);
+    assert.doesNotMatch(JSON.stringify(doc), /ghs_masked-installation-token-7713|«secret:GIT_CONFIG/);
+  } finally {
+    fs.rmSync(host.cwd, { recursive: true, force: true });
+  }
+});
+
+test('an action is never handed a cached installation token that could expire mid-command', async () => {
+  let issued = 0;
+  const host = githubAppActionHost(() => `ghs_action-token-${++issued}`);
+  try {
+    const start = Date.parse('2026-09-21T12:00:00.000Z');
+    host.setNow(start);
+    // Another lane (deconfliction, a conflict probe) cached a read token.
+    assert.equal(await mintGitHubAppToken('octo/repo', 'read'), 'ghs_action-token-1');
+    // 50 minutes later it has 10 minutes left: still inside the ordinary
+    // five-minute reuse margin, but not enough for an action.
+    host.setNow(start + 50 * 60_000);
+    assert.equal(await mintGitHubAppToken('octo/repo', 'read'), 'ghs_action-token-1');
+    await makeActionWorkstream('engine-action-fresh-token-ws', {
+      state: 'queued',
+      exec: {
+        cwd: host.cwd,
+        run: 'if false; then git fetch origin; fi; printf "%s" "$GH_TOKEN" > run-token.txt',
+        verify: 'if false; then gh api repos/octo/repo; fi; test -f run-token.txt',
+        approval: { by: 'human', at: new Date().toISOString() },
+      },
+    });
+
+    await tick('engine-action-fresh-token-ws', { maxPasses: 0 });
+
+    assert.equal(host.mints(), 2, 'the action minted once and reused that fresh token for its own lifecycle');
+    assert.equal(fs.readFileSync(path.join(host.cwd, 'run-token.txt'), 'utf8'), 'ghs_action-token-2');
+  } finally {
+    fs.rmSync(host.cwd, { recursive: true, force: true });
   }
 });
 

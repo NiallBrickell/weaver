@@ -16,12 +16,15 @@ import {
   gitHubAppCommitIdentity,
   githubAppConfigured,
   githubAppEnvironment,
+  githubAppRedactionSecrets,
   githubRepositoryFromCwd,
+  GITHUB_APP_GIT_PLUMBING_ENV,
+  GITHUB_APP_TOKEN_ENV,
   mintGitHubAppToken,
   parseGitHubRepositoryRemote,
   workerGitIdentityEnv,
 } from './githubApp.js';
-import { setExecutorSecret } from './secrets.js';
+import { engineCommandEnv, loadRedactionSecrets, redactSecrets, setExecutorSecret } from './secrets.js';
 import type { Assignment } from './types.js';
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -227,6 +230,68 @@ test('token cache is isolated by exact owner/repo and access and refreshes at th
   now += 1;
   assert.equal(await mintGitHubAppToken('first/shared-name', 'read'), 'token-4');
   assert.equal(calls, 4);
+});
+
+test('a caller-required remaining lifetime refuses a cached token that could expire mid-command', async () => {
+  configure();
+  let now = fixedNow;
+  let calls = 0;
+  __setGitHubAppTestDependencies({
+    now: () => now,
+    fetch: (async () => tokenResponse(`token-${++calls}`, now, 'octo/widget')) as typeof globalThis.fetch,
+  });
+  const fifteenMinutes = 15 * 60 * 1_000;
+
+  assert.equal(await mintGitHubAppToken('octo/widget', 'read'), 'token-1');
+  // 16 minutes left: enough for a fifteen-minute requirement, so reused.
+  now = fixedNow + 44 * 60 * 1_000;
+  assert.equal(await mintGitHubAppToken('octo/widget', 'read', { minRemainingMs: fifteenMinutes }), 'token-1');
+  // 14 minutes left: the ordinary five-minute margin would still reuse it...
+  now = fixedNow + 46 * 60 * 1_000;
+  assert.equal(await mintGitHubAppToken('octo/widget', 'read'), 'token-1');
+  assert.equal(calls, 1);
+  // ...but a caller about to run a command that needs fifteen gets a fresh one,
+  // and that fresh token replaces the cache for later callers.
+  assert.equal(await mintGitHubAppToken('octo/widget', 'read', { minRemainingMs: fifteenMinutes }), 'token-2');
+  assert.equal(await mintGitHubAppToken('octo/widget', 'read'), 'token-2');
+  assert.equal(calls, 2);
+
+  // The environment builder carries the requirement through to the mint.
+  now = fixedNow + 46 * 60 * 1_000 + 47 * 60 * 1_000;
+  const environment = await githubAppEnvironment(gitRepo('https://github.com/octo/widget.git'), 'read', { minRemainingMs: fifteenMinutes });
+  assert.equal(environment.GH_TOKEN, 'token-3');
+  assert.equal(calls, 3);
+
+  await assert.rejects(mintGitHubAppToken('octo/widget', 'read', { minRemainingMs: -1 }), /minRemainingMs/);
+  await assert.rejects(mintGitHubAppToken('octo/widget', 'read', { minRemainingMs: 60 * 60 * 1_000 }), /minRemainingMs/);
+});
+
+test('only the installation token joins a redaction set; the Git plumbing is public configuration', async () => {
+  configure();
+  __setGitHubAppTestDependencies({
+    fetch: (async () => tokenResponse('ghs_redacted-token', fixedNow, 'octo/widget')) as typeof globalThis.fetch,
+  });
+  const environment = await githubAppEnvironment(gitRepo('https://github.com/octo/widget.git'));
+  assert.deepEqual(
+    Object.keys(environment).sort(),
+    [GITHUB_APP_TOKEN_ENV, ...GITHUB_APP_GIT_PLUMBING_ENV].sort(),
+    'every name the App environment sets is either the token or declared plumbing',
+  );
+  assert.deepEqual(githubAppRedactionSecrets(environment), { GH_TOKEN: 'ghs_redacted-token' });
+  assert.deepEqual(githubAppRedactionSecrets({}), {});
+  assert.equal(
+    redactSecrets('merged: true\ntoken ghs_redacted-token', { ...loadRedactionSecrets(), ...githubAppRedactionSecrets(environment) }),
+    'merged: true\ntoken «secret:GH_TOKEN»',
+  );
+  // The scrubbed engine command environment still authenticates Git pushes
+  // through the App's process-local credential helper.
+  const credential = execFileSync('git', ['credential', 'fill'], {
+    input: 'protocol=https\nhost=github.com\npath=octo/widget.git\n\n',
+    encoding: 'utf8',
+    env: engineCommandEnv(environment),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  assert.match(credential, /^password=ghs_redacted-token$/m);
 });
 
 test('origin parsing accepts exact github.com HTTPS and SSH repositories only', () => {

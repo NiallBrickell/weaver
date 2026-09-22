@@ -26,6 +26,7 @@ import { execFileSync } from 'node:child_process';
 import { arrive, listWorkstreams, load, newId } from './store.js';
 import { isRepoEgressAction } from './deconflict.js';
 import { githubAppEnvironment } from './githubApp.js';
+import { engineCommandEnv } from './secrets.js';
 
 /** Between provider probes per workstream. PR mergeability changes at merge
  * cadence (minutes to hours), and each probe is one gh call per egressed
@@ -61,7 +62,9 @@ function tryRun(
   try {
     return execFileSync(bin, args, {
       cwd,
-      env: { ...process.env, ...environment },
+      // Harness-authored, but it runs in a model-influenced checkout whose
+      // Git configuration can execute commands: never the runner's secrets.
+      env: engineCommandEnv(environment),
       encoding: 'utf8',
       timeout: 30_000,
       stdio: ['ignore', 'pipe', 'ignore'],
