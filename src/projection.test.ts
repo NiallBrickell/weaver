@@ -27,9 +27,12 @@ test('the projection exposes durable coordinator host preference without changin
 const NOW = '2026-08-10T00:00:00.000Z';
 const BIG_RATIONALE = 'x'.repeat(2000); // supporting prose that must not dominate
 
-/** A routine that has run `cycles` cycles the RIGHT way: each cycle records one
- * course (superseding the previous cycle's), adopts two work products, and
- * completes three assignments. Plus a little genuinely-live work at the head. */
+/** A routine that has run `cycles` cycles the RIGHT way: ONE standing course
+ * for the recurring loop, advanced in place with record_progress — no decision
+ * per cycle or step — while each cycle adopts two work products and completes
+ * three assignments. Plus a little genuinely-live work at the head. The
+ * course's rationale is a legacy oversize one (written before the caps), which
+ * must still load and render excerpted. */
 function routineDoc(cycles: number): WorkstreamDoc {
   const decisions: Decision[] = [];
   const deliverables: Deliverable[] = [];
@@ -44,23 +47,33 @@ function routineDoc(cycles: number): WorkstreamDoc {
     status: 'standing',
     decidedAtVirtual: NOW,
   });
+  // The recurring course: its commitment never changed, so it never needed a
+  // successor — only its position moved.
+  decisions.push({
+    id: 'dec_course',
+    title: 'Triage the queue every cycle',
+    rationale: `Recurring triage commitment. ${BIG_RATIONALE}`,
+    madeBy: 'coordinator',
+    status: 'standing',
+    decidedAtVirtual: NOW,
+    ...(cycles > 0
+      ? {
+          progress: {
+            cycle: cycles,
+            step: 2,
+            label: `cycle ${cycles} fixes dispatched`,
+            awaitingIds: ['asg_live'],
+            basisIds: [`del_${cycles - 1}_1`],
+            next: 'Review the live candidate, then schedule the next sweep.',
+            passId: `pass_${cycles}`,
+            atVirtual: NOW,
+            cycleStartedAtVirtual: NOW,
+          },
+        }
+      : {}),
+  });
 
   for (let c = 0; c < cycles; c++) {
-    const prev = c > 0 ? `dec_cycle_${c - 1}` : undefined;
-    if (prev) {
-      const old = decisions.find((d) => d.id === prev)!;
-      old.status = 'superseded';
-      old.supersededBy = `dec_cycle_${c}`;
-    }
-    decisions.push({
-      id: `dec_cycle_${c}`,
-      title: `Cycle ${c} triage disposition`,
-      rationale: `Cycle ${c}: ${BIG_RATIONALE}`,
-      madeBy: 'coordinator',
-      status: 'standing',
-      ...(prev ? { supersedes: prev } : {}),
-      decidedAtVirtual: NOW,
-    });
     for (let k = 0; k < 2; k++) {
       deliverables.push({
         id: `del_${c}_${k}`,
@@ -153,26 +166,55 @@ function routineDoc(cycles: number): WorkstreamDoc {
   };
 }
 
+/** The step-log shape stores written before record_progress still hold: every
+ * cycle superseded the previous cycle's course with a fresh 2 KB decision. It
+ * must stay bounded and loadable, though it is no longer the right way. */
+function legacyStepLogDoc(cycles: number): WorkstreamDoc {
+  const doc = routineDoc(cycles);
+  for (let c = 0; c < cycles; c++) {
+    const prev = c > 0 ? `dec_cycle_${c - 1}` : undefined;
+    if (prev) {
+      const old = doc.decisions.find((d) => d.id === prev)!;
+      old.status = 'superseded';
+      old.supersededBy = `dec_cycle_${c}`;
+    }
+    doc.decisions.push({
+      id: `dec_cycle_${c}`,
+      title: `Cycle ${c} triage disposition`,
+      rationale: `Cycle ${c}: ${BIG_RATIONALE}`,
+      madeBy: 'coordinator',
+      status: 'standing',
+      ...(prev ? { supersedes: prev } : {}),
+      decidedAtVirtual: NOW,
+    });
+  }
+  return doc;
+}
+
 test('projection does not grow linearly as a routine runs more cycles', () => {
-  const at20 = buildProjection(routineDoc(20), []).length;
-  const at80 = buildProjection(routineDoc(80), []).length;
-  // 60 extra cycles add 180 completed assignments, 120 adopted deliverables,
-  // and 60 retired decisions of 2 KB each — ~250 KB of raw history. The
-  // projection must absorb that into bounded tails, not carry it.
-  assert.ok(
-    at80 - at20 < 2000,
-    `projection grew ${at80 - at20} chars over 60 cycles — history is leaking into the prompt`,
-  );
-  // And the absolute size stays modest even after many cycles.
-  assert.ok(at80 < 20000, `projection is ${at80} chars after 80 cycles — too large`);
+  for (const shape of [routineDoc, legacyStepLogDoc]) {
+    const at20 = buildProjection(shape(20), []).length;
+    const at80 = buildProjection(shape(80), []).length;
+    // 60 extra cycles add 180 completed assignments and 120 adopted
+    // deliverables (and, in the legacy step-log shape, 60 retired decisions of
+    // 2 KB each) — up to ~250 KB of raw history. The projection must absorb
+    // that into bounded tails, not carry it.
+    assert.ok(
+      at80 - at20 < 2000,
+      `${shape.name}: projection grew ${at80 - at20} chars over 60 cycles — history is leaking into the prompt`,
+    );
+    // And the absolute size stays modest even after many cycles.
+    assert.ok(at80 < 20000, `${shape.name}: projection is ${at80} chars after 80 cycles — too large`);
+  }
 });
 
 test('bounded projection still carries live work and standing commitments', () => {
   const p = buildProjection(routineDoc(50), []);
   // The durable standing commitment survives in full.
   assert.match(p, /Persistent workspace is \/tmp\/routine-clone/);
-  // The latest cycle course (still standing) survives.
-  assert.match(p, /Cycle 49 triage disposition/);
+  // The one recurring course survives, and so does where it stands.
+  assert.match(p, /dec_course \[STANDING\] "Triage the queue every cycle"/);
+  assert.match(p, /progress: cycle 50 · step 2 "cycle 50 fixes dispatched"/);
   // Live unresolved work survives.
   assert.match(p, /UNIQUE_LIVE_MARKER/);
   assert.match(p, /LIVE candidate awaiting review/);
@@ -223,7 +265,7 @@ test('completed assignments are counted, not enumerated', () => {
 });
 
 test('older adopted deliverables and retired decisions are summarized, not dumped', () => {
-  const p = buildProjection(routineDoc(50), []);
+  const p = buildProjection(legacyStepLogDoc(50), []);
   assert.match(p, /earlier adopted work products/);
   assert.match(p, /earlier retired decisions/);
 });
@@ -403,4 +445,73 @@ test('projection exposes exact cancellable organizational wakes but no harness-o
     assert.doesNotMatch(projection, new RegExp(marker));
   }
   assert.ok(projection.length < 20_000, `projection grew to ${projection.length} characters`);
+});
+
+test('a standing course renders its recorded progress as one typed line — position, not authority', () => {
+  const doc = routineDoc(7);
+  const p = buildProjection(doc, []);
+  const courseLine = p.split('\n').findIndex((line) => line.startsWith('- dec_course [STANDING]'));
+  assert.ok(courseLine >= 0);
+  assert.equal(
+    p.split('\n')[courseLine + 1],
+    `  progress: cycle 7 · step 2 "cycle 7 fixes dispatched" · awaiting [asg_live] · basis [del_6_1] · next: Review the live candidate, then schedule the next sweep. · as of ${NOW} (cycle since ${NOW}) (position, not authority)`,
+  );
+  // A course with no progress renders no progress line.
+  assert.doesNotMatch(buildProjection(routineDoc(0), []), /progress: cycle/);
+  // Awaited work that has since settled is marked, from typed state.
+  doc.assignments.find((a) => a.id === 'asg_live')!.state = 'completed';
+  assert.match(buildProjection(doc, []), /awaiting \[asg_live \(settled\)\]/);
+  // Progress never changes what is authoritative: the course is still the
+  // same standing commitment, and nothing it cites was adopted by it.
+  assert.match(buildProjection(doc, []), /LIVE candidate awaiting review/);
+});
+
+/** A supersede chain dec_churn_0 → … → dec_churn_n, successor i decided
+ * `hoursAgo(i)` hours before virtual now. Titles are deliberately counter-free
+ * so the test proves the nudge reads typed lineage, not prose. */
+function churnDoc(successors: number, hoursAgo: (i: number) => number): WorkstreamDoc {
+  const doc = routineDoc(0);
+  const now = virtualNow().getTime();
+  for (let i = 0; i <= successors; i++) {
+    doc.decisions.push({
+      id: `dec_churn_${i}`,
+      title: 'Keep the investigation on its current plan',
+      rationale: 'same commitment, restated',
+      madeBy: 'coordinator',
+      status: i === successors ? 'standing' : 'superseded',
+      ...(i > 0 ? { supersedes: `dec_churn_${i - 1}` } : {}),
+      ...(i < successors ? { supersededBy: `dec_churn_${i + 1}` } : {}),
+      decidedAtVirtual: new Date(now - hoursAgo(i) * 60 * 60_000).toISOString(),
+    });
+  }
+  return doc;
+}
+
+test('a supersede lineage churning five or more times in 24h is named and pointed at record_progress', () => {
+  const recent = (i: number) => 10 - i; // every successor inside the last 10h
+  const five = buildProjection(churnDoc(5, recent), []);
+  assert.match(five, /CHURN: dec_churn_5's lineage \(from dec_churn_0\) was superseded 5 times in the last 24h/);
+  assert.match(five, /advance it with record_progress/);
+
+  assert.doesNotMatch(buildProjection(churnDoc(4, recent), []), /CHURN:/, 'four supersessions is below the threshold');
+  // Six supersessions, but only four of them inside the window.
+  const old = (i: number) => (i <= 2 ? 48 - i : 10 - i);
+  assert.doesNotMatch(buildProjection(churnDoc(6, old), []), /CHURN:/, 'churn outside the 24h window is history, not a habit');
+  // A lineage whose head was closed has nothing left to advance.
+  const closed = churnDoc(5, recent);
+  closed.decisions.at(-1)!.status = 'closed';
+  assert.doesNotMatch(buildProjection(closed, []), /CHURN:/);
+});
+
+test('a legacy oversize review boundary is excerpted in the projection and kept whole in state', () => {
+  const doc = routineDoc(1);
+  const reviewWhen = `review when the baseline moves ${'w'.repeat(2_800)} REVIEW_TAIL`;
+  const course = doc.decisions.find((d) => d.id === 'dec_course')!;
+  course.reviewWhen = reviewWhen;
+  const p = buildProjection(doc, []);
+  assert.doesNotMatch(p, /REVIEW_TAIL/);
+  assert.match(p, /Review when: review when the baseline moves w+…\./);
+  const shown = /Review when: ([^\n]*?)\. \(by/.exec(p)![1]!;
+  assert.ok(shown.length <= 201, `review boundary rendered ${shown.length} chars`);
+  assert.equal(course.reviewWhen, reviewWhen, 'the typed record is untouched');
 });

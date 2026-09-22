@@ -26,6 +26,7 @@ import {
   revisePolicyMechanism,
   supersedePolicy,
   validatePolicyCitations,
+  type PolicyRecord,
 } from './policies.js';
 import { arrive, createWorkstream, mutatePolicies } from './store.js';
 import { virtualNow } from './clock.js';
@@ -663,4 +664,90 @@ test('a policy retired because its rules section vanished carries the reason, an
   const err = validatePolicyCitations([doc.id], [stored], ['acme']);
   assert.match(err!, /retired/);
   assert.equal((await matchPolicies(['acme'])).some((p) => p.id === doc.id), false);
+});
+
+// ---------------------------------------------------------------------------
+// The projection's policy block is bounded without losing the operator's words.
+
+/** An in-memory policy record — rendering is pure over records. */
+function record(id: string, overrides: Partial<PolicyRecord> = {}): PolicyRecord {
+  return {
+    id,
+    statement: `Rule ${id}`,
+    scope: { tags: ['acme'] },
+    effect: { kind: 'advisory', description: `effect of ${id}` },
+    widensAuthority: false,
+    status: 'active',
+    provenance: { workstreamSlug: 'ws-src', passId: 'pass_src', interventionSummary: 'learned' },
+    evidence: [],
+    createdAt: '2026-09-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function interventionFree(n: number): PolicyRecord['evidence'] {
+  return Array.from({ length: n }, (_, i) => ({
+    workstreamSlug: `ws-${i}`, passId: `pass_${i}`, note: 'held', interventionFree: true,
+    applyingDecisionId: `dec_${i}`, at: '2026-09-02T00:00:00.000Z',
+  }));
+}
+
+test('the policy block keeps every shown doctrine statement verbatim while excerpting effect and mechanism prose', () => {
+  const longStatement = `Use a regular merge commit on every repository — never squash-merge or rebase-merge, because the per-commit trail is the review record ${'and it must survive '.repeat(30)}DOCTRINE_STATEMENT_TAIL`;
+  const doctrine = record('pol_doctrine', {
+    statement: longStatement,
+    status: 'shadow',
+    mechanism: `gh pr merge <n> --merge ${'--flag '.repeat(100)}DOCTRINE_MECHANISM_TAIL`,
+    provenance: { source: 'backfill:rules', ref: '/repo/CLAUDE.md § Git', interventionSummary: 'backfilled' },
+  });
+  const learned = record('pol_learned', {
+    effect: { kind: 'add_verification', description: `verify the readback ${'carefully '.repeat(40)}EFFECT_TAIL` },
+    mechanism: `run the check ${'again '.repeat(80)}LEARNED_MECHANISM_TAIL`,
+  });
+  assert.equal(isDoctrine(doctrine), true);
+  const render = renderPoliciesForProjection([doctrine, learned]);
+  assert.ok(render.includes(`"${longStatement}"`), 'the operator\'s own words bind verbatim');
+  assert.ok(render.indexOf('pol_doctrine') < render.indexOf('pol_learned'), 'doctrine keeps precedence');
+  for (const tail of ['DOCTRINE_MECHANISM_TAIL', 'EFFECT_TAIL', 'LEARNED_MECHANISM_TAIL']) {
+    assert.doesNotMatch(render, new RegExp(tail));
+  }
+  assert.match(render, /mechanism \(revisable, not the rule\): gh pr merge <n> --merge --flag[^\n]*… \[excerpt — read_policy for the full text\]/);
+  const learnedLine = render.split('\n').find((line) => line.startsWith('- pol_learned'))!;
+  assert.match(learnedLine, /— verify the readback carefully[^\n]*… \[excerpt — read_policy for the full text\] \(learned from ws-src; unproven\)/);
+  // Short prose renders exactly as written, with no excerpt marker.
+  const short = renderPoliciesForProjection([record('pol_short', { mechanism: 'gh pr checks <n>' })]);
+  assert.match(short, /— effect of pol_short \(learned from/);
+  assert.match(short, /mechanism \(revisable, not the rule\): gh pr checks <n>\n/);
+  assert.doesNotMatch(short, /\[excerpt/);
+});
+
+test('active learned policies are capped by intervention-free evidence, then recency, with the omission counted', () => {
+  // 33 active: pol_a00 has the most evidence … pol_a32 the least. Two share the
+  // lowest shown rank, so recency breaks the tie.
+  const active = Array.from({ length: 33 }, (_, i) => record(`pol_a${String(i).padStart(2, '0')}`, {
+    evidence: interventionFree(40 - i),
+    createdAt: `2026-09-${String(1 + (i % 20)).padStart(2, '0')}T00:00:00.000Z`,
+  }));
+  // pol_a29 holds 11; lift pol_a30 to 11 as well, but newer, so it wins the tie.
+  active[30] = { ...active[30]!, evidence: interventionFree(11), createdAt: '2026-09-28T00:00:00.000Z' };
+  const contested = record('pol_contested', {
+    evidence: interventionFree(1),
+    contested: { at: '2026-09-03T00:00:00.000Z', workstreamSlug: 'ws-neg', note: 'needed correction' },
+  });
+  const doctrine = Array.from({ length: 3 }, (_, i) => record(`pol_rule${i}`, {
+    status: 'shadow',
+    provenance: { source: 'backfill:rules', ref: `/repo/CLAUDE.md § ${i}`, interventionSummary: 'backfilled' },
+  }));
+  const render = renderPoliciesForProjection([...doctrine, ...active, contested]);
+  const shown = active.filter((p) => render.includes(`- ${p.id} [active/`));
+  assert.equal(shown.length, 30);
+  assert.match(render, /\(\+3 more active learned policies not shown — this window keeps the 30 with the most intervention-free evidence/);
+  // The fewest-evidence ones are the ones left out; the newer of a tie wins.
+  for (const id of ['pol_a31', 'pol_a32', 'pol_a29']) assert.doesNotMatch(render, new RegExp(`- ${id} \\[active/`));
+  assert.match(render, /- pol_a30 \[active\//);
+  // Most-proven first.
+  assert.ok(render.indexOf('- pol_a00 ') < render.indexOf('- pol_a01 '));
+  // Contested policies are never counted into the cap, and every doctrine rule stays.
+  assert.match(render, /pol_contested[^\n]*CONTESTED in ws-neg/);
+  for (const rule of doctrine) assert.ok(render.includes(`"${rule.statement}"`));
 });

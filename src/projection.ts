@@ -8,12 +8,12 @@
  * or claim an external effect that typed state does not record.
  */
 
-import type { WorkstreamDoc, Deliverable } from './types.js';
+import type { WorkstreamDoc, Decision, Deliverable } from './types.js';
 import type { PolicyRecord } from './policies.js';
 import { renderPoliciesForProjection } from './policies.js';
 import { secretNames } from './secrets.js';
 import { pendingSteering } from './steering.js';
-import { coordinatorCancellableWakePage, virtualNow } from './clock.js';
+import { coordinatorCancellableWakePage, liveOrganizationalItemLabel, virtualNow } from './clock.js';
 import { capacityPresentation } from './capacity.js';
 import { executionSafetyConfig } from './executionSafety.js';
 import { actionHasLivePilotOutage, humanAttention } from './actionApproval.js';
@@ -29,6 +29,11 @@ export const PROMPT_VERSION = 1;
 // fresh coordinator needs to CONTINUE — live authority, unresolved work, waits,
 // every standing commitment's gist — is always rendered in full.
 const RATIONALE_EXCERPT = 280; // per standing-decision rationale in the projection
+const REVIEW_WHEN_EXCERPT = 200; // per standing-decision review boundary
+const PROGRESS_LABEL_EXCERPT = 120; // record_progress caps these at write; legacy/hand edits stay bounded
+const PROGRESS_NEXT_EXCERPT = 400;
+const CHURN_WINDOW_MS = 24 * 60 * 60_000; // supersessions counted inside this window…
+const CHURN_SUPERSESSIONS = 5; // …at or above this many name the lineage as a step log
 const STANDING_SOFT_CAP = 20; // above this, nudge the coordinator to close stale cycle courses
 const RETIRED_SHOWN = 10; // most-recent superseded/closed decisions rendered as lineage
 const ACCEPTED_SHOWN = 25; // most-recent adopted deliverables rendered in full
@@ -43,6 +48,47 @@ function fmtList(items: string[], empty: string): string {
 function excerpt(s: string, n: number): string {
   const flat = s.replace(/\s+/g, ' ').trim();
   return flat.length > n ? `${flat.slice(0, n).trimEnd()}…` : flat;
+}
+
+/** The course's recorded position, rendered under its standing decision.
+ * Awaited ids that have since settled are marked so a fresh coordinator can
+ * see the position is ready to advance without re-deriving it. */
+function progressLine(doc: WorkstreamDoc, d: Decision): string | undefined {
+  const p = d.progress;
+  if (!p) return undefined;
+  const awaiting = p.awaitingIds.map((id) => (liveOrganizationalItemLabel(doc, id) ? id : `${id} (settled)`));
+  return [
+    `progress: cycle ${p.cycle} · step ${p.step} "${excerpt(p.label, PROGRESS_LABEL_EXCERPT)}"`,
+    `awaiting [${awaiting.join(', ')}]`,
+    `basis [${p.basisIds.join(', ')}]`,
+    ...(p.next ? [`next: ${excerpt(p.next, PROGRESS_NEXT_EXCERPT)}`] : []),
+    `as of ${p.atVirtual} (cycle since ${p.cycleStartedAtVirtual}) (position, not authority)`,
+  ].join(' · ');
+}
+
+/**
+ * Supersede lineages used as a step log: for each standing decision, walk its
+ * `supersedes` chain and count the successors decided inside the churn window.
+ * Typed fields only — lineage links and timestamps, never titles — so the
+ * nudge cannot be steered by how a coordinator words its decisions.
+ */
+function churningLineages(doc: WorkstreamDoc, nowIso: string): { headId: string; count: number; rootId: string }[] {
+  const since = new Date(new Date(nowIso).getTime() - CHURN_WINDOW_MS).toISOString();
+  const byId = new Map(doc.decisions.map((d) => [d.id, d]));
+  const out: { headId: string; count: number; rootId: string }[] = [];
+  for (const head of doc.decisions) {
+    if (head.status !== 'standing' || !head.supersedes) continue;
+    let count = 0;
+    let rootId = head.id;
+    const seen = new Set<string>();
+    for (let cur: Decision | undefined = head; cur?.supersedes && !seen.has(cur.id); cur = byId.get(cur.supersedes)) {
+      seen.add(cur.id);
+      if (cur.decidedAtVirtual >= since) count++;
+      rootId = cur.supersedes;
+    }
+    if (count >= CHURN_SUPERSESSIONS) out.push({ headId: head.id, count, rootId });
+  }
+  return out;
 }
 
 /** Index of the last completed pass's end time, for "newly arrived" cutoff. */
@@ -155,15 +201,19 @@ export function buildProjection(
   // commitments — all shown, but each rationale is excerpted so supporting
   // prose cannot dominate the projection. Retired decisions (superseded or
   // closed) survive only as a bounded lineage tail; their full text lives in
-  // inspection. A routine that lets per-cycle courses pile up as standing is
-  // the growth this section guards against — hence the nudge to close them.
+  // inspection. A routine that lets per-cycle courses pile up as standing, or
+  // supersedes its course at every step, is the growth this section guards
+  // against — hence the nudges. A course's position is its typed `progress`,
+  // rendered under it; the decision itself changes only with the commitment.
   const standing = doc.decisions.filter((d) => d.status === 'standing');
   const retired = doc.decisions.filter((d) => d.status !== 'standing');
   const decLines = standing.map((d) => {
     const lineage = d.supersedes ? ` (supersedes ${d.supersedes})` : '';
-    const review = d.reviewWhen ? ` Review when: ${d.reviewWhen}.` : '';
-    return `${d.id} [STANDING${lineage}] "${d.title}" — ${excerpt(d.rationale, RATIONALE_EXCERPT)}${review} (by ${d.madeBy}, ${d.decidedAtVirtual})`;
+    const review = d.reviewWhen ? ` Review when: ${excerpt(d.reviewWhen, REVIEW_WHEN_EXCERPT)}.` : '';
+    const progress = progressLine(doc, d);
+    return `${d.id} [STANDING${lineage}] "${d.title}" — ${excerpt(d.rationale, RATIONALE_EXCERPT)}${review} (by ${d.madeBy}, ${d.decidedAtVirtual})${progress ? `\n  ${progress}` : ''}`;
   });
+  const churn = churningLineages(doc, now);
   const shownRetired = retired.slice(-RETIRED_SHOWN);
   const olderRetired = retired.length - shownRetired.length;
   const retLines = [
@@ -176,14 +226,18 @@ export function buildProjection(
   ];
   const s4 = [
     `## 4. Standing decisions`,
-    `These are authoritative commitments. Continue them unless newly arrived evidence justifies an explicit superseding decision — never silently reverse one.`,
+    `These are authoritative commitments. Continue them unless newly arrived evidence justifies an explicit superseding decision — never silently reverse one. A \`progress:\` line is where a course stands (position, not authority); advance a step or cycle with record_progress, never with a new decision.`,
     fmtList(decLines, 'no standing decisions yet — establishing direction is likely your first job'),
     ...(standing.length > STANDING_SOFT_CAP
       ? [
           ``,
-          `NOTE: ${standing.length} standing decisions. Standing decisions are commitments, not a cycle log — retire ones that no longer bind (supersede the prior course, or close_decision a finished cycle's course) and keep per-cycle findings as deliverables/results, not decisions.`,
+          `NOTE: ${standing.length} standing decisions. Standing decisions are commitments, not a cycle log — retire ones that no longer bind (supersede a course whose commitment changed, or close_decision a finished one), advance a recurring course with record_progress, and keep per-cycle findings as deliverables/results, not decisions.`,
         ]
       : []),
+    ...(churn.length ? [``] : []),
+    ...churn.map((c) =>
+      `CHURN: ${c.headId}'s lineage (from ${c.rootId}) was superseded ${c.count} times in the last 24h — that is a step log, not changing commitments. Keep ${c.headId} as the ONE standing course and advance it with record_progress (cycle, step, awaiting, basis); supersede only when the commitment itself changes.`,
+    ),
     ...(retLines.length ? [``, `Retired (lineage — context only, not authoritative):`, fmtList(retLines, '')] : []),
     renderPoliciesForProjection(policies),
   ].join('\n');

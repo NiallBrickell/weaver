@@ -220,7 +220,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   const recentAdopted = adopted.slice(-8);
   const whyLines = [
     ...standing.map(
-      (d) => `decision ${d.id}: "${d.title}" — ${whyExcerpt(d.rationale)}${d.supersedes ? ` (supersedes ${d.supersedes})` : ''}`,
+      (d) => `decision ${d.id}: "${d.title}" — ${whyExcerpt(d.rationale)}${d.supersedes ? ` (supersedes ${d.supersedes})` : ''}${d.progress ? ` · now at cycle ${d.progress.cycle}, step ${d.progress.step}: ${d.progress.label}` : ''}`,
     ),
     ...(adopted.length > recentAdopted.length
       ? [`(+${adopted.length - recentAdopted.length} earlier adopted products — see [i])`]

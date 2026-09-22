@@ -943,42 +943,70 @@ export async function reviewClearPolicy(policyId: Id, note: string): Promise<Pol
   return updated!;
 }
 
+/** Projection bounds for the policy block. Measured on the production store
+ * (2026-09): the block was ~100k characters for routine/erdo-tagged
+ * workstreams — every pass paid for full effect descriptions and mechanisms
+ * of every active learned policy, ~20× the size of the decision lines. */
+const DOCTRINE_CAP = 25;
+const ACTIVE_LEARNED_CAP = 30;
+const SHADOW_CAP = 25;
+const EFFECT_EXCERPT = 160;
+const MECHANISM_EXCERPT = 300;
+
+/** Supporting policy prose (effect description, mechanism), excerpted with a
+ * pointer to the full record. Never applied to a STATEMENT: the statement is
+ * the rule — for doctrine, the operator's own words — and binds verbatim. */
+function policyProse(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > limit ? `${flat.slice(0, limit).trimEnd()}… [excerpt — read_policy for the full text]` : flat;
+}
+
+function interventionFreeCount(p: PolicyRecord): number {
+  return p.evidence.filter((e) => e.interventionFree).length;
+}
+
 export function renderPoliciesForProjection(policies: PolicyRecord[]): string {
   if (!policies.length) return '';
-  // A large backfilled store must not drown the projection: active (earned)
-  // policies always render; doctrine and shadow candidates are capped, newest
-  // first, with the omission stated — the full store stays inspectable via the
-  // CLI. CONTESTED learned policies (unresolved negative evidence) are pulled
-  // out of the ordinary guidance list into their own "under review" section so
-  // a coordinator does not treat them as active guidance — whatever their
-  // status.
+  // A large backfilled store must not drown the projection: every class is
+  // capped with the omission stated, and the full store stays inspectable via
+  // the CLI and the coordinator's read-only read_policy. Active (earned)
+  // policies keep the ones with the most intervention-free evidence, then the
+  // newest; doctrine and shadow candidates keep the newest. Statements always
+  // render whole; effect descriptions and mechanisms are excerpted. CONTESTED
+  // learned policies (unresolved negative evidence) are pulled out of the
+  // ordinary guidance list into their own "under review" section, always shown
+  // in full, so a coordinator does not treat them as active guidance —
+  // whatever their status.
   //
   // DOCTRINE RENDERS FIRST, and renders whether or not anything has proven it.
   // Ordering is the surface where precedence becomes real: a coordinator reads
   // top-down under a token budget, and the nine-day failure this fixes was a
   // coordinator acting on a learned policy while the operator's own rule sat
   // below it, unproven, indistinguishable from an untested guess.
-  const DOCTRINE_CAP = 25;
-  const SHADOW_CAP = 25;
   const doctrine = policies.filter(isDoctrine);
   const learned = policies.filter((p) => !isDoctrine(p));
   const contested = learned.filter((p) => p.contested);
   const active = learned.filter((p) => p.status === 'active' && !p.contested);
   const shadow = learned.filter((p) => p.status !== 'active' && !p.contested);
+  const shownActive = [...active]
+    .sort((a, b) => interventionFreeCount(b) - interventionFreeCount(a) || b.createdAt.localeCompare(a.createdAt))
+    .slice(0, ACTIVE_LEARNED_CAP);
+  const omittedActive = active.length - shownActive.length;
   const shownShadow = shadow.slice(-SHADOW_CAP);
   const omitted = shadow.length - shownShadow.length;
   const shownDoctrine = doctrine.slice(-DOCTRINE_CAP);
   const omittedDoctrine = doctrine.length - shownDoctrine.length;
 
   const mechanismOf = (p: PolicyRecord): string =>
-    p.mechanism ? `\n    mechanism (revisable, not the rule): ${p.mechanism}` : '';
+    p.mechanism ? `\n    mechanism (revisable, not the rule): ${policyProse(p.mechanism, MECHANISM_EXCERPT)}` : '';
   const line = (p: PolicyRecord): string => {
     const ev = p.evidence.length
       ? ` evidence=${p.evidence.length} (${p.evidence.filter((e) => e.interventionFree).length} intervention-free)`
       : ' unproven';
     const overlap = doctrine.length ? doctrineOverlapTags(p, doctrine) : [];
     const subordinate = overlap.length ? ` — SUBORDINATE TO DOCTRINE on [${overlap.join(', ')}]` : '';
-    return `- ${p.id} [${p.status}/${p.effect.kind}] "${p.statement}" — ${p.effect.description} (learned from ${policyOrigin(p)};${ev})${subordinate}${mechanismOf(p)}`;
+    return `- ${p.id} [${p.status}/${p.effect.kind}] "${p.statement}" — ${policyProse(p.effect.description, EFFECT_EXCERPT)} (learned from ${policyOrigin(p)};${ev})${subordinate}${mechanismOf(p)}`;
   };
 
   const out: string[] = [];
@@ -1004,7 +1032,11 @@ export function renderPoliciesForProjection(policies: PolicyRecord[]): string {
       ? `Learned policies matching this workstream's tags — inferred by coordinators from past corrections, and subordinate to the doctrine above wherever their scope tags overlap:`
       : `Learned policies matching this workstream's tags:`,
   );
-  for (const p of [...active, ...shownShadow]) out.push(line(p));
+  for (const p of shownActive) out.push(line(p));
+  if (omittedActive > 0) {
+    out.push(`(+${omittedActive} more active learned policies not shown — this window keeps the ${ACTIVE_LEARNED_CAP} with the most intervention-free evidence; the rest stay in the store, and read_policy reads any id)`);
+  }
+  for (const p of shownShadow) out.push(line(p));
   if (omitted > 0) {
     out.push(`(+${omitted} more shadow candidates not shown — the store is larger than this projection window)`);
   }
@@ -1021,7 +1053,7 @@ export function renderPoliciesForProjection(policies: PolicyRecord[]): string {
     }
   }
   out.push(
-    `A policy can only add verification, narrow authority, or advise — never widen what you may do; doctrine included, since the operator writing a rule down is not the same as them granting authority for it. When you apply one, cite its id in applied_policy_ids on the decision that applies it, so its effect stays attributable. If one proves wrong for this workstream, say so in a decision (or supersede_policy) rather than silently ignoring it; if it helped, record_policy_outcome with the applying decision. A policy's mechanism is the current HOW — the exact command, flag, or threshold — and you may correct it (revise_policy_mechanism) the moment it stops working, without ceremony: outcomes are recorded about the statement, never about the mechanism.`,
+    `A policy can only add verification, narrow authority, or advise — never widen what you may do; doctrine included, since the operator writing a rule down is not the same as them granting authority for it. When you apply one, cite its id in applied_policy_ids on the decision that applies it, so its effect stays attributable. If one proves wrong for this workstream, say so in a decision (or supersede_policy) rather than silently ignoring it; if it helped, record_policy_outcome with the applying decision. A policy's mechanism is the current HOW — the exact command, flag, or threshold — and you may correct it (revise_policy_mechanism) the moment it stops working, without ceremony: outcomes are recorded about the statement, never about the mechanism. Statements above are whole; long effect descriptions and mechanisms are excerpts, and read_policy returns any policy's full record.`,
   );
   return out.join('\n');
 }
