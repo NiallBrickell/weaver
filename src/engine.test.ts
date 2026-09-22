@@ -1212,7 +1212,11 @@ test('a GitHub read action with a non-repository cwd settles before claim exactl
     state: 'queued',
     exec: {
       cwd,
-      run: `if false; then gh api repos/octo/repo; fi; touch ${JSON.stringify(marker)}`,
+      // The command deliberately names NO repository (no --repo flag, no
+      // repos/<owner>/<name> path, no URL): with nothing durable to derive the
+      // scope from, the visible-but-not-a-checkout cwd is a durable, settled
+      // configuration failure.
+      run: `if false; then gh pr list --json number; fi; touch ${JSON.stringify(marker)}`,
       verify: 'false',
       approval: { by: 'human', at: new Date().toISOString() },
     },
@@ -1308,6 +1312,197 @@ test('a model-backed action uses the same typed pre-claim GitHub failure settlem
   assert.equal(doc.assignments[0]!.attempts.length, 0);
   assert.equal(doc.events.filter((event) => event.type === 'action.preparation_failed').length, 1);
   assert.deepEqual(doc.attention, []);
+});
+
+test('a gh action naming its repository mints at a neutral cwd and executes pre-claim', async () => {
+  // Previously-failing shape: a neutral (non-checkout) cwd killed a gh action
+  // pre-claim because the mint required cwd-origin resolution. The command
+  // itself names the repository, so the mint is now host-independent.
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-neutral-cwd-'));
+  const fixedNow = Date.parse('2026-09-14T12:00:00.000Z');
+  const requests: Array<{ contents: string; repository: string[] }> = [];
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret(
+    'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64',
+    Buffer.from(githubTestPrivateKey).toString('base64'),
+  );
+  __setGitHubAppTestDependencies({
+    now: () => fixedNow,
+    execFileSync: (() => {
+      throw new Error('cwd-origin resolution must not be spawned when the command names the repository');
+    }) as typeof execFileSync,
+    fetch: (async (_input, init = {}) => {
+      const body = JSON.parse(String(init.body)) as {
+        permissions: { contents: string };
+        repositories: string[];
+      };
+      requests.push({ contents: body.permissions.contents, repository: body.repositories });
+      return Response.json({
+        token: 'neutral-cwd-token',
+        expires_at: new Date(fixedNow + 60 * 60_000).toISOString(),
+        repositories: [{ full_name: 'octo/neutral' }],
+      }, { status: 201 });
+    }) as typeof globalThis.fetch,
+  });
+  try {
+    await makeActionWorkstream('github-neutral-cwd-ws', {
+      state: 'queued',
+      exec: {
+        cwd,
+        run: 'if false; then gh api repos/octo/neutral/commits/main; fi; test "$GH_TOKEN" = neutral-cwd-token && touch effect.txt',
+        verify: 'test -f effect.txt',
+        approval: { by: 'human', at: new Date().toISOString() },
+      },
+    });
+    await tick('github-neutral-cwd-ws', { maxPasses: 0 });
+    const action = (await load('github-neutral-cwd-ws')).assignments[0]!;
+    assert.equal(action.state, 'awaiting_review');
+    assert.equal(action.attempts.length, 1, 'the neutral cwd no longer kills the action pre-claim');
+    assert.equal(action.exec!.verified!.ok, true);
+    assert.ok(requests.length >= 1);
+    assert.ok(requests.every((request) => request.repository.join('/') === 'neutral'));
+    const doc = await load('github-neutral-cwd-ws');
+    assert.equal(doc.events.some((event) => event.type === 'action.preparation_failed'), false);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a bootstrap clone-shaped action at a pre-checkout cwd proceeds to execution', async () => {
+  // Previously-failing shape: a bootstrap `git clone` action whose exec.cwd
+  // is by construction a not-yet-created destination. The clone URL names the
+  // repository, so the mint needs no checkout at the cwd.
+  const cwd = path.join(os.tmpdir(), `weaver-github-preclone-${process.pid}-${Date.now()}`);
+  const fixedNow = Date.parse('2026-09-14T12:00:00.000Z');
+  const requests: Array<{ repository: string[] }> = [];
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret(
+    'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64',
+    Buffer.from(githubTestPrivateKey).toString('base64'),
+  );
+  __setGitHubAppTestDependencies({
+    now: () => fixedNow,
+    fetch: (async (_input, init = {}) => {
+      const body = JSON.parse(String(init.body)) as { repositories: string[] };
+      requests.push({ repository: body.repositories });
+      return Response.json({
+        token: 'bootstrap-token',
+        expires_at: new Date(fixedNow + 60 * 60_000).toISOString(),
+        repositories: [{ full_name: 'octo/bootstrap' }],
+      }, { status: 201 });
+    }) as typeof globalThis.fetch,
+  });
+  try {
+    await makeActionWorkstream('github-bootstrap-preclone-ws', {
+      state: 'queued',
+      exec: {
+        cwd,
+        // The clone is never executed here (offline sandbox); what matters is
+        // that preparation mints from the URL and the action reaches its
+        // one-shot execution attempt instead of dying pre-claim.
+        run: 'if false; then git clone https://github.com/octo/bootstrap.git dest; fi; test "$GH_TOKEN" = bootstrap-token && touch bootstrapped.txt',
+        verify: 'test -f bootstrapped.txt',
+        approval: { by: 'human', at: new Date().toISOString() },
+      },
+    });
+    await tick('github-bootstrap-preclone-ws', { maxPasses: 0 });
+    const action = (await load('github-bootstrap-preclone-ws')).assignments[0]!;
+    assert.equal(action.state, 'awaiting_review');
+    assert.equal(action.attempts.length, 1, 'a pre-checkout bootstrap cwd no longer kills the action pre-claim');
+    assert.equal(action.exec!.verified!.ok, true);
+    assert.ok(requests.length >= 1);
+    assert.ok(requests.every((request) => request.repository.join('/') === 'bootstrap'));
+    const doc = await load('github-bootstrap-preclone-ws');
+    assert.equal(doc.events.some((event) => event.type === 'action.preparation_failed'), false);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a cwd invisible to this runner is placement information, not a durable action failure', async () => {
+  // Previously-failing shape: cross-host cwd under any-runner placement. The
+  // action must stay queued (re-queueable to a runner that can see the path),
+  // record one placement wake, and never settle as failed.
+  const cwd = path.join(process.env.WEAVER_HOME!, 'other-host-root', 'workspaces', 'erdo');
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret(
+    'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64',
+    Buffer.from(githubTestPrivateKey).toString('base64'),
+  );
+  __setGitHubAppTestDependencies({
+    fetch: (async () => {
+      throw new Error('no mint may happen without a resolvable scope');
+    }) as typeof globalThis.fetch,
+  });
+  await makeActionWorkstream('github-cross-host-cwd-ws', {
+    state: 'queued',
+    exec: {
+      cwd,
+      run: 'gh pr list --json number',
+      verify: 'false',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+
+  await tick('github-cross-host-cwd-ws', { maxPasses: 0 });
+  await tick('github-cross-host-cwd-ws', { maxPasses: 0 });
+  const doc = await load('github-cross-host-cwd-ws');
+  const action = doc.assignments[0]!;
+  assert.equal(action.state, 'queued', 'host invisibility is placement info: the action stays queued');
+  assert.equal(action.attempts.length, 0);
+  assert.equal(doc.events.filter((event) => event.type === 'action.preparation_failed').length, 0);
+  const placements = doc.events.filter((event) => event.type === 'action.placement_pending');
+  assert.equal(placements.length, 1, 'the placement fact is recorded exactly once across ticks');
+  const wakes = doc.wakes.filter((wake) => wake.reason.includes('could not start on this runner'));
+  assert.equal(wakes.length, 1, 'repeated ticks do not duplicate the placement wake');
+  assert.match(wakes[0]!.reason, /zero execution attempts were made and no external effect occurred/);
+  assert.deepEqual(doc.attention, []);
+});
+
+test('an invisible cwd still mints when the action names its repository explicitly', async () => {
+  // The escape hatch: exec.repository (or a named-repo command) makes the mint
+  // host-independent, so even a cross-host cwd cannot block preparation.
+  const cwd = path.join(process.env.WEAVER_HOME!, 'other-host-root-2', 'workspaces', 'erdo');
+  const fixedNow = Date.parse('2026-09-14T12:00:00.000Z');
+  const requests: Array<{ repository: string[] }> = [];
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret(
+    'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64',
+    Buffer.from(githubTestPrivateKey).toString('base64'),
+  );
+  __setGitHubAppTestDependencies({
+    now: () => fixedNow,
+    fetch: (async (_input, init = {}) => {
+      const body = JSON.parse(String(init.body)) as { repositories: string[] };
+      requests.push({ repository: body.repositories });
+      return Response.json({
+        token: 'explicit-repo-token',
+        expires_at: new Date(fixedNow + 60 * 60_000).toISOString(),
+        repositories: [{ full_name: 'octo/explicit' }],
+      }, { status: 201 });
+    }) as typeof globalThis.fetch,
+  });
+  await makeActionWorkstream('github-explicit-repo-ws', {
+    state: 'queued',
+    exec: {
+      cwd,
+      repository: 'octo/explicit',
+      run: 'if false; then gh api repos/octo/explicit; fi; test "$GH_TOKEN" = explicit-repo-token && touch explicit.txt',
+      verify: 'test -f explicit.txt',
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+  await tick('github-explicit-repo-ws', { maxPasses: 0 });
+  const action = (await load('github-explicit-repo-ws')).assignments[0]!;
+  assert.equal(action.state, 'awaiting_review');
+  assert.equal(action.attempts.length, 1, 'an explicitly scoped action runs regardless of cwd visibility');
+  assert.equal(action.exec!.verified!.ok, true);
+  assert.ok(requests.length >= 1);
+  assert.ok(requests.every((request) => request.repository.join('/') === 'explicit'));
 });
 
 test('a repo engine action gets write scope only for execution and read scope for checks', async () => {

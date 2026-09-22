@@ -48,7 +48,12 @@
 import { existsSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { virtualNow } from './clock.js';
-import { GitHubAppPreparationError, githubAppEnvironment, type GitHubAppAccess } from './githubApp.js';
+import {
+  GitHubAppHostVisibilityError,
+  GitHubAppPreparationError,
+  githubAppEnvironment,
+  type GitHubAppAccess,
+} from './githubApp.js';
 import { loadRedactionSecrets, loadSecrets, redactSecrets, selectNamedSecrets } from './secrets.js';
 import {
   arrive,
@@ -286,8 +291,14 @@ export async function probeEnvironment(
       github = await githubEnvironment(spec.cwd, 'read');
     } catch (error) {
       // A durable App/cwd misconfiguration is repaired by the coordinator or
-      // operator; a transient mint failure is an ordinary failed check.
-      if (error instanceof GitHubAppPreparationError) throw new ProbeConfigError(error.message);
+      // operator; a transient mint failure is an ordinary failed check. A cwd
+      // this runner cannot see is placement information for a one-shot action,
+      // but a probe is a standing check bound to the runner that sweeps it:
+      // the same judgment the explicit `probe cwd … does not exist on runner`
+      // check below makes, so it stays a config failure here too.
+      if (error instanceof GitHubAppPreparationError || error instanceof GitHubAppHostVisibilityError) {
+        throw new ProbeConfigError(error.message);
+      }
       throw error;
     }
   }

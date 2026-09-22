@@ -102,7 +102,15 @@ is written into its URL, Git configuration, credential store, or command line.
   that references that variable. The helper clears inherited credential
   helpers and never writes the token into argv, Git configuration, a
   credential store, or a temporary file. The installation token remains
-  narrowed to the one repository resolved from the assignment checkout.
+  narrowed to one repository. The scope is derived, in order, from the
+  action's explicit `exec.repository` field, then the repository its own
+  `gh --repo`/`gh api repos/…`/clone-URL arguments name, and only then the
+  checkout at `exec.cwd` — so an action that names its repository mints
+  host-independently, without requiring a git checkout at the cwd.
+- A cwd the claiming runner cannot see is placement information, not a
+  durable action failure: the action stays queued with zero attempts and a
+  single wake tells the coordinator to place it on a runner that can resolve
+  the path (or to name the repository explicitly).
 - A deterministic repo egress gets write scope only after approval and only
   immediately before its literal `gh pr create`/`gh pr merge`/`git push`
   command. Merely using `gh`, `git fetch`, or another Git remote read does not
