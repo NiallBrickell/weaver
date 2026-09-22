@@ -23,7 +23,8 @@
 
 import { execFileSync } from 'node:child_process';
 
-import { arrive, listWorkstreams, load, newId } from './store.js';
+import { arrive, newId } from './store.js';
+import type { WorkstreamDoc } from './types.js';
 import { isRepoEgressAction } from './deconflict.js';
 import { githubAppEnvironment } from './githubApp.js';
 import { engineCommandEnv } from './secrets.js';
@@ -98,11 +99,13 @@ const liveIO: PrConflictIO = {
 
 /**
  * Probe one workstream's egressed branches and wake it for each newly
- * conflicted PR head. Returns the number of wakes added.
+ * conflicted PR head. Returns the number of wakes added. The document comes
+ * from the runner's revision-validated cache: the probe reads only what the
+ * scan already holds, and the wake itself is a revision-checked arrive().
  */
-export async function probeWorkstreamPrConflicts(slug: string, io: PrConflictIO = liveIO): Promise<number> {
-  const doc = await load(slug);
+export async function probeWorkstreamPrConflicts(doc: WorkstreamDoc, io: PrConflictIO = liveIO): Promise<number> {
   if (doc.workstream.status !== 'active') return 0;
+  const slug = doc.workstream.slug;
   // The durable trace of "this stream put a PR into the world": an egress
   // action that actually ran. Its cwd names the checkout; the checkout names
   // the branch. Deleted worktrees fail open in branchOf.
@@ -151,19 +154,25 @@ export async function probeWorkstreamPrConflicts(slug: string, io: PrConflictIO 
  * Runner-level sweep: probe every active workstream at most once per
  * PR_CONFLICT_PROBE_INTERVAL_MS. `lastProbedAt` is runner memory — a restart
  * probing once more is harmless, and no schema rides on the throttle.
+ *
+ * `docs` is the runner's cached fleet scan. The sweep used to load() every
+ * workstream itself, closed and paused ones included, before looking at its
+ * status — the hot-path fleet read the remote-store cost rule forbids.
  */
 export async function sweepPrConflicts(
+  docs: ReadonlyMap<string, WorkstreamDoc>,
   lastProbedAt: Map<string, number>,
   log: (line: string) => void,
   io: PrConflictIO = liveIO,
   intervalMs: number = PR_CONFLICT_PROBE_INTERVAL_MS,
 ): Promise<void> {
   const now = Date.now();
-  for (const slug of await listWorkstreams()) {
+  for (const [slug, doc] of docs) {
+    if (doc.workstream.status !== 'active') continue;
     if ((lastProbedAt.get(slug) ?? 0) > now - intervalMs) continue;
     lastProbedAt.set(slug, now);
     try {
-      const woken = await probeWorkstreamPrConflicts(slug, io);
+      const woken = await probeWorkstreamPrConflicts(doc, io);
       if (woken > 0) log(`[run] ${slug}: ${woken} open PR(s) turned CONFLICTING — stream woken to rebase`);
     } catch {
       /* fail open: an unreadable stream reports through its own tick */
