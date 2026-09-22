@@ -379,13 +379,30 @@ test('an unreadable history refuses to post blind, and a dry run never posts', a
 });
 
 test('the destination is operator configuration from the executor-only store', () => {
-  assert.equal(digestSlackConfig({}), undefined);
+  assert.equal(digestSlackConfig({}, {}), undefined);
+  // The fleet's Slack bot alone is not a destination: the channel is chosen once.
+  assert.equal(digestSlackConfig({}, { SLACK_BOT_TOKEN: 'xoxb-fleet' }), undefined);
   assert.deepEqual(
-    digestSlackConfig({ WEAVER_DIGEST_SLACK_TOKEN: ' xoxb-1 ', WEAVER_DIGEST_SLACK_CHANNEL: 'D0FOUNDER' }),
+    digestSlackConfig({ WEAVER_DIGEST_SLACK_TOKEN: ' xoxb-1 ', WEAVER_DIGEST_SLACK_CHANNEL: 'D0FOUNDER' }, {}),
     { token: 'xoxb-1', channel: 'D0FOUNDER' },
   );
-  assert.throws(() => digestSlackConfig({ WEAVER_DIGEST_SLACK_TOKEN: 'xoxb-1' }), /needs both/);
-  assert.throws(() => digestSlackConfig({ WEAVER_DIGEST_SLACK_TOKEN: 'xoxb-1', WEAVER_DIGEST_SLACK_CHANNEL: '#founders' }), /channel or DM id/);
+  assert.throws(() => digestSlackConfig({ WEAVER_DIGEST_SLACK_TOKEN: 'xoxb-1' }, {}), /CHANNEL is not/);
+  assert.throws(() => digestSlackConfig({ WEAVER_DIGEST_SLACK_TOKEN: 'xoxb-1', WEAVER_DIGEST_SLACK_CHANNEL: '#founders' }, {}), /channel or DM id/);
+  assert.throws(() => digestSlackConfig({ WEAVER_DIGEST_SLACK_CHANNEL: 'C0TEAM' }, {}), /needs a Slack bot token/);
+});
+
+test("the digest reuses the fleet's existing Slack bot unless overridden", () => {
+  assert.deepEqual(
+    digestSlackConfig({ WEAVER_DIGEST_SLACK_CHANNEL: 'C0TEAM' }, { SLACK_BOT_TOKEN: ' xoxb-fleet ' }),
+    { token: 'xoxb-fleet', channel: 'C0TEAM' },
+  );
+  assert.deepEqual(
+    digestSlackConfig(
+      { WEAVER_DIGEST_SLACK_CHANNEL: 'C0TEAM', WEAVER_DIGEST_SLACK_TOKEN: 'xoxb-own' },
+      { SLACK_BOT_TOKEN: 'xoxb-fleet' },
+    ),
+    { token: 'xoxb-own', channel: 'C0TEAM' },
+  );
 });
 
 test('the marker follows the London calendar across daylight saving', () => {

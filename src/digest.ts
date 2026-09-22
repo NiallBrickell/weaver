@@ -25,7 +25,7 @@ import { operatorPublicOrigin } from './clerkOperatorAuth.js';
 import { virtualNow } from './clock.js';
 import { fleetIncidents } from './fleetHealth.js';
 import { FLEET_HEALTH_STALE_SECONDS, fleetHealthSnapshot } from './operatorUi.js';
-import { loadAllSecrets, loadExecutorSecrets, redactSecrets } from './secrets.js';
+import { loadAllSecrets, loadExecutorSecrets, loadSecrets, redactSecrets } from './secrets.js';
 import { listRunnerPresence, listWorkstreams, load, type RunnerPresence } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 import { fleetNeeds, firstLine, firstSentence, presentNeed, type FleetNeed } from './ui/inspect/model.js';
@@ -390,20 +390,32 @@ export interface DigestSlackConfig {
 }
 
 /**
- * The operator-fixed destination, from the executor-only secret store and
- * reloaded per run like WEAVER_PILOT_TOKEN — never process.env, a worker
- * environment, or Workstream state. Both absent means the digest is not set
- * up on this host; exactly one present is a configuration error.
+ * The operator-fixed destination, reloaded per run like WEAVER_PILOT_TOKEN —
+ * never process.env, a worker environment, or Workstream state. The channel is
+ * set once per fleet in the executor-only store (`WEAVER_DIGEST_SLACK_CHANNEL`).
+ * The token defaults to the fleet's existing Slack bot (`SLACK_BOT_TOKEN` in
+ * the global store): a fleet that already posts to Slack must not be asked for
+ * a second credential to post one more message. `WEAVER_DIGEST_SLACK_TOKEN`
+ * (executor-only) overrides it. No channel means the digest is not set up here.
  */
-export function digestSlackConfig(secrets: Record<string, string> = loadExecutorSecrets()): DigestSlackConfig | undefined {
-  const token = secrets.WEAVER_DIGEST_SLACK_TOKEN?.trim();
-  const channel = secrets.WEAVER_DIGEST_SLACK_CHANNEL?.trim();
-  if (!token && !channel) return undefined;
-  if (!token || !channel) {
-    throw new Error('the daily digest needs both WEAVER_DIGEST_SLACK_TOKEN and WEAVER_DIGEST_SLACK_CHANNEL in the executor-only secret store (weaver secret set <NAME> --executor)');
+export function digestSlackConfig(
+  executorSecrets: Record<string, string> = loadExecutorSecrets(),
+  globalSecrets: Record<string, string> = loadSecrets(),
+): DigestSlackConfig | undefined {
+  const override = executorSecrets.WEAVER_DIGEST_SLACK_TOKEN?.trim();
+  const channel = executorSecrets.WEAVER_DIGEST_SLACK_CHANNEL?.trim();
+  if (!channel) {
+    if (override) {
+      throw new Error('WEAVER_DIGEST_SLACK_TOKEN is set but WEAVER_DIGEST_SLACK_CHANNEL is not (weaver secret set WEAVER_DIGEST_SLACK_CHANNEL --executor)');
+    }
+    return undefined;
   }
   if (!/^[CDG][A-Z0-9]{2,}$/.test(channel)) {
     throw new Error('WEAVER_DIGEST_SLACK_CHANNEL must be a Slack channel or DM id (C…, G… or D…), not a #name');
+  }
+  const token = override || globalSecrets.SLACK_BOT_TOKEN?.trim();
+  if (!token) {
+    throw new Error("the daily digest needs a Slack bot token: the fleet's SLACK_BOT_TOKEN (weaver secret set SLACK_BOT_TOKEN), or WEAVER_DIGEST_SLACK_TOKEN --executor");
   }
   return { token, channel };
 }
@@ -540,7 +552,12 @@ export interface DigestCommandOptions {
 /** `weaver digest [--post] [--dry-run]`. Returns what to print, or the failure. */
 export async function digestCommand(
   options: DigestCommandOptions,
-  deps: { input?: DigestInput; secrets?: Record<string, string>; fetch?: DigestFetch } = {},
+  deps: {
+    input?: DigestInput;
+    secrets?: Record<string, string>;
+    globalSecrets?: Record<string, string>;
+    fetch?: DigestFetch;
+  } = {},
 ): Promise<{ ok: boolean; message: string }> {
   const digest = renderDigest(deps.input ?? await loadDigestInput());
   // --dry-run walks the --post path read-only: configuration, skip rule, and
@@ -551,7 +568,7 @@ export async function digestCommand(
   }
   let config: DigestSlackConfig | undefined;
   try {
-    config = digestSlackConfig(deps.secrets);
+    config = digestSlackConfig(deps.secrets, deps.globalSecrets);
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
