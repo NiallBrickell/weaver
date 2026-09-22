@@ -1237,18 +1237,10 @@ test('provisioning keeps the host alive through memory pressure and missed DHCP 
 test('provisioning installs the daily digest on its own timer, started only at the runner cutover', () => {
   const text = fs.readFileSync(script, 'utf8');
   const provision = text.slice(text.indexOf("<<'PROVISION'"), text.indexOf('\nPROVISION\n'));
-  const unitBlock = (name: string) => {
-    const start = provision.indexOf(`/etc/systemd/system/${name} <<'UNIT'`);
-    assert.ok(start >= 0, `${name} is installed during provisioning`);
-    return provision.slice(start, provision.indexOf('\nUNIT\n', start));
-  };
-  const service = unitBlock('weaver-digest.service');
-  assert.match(service, /Type=oneshot\nUser=weaver\nWorkingDirectory=\/opt\/weaver\nExecStart=\/usr\/local\/bin\/weaver digest --post\n/);
-  // Its own unit: no runner preflight to fail and no dependency on weaver-run,
-  // so the digest still arrives when the runner is down or refused.
-  assert.doesNotMatch(service, /ExecStartPre|weaver-run|Restart=/);
-  const timer = unitBlock('weaver-digest.timer');
-  assert.match(timer, /\[Timer\]\nOnCalendar=\*-\*-\* 07:30:00 Europe\/London\nPersistent=true\n\[Install\]\nWantedBy=timers\.target/);
+  // The units come from the updater's install (see gcpUpdate.test.ts), the
+  // same step `weaver-gcp update` runs on an existing host.
+  assert.match(provision, /\/usr\/local\/sbin\/weaver-gcp-update install\n/);
+  assert.doesNotMatch(provision, /\/etc\/systemd\/system\/weaver-digest/);
   assert.match(provision, /systemctl enable weaver-run weaver-serve weaver-digest\.timer/);
   assert.match(provision, /systemctl disable --now weaver-run weaver-serve weaver-digest\.timer/);
 
