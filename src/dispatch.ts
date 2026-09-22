@@ -19,7 +19,7 @@ export const KNOWN_COMMANDS = new Set([
   'assign-action', 'constraint', 'approve-action', 'reject-action', 'reject-send', 'reply', 'observe',
   'adopt', 'budget', 'execution-safety', 'policies', 'backfill', 'secret', 'login', 'pilot-auth-check', 'github-app-setup', 'github-auth-check', 'github-clone', 'link', 'store', 'run', 'serve', 'ui', 'resolve', 'tag', 'pause', 'rename',
   'resume', 'watch', 'inspect', 'printout', 'stats', 'advance', 'tick', 'help', '--help', 'priority',
-  'placement', 'coordinator-runners',
+  'placement', 'coordinator-runners', 'attention-hints',
 ]);
 
 // Subcommands whose first positional argument is a workstream slug. Used to tell

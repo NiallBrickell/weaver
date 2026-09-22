@@ -22,6 +22,7 @@ import {
   datedInterventions,
   fleetDays,
   interruptionLoad,
+  isSystemActor,
   passHealth,
   passHealthTotals,
   policyStatusByDay,
@@ -449,4 +450,56 @@ test('computeStats week-ago delta needs eight days of history', async () => {
   const long = computeStats(docs, [], new Date('2026-08-12T00:00:00.000Z'));
   // The outcome curve (per qualified conclusion) was already 1.0 a week before.
   assert.equal(long.totals.perOutcomeWeekAgo, 1);
+});
+
+test('isSystemActor: exact system/harness names and any engine:* actor are system, human-looking actors are not', () => {
+  assert.equal(isSystemActor('pilot'), true);
+  assert.equal(isSystemActor('coordinator'), true);
+  assert.equal(isSystemActor('worker'), true);
+  assert.equal(isSystemActor('fleet-capacity'), true);
+  assert.equal(isSystemActor('capacity-probe'), true);
+  assert.equal(isSystemActor('execution-safety-migration'), true);
+  assert.equal(isSystemActor('engine:readback'), true);
+  assert.equal(isSystemActor('engine:capacity-recovered'), true);
+  assert.equal(isSystemActor('engine:anything'), true, 'every engine:* actor is a harness act');
+  assert.equal(isSystemActor('engineer'), false, 'a human-looking name that merely starts with "engine" is not engine:*');
+  assert.equal(isSystemActor('niall'), false);
+  assert.equal(isSystemActor('claude-session'), false);
+});
+
+test('worker/fleet-capacity/capacity-probe/engine:* resolutions are never dated interventions, and classify as the pilot/system bucket', async () => {
+  await makeWorkstream();
+  const systemActors = ['worker', 'fleet-capacity', 'capacity-probe', 'engine:readback', 'engine:capacity-recovered'];
+  await arrive('stats-ws', (d) => {
+    systemActors.forEach((actor, i) => {
+      d.attention.push({
+        id: `att_${actor}`,
+        kind: 'blocker',
+        summary: `resolved by ${actor}`,
+        status: 'resolved',
+        createdAt: '2026-08-04T08:00:00.000Z',
+        resolvedAt: `2026-08-0${4 + i}T09:00:00.000Z`,
+        resolvedBy: actor,
+      });
+    });
+  });
+  const doc = await load('stats-ws');
+  assert.equal(datedInterventions(doc).length, 0, 'no worker/capacity/engine resolution is a dated intervention');
+  for (const actor of systemActors) {
+    assert.equal(actorClass(actor), 'pilot', `${actor} classifies as the system bucket`);
+  }
+});
+
+test('human resolutions still count as dated interventions', async () => {
+  await makeWorkstream();
+  await arrive('stats-ws', (d) => {
+    d.attention.push(
+      { id: 'att_h1', kind: 'blocker', summary: 'human', status: 'resolved', createdAt: '2026-08-04T08:00:00.000Z', resolvedAt: '2026-08-04T09:00:00.000Z', resolvedBy: 'niall' },
+      { id: 'att_h2', kind: 'blocker', summary: 'session', status: 'resolved', createdAt: '2026-08-04T08:00:00.000Z', resolvedAt: '2026-08-04T10:00:00.000Z', resolvedBy: 'claude-session' },
+    );
+  });
+  const doc = await load('stats-ws');
+  const acts = datedInterventions(doc);
+  assert.equal(acts.length, 2, 'both a human and a session resolution still count');
+  assert.deepEqual(acts.map((a) => a.actor).sort(), ['claude-session', 'niall']);
 });

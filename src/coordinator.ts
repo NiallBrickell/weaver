@@ -52,9 +52,11 @@ import {
   recordCapacityBackoff,
   recordProviderCapacityObservations,
   resolveCapacityAttention,
+  resolveCapacityAttentionForRole,
   SdkFailureTracker,
 } from './capacity.js';
 import { noteFleetRecovery } from './fleetCapacity.js';
+import { MAX_RESOLVES_WHEN_FACTS, describeExternalFact, parseExternalFacts } from './attentionReadback.js';
 import { ensureActionApprovalAttention } from './actionApproval.js';
 import { FLEET_ATTENTION_STEWARD_SOURCE_KEY, isFleetAttentionSteward } from './fleetHealth.js';
 import { assertPublicWorkstreamSourceKey, recordObservation } from './ingress.js';
@@ -86,7 +88,7 @@ import {
   sha256,
   verifyArtifact,
 } from './store.js';
-import type { Assignment, CourseProgress, InfrastructureWait, PassRecord, Wake, WorkstreamDoc } from './types.js';
+import type { Assignment, CourseProgress, ExternalFact, InfrastructureWait, PassRecord, Wake, WorkstreamDoc } from './types.js';
 
 const LEASE_MS = 15 * 60_000;
 
@@ -138,9 +140,14 @@ export function recordCoordinatorCapacityBackoff(
   doc: WorkstreamDoc,
   infrastructure: InfrastructureWait,
   wakeId: string,
+  options: { fallbackAvailable?: boolean } = {},
 ): void {
   const capacity = recordCapacityBackoff(doc, infrastructure);
-  ensureCapacityAttention(doc, capacity, wakeId, () => newId('att'));
+  // A free fallback seat means the coordinator keeps reconciling: the limited
+  // pool is degradation, and a new card would be moot on the next pass.
+  ensureCapacityAttention(doc, capacity, wakeId, () => newId('att'), {
+    roleContinues: options.fallbackAvailable === true,
+  });
 }
 
 export function clearCoordinatorCapacityBackoff(
@@ -901,14 +908,31 @@ export async function runCoordinatorPass(
 
       tool(
         'raise_attention',
-        'Put something on the human\'s needs-you queue. RESERVED for decisions and blockers only — something the workstream cannot proceed past without the human\'s judgment. Never use it for FYIs, non-blocking notes, or status ("worked fine, but..."): those belong in your finish_pass summary, where the human reads them on their own schedule. Every needless attention item trains the human to ignore the queue. ACCESS BLOCKERS have a required shape: when the blocker is unreachable data or a failing service, the operator\'s machine very often already holds an alternate path (a direct connection URI, a logged-in CLI, an MCP server) — so the card must ask for access BY NAME as its primary option ("if you have a direct URI for X, run: weaver secret set <NAME> --ws <slug> — the workstream takes it from there"), with chasing the external service as the fallback, not the lead. A card that sends the human off to a status page or support desk while a credential on their own machine would unblock the work is asking them to do YOUR remediation.',
+        'Put something on the human\'s needs-you queue. RESERVED for decisions and blockers only — something the workstream cannot proceed past without the human\'s judgment. Never use it for FYIs, non-blocking notes, or status ("worked fine, but..."): those belong in your finish_pass summary, where the human reads them on their own schedule. Every needless attention item trains the human to ignore the queue. ACCESS BLOCKERS have a required shape: when the blocker is unreachable data or a failing service, the operator\'s machine very often already holds an alternate path (a direct connection URI, a logged-in CLI, an MCP server) — so the card must ask for access BY NAME as its primary option ("if you have a direct URI for X, run: weaver secret set <NAME> --ws <slug> — the workstream takes it from there"), with chasing the external service as the fallback, not the lead. A card that sends the human off to a status page or support desk while a credential on their own machine would unblock the work is asking them to do YOUR remediation. When a card only exists until an external fact holds (a PR merges, a Sentry issue resolves), declare it in resolves_when so the card closes itself: the harness reads the fact back, closes the card with evidence, and wakes you. Mentioning a PR in the summary binds nothing — only a declared fact does.',
         {
           kind: z.enum(['review', 'blocker']),
           summary: z.string(),
           ref_id: z.string().optional(),
+          resolves_when: z.array(z.object({
+            kind: z.enum(['github_pr_state', 'sentry_issue_status']),
+            repo: z.string().optional().describe('github_pr_state: the exact GitHub owner/name, e.g. "erdoai/erdo"'),
+            number: z.number().int().optional().describe('github_pr_state: the PR number'),
+            states: z.array(z.enum(['MERGED', 'CLOSED'])).optional().describe('github_pr_state: the card is moot once the PR is in ANY of these states'),
+            org: z.string().optional().describe('sentry_issue_status: the Sentry organization slug'),
+            shortId: z.string().optional().describe('sentry_issue_status: the issue short id, e.g. "GO-ZX"'),
+            statuses: z.array(z.enum(['resolved', 'ignored'])).optional().describe('sentry_issue_status: the card is moot once the issue is in ANY of these statuses'),
+          })).max(MAX_RESOLVES_WHEN_FACTS).optional().describe(
+            'Typed external facts that make this card MOOT: when ANY holds, the harness reads it back from the provider and closes the card itself (with evidence) and wakes you. Declare one only when the ask genuinely stops mattering once that fact holds — e.g. "merge or close PR #N?" is moot when the PR is MERGED or CLOSED. Never declare a fact that is only background to a still-live question. Omit when no external fact settles the ask.',
+          ),
         },
-        async (a) =>
-          change((d, event) => {
+        async (a) => {
+          let resolvesWhen: ExternalFact[] | undefined;
+          try {
+            resolvesWhen = a.resolves_when === undefined ? undefined : parseExternalFacts(a.resolves_when);
+          } catch (e) {
+            return err(`REFUSED resolves_when: ${e instanceof Error ? e.message : String(e)} — nothing was raised`);
+          }
+          return change((d, event) => {
             const id = newId('att');
             d.attention.push({
               id,
@@ -917,10 +941,13 @@ export async function runCoordinatorPass(
               ...(a.ref_id ? { refId: a.ref_id } : {}),
               status: 'open',
               createdAt: new Date().toISOString(),
+              ...(resolvesWhen ? { resolvesWhen: { any: resolvesWhen } } : {}),
             });
-            event('attention.raised', `${id} [${a.kind}] ${a.summary}`, [id]);
-            return `raised ${id}`;
-          }),
+            const closesWhen = resolvesWhen ? ` (closes itself when ${resolvesWhen.map(describeExternalFact).join(' or ')})` : '';
+            event('attention.raised', `${id} [${a.kind}] ${a.summary}${closesWhen}`, [id]);
+            return `raised ${id}${closesWhen}`;
+          });
+        },
       ),
 
       tool(
@@ -1560,6 +1587,19 @@ export async function runCoordinatorPass(
     if (d.lease?.passId === passId) d.lease = null;
     if (!infrastructure) {
       clearCoordinatorCapacityBackoff(d, passTarget);
+      // A completed pass on ANY seat means this stream's coordination is
+      // flowing: a card asking the human to restore some coordinator pool is
+      // moot. The pools' backoff records stay for routing.
+      if (rec?.outcome === 'completed') {
+        const closed = resolveCapacityAttentionForRole(
+          d,
+          'coordinator',
+          `coordinator pass ${passId} completed on ${passTarget.executor}:${passTarget.provider}:${passTarget.model}`,
+        );
+        if (closed.length) {
+          event('attention.capacity_recovered', `${closed.join(', ')} closed — coordinator work is flowing again (pass ${passId} completed on ${passTarget.executor}:${passTarget.model})`, closed);
+        }
+      }
     }
     // Provider waits are execution attempts, not logical coordinator passes:
     // a month-long provider-usage outage must not consume the workstream's pass cap.
@@ -1591,14 +1631,14 @@ export async function runCoordinatorPass(
         createdAt: new Date().toISOString(),
         infrastructure,
       });
-      recordCoordinatorCapacityBackoff(d, infrastructure, wakeId);
-      event('pass.backoff', `${passId} parked on ${infrastructure.kind} until ${infrastructure.retryAt}`, [passId, wakeId]);
       // Degrade, don't park: if ANY other seat in the ordered chain has no
       // active wait, wake immediately — the next pass will pick the first
-      // available seat (pickCoordinatorTarget reads the capacity entry just
-      // recorded). The retry wake stays until a pass successfully reconciles
-      // this work. That finish retires the timer, not the capacity entry:
-      // the next real wake after reset may select this pool again.
+      // available seat (pickCoordinatorTarget reads the capacity entry
+      // recorded below). The retry wake stays until a pass successfully
+      // reconciles this work. That finish retires the timer, not the capacity
+      // entry: the next real wake after reset may select this pool again.
+      // The failed seat is excluded, so the choice does not depend on the
+      // entry about to be recorded for it.
       const passNowIso = virtualNow().toISOString();
       const next = coordinatorTargets().find((target) => {
         const failedSeat = target.executor === infrastructure.executor &&
@@ -1607,6 +1647,8 @@ export async function runCoordinatorPass(
         const targetWait = capacityBackoffFor(d, target)?.wait;
         return !targetWait || targetWait.retryAt <= passNowIso;
       });
+      recordCoordinatorCapacityBackoff(d, infrastructure, wakeId, { fallbackAvailable: !!next });
+      event('pass.backoff', `${passId} parked on ${infrastructure.kind} until ${infrastructure.retryAt}`, [passId, wakeId]);
       if (next) {
         d.wakes.push({
           id: newId('wake'),

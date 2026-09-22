@@ -20,17 +20,20 @@ import { PiExecutor } from './executor/pi.js';
 import type { SubmitReply, SubmitSurface, WorkerExecutor } from './executor/types.js';
 import { armWall } from './wall.js';
 import {
+  capacityTargetKey,
   clearCapacityBackoff,
   ensureCapacityAttention,
   infrastructureWaitSummary,
   recordCapacityBackoff,
   recordProviderCapacityObservations,
   resolveCapacityAttention,
+  resolveCapacityAttentionForRole,
   selectWorkerCapacityTarget,
   SdkFailureTracker,
 } from './capacity.js';
 import { noteFleetRecovery } from './fleetCapacity.js';
 import {
+  targetOfWait,
   workerCapacityTarget,
   workerExecutorName,
   type CapacityTarget,
@@ -303,6 +306,17 @@ export async function finalizeWorkerRun(
     if (outcome.submitted) {
       clearCapacityBackoff(d, target);
       resolveCapacityAttention(d, target, 'worker');
+      // Submitted work on ANY target means this stream's worker lane is
+      // flowing: a card asking the human to restore some worker pool is moot.
+      // The pools' backoff records stay for routing.
+      const closed = resolveCapacityAttentionForRole(
+        d,
+        'worker',
+        `worker attempt ${runId} on ${assignmentId} submitted on ${target.executor}:${target.provider}:${target.model}`,
+      );
+      if (closed.length) {
+        event('attention.capacity_recovered', `${closed.join(', ')} closed — worker work is flowing again (${runId} submitted on ${target.executor}:${target.model})`, closed);
+      }
       return;
     }
 
@@ -327,7 +341,20 @@ export async function finalizeWorkerRun(
         infrastructure,
       });
       const capacity = recordCapacityBackoff(d, infrastructure);
-      ensureCapacityAttention(d, capacity, wakeId, () => newId('att'));
+      // Another worker target without an active wait carries this
+      // assignment next: the limited pool is degradation, not a blocked
+      // stream, so no new card (an open one is still refreshed).
+      // Config is re-read here; a malformed ladder must never abort this
+      // finalization write, so it simply counts as "no fallback".
+      const failed = targetOfWait(infrastructure);
+      let fallback: CapacityTarget | undefined;
+      try {
+        fallback = selectWorkerCapacityTarget(d, a, virtualNow().toISOString());
+      } catch {
+        fallback = undefined;
+      }
+      const roleContinues = !!fallback && !!failed && capacityTargetKey(fallback) !== capacityTargetKey(failed);
+      ensureCapacityAttention(d, capacity, wakeId, () => newId('att'), { roleContinues });
       event('worker.backoff', `${assignmentId} attempt ${runId} parked on ${infrastructure.kind} until ${infrastructure.retryAt}`, [assignmentId, runId, wakeId]);
       return;
     }

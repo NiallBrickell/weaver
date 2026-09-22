@@ -56,8 +56,26 @@ export interface DatedAct {
 
 export const UNATTRIBUTED = 'unattributed';
 
-/** Resolutions stamped by these are system acts, never human interventions. */
-const SYSTEM_ACTORS = new Set(['pilot', 'coordinator']);
+/**
+ * Resolutions/acts stamped by these are system acts, never human
+ * interventions. Every name here is a code path that stamps `resolvedBy` (or
+ * an equivalent actor field) with a non-human value:
+ * - `pilot`                        — engine.ts auto-approval/auto-resolution.
+ * - `coordinator`                  — coordinator.ts attention auto-resolution.
+ * - `worker`                       — worker.ts, via capacity.ts's
+ *                                     `resolveCapacityAttention`.
+ * - `fleet-capacity`, `capacity-probe` — runner.ts capacity bookkeeping.
+ * - `execution-safety-migration`   — executionSafety.ts one-time migration.
+ * Any actor starting with `engine:` (e.g. `engine:readback`,
+ * `engine:capacity-recovered`, see attentionReadback.ts and capacity.ts) is
+ * also a harness act, never a human one.
+ */
+const SYSTEM_ACTOR_NAMES = new Set(['pilot', 'coordinator', 'worker', 'fleet-capacity', 'capacity-probe', 'execution-safety-migration']);
+
+/** True when `actor` is a system/harness actor — never a human intervention. */
+export function isSystemActor(actor: string): boolean {
+  return SYSTEM_ACTOR_NAMES.has(actor) || actor.startsWith('engine:');
+}
 
 /**
  * Who a durable act is attributable to, as distinct buckets that must never
@@ -66,7 +84,9 @@ const SYSTEM_ACTORS = new Set(['pilot', 'coordinator']);
  * - `session`  — the human via an agent session on their behalf (actor name
  *                carries a session marker); still a human intervention, but a
  *                cheaper one than a human keypress.
- * - `pilot`    — the operator's pilot daemon or the coordinator (system acts).
+ * - `pilot`    — any system/harness actor (see `isSystemActor`: the pilot
+ *                daemon, the coordinator, the worker, capacity bookkeeping,
+ *                the execution-safety migration, or any `engine:*` act).
  *                Delegated/standing authority, NOT a human intervention and
  *                NEVER a learned-policy win.
  * - `unattributed` — dated acts predating actor attribution (legacy residual).
@@ -77,7 +97,7 @@ const SESSION_MARKER = 'session';
 
 export function actorClass(actor: string): ActorClass {
   if (actor === UNATTRIBUTED) return 'unattributed';
-  if (SYSTEM_ACTORS.has(actor)) return 'pilot';
+  if (isSystemActor(actor)) return 'pilot';
   if (actor.toLowerCase().includes(SESSION_MARKER)) return 'session';
   return 'human';
 }
@@ -115,10 +135,11 @@ export function datedInterventions(doc: WorkstreamDoc): DatedAct[] {
   for (const att of doc.attention) {
     if (att.status !== 'resolved' || !att.resolvedAt) continue;
     // Resolutions count only when durably attributed to a NON-system actor.
-    // Pilot/coordinator resolutions are system acts; legacy records with no
-    // resolvedBy are indistinguishable from them, so they fall into the
-    // undated remainder (anchored to the counter) instead of being guessed.
-    if (!att.resolvedBy || SYSTEM_ACTORS.has(att.resolvedBy)) continue;
+    // System/harness resolutions (see isSystemActor) are system acts; legacy
+    // records with no resolvedBy are indistinguishable from them, so they
+    // fall into the undated remainder (anchored to the counter) instead of
+    // being guessed.
+    if (!att.resolvedBy || isSystemActor(att.resolvedBy)) continue;
     if (seenResolved.has(att.resolvedAt)) continue; // twins resolved in one act
     const t = Date.parse(att.resolvedAt);
     if (primaryTimes.some((pt) => Math.abs(pt - t) < 5000)) continue; // the primary act was the act

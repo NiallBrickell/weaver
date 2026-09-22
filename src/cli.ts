@@ -149,6 +149,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver stats                               outcome scoreboard → self-contained HTML: interventions per adopted work product, approval split, policy evidence, per-workstream stats
   weaver ui [--host H] [--port N]            browser operator workspace (default 127.0.0.1:9724); non-loopback requires Clerk or WEAVER_UI_TOKEN
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
+  weaver attention-hints [--apply]   read back PRs cited by open needs-you cards; post one hint Observation per card citing a MERGED/CLOSED PR (dry run without --apply; never resolves a card)
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
   weaver tick <slug> --engine-only           placed exact actions/readback only (requires placement-only env)
@@ -712,6 +713,18 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       } else {
         process.stdout.write(`observation recorded — run: weaver tick ${slug}\n`);
       }
+      break;
+    }
+
+    case 'attention-hints': {
+      const apply = rest.includes('--apply');
+      const { runAttentionHints } = await import('./attentionHints.js');
+      const result = await runAttentionHints({ apply });
+      process.stdout.write(
+        `attention-hints: ${apply ? `posted ${result.posted}` : `would post ${result.wouldPost} (dry run — pass --apply to post)`}, ` +
+          `duplicates ${result.duplicates}, skipped repo(s) ${result.skippedRepos.length}` +
+          `${result.skippedRepos.length ? ` [${result.skippedRepos.join(', ')}]` : ''}\n`,
+      );
       break;
     }
 

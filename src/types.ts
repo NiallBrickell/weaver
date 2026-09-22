@@ -452,17 +452,61 @@ export interface Steering {
   revokedBy?: string;
 }
 
+/**
+ * An outside-world fact whose truth makes a needs-you card moot. Typed state
+ * the COORDINATOR declared at raise time (or the harness declared on its own
+ * capacity cards) — never parsed from the card's prose. The runner reads each
+ * fact back from its provider; only an exact typed answer closes a card, and
+ * an error or an unknown answer leaves it open.
+ *
+ * - `github_pr_state` — the PR `repo#number` (repo is `owner/name`) reached one
+ *   of `states`, read back with the host's GitHub App READ token.
+ * - `sentry_issue_status` — Sentry issue `shortId` in organization `org` reached
+ *   one of `statuses`, read back with the executor-only
+ *   `WEAVER_SENTRY_READ_TOKEN`.
+ * - `capacity_target_unblocked` — harness-owned: the exact provider target the
+ *   card was raised for works again for that role. Read from typed state (the
+ *   fleet recovery ledger and recorded passes/attempts), never probed.
+ */
+export type ExternalFact =
+  | { kind: 'github_pr_state'; repo: string /* owner/name */; number: number; states: Array<'MERGED' | 'CLOSED'> }
+  | { kind: 'sentry_issue_status'; org: string; shortId: string; statuses: Array<'resolved' | 'ignored'> }
+  | { kind: 'capacity_target_unblocked'; role: 'coordinator' | 'worker'; target: { executor: string; provider: string; model: string } };
+
+/** One read-back observation that proved a declared fact true. */
+export interface ExternalFactEvidence {
+  fact: ExternalFact;
+  /** What the provider (or typed state) reported, e.g. `MERGED at 2026-09-18T12:26:00Z`. */
+  observed: string;
+  url?: string;
+  at: Iso;
+}
+
 export interface AttentionItem {
   id: Id;
   kind: 'approval' | 'review' | 'blocker' | 'budget' | 'capacity';
   summary: string;
-  /** Reference to the interaction/assignment/etc. this concerns. */
+  /** Reference to the interaction/assignment/etc. this concerns. Internal
+   * only — an external thing the card waits on is a typed `resolvesWhen` fact. */
   refId?: Id;
   status: 'open' | 'resolved';
   createdAt: Iso;
   resolvedAt?: Iso;
-  /** WHO resolved it (WEAVER_ACTOR) — durable, unlike the event summary. */
+  /** WHO resolved it (WEAVER_ACTOR) — durable, unlike the event summary.
+   * System actors (pilot, coordinator, worker, fleet-capacity, capacity-probe,
+   * and every `engine:*`) are never human interventions — see stats.ts. */
   resolvedBy?: string;
+  /** The card is moot as soon as ANY of these external facts holds. Declared
+   * as typed state when the card is raised; the runner's readback sweep
+   * (attentionReadback.ts) checks them and closes the card with evidence.
+   * Absent means only a human, the coordinator, or the act the card asks for
+   * can close it. Prose that merely mentions a PR never binds a card. */
+  resolvesWhen?: { any: ExternalFact[] };
+  /** How the harness closed the card from facts, with the exact facts observed
+   * true: `engine:readback` read a declared external fact back from its
+   * provider; `engine:capacity-recovered` found typed proof that a capacity
+   * card's ask is moot (its target works again, or the role's work flows). */
+  resolution?: { by: 'engine:readback' | 'engine:capacity-recovered'; evidence: ExternalFactEvidence[] };
 }
 
 // ---------------------------------------------------------------------------

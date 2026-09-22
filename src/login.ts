@@ -560,7 +560,7 @@ function statusCommand(): void {
     if (value === undefined) continue;
     process.stdout.write(`  ${name.padEnd(37)} ${value}  (${configSource(name)})\n`);
   }
-  const registered = [...CLAUDE_IDENTITY_NAMES, ...PROVIDER_KEY_NAMES, ...GITHUB_APP_SECRET_NAMES, 'WEAVER_SERVE_TOKEN', 'WEAVER_PILOT_TOKEN'].filter(
+  const registered = [...CLAUDE_IDENTITY_NAMES, ...PROVIDER_KEY_NAMES, ...GITHUB_APP_SECRET_NAMES, 'WEAVER_SERVE_TOKEN', 'WEAVER_PILOT_TOKEN', 'WEAVER_SENTRY_READ_TOKEN'].filter(
     (n) => secrets[n],
   );
   process.stdout.write(

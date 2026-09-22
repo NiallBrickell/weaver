@@ -150,6 +150,18 @@ compatible only on loopback (`localhost`, `127.0.0.1`, or `::1`). Executor-only
 secret provisioning carries `WEAVER_PILOT_TOKEN` with the other adapter
 credentials; general environment rendering deliberately does not.
 
+Needs-you cards that declare a Sentry issue fact are read back by the runner
+with an optional read-only Sentry token, also executor-only:
+
+```bash
+weaver secret set WEAVER_SENTRY_READ_TOKEN --executor
+```
+
+It needs only issue read scope, is reloaded for every read, and never reaches a
+worker; a worker-visible `SENTRY_AUTH_TOKEN` in a workstream's secrets is never
+used for this. Without it, Sentry-declared cards simply stay open until the
+workstream or you close them. GitHub PR facts use the GitHub App below.
+
 Hosted GitHub access uses three executor-only values rather than a personal
 CLI login or PAT: `WEAVER_GITHUB_APP_ID`,
 `WEAVER_GITHUB_APP_INSTALLATION_ID`, and

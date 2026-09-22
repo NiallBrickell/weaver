@@ -17,6 +17,7 @@ import { coordinatorCancellableWakePage, liveOrganizationalItemLabel, virtualNow
 import { capacityPresentation } from './capacity.js';
 import { executionSafetyConfig } from './executionSafety.js';
 import { actionHasLivePilotOutage, humanAttention } from './actionApproval.js';
+import { describeExternalFact } from './attentionReadback.js';
 
 const SCHEMA_VERSION = 1;
 export const PROMPT_VERSION = 1;
@@ -326,7 +327,13 @@ export function buildProjection(
   const s6 = [
     `## 6. Open loops`,
     `Needs a human (do NOT act on these yourself):`,
-    fmtList(openAttention.map((a) => `${a.id} [${a.kind}] ${a.summary}`), 'nothing'),
+    fmtList(openAttention.map((a) => {
+      // Declared external facts are typed state: show them so a fresh pass
+      // knows the card closes itself (the harness reads them back) and does
+      // not re-ask or withdraw it merely to track the same fact.
+      const facts = (a.resolvesWhen?.any ?? []).map(describeExternalFact);
+      return `${a.id} [${a.kind}] ${a.summary}${facts.length ? ` — closes itself when ${facts.join(' or ')}` : ''}`;
+    }), 'nothing'),
     ``,
     `Operational dependency waits (not human decisions; preserve the gate and investigate the shared cause):`,
     fmtList(
