@@ -338,6 +338,32 @@ export function priorityRank(priority: 'high' | 'normal' | 'low' | undefined): n
   return priority === 'high' ? 0 : priority === 'low' ? 2 : 1;
 }
 
+/**
+ * When a runner last served this stream, read from durable state: the newest
+ * start of any coordinator pass or worker attempt. Seeds the runner-memory
+ * fairness clock the first time a runner sees a stream, so least-recently-
+ * ticked order survives a restart. Without it every stream reads as "never
+ * ticked" after a restart, the stable sort falls back to the store's slug
+ * order, and a runner that restarts before finishing a sweep (the
+ * self-updater restarts it on every merge) re-serves the start of the
+ * alphabet: on 2026-09-21 thread-review-* and support-* streams sat 3.4 days
+ * behind due wakes while daily-* and evals-* ran twice.
+ */
+export function durableLastServedMs(doc: WorkstreamDoc): number {
+  let latest = 0;
+  for (const pass of doc.passes) {
+    const at = Date.parse(pass.startedAt);
+    if (Number.isFinite(at) && at > latest) latest = at;
+  }
+  for (const assignment of doc.assignments) {
+    for (const attempt of assignment.attempts) {
+      const at = Date.parse(attempt.startedAt);
+      if (Number.isFinite(at) && at > latest) latest = at;
+    }
+  }
+  return latest;
+}
+
 export function byPriorityThenFairness(
   priority: ReadonlyMap<string, number>,
   lastTickedAt: ReadonlyMap<string, number>,
@@ -852,7 +878,8 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   // (alphabetical) scan with a concurrency break starves every stream ranked
   // below the cap the moment enough earlier streams exist — sentry-sweep sat
   // 19h behind a due wake while ten alphabetically-earlier streams re-took
-  // all ten slots every iteration.
+  // all ten slots every iteration. Seeded per stream from durable state
+  // (durableLastServedMs) so the order survives a runner restart.
   const lastTickedAt = new Map<string, number>();
   // Open-PR conflict watch throttle (see prConflicts.ts). Runner memory only.
   const prConflictProbedAt = new Map<string, number>();
@@ -990,6 +1017,7 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
         if (ws.status !== 'active' && !(ws.status === 'done' && missingManagerNotices.length)) continue;
         const signature = runnerDispatchSignature(doc, runner, presences, wallNow, virtual, managerDoc);
         if (!dispatches.shouldDispatch(slug, signature)) continue;
+        if (!lastTickedAt.has(slug)) lastTickedAt.set(slug, durableLastServedMs(doc));
         due.push(slug);
         dispatchSignatures.set(slug, signature);
         priority.set(slug, priorityRank(ws.priority));
