@@ -129,6 +129,9 @@ export function isWakeDue(
   virtualNow = wallNow,
 ): boolean {
   if (condition.type === 'immediate') return true;
+  // A probe wakes a pass only once a check has recorded changed output; until
+  // then the engine checks it off the dispatch path (src/probe.ts).
+  if (condition.type === 'probe') return !!condition.satisfiedBy;
   return condition.type === 'wall_time'
     ? condition.dueAt <= wallNow.toISOString()
     : condition.dueAtVirtual <= virtualNow.toISOString();

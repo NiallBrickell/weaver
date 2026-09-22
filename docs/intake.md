@@ -125,14 +125,61 @@ fix, and it should be added then rather than in anticipation.
 
 ## Repeating
 
-There is no trigger primitive. A repeating stream schedules its own next wake
-with `schedule_wake` at the end of each pass, and if a pass dies before doing so
-the engine restores its unconsumed wakes (`wakes.restored`). When a standing
-cycle or cadence is superseded, the coordinator cancels each exact obsolete
-ordinary wake only when typed basis directly closes its stored course, then
-schedules the replacement against the exact new decision or work item; a
-bounded read tool pages any backlog by exact id. Harness-owned waits are not
-individually coordinator-controlled. If that turns out
-to be too fragile in practice — a stream that goes quiet because no pass ever
-re-armed it — a declarative `Trigger` on the document is the fix, and it should
-be written only once that failure is observed rather than in anticipation of it.
+A repeating stream schedules its own next wake with `schedule_wake` at the end
+of each pass, and if a pass dies before doing so the engine restores its
+unconsumed wakes (`wakes.restored`). When a standing cycle or cadence is
+superseded, the coordinator cancels each exact obsolete ordinary wake only when
+typed basis directly closes its stored course, then schedules the replacement
+against the exact new decision or work item; a bounded read tool pages any
+backlog by exact id. Harness-owned waits are not individually
+coordinator-controlled.
+
+### Probes: watching external state without a pass per look
+
+This section used to say a declarative trigger should be written only once the
+failure it prevents was observed. Thirty days of fleet data observed it, in the
+form of cost rather than silence. A cron-shaped intake routine paid at least
+three coordinator passes per poll — dispatch a poll worker, a half-hour safety
+net, then adopt — and roughly 85% of polls found nothing new: support intake ran
+362 passes for 41 polls, costing about $81 in passes against $14 for the poll
+workers themselves; roadmap intake ran 252 passes that created no child
+workstream; the fleet steward approved the same read-only freshness `stat`
+eleven times through Pilot; the daily update opened every cycle with an
+engine-run `git fetch` across seven repositories. The looking was cheap. Waking
+a model to decide there was nothing to look at was not.
+
+A probe is that trigger, expressed as a wake condition rather than a new
+subsystem (`WakeCondition` `type: 'probe'`, [`src/probe.ts`](../src/probe.ts)).
+The coordinator calls `schedule_probe` with one exact bash command, an absolute
+cwd, a cadence of at least five minutes on a wall-clock grid anchored at
+`first_check_at` (so a daily probe can land at 06:00Z), optional credential
+names and GitHub read access, and the live course it serves. The engine — never
+a model — re-runs the command on the cadence and compares a sha256 of its
+redacted stdout with the wake's stored `baseline`:
+
+- **Unchanged** advances the probe cursor and writes nothing to the Workstream
+  document, so the revision the runners' body cache is keyed on stays put.
+- **Changed, or the first check** makes one arrival: an untrusted Observation
+  (ingress key `probe:<wakeId>:<fingerprint>`, a bounded added/removed-lines
+  summary, the full redacted output as an artifact), `satisfiedBy` on the probe
+  — which is the only thing that makes a probe due — and a successor probe with
+  the same spec, course, and approval and the new baseline. The revision bump
+  makes the runner tick the stream, and the satisfied probe coalesces with any
+  other due wakes into one pass. The automatic re-arm is what keeps a watch from
+  lapsing because some pass forgot to re-schedule it.
+- **Failures** back off in the cursor (`every · 2^failures`, capped at a day)
+  and never wake the coordinator, until the third consecutive failure — or at
+  once for a missing or unallowed credential or a missing cwd — records one
+  `error` and one immediate wake so the coordinator can repair the probe.
+  Further failures write nothing; a successful check clears the error.
+
+The command must print only stable facts. Anything that differs on every run —
+a timestamp, an mtime, a duration — is a byte of change that wakes a pass, so a
+probe that prints one is a poll with extra steps. Probe output is an
+Observation like any other: untrusted input that wakes the stream and supplies
+evidence (kernel rule 9), listed under "Unevaluated observations" in the
+projection until `evaluate_observation` judges it.
+
+A probe starts inert. Authority is the same as for an engine-run action: see
+[harness.md](./harness.md) for the Pilot gate, the spec-pinned approval, and
+the environment the engine builds.

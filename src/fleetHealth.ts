@@ -74,11 +74,27 @@ function isPastGrace(boundary: string, now: Date, graceMs: number): boolean {
   return Number.isFinite(boundaryMs) && now.getTime() >= boundaryMs + graceMs;
 }
 
+/** When a satisfied probe became due: the arrival of the observation that
+ * satisfied it — never the probe's own creation, which can be weeks older. */
+function satisfiedProbeDueAt(doc: WorkstreamDoc, wake: WorkstreamDoc['wakes'][number]): string {
+  const satisfiedBy = wake.condition.type === 'probe' ? wake.condition.satisfiedBy : undefined;
+  const observation = satisfiedBy ? doc.observations.find((candidate) => candidate.id === satisfiedBy) : undefined;
+  return observation?.atVirtual ?? wake.createdAt;
+}
+
 function wakePastGrace(
+  doc: WorkstreamDoc,
   wake: WorkstreamDoc['wakes'][number],
   wallNow: Date,
   nowVirtual: Date,
 ): boolean {
+  if (wake.condition.type === 'probe') {
+    // A watching probe has no due time: it is the routine working as designed,
+    // never an overdue wake. Once satisfied it became due when its observation
+    // arrived, and an unconsumed one past grace is a real stall.
+    if (!wake.condition.satisfiedBy) return false;
+    return isPastGrace(satisfiedProbeDueAt(doc, wake), nowVirtual, ROUTINE_WAKE_GRACE_MS);
+  }
   if (wake.condition.type === 'time') {
     return isPastGrace(wake.condition.dueAtVirtual, nowVirtual, ROUTINE_WAKE_GRACE_MS);
   }
@@ -112,7 +128,7 @@ function routineHealth(doc: WorkstreamDoc, wallNow: Date, nowVirtual: Date) {
   );
   const coordinating = !!doc.lease && new Date(doc.lease.expiresAt).getTime() > wallNow.getTime();
   const overdueWakes = coordinating ? [] : pendingWakes
-    .filter((wake) => wakePastGrace(wake, wallNow, nowVirtual))
+    .filter((wake) => wakePastGrace(doc, wake, wallNow, nowVirtual))
     .map((wake) => ({
       id: wake.id,
       condition: wake.condition.type,
@@ -351,7 +367,9 @@ export function runnerOutput(
         ? wake.condition.dueAt
         : wake.condition.type === 'time'
           ? wake.condition.dueAtVirtual
-          : wake.createdAt;
+          : wake.condition.type === 'probe'
+            ? satisfiedProbeDueAt(doc, wake)
+            : wake.createdAt;
       if (!oldestUnservedDueAt || dueAt < oldestUnservedDueAt) oldestUnservedDueAt = dueAt;
     }
   }

@@ -105,6 +105,7 @@ routes, then these configured seats — is covered in
 | `WEAVER_OPENHANDS_BASE_URL` | OpenRouter's official endpoint for `openrouter/*` | OpenAI-compatible upstream used by the host credential proxy; required for other OpenHands providers |
 | `WEAVER_WORKER_MEMORY_LIMIT` | `4g` | Memory ceiling for each worker container (OpenHands and containerized Claude), as a Docker size such as `4g` or `3072m`, at least `512m`. Swap is capped at the same value, so a runaway is OOM-killed inside its own container instead of pushing the host into swap thrash. `0`/`none`/`off` removes the ceiling; any other malformed value refuses the run. Under rootless Docker the ceiling needs the cgroup v2 memory controller delegated to the Docker user — without it Docker warns, drops the limit, and the run proceeds unbounded (`docker info` then prints `No memory limit support`) |
 | `WEAVER_PILOT_URL` | `http://localhost:9721` | The operator's pilot daemon that gates external actions |
+| `WEAVER_PROBE_CREDENTIALS` | *(unset → none)* | Comma-separated credential names a [probe](./routines.md#watching-something-that-rarely-changes-probes) may select. A probe re-runs model-written shell on a cadence, so its credential access is an explicit operator allowlist on the runner, on top of the workstream's own secret store |
 
 An unknown work or action executor fails hard before any attempt starts — a
 silent local fallback would make a misconfigured remote fleet look healthy.

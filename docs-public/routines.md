@@ -38,9 +38,33 @@ dec_7f3a [STANDING] "Triage recent issues every 12h; open PRs for clear fixes"
 
 If a routine starts superseding its course over and over — five or more times in 24 hours — the projection names that lineage and tells the coordinator to record progress instead. Decisions also have size limits now (a 200-character title, a 1,500-character rationale): evidence belongs in the deliverables a decision cites, not in the decision.
 
+## Watching something that rarely changes: probes
+
+Many routines exist to notice when something outside Weaver changes — a support inbox, a board column, a remote branch, a status page. Waking a model every half hour to look, and finding nothing new most of the time, spends passes on the looking. A **probe** moves the looking below the model: the routine's coordinator declares one exact read-only command, and the runner re-runs it on a cadence and wakes the routine **only when the output changes**.
+
+What a coordinator schedules looks like this (the `schedule_probe` tool):
+
+```text
+reason:          new support tickets need triage
+command:         gh issue list --repo acme/support --label inbound --state open --json number,title --jq '.[] | "\(.number) \(.title)"'
+cwd:             /srv/weaver/workspaces/support-intake/support
+every:           30m
+first_check_at:  2026-09-22T06:00:00Z   (optional — anchors the cadence grid)
+github_read:     true
+course_id:       dec_…                  (the standing decision it serves)
+```
+
+- **Print only stable facts.** Ids, states, titles, counts. Never a timestamp, an mtime, or a duration: any byte of difference wakes the routine.
+- **Unchanged output costs nothing but the command.** No model runs, and the routine's record is not written.
+- **Changed output** arrives as one observation — a short added/removed-lines summary, with the full output kept as an artifact — and the probe re-arms itself with the new output as its baseline. The first check sets the baseline and wakes the routine once.
+- **A probe starts inert.** It runs model-written shell repeatedly, so it is approved like an engine-run action: your [Pilot](./actions.md) rules see the exact command and the probe as a whole, and anything Pilot denies or asks about comes to you as an approval card (`weaver approve-action <slug> <wakeId>`, or `a` in `weaver watch`; `weaver reject-action` retires it). Approval covers that exact spec — a different command is a new probe.
+- **Minimal environment.** A probe sees `PATH`, `HOME`, `LANG`, only the credentials it names, and — with `github_read` — a GitHub App read-only token for its repository. It never inherits the runner's environment. A credential must also be listed in `WEAVER_PROBE_CREDENTIALS` on the runner (unset means probes get none).
+- **Failures stay quiet until they matter.** A failing check backs off (doubling, capped at a day); the third failure in a row — or a missing credential or directory, immediately — wakes the routine once to repair the probe.
+- **Limits:** cadence at least 5 minutes, command at most 4 KB, 60 seconds per run, 256 KB of output, three watching probes per workstream.
+
 ## Mechanics
 
-- Wakes are stored data, not sleeping processes — the resident runner discovers what's due. Kill the runner for a week; the routine picks up exactly where it stopped.
-- A superseded cycle does not leave its old organizational checks behind. Every new check names the exact decision or work item it serves; the coordinator can cancel it only when typed facts directly close or supersede that same course. The cancellation and basis remain in history, and large backlogs are read in bounded pages rather than dumped into every pass. Infrastructure recovery, execution-safety, immediate-arrival, wall-time, and fired wakes cannot be cancelled individually; validated workstream conclusion retires the remaining waits by pass reference.
+- Wakes are stored data, not sleeping processes — the resident runner discovers what's due. Kill the runner for a week; the routine picks up exactly where it stopped. A probe's last-check bookkeeping lives outside the routine's record and holds no truth: lose it and the next check compares against the stored baseline.
+- A superseded cycle does not leave its old organizational checks behind. Every new check names the exact decision or work item it serves; the coordinator can cancel it only when typed facts directly close or supersede that same course. The cancellation and basis remain in history, and large backlogs are read in bounded pages rather than dumped into every pass. Probes are cancelled the same way; a probe that keeps failing may cite itself. Infrastructure recovery, execution-safety, immediate-arrival, wall-time, and fired wakes cannot be cancelled individually; validated workstream conclusion retires the remaining waits, probes included, by pass reference.
 - The dashboard shows routines in their own `↻ ROUTINES` section with the next-run time.
 - `weaver pause <slug>` stops a routine with its state and scheduled wakes intact; `weaver resume <slug>` restarts it. Run `weaver pause` with no slug to pause every currently active workstream. [Pausing work](./pausing.md) explains the fleet boundary. `weaver tag <slug> add routine` converts an existing workstream.

@@ -10,6 +10,7 @@ import { virtualNow } from './clock.js';
 import { loadPolicies, type PolicyRecord } from './policies.js';
 import { arrive, listWorkstreams, load, mutate, mutatePolicies, newId, rename, RevisionConflictError } from './store.js';
 import type { WorkstreamCore } from './types.js';
+import { isWatchingProbe, probeApproved, probeSpecHash } from './probe.js';
 import { assertRunnerId } from './runnerIdentity.js';
 import { validateCoordinatorRunnerOrder } from './coordinatorRunner.js';
 
@@ -182,6 +183,50 @@ export async function rejectAction(slug: string, asgId: string, reason = 'reject
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
     event('action.rejected', `${asgId} rejected by ${actor()}: ${reason}`, [asgId]);
   });
+}
+
+/**
+ * Human approval of an inert probe — the same authority act as approving a
+ * gated action, pinned to the exact spec the human saw: the approval records
+ * the hash recomputed from the stored spec, so any other spec stays inert.
+ * No wake: the runner's next sweep sees the approval and starts checking.
+ */
+export async function approveProbe(slug: string, wakeId: string): Promise<void> {
+  await arrive(slug, (d, event) => {
+    const probe = d.wakes.find((w) => w.id === wakeId);
+    if (!probe) throw new Error(`no wake ${wakeId}`);
+    if (!isWatchingProbe(probe)) throw new Error(`${wakeId} is not a watching probe`);
+    const specHash = probeSpecHash(probe.condition.spec);
+    if (probe.condition.specHash !== specHash) throw new Error(`${wakeId} stores a spec hash that does not match its spec — refusing to approve it`);
+    if (probeApproved(probe.condition)) throw new Error(`${wakeId} is already approved`);
+    probe.condition.approval = { by: 'human', at: new Date().toISOString(), specHash, actor: actor() };
+    resolveRefAttention(d, wakeId);
+    d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+    event('probe.approved', `${wakeId} approved by ${actor()} for spec ${specHash.slice(0, 12)} — the engine starts checking it`, [wakeId]);
+  });
+}
+
+/** Human rejection of a probe: it is retired and never runs again, and the
+ * coordinator is woken to reconcile the watch it wanted. Unlike a one-shot
+ * action, an approved probe keeps running, so the human may retire it after
+ * approval too — rejecting only ever removes authority. */
+export async function rejectProbe(slug: string, wakeId: string, reason = 'rejected by human'): Promise<void> {
+  await arrive(slug, (d, event) => {
+    const probe = d.wakes.find((w) => w.id === wakeId);
+    if (!probe) throw new Error(`no wake ${wakeId}`);
+    if (!isWatchingProbe(probe)) throw new Error(`${wakeId} is not a watching probe`);
+    probe.condition.rejection = { actor: actor(), at: new Date().toISOString(), reason };
+    (probe as { status: string }).status = 'cancelled';
+    resolveRefAttention(d, wakeId);
+    wake(d, `human rejected probe ${wakeId}: ${reason}`);
+    d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+    event('probe.rejected', `${wakeId} rejected by ${actor()}: ${reason}`, [wakeId]);
+  });
+}
+
+/** Whether an id names a probe wake (CLI/TUI approve verbs accept both). */
+export async function isProbeWakeId(slug: string, id: string): Promise<boolean> {
+  return (await load(slug)).wakes.some((w) => w.id === id && w.condition.type === 'probe');
 }
 
 export async function resolveAttention(slug: string, attId: string, note = ''): Promise<void> {

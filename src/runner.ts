@@ -18,12 +18,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { fleetLaunchTargetKeys, tick } from './engine.js';
+import { fleetLaunchTargetKeys, runActionCommand, tick } from './engine.js';
 import { RUNNER_PRESENCE_TTL_MS, coordinatorRunnerEligibility } from './coordinatorRunner.js';
 import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
 import { runnerOutput } from './fleetHealth.js';
 import { sweepPrConflicts } from './prConflicts.js';
 import { sweepAttentionReadbacks } from './attentionReadback.js';
+import { probeAwaitingPilot, sweepProbes } from './probe.js';
 import { sdkEnv } from './secrets.js';
 import {
   arrive,
@@ -162,6 +163,9 @@ export function pendingManagerNoticeKeys(
  *
  * A document revision is the ordinary event signal. Time is the one planned
  * exception: a stored wake or recovery lease can become due without a write.
+ * A watching probe is not a due wake: its checks run off this path
+ * (sweepProbes) and a change arrives as an ordinary revision. Only its
+ * approval-service retry is a no-write timer here, exactly like an action's.
  * Runner failover is another stored seam outside the document, so the exact
  * coordinator eligibility result joins the signature only while wakes are
  * due. A running attempt whose owner later dies or crosses its recovery
@@ -210,6 +214,13 @@ export function runnerDispatchSignature(
       assignment.exec.pilotRetryAt <= wallNow.toISOString())
     .map((assignment) => assignment.id)
     .sort();
+  const duePilotProbeRetryIds = doc.wakes
+    .filter((wake) =>
+      probeAwaitingPilot(wake, wallNow.toISOString()) &&
+      wake.condition.type === 'probe' &&
+      !!wake.condition.pilotRetryAt)
+    .map((wake) => wake.id)
+    .sort();
   const coordinatorEligibility = dueWakeIds.length
     ? coordinatorRunnerEligibility(doc, runner.id, presences, wallNow.getTime(), RUNNER_PRESENCE_TTL_MS, virtual.toISOString())
     : null;
@@ -219,6 +230,7 @@ export function runnerDispatchSignature(
     leaseExpired,
     recoverableAttempts,
     duePilotRetryIds,
+    duePilotProbeRetryIds,
     managerNoticeKeys: pendingManagerNoticeKeys(doc, managerDoc),
     coordinatorRunner: coordinatorEligibility?.eligible
       ? 'eligible'
@@ -869,6 +881,11 @@ function waitForNextIteration(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** Minimum spacing between probe sweeps. Probes run at most every five
+ * minutes, so fifteen seconds of dispatch latency is free, and a sweep costs
+ * one narrow cursor read whenever this runner holds an approved probe. */
+export const PROBE_SWEEP_INTERVAL_MS = 15_000;
+
 /** Why a resident runner's poll loop returned. */
 export type RunLoopExit = 'aborted' | 'source-stale' | 'store-unreachable';
 
@@ -975,6 +992,10 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   // attentionReadback.ts). Runner memory only: a restart checks once more.
   const attentionNextCheckAt = new Map<string, number>();
   let attentionSweepInFlight = false;
+  // Probe sweep (see probe.ts): off the loop, one in flight, over the bodies
+  // this iteration's scan already holds — never a load() per workstream.
+  let probeSweepInFlight = false;
+  let lastProbeSweepAt = 0;
   let probing = false;
   let lastCredMtime = credentialsMtime();
   // Presence carries this host's coordinator seats so a standby can tell a
@@ -1104,6 +1125,20 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
         void sweepAttentionReadbacks(docs, attentionNextCheckAt, log)
           .catch((e) => logError(`[run] attention readback sweep failed: ${e instanceof Error ? e.message : e}`))
           .finally(() => { attentionSweepInFlight = false; });
+      }
+      if (!probeSweepInFlight && Date.now() - lastProbeSweepAt >= PROBE_SWEEP_INTERVAL_MS) {
+        probeSweepInFlight = true;
+        lastProbeSweepAt = Date.now();
+        void sweepProbes(docs, {
+          runner,
+          run: runActionCommand,
+          // The loop skips this point entirely while degraded; this closes the
+          // window for a sweep already in flight when the disk fills.
+          degraded: () => degradedReason !== null,
+          log,
+        })
+          .catch((e) => logError(`[run] probe sweep failed: ${e instanceof Error ? e.message : e}`))
+          .finally(() => { probeSweepInFlight = false; });
       }
       const presences = await listRunnerPresence();
       // The store answered a full scan: any running outage clock stops here.

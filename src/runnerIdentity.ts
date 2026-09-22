@@ -89,8 +89,9 @@ export function runnerClaimIdentity(
 }
 
 /** Placement is optional for backward compatibility; when present it is an
- * exact match and an unmatched runner must leave intended work untouched. */
-export function assignmentMatchesRunner(assignment: Assignment, runner: RunnerClaimIdentity): boolean {
+ * exact match and an unmatched runner must leave intended work untouched.
+ * Probes pass their Workstream's `assignmentRunnerId` through the same rule. */
+export function assignmentMatchesRunner(assignment: Pick<Assignment, 'runnerId'>, runner: RunnerClaimIdentity): boolean {
   if (runner.placementOnly) return assignment.runnerId === runner.id;
   return assignment.runnerId === undefined || assignment.runnerId === runner.id;
 }

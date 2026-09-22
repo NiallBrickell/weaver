@@ -571,7 +571,9 @@ export function capacityPresentation(
       }
       return wake.condition.type === 'immediate' ||
         (wake.condition.type === 'time' && wake.condition.dueAtVirtual <= nowIso) ||
-        (wake.condition.type === 'wall_time' && wake.condition.dueAt <= new Date().toISOString());
+        (wake.condition.type === 'wall_time' && wake.condition.dueAt <= new Date().toISOString()) ||
+        // A probe that recorded changed output is due for a pass now.
+        (wake.condition.type === 'probe' && !!wake.condition.satisfiedBy);
     });
 
   const degraded = coordinatorIntent && primary && firstAvailableTarget

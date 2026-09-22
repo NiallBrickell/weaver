@@ -315,6 +315,21 @@ export interface Observation {
   source: string;
   summary: string;
   atVirtual: Iso;
+  /** Present when an engine-run probe produced this observation (src/probe.ts).
+   * Provenance for the untrusted output, never authority: the full redacted
+   * stdout is the artifact, the summary is a bounded line diff of it. */
+  probe?: {
+    /** The probe wake whose check changed and which this observation satisfied. */
+    wakeId: Id;
+    /** sha256 of the redacted stdout — also the artifact's content hash. */
+    fingerprint: string;
+    /** The baseline fingerprint the output changed from; absent on a first check. */
+    previous?: string;
+    /** Artifact path (under the workstream) holding the full redacted stdout. */
+    artifactPath: string;
+    /** Size of the redacted stdout in bytes. */
+    bytes: number;
+  };
   evaluation?: {
     countsTowardObjective: boolean;
     note: string;
@@ -402,10 +417,68 @@ export interface ProviderCapacityObservation {
   resetAt?: Iso;
 }
 
+/** The exact shell a probe runs. Every field is part of the approved spec:
+ * changing any of them is a different probe that needs a new approval. */
+export interface ProbeSpec {
+  /** Literal bash command the ENGINE runs verbatim, with no model in the loop.
+   * It must print only stable facts: any byte difference wakes the stream. */
+  command: string;
+  /** Absolute working directory the command runs in. */
+  cwd: string;
+  /** Cadence in wall-clock seconds (minimum 300), on the grid anchored at
+   * `firstCheckAt`. */
+  everySeconds: number;
+  /** Exact named credentials injected as environment variables, resolved
+   * immediately before each run and limited to WEAVER_PROBE_CREDENTIALS. */
+  credentialNames?: string[];
+  /** When true, the run also receives a GitHub App READ token for the repo
+   * resolved from `cwd` — never a write token. */
+  githubRead?: boolean;
+}
+
 export type WakeCondition =
   | { type: 'time'; dueAtVirtual: Iso }
   | { type: 'wall_time'; dueAt: Iso }
-  | { type: 'immediate' };
+  | { type: 'immediate' }
+  /** An engine-run check of external state that wakes the workstream only
+   * when its output changes (src/probe.ts). An unsatisfied probe is never due;
+   * a check that finds new output records one untrusted Observation, sets
+   * `satisfiedBy` (which makes this wake due for one coalesced pass), and
+   * re-arms a successor probe carrying the new baseline. Checks that find
+   * nothing new write only the probe cursor, never this document. */
+  | {
+      type: 'probe';
+      /** What the engine runs; immutable for the life of this wake. */
+      spec: ProbeSpec;
+      /** sha256 of the canonical spec (probeSpecHash). Approval pins this
+       * value, and eligibility recomputes it from `spec` before every run. */
+      specHash: string;
+      /** Wall-clock anchor of the cadence grid and the first check time, so a
+       * daily probe can land at a chosen hour. */
+      firstCheckAt: Iso;
+      /** Fingerprint of the output the previous probe fired on. Absent on the
+       * first probe of a watch: its first successful check fires once. */
+      baseline?: string;
+      /** Which authority cleared this exact spec. Absent = inert: the engine
+       * never runs a probe whose approval does not pin the current specHash. */
+      approval?: { by: 'pilot' | 'human'; at: Iso; specHash: string; actor?: string };
+      /** One-shot Pilot verdict, so a deny/ask is not re-asked every tick; a
+       * non-approve verdict leaves the probe inert for the human card. */
+      pilotVerdict?: { decision: string; reason: string; at: Iso };
+      /** Physical-time retry boundary while Pilot is unreachable. */
+      pilotRetryAt?: Iso;
+      /** Human rejection of this probe's approval card — the mirror of
+       * approval, kept durable (status 'cancelled' alone attributes nothing). */
+      rejection?: { actor: string; at: Iso; reason: string };
+      /** The Observation that recorded changed output. Set once; it makes
+       * this wake due and retires it from checking. */
+      satisfiedBy?: Id;
+      /** Set once when checks keep failing (third consecutive failure) or
+       * cannot start (missing/unallowed credential, bad cwd), together with
+       * one immediate wake so the coordinator can repair the probe. Later
+       * failures write nothing; the next successful check clears it. */
+      error?: { since: Iso; failures: number; excerpt: string };
+    };
 
 export interface Wake {
   id: Id;

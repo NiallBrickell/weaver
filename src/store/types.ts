@@ -76,6 +76,36 @@ export interface RunnerPresence {
   output?: RunnerOutput;
 }
 
+/**
+ * Where one probe wake's checking stands — engine scheduling state kept
+ * OUTSIDE the Workstream document on purpose. A check that finds unchanged
+ * output must write nothing to the document: every document write bumps the
+ * revision, and a changed revision makes every runner re-transfer the whole
+ * body over a hosted store's billed proxy. The cursor holds no truth: losing
+ * it only means the next check compares against the wake's stored baseline.
+ *
+ * A claim is `claimedBy` plus `nextCheckAt` pushed to the claim's expiry, so
+ * the single CAS on `nextCheckAt` both linearizes two runners racing one due
+ * check and lets a crashed claimant's check fall due again.
+ */
+export interface ProbeCursor {
+  slug: string;
+  wakeId: string;
+  /** When the next check is due, or when an in-flight claim expires. */
+  nextCheckAt: string;
+  /** When the last check finished (success or failure). */
+  checkedAt?: string;
+  /** Runner currently holding the check claim. */
+  claimedBy?: string;
+  /** Consecutive failed checks; reset by any successful check. */
+  failures: number;
+  /** Redacted excerpt of the last failure. */
+  lastError?: string;
+}
+
+/** The replacement state for one cursor row (identity fields excluded). */
+export type ProbeCursorState = Omit<ProbeCursor, 'slug' | 'wakeId'>;
+
 /** Cheap identity of a Workstream's current durable head. Runners use this
  * before loading documents so an unchanged shared fleet costs one narrow
  * metadata query rather than retransmitting every document every poll. */
@@ -165,11 +195,24 @@ export interface StateStore {
   heartbeatRunner(presence: RunnerPresence): Promise<void>;
   /** Current and stale runner observations; callers apply the harness TTL. */
   listRunnerPresence(): Promise<RunnerPresence[]>;
+  /** Every probe cursor (or one workstream's), ordered by slug then wake id.
+   * A narrow table read — no document body crosses this seam. */
+  listProbeCursors(slug?: string): Promise<ProbeCursor[]>;
+  /** Compare-and-set one probe cursor on its `nextCheckAt`. `expectedNextCheckAt`
+   * null means "no row may exist yet" (insert); `next` null deletes the row.
+   * Returns false, changing nothing, when the stored row does not match. Never
+   * touches the Workstream document or its revision. */
+  casProbeCursor(
+    slug: string,
+    wakeId: string,
+    expectedNextCheckAt: string | null,
+    next: ProbeCursorState | null,
+  ): Promise<boolean>;
   /** Cross-process tick exclusion; null when another live process holds it. */
   tryTickLock(slug: string): Promise<(() => Promise<void>) | null>;
   /** Move one workstream's whole stored identity to a new slug: the doc's
-   * `workstream.slug`, its artifacts, and (fs) its state directory move
-   * together, with a `workstream.renamed` event, a bumped revision, and a
+   * `workstream.slug`, its artifacts, its probe cursors, and (fs) its state
+   * directory move together, with a `workstream.renamed` event, a bumped revision, and a
    * printout receipt — the old name survives as lineage, never as state. The
    * backend must refuse an occupied target and a workstream whose tick lock a
    * live process holds (the tick lock covers the whole tick, workers included,
