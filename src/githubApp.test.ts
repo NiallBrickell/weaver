@@ -9,10 +9,13 @@ import { beforeEach, test } from 'node:test';
 import {
   __resetGitHubAppForTests,
   __setGitHubAppTestDependencies,
+  actionGitHubAppEnvironment,
   actionUsesGitHub,
   checkGitHubAppAuthentication,
   cloneGitHubRepository,
+  GitHubAppHostVisibilityError,
   GitHubAppPreparationError,
+  GitHubAppScopeUnresolvedError,
   gitHubAppCommitIdentity,
   githubAppConfigured,
   githubAppEnvironment,
@@ -22,6 +25,9 @@ import {
   GITHUB_APP_TOKEN_ENV,
   mintGitHubAppToken,
   parseGitHubRepositoryRemote,
+  repositoryFromActionCommands,
+  repositoryFromGhCommand,
+  repositoryFromGitCommand,
   workerGitIdentityEnv,
 } from './githubApp.js';
 import { engineCommandEnv, loadRedactionSecrets, redactSecrets, setExecutorSecret } from './secrets.js';
@@ -654,4 +660,135 @@ test('workerGitIdentityEnv is empty when no App is configured and no override is
   });
   assert.deepEqual(await workerGitIdentityEnv(), {});
   assert.equal(fetched, false);
+});
+
+test('repository derivation reads --repo/-R flags, gh api repos/ paths, and clone URLs only', () => {
+  assert.equal(repositoryFromGhCommand('gh pr list --repo octo/flag'), 'octo/flag');
+  assert.equal(repositoryFromGhCommand('gh -R octo/short pr list'), 'octo/short');
+  assert.equal(repositoryFromGhCommand('gh -R=octo/equal pr list'), 'octo/equal');
+  assert.equal(repositoryFromGhCommand('gh api repos/octo/path/commits/main'), 'octo/path');
+  assert.equal(repositoryFromGhCommand('if false; then gh api repos/octo/guarded; fi'), 'octo/guarded');
+  assert.equal(repositoryFromGhCommand('gh pr list'), null);
+  assert.equal(repositoryFromGhCommand('gh pr list --head octo/not-a-repo-flag'), null);
+  assert.equal(repositoryFromGhCommand('echo "gh api repos/octo/quoted"'), null, 'never matched inside prose');
+  // Disagreement between commands falls back to the cwd origin, never a guess.
+  assert.equal(repositoryFromGhCommand('gh api repos/octo/one; gh api repos/octo/two'), null);
+
+  assert.equal(repositoryFromGitCommand('git clone https://github.com/octo/https.git dest'), 'octo/https');
+  assert.equal(repositoryFromGitCommand('git clone git@github.com:octo/scp.git dest'), 'octo/scp');
+  assert.equal(repositoryFromGitCommand('git -C /ws fetch https://github.com/octo/fetch.git'), 'octo/fetch');
+  assert.equal(repositoryFromGitCommand('git push origin HEAD'), null);
+  assert.equal(repositoryFromGitCommand('git clone https://gitlab.com/octo/other.git'), null);
+  assert.equal(repositoryFromGitCommand('git clone https://github.com/octo/a.git; git clone https://github.com/octo/b.git'), null);
+
+  assert.equal(repositoryFromActionCommands('gh api repos/octo/one', 'test -f x'), 'octo/one');
+  assert.equal(repositoryFromActionCommands('git clone https://github.com/octo/one.git', 'gh pr list'), 'octo/one');
+  assert.equal(repositoryFromActionCommands(undefined, 'gh pr list'), null);
+  assert.equal(repositoryFromActionCommands('gh api repos/octo/one', 'gh api repos/octo/two'), null);
+});
+
+test('action environment prefers the explicit repository, then the command-named one, without any cwd lookup', async () => {
+  configure();
+  const requests: string[] = [];
+  __setGitHubAppTestDependencies({
+    now: () => fixedNow,
+    execFileSync: (() => {
+      throw new Error('no cwd-origin probe may be spawned when a repository is already named');
+    }) as typeof execFileSync,
+    fetch: (async (_input, init = {}) => {
+      const body = JSON.parse(String(init.body)) as { repositories: string[] };
+      const fullName = body.repositories.length === 1 ? `octo/${body.repositories[0]}` : undefined;
+      requests.push(fullName ?? '');
+      return tokenResponse(`token-${requests.length}`, fixedNow, fullName);
+    }) as typeof globalThis.fetch,
+  });
+
+  // Neutral cwd, gh command that names no repository: the explicit field wins
+  // and the neutral cwd is never probed.
+  const explicit = await actionGitHubAppEnvironment({
+    cwd: '/not/a/git/repository',
+    repository: 'octo/explicit',
+    run: 'gh pr list',
+  });
+  assert.equal(explicit.GH_TOKEN, 'token-1');
+  assert.deepEqual(requests, ['octo/explicit']);
+
+  // No explicit field: the repository the command names is used, again with
+  // no cwd-origin probe (a neutral cwd would previously have failed here).
+  const named = await actionGitHubAppEnvironment({
+    cwd: '/definitely/not/a/repository/either',
+    run: 'gh api repos/octo/named/commits/main',
+  });
+  assert.equal(named.GH_TOKEN, 'token-2');
+  assert.deepEqual(requests, ['octo/explicit', 'octo/named']);
+
+  // A malformed explicit field is durable operator-repairable configuration.
+  await assert.rejects(
+    actionGitHubAppEnvironment({ cwd: '/tmp', repository: 'not-an-exact-repository' }),
+    /GitHub App action repository must be an exact owner\/name/,
+  );
+});
+
+test('host invisibility and scope-unresolved are distinct, differently-typed failures', async () => {
+  configure();
+  __setGitHubAppTestDependencies({
+    fetch: (async () => {
+      throw new Error('no mint may happen without a scope');
+    }) as typeof globalThis.fetch,
+  });
+
+  // A cwd that does not exist on this runner: placement information, NOT a
+  // durable preparation failure (GitHubAppHostVisibilityError deliberately
+  // does not extend GitHubAppPreparationError).
+  const invisible = await actionGitHubAppEnvironment({
+    cwd: '/other-host/workspaces/erdo',
+    run: 'gh pr list',
+  }).catch((caught: unknown) => caught);
+  assert.ok(invisible instanceof GitHubAppHostVisibilityError);
+  assert.ok(!(invisible instanceof GitHubAppPreparationError));
+  assert.match((invisible as Error).message, /could not resolve cwd origin \(path is not visible on this runner\)/);
+
+  // A cwd that exists here but is not a github.com checkout: still durable,
+  // operator-repairable configuration (GitHubAppScopeUnresolvedError extends
+  // GitHubAppPreparationError so existing settlement catches keep working).
+  const neutral = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-neutral-'));
+  const unresolved = await actionGitHubAppEnvironment({
+    cwd: neutral,
+    run: 'gh pr list',
+  }).catch((caught: unknown) => caught);
+  assert.ok(unresolved instanceof GitHubAppScopeUnresolvedError);
+  assert.ok(unresolved instanceof GitHubAppPreparationError);
+  assert.match((unresolved as Error).message, /could not resolve cwd origin/);
+  fs.rmSync(neutral, { recursive: true, force: true });
+
+  const nonGitHub = await actionGitHubAppEnvironment({
+    cwd: gitRepo('https://gitlab.com/octo/widget.git'),
+    run: 'gh pr list',
+  }).catch((caught: unknown) => caught);
+  assert.ok(nonGitHub instanceof GitHubAppScopeUnresolvedError);
+  assert.match((nonGitHub as Error).message, /requires cwd origin to be an exact github.com repository/);
+});
+
+test('the proven working route still derives scope from a real checkout origin', async () => {
+  configure();
+  const requests: string[] = [];
+  __setGitHubAppTestDependencies({
+    now: () => fixedNow,
+    fetch: (async (_input, init = {}) => {
+      const body = JSON.parse(String(init.body)) as { repositories: string[] };
+      const fullName = body.repositories.length === 1 ? `octo/${body.repositories[0]}` : undefined;
+      requests.push(fullName ?? '');
+      return tokenResponse('origin-token', fixedNow, fullName);
+    }) as typeof globalThis.fetch,
+  });
+
+  // A real checkout whose commands name no repository: unchanged behaviour —
+  // the scope comes from the cwd's origin exactly as before the fix.
+  const environment = await actionGitHubAppEnvironment({
+    cwd: gitRepo('https://github.com/octo/origin.git'),
+    run: 'gh pr merge 42 --merge',
+  }, 'write');
+  assert.equal(environment.GH_TOKEN, 'origin-token');
+  assert.deepEqual(requests, ['octo/origin']);
+  assert.equal(environment.GIT_TERMINAL_PROMPT, '0');
 });

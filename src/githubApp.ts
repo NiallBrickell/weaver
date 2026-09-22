@@ -25,6 +25,22 @@ export class GitHubAppPreparationError extends Error {
   override name = 'GitHubAppPreparationError';
 }
 
+/** The assignment's cwd is not visible to the claiming runner. That is a fact
+ * about PLACEMENT, not about the action: another runner may resolve the same
+ * path, so it must never settle the action as durably failed. Callers record
+ * it as routing information and leave the assignment queued. */
+export class GitHubAppHostVisibilityError extends Error {
+  override name = 'GitHubAppHostVisibilityError';
+}
+
+/** The token's repository scope could not be derived from anything the
+ * assignment durably names (explicit field, command arguments, or a usable
+ * cwd checkout). This remains durable, operator-repairable configuration:
+ * it fails the action before its one-shot claim. */
+export class GitHubAppScopeUnresolvedError extends GitHubAppPreparationError {
+  override name = 'GitHubAppScopeUnresolvedError';
+}
+
 interface GitHubAppCredentials {
   appId: string;
   installationId: string;
@@ -111,6 +127,73 @@ export function actionUsesGitHub(asg: Assignment): boolean {
   if (asg.kind !== 'action' || !asg.exec) return false;
   return [asg.exec.run ?? '', asg.exec.verify ?? '']
     .some((command) => hasGhCommand(command) || hasGitRemoteNetworkCommand(command));
+}
+
+/** The exact repository a literal gh command names: a --repo/-R flag, or the
+ * gh api repos/<owner>/<name> path form. Null when it names none — or when
+ * distinct gh commands name different repositories, which must fall back to
+ * the cwd origin rather than mint a possibly-wrong scope. */
+export function repositoryFromGhCommand(command: string): string | null {
+  const named = new Set<string>();
+  const ghCommand = new RegExp(
+    `${SHELL_COMMAND_START}${SHELL_ENV_PREFIX}${SHELL_EXECUTABLE_PREFIX}gh\\b([^\\n;&|]*)`,
+    'gm',
+  );
+  for (const occurrence of command.matchAll(ghCommand)) {
+    const args = occurrence[1] ?? '';
+    for (const flag of args.matchAll(/(?:--repo(?:=|\s+)|-R(?:=|\s+))([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/g)) {
+      named.add(flag[1]!);
+    }
+    for (const apiPath of args.matchAll(/\brepos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?=\/|\s|$)/g)) {
+      named.add(`${apiPath[1]!}/${apiPath[2]!}`);
+    }
+  }
+  return singleNamedRepository(named);
+}
+
+/** The exact github.com repository a literal Git network command names in a
+ * URL argument (clone/fetch/pull/push/ls-remote). Null when it names none —
+ * or when commands name different repositories, as above. */
+export function repositoryFromGitCommand(command: string): string | null {
+  const named = new Set<string>();
+  const gitCommand = new RegExp(
+    `${SHELL_COMMAND_START}${SHELL_ENV_PREFIX}${SHELL_EXECUTABLE_PREFIX}git\\b${String.raw`(?:\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace)\s+[^\s;&|()]+|--(?:git-dir|work-tree|namespace)=[^\s;&|()]+|--(?:bare|no-replace-objects|literal-pathspecs|glob-pathspecs|noglob-pathspecs|icase-pathspecs)))*`}([^\n;&|]*)`,
+    'gm',
+  );
+  for (const occurrence of command.matchAll(gitCommand)) {
+    for (const argument of (occurrence[1] ?? '').matchAll(/[^\s;&|()'"]+/g)) {
+      const repository = parseGitHubRepositoryRemote(argument[0]);
+      if (repository) named.add(repository);
+    }
+  }
+  return singleNamedRepository(named);
+}
+
+function singleNamedRepository(named: Set<string>): string | null {
+  if (named.size !== 1) return null;
+  const repository = [...named][0]!;
+  try {
+    repositoryName(repository);
+  } catch {
+    return null;
+  }
+  return repository;
+}
+
+/** The one repository the action's own commands durably name, if they agree.
+ * Deriving the scope here keeps the mint host-independent: no checkout has
+ * to exist at exec.cwd on the claiming runner for these shapes. */
+export function repositoryFromActionCommands(run: string | undefined, verify: string | undefined): string | null {
+  const named = new Set<string>();
+  for (const repository of [
+    repositoryFromGhCommand(run ?? ''),
+    repositoryFromGhCommand(verify ?? ''),
+    repositoryFromGitCommand(run ?? ''),
+    repositoryFromGitCommand(verify ?? ''),
+  ]) {
+    if (repository) named.add(repository);
+  }
+  return singleNamedRepository(named);
 }
 
 function base64url(value: string | Buffer): string {
@@ -355,10 +438,17 @@ export function parseGitHubRepositoryRemote(remote: string): string | null {
   }
 }
 
-/** Derive the exact github.com owner/name from cwd's origin, failing closed. */
+/** Derive the exact github.com owner/name from cwd's origin, failing closed.
+ * A cwd the claiming runner cannot see is placement information
+ * (GitHubAppHostVisibilityError), never durable action truth: another runner
+ * may resolve the same path. A cwd that IS visible but is not a usable
+ * github.com checkout is durable, operator-repairable configuration
+ * (GitHubAppScopeUnresolvedError). */
 export function githubRepositoryFromCwd(cwd: string): string {
   if (!isAbsolute(cwd) || !existsSync(cwd)) {
-    throw new GitHubAppPreparationError('GitHub App authentication could not resolve cwd origin');
+    throw new GitHubAppHostVisibilityError(
+      'GitHub App authentication could not resolve cwd origin (path is not visible on this runner)',
+    );
   }
   let remote: string;
   try {
@@ -376,13 +466,13 @@ export function githubRepositoryFromCwd(cwd: string): string {
     // and is operator-repairable configuration. A spawn/programming failure
     // has no numeric exit status and must remain infrastructure, not truth.
     if (typeof (error as { status?: unknown })?.status === 'number') {
-      throw new GitHubAppPreparationError('GitHub App authentication could not resolve cwd origin');
+      throw new GitHubAppScopeUnresolvedError('GitHub App authentication could not resolve cwd origin');
     }
     throw error;
   }
   const repository = parseGitHubRepositoryRemote(remote);
   if (!repository) {
-    throw new GitHubAppPreparationError('GitHub App authentication requires cwd origin to be an exact github.com repository');
+    throw new GitHubAppScopeUnresolvedError('GitHub App authentication requires cwd origin to be an exact github.com repository');
   }
   return repository;
 }
@@ -430,14 +520,12 @@ esac
   }
 }
 
-/** Environment supplied to a GitHub action process. */
-export async function githubAppEnvironment(
-  cwd: string,
-  access: GitHubAppAccess = 'read',
+/** Environment supplied to a GitHub action process, scoped to `repository`. */
+async function mintedGitHubAppEnvironment(
+  repository: string,
+  access: GitHubAppAccess,
   options: GitHubAppMintOptions = {},
 ): Promise<Record<string, string>> {
-  if (!githubAppConfigured()) return {};
-  const repository = githubRepositoryFromCwd(cwd);
   const token = await mintGitHubAppToken(repository, access, options);
   const environment: Record<(typeof GITHUB_APP_GIT_PLUMBING_ENV)[number] | typeof GITHUB_APP_TOKEN_ENV, string> = {
     // gh reads the token directly. Git receives the same value only through a
@@ -467,6 +555,53 @@ export async function githubAppEnvironment(
 export function githubAppRedactionSecrets(environment: Record<string, string>): Record<string, string> {
   const token = environment[GITHUB_APP_TOKEN_ENV];
   return token ? { [GITHUB_APP_TOKEN_ENV]: token } : {};
+}
+
+/** Environment derived from a checkout's own origin — the legacy, cwd-bound
+ * form, still used by callers that hold a proven checkout path. */
+export async function githubAppEnvironment(
+  cwd: string,
+  access: GitHubAppAccess = 'read',
+  options: GitHubAppMintOptions = {},
+): Promise<Record<string, string>> {
+  if (!githubAppConfigured()) return {};
+  return mintedGitHubAppEnvironment(githubRepositoryFromCwd(cwd), access, options);
+}
+
+/** The repository scope an action's own durable state names. Preference
+ * order: the explicit exec.repository field, then the repository the run/verify
+ * commands literally name, and only then the checkout at exec.cwd. The first
+ * two make the mint host-independent; the last keeps the proven working route
+ * (a real checkout on the claiming runner) minting exactly as before. */
+export interface GitHubActionScope {
+  cwd: string;
+  run?: string;
+  verify?: string;
+  /** Exact owner/name for the App token's repository scope. */
+  repository?: string;
+}
+
+export async function actionGitHubAppEnvironment(
+  action: GitHubActionScope,
+  access: GitHubAppAccess = 'read',
+  options: GitHubAppMintOptions = {},
+): Promise<Record<string, string>> {
+  if (!githubAppConfigured()) return {};
+  const explicit = action.repository?.trim();
+  if (explicit) {
+    try {
+      repositoryName(explicit);
+    } catch {
+      throw new GitHubAppPreparationError('GitHub App action repository must be an exact owner/name');
+    }
+    return mintedGitHubAppEnvironment(explicit, access, options);
+  }
+  const named = repositoryFromActionCommands(action.run, action.verify);
+  if (named) return mintedGitHubAppEnvironment(named, access, options);
+  // Nothing the assignment names resolves the scope: fall back to the cwd
+  // checkout. A cwd this runner cannot see throws the placement-typed
+  // GitHubAppHostVisibilityError for the caller to record as routing info.
+  return mintedGitHubAppEnvironment(githubRepositoryFromCwd(action.cwd), access, options);
 }
 
 export interface GitCommitIdentity {

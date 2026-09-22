@@ -68,9 +68,10 @@ import {
   probeSpecHash,
 } from './probe.js';
 import {
+  actionGitHubAppEnvironment,
   actionUsesGitHub,
+  GitHubAppHostVisibilityError,
   GitHubAppPreparationError,
-  githubAppEnvironment,
   githubAppRedactionSecrets,
   type GitHubAppAccess,
 } from './githubApp.js';
@@ -239,8 +240,14 @@ async function actionExecutionSecrets(
   const githubAccess: GitHubAppAccess = access === 'write' && isRepoEgressAction(asg)
     ? 'write'
     : 'read';
+  // Scope preference: the explicit exec.repository field, then the repository
+  // the run/verify commands literally name, and only then the checkout at
+  // exec.cwd. The first two need no host-visible cwd, so a gh/git-network
+  // action no longer requires cwd-origin resolution to mint; a cwd the
+  // claiming runner cannot see surfaces as GitHubAppHostVisibilityError
+  // (placement information) instead of a durable preparation failure.
   const githubEnvironment = actionUsesGitHub(asg) && asg.exec
-    ? await githubAppEnvironment(asg.exec.cwd, githubAccess, {
+    ? await actionGitHubAppEnvironment(asg.exec, githubAccess, {
         minRemainingMs: ACTION_GITHUB_TOKEN_MIN_REMAINING_MS,
       })
     : {};
@@ -287,6 +294,39 @@ async function settleActionPreparationFailure(
     settled = true;
   });
   return settled;
+}
+
+/** A cwd the claiming runner cannot see is routing information, not action
+ * truth: the assignment stays queued so a runner that CAN resolve it may
+ * claim it. Record the fact once (dedup by assignment id + marker) with zero
+ * attempts and no external effect — identical safety guarantees to a
+ * preparation failure, without durably failing the action. */
+async function recordActionPlacementPending(
+  slug: string,
+  assignmentId: string,
+  detail: string,
+): Promise<boolean> {
+  const marker = `Action ${assignmentId} could not start on this runner`;
+  let recorded = false;
+  await arrive(slug, (d, event) => {
+    const asg = d.assignments.find((candidate) => candidate.id === assignmentId);
+    if (!asg || asg.kind !== 'action' || asg.state !== 'queued' || asg.attempts.length > 0) return;
+    if (d.wakes.some((wake) => wake.status === 'pending' && wake.reason.includes(marker))) return;
+    d.wakes.push({
+      id: newId('wake'),
+      reason: `${marker} because its execution cwd is not visible here (${detail}). This is placement information, not a durable failure: zero execution attempts were made and no external effect occurred. Place or re-queue the action on a runner that can resolve its cwd, or name the repository explicitly (exec.repository or a --repo/URL argument) so the token mints host-independently.`,
+      condition: { type: 'immediate' },
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+    event(
+      'action.placement_pending',
+      `${assignmentId} deferred: its cwd is not visible on this runner (${detail}) — zero attempts, no external effect; it remains queued for a runner that can resolve it`,
+      [assignmentId],
+    );
+    recorded = true;
+  });
+  return recorded;
 }
 
 /** A non-confirming action readback proves neither that the effect landed nor
@@ -967,11 +1007,13 @@ export async function guardRepoEgress(
   const command = [asg.exec.run ?? '', asg.exec.verify ?? ''].join('\n');
   let githubEnvironment: Record<string, string>;
   try {
-    githubEnvironment = await githubAppEnvironment(asg.exec.cwd, 'read');
+    githubEnvironment = await actionGitHubAppEnvironment(asg.exec, 'read');
   } catch (error) {
-    // Authentication/cwd preparation is not a deconfliction verdict. Abstain
-    // here and let the action's own preflight durably settle the known failure
-    // before any one-shot attempt is recorded.
+    // Authentication/cwd preparation is not a deconfliction verdict — and a
+    // cwd this runner cannot see is placement information, not a failure. In
+    // both cases abstain here and let the action's own preflight record the
+    // typed outcome (placement-pending or durable settlement) before any
+    // one-shot attempt is recorded.
     const message = error instanceof Error ? error.message : 'unknown GitHub authentication failure';
     const detail = redactSecrets(message, loadRedactionSecrets(slug)).slice(0, 300);
     process.stderr.write(`[tick] ${asg.id} repo-egress check abstained: ${detail} — action preflight will decide\n`);
@@ -1068,6 +1110,10 @@ async function executeHumanActions(
         continue;
       }
     } catch (error) {
+      if (error instanceof GitHubAppHostVisibilityError) {
+        await recordActionPlacementPending(slug, asg.id, error.message);
+        continue;
+      }
       if (!(error instanceof GitHubAppPreparationError)) throw error;
       if (await settleActionPreparationFailure(slug, asg.id, error)) executed++;
       continue;
@@ -1079,6 +1125,10 @@ async function executeHumanActions(
     try {
       executionSecrets = await actionExecutionSecrets(slug, asg, 'write');
     } catch (error) {
+      if (error instanceof GitHubAppHostVisibilityError) {
+        await recordActionPlacementPending(slug, asg.id, error.message);
+        continue;
+      }
       if (!(error instanceof GitHubAppPreparationError)) throw error;
       if (await settleActionPreparationFailure(slug, asg.id, error)) executed++;
       continue;
@@ -1858,6 +1908,10 @@ async function tickLocked(
             continue;
           }
         } catch (error) {
+          if (error instanceof GitHubAppHostVisibilityError) {
+            await recordActionPlacementPending(slug, id, error.message);
+            continue;
+          }
           if (!(error instanceof GitHubAppPreparationError)) throw error;
           if (await settleActionPreparationFailure(slug, id, error)) progressed = true;
           continue;

@@ -167,6 +167,12 @@ export interface Assignment {
    * runs deterministically (no model) whose exit status confirms the effect. */
   exec?: {
     cwd: string;
+    /** Exact owner/name GitHub repository for the App token's scope. When
+     * set, the token mints for this repository without resolving the cwd's
+     * git origin — the mint is then independent of which runner claims the
+     * action. Absent keeps the legacy derivation: first the repository the
+     * run/verify commands literally name, then the checkout at `cwd`. */
+    repository?: string;
     verify: string;
     /** Absent/`postcondition` runs verify before execution and skips when it
      * already succeeds. `always-execute` suppresses only that preflight read;

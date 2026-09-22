@@ -26,7 +26,7 @@ import { execFileSync } from 'node:child_process';
 import { arrive, newId } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 import { isRepoEgressAction } from './deconflict.js';
-import { githubAppEnvironment } from './githubApp.js';
+import { githubAppEnvironment, GitHubAppHostVisibilityError } from './githubApp.js';
 import { engineCommandEnv } from './secrets.js';
 
 /** Between provider probes per workstream. PR mergeability changes at merge
@@ -120,7 +120,15 @@ export async function probeWorkstreamPrConflicts(doc: WorkstreamDoc, io: PrConfl
   let woken = 0;
   const probedBranches = new Set<string>();
   for (const cwd of cwds) {
-    const githubEnvironment = await githubAppEnvironment(cwd, 'read');
+    let githubEnvironment: Record<string, string>;
+    try {
+      githubEnvironment = await githubAppEnvironment(cwd, 'read');
+    } catch (error) {
+      // A checkout this runner cannot see is not probeable here — placement
+      // information, not a probe verdict. Skip it; another runner sweeps it.
+      if (error instanceof GitHubAppHostVisibilityError) continue;
+      throw error;
+    }
     const branch = io.branchOf(cwd, githubEnvironment);
     // The trunk is never a PR head this watch should chase.
     if (!branch || branch === 'main' || branch === 'master' || probedBranches.has(branch)) continue;
