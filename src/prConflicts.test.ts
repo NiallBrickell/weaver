@@ -63,7 +63,7 @@ function io(mergeable: string, headRefOid = 'deadbeefcafe'): PrConflictIO {
 
 test('a CONFLICTING PR wakes its owning stream exactly once per head', async () => {
   await makeEgressWorkstream('pr-conflict-ws');
-  assert.equal(await probeWorkstreamPrConflicts('pr-conflict-ws', io('CONFLICTING')), 1);
+  assert.equal(await probeWorkstreamPrConflicts(await load('pr-conflict-ws'), io('CONFLICTING')), 1);
   let doc = await load('pr-conflict-ws');
   const wake = doc.wakes.find((w) => w.reason.includes('PR #77'));
   assert.ok(wake, 'the stream is woken with the conflict fact');
@@ -71,27 +71,27 @@ test('a CONFLICTING PR wakes its owning stream exactly once per head', async () 
   assert.ok(doc.events.some((e) => e.type === 'pr.conflict_detected' && e.summary.includes(prConflictToken(77, 'deadbeefcafe'))));
 
   // Same head, still conflicting: no second wake — the fact is already known.
-  assert.equal(await probeWorkstreamPrConflicts('pr-conflict-ws', io('CONFLICTING')), 0);
+  assert.equal(await probeWorkstreamPrConflicts(await load('pr-conflict-ws'), io('CONFLICTING')), 0);
   doc = await load('pr-conflict-ws');
   assert.equal(doc.wakes.filter((w) => w.reason.includes('PR #77')).length, 1);
 
   // A rebase moved the head but it STILL conflicts: new information, one new wake.
-  assert.equal(await probeWorkstreamPrConflicts('pr-conflict-ws', io('CONFLICTING', 'a1b2c3d4e5f6')), 1);
+  assert.equal(await probeWorkstreamPrConflicts(await load('pr-conflict-ws'), io('CONFLICTING', 'a1b2c3d4e5f6')), 1);
 });
 
 test('MERGEABLE and UNKNOWN mergeability wake nothing', async () => {
   await makeEgressWorkstream('pr-clean-ws');
-  assert.equal(await probeWorkstreamPrConflicts('pr-clean-ws', io('MERGEABLE')), 0);
-  assert.equal(await probeWorkstreamPrConflicts('pr-clean-ws', io('UNKNOWN')), 0);
+  assert.equal(await probeWorkstreamPrConflicts(await load('pr-clean-ws'), io('MERGEABLE')), 0);
+  assert.equal(await probeWorkstreamPrConflicts(await load('pr-clean-ws'), io('UNKNOWN')), 0);
   assert.equal((await load('pr-clean-ws')).wakes.length, 0);
 });
 
 test('unreadable checkouts and absent PRs fail open', async () => {
   await makeEgressWorkstream('pr-gone-ws');
   const dead: PrConflictIO = { branchOf: () => null, openPrForBranch: () => null };
-  assert.equal(await probeWorkstreamPrConflicts('pr-gone-ws', dead), 0);
+  assert.equal(await probeWorkstreamPrConflicts(await load('pr-gone-ws'), dead), 0);
   const noPr: PrConflictIO = { branchOf: () => 'feat/x', openPrForBranch: () => null };
-  assert.equal(await probeWorkstreamPrConflicts('pr-gone-ws', noPr), 0);
+  assert.equal(await probeWorkstreamPrConflicts(await load('pr-gone-ws'), noPr), 0);
 });
 
 test('the sweep throttles per stream', async () => {
@@ -102,7 +102,31 @@ test('the sweep throttles per stream', async () => {
     openPrForBranch: () => null,
   };
   const state = new Map<string, number>();
-  await sweepPrConflicts(state, () => {}, counting, 60_000);
-  await sweepPrConflicts(state, () => {}, counting, 60_000);
+  const docs = new Map([['pr-throttle-ws', await load('pr-throttle-ws')]]);
+  await sweepPrConflicts(docs, state, () => {}, counting, 60_000);
+  await sweepPrConflicts(docs, state, () => {}, counting, 60_000);
   assert.equal(probes, 1, 'a second sweep inside the interval must not re-probe');
+});
+
+test('the sweep reads only the cached scan and skips inactive streams', async () => {
+  await makeEgressWorkstream('pr-active-ws');
+  await makeEgressWorkstream('pr-paused-ws');
+  await arrive('pr-paused-ws', (d) => { d.workstream.status = 'paused'; });
+  const probed: string[] = [];
+  const recording: PrConflictIO = {
+    branchOf: (cwd) => { probed.push(cwd); return null; },
+    openPrForBranch: () => null,
+  };
+  const state = new Map<string, number>();
+  // A cached document for a stream the store no longer holds proves the
+  // sweep never goes back to the store for bodies.
+  const active = await load('pr-active-ws');
+  const docs = new Map([
+    ['pr-active-ws', active],
+    ['pr-paused-ws', await load('pr-paused-ws')],
+  ]);
+  fs.rmSync(path.join(home, 'pr-active-ws'), { recursive: true, force: true });
+  await sweepPrConflicts(docs, state, () => {}, recording, 60_000);
+  assert.deepEqual(probed, ['/tmp/some-worktree']);
+  assert.deepEqual([...state.keys()], ['pr-active-ws'], 'a paused stream is neither probed nor throttled');
 });

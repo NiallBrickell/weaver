@@ -1081,14 +1081,6 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       // has since used successfully is released without spending a call.
       const fleetRecovered = await fleetRecoveredSlugs(workstreams);
       if (fleetRecovered.size) await releaseFleetRecovered(fleetRecovered, log);
-      // Open-PR conflict watch: probes are gh calls, so they run off the loop
-      // (never blocking an iteration) and at most one sweep is in flight.
-      if (!prConflictSweepInFlight) {
-        prConflictSweepInFlight = true;
-        void sweepPrConflicts(prConflictProbedAt, log)
-          .catch((e) => logError(`[run] PR conflict sweep failed: ${e instanceof Error ? e.message : e}`))
-          .finally(() => { prConflictSweepInFlight = false; });
-      }
       const backedOff = probing ? [] : await infraBackoffSlugs(workstreams);
       if (backedOff.length) {
         const credMtime = credentialsMtime();
@@ -1139,6 +1131,15 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
         })
           .catch((e) => logError(`[run] probe sweep failed: ${e instanceof Error ? e.message : e}`))
           .finally(() => { probeSweepInFlight = false; });
+      }
+      // Open-PR conflict watch: probes are gh calls, so they run off the loop
+      // (never blocking an iteration) and at most one sweep is in flight. It
+      // reads this scan's cached documents, never the store.
+      if (!prConflictSweepInFlight) {
+        prConflictSweepInFlight = true;
+        void sweepPrConflicts(docs, prConflictProbedAt, log)
+          .catch((e) => logError(`[run] PR conflict sweep failed: ${e instanceof Error ? e.message : e}`))
+          .finally(() => { prConflictSweepInFlight = false; });
       }
       const presences = await listRunnerPresence();
       // The store answered a full scan: any running outage clock stops here.
