@@ -1234,19 +1234,23 @@ test('provisioning keeps the host alive through memory pressure and missed DHCP 
   );
 });
 
-test('provisioning installs the daily digest on its own timer, started only at the runner cutover', () => {
+test('provisioning installs the daily digest units but neither provisioning nor start enables the timer', () => {
   const text = fs.readFileSync(script, 'utf8');
   const provision = text.slice(text.indexOf("<<'PROVISION'"), text.indexOf('\nPROVISION\n'));
   // The units come from the updater's install (see gcpUpdate.test.ts), the
-  // same step `weaver-gcp update` runs on an existing host.
+  // same step `weaver-gcp update` runs on an existing host. The timer is
+  // opt-in on the host: an operator who turned it off must not find it back
+  // on after a re-provision or a cutover.
   assert.match(provision, /\/usr\/local\/sbin\/weaver-gcp-update install\n/);
   assert.doesNotMatch(provision, /\/etc\/systemd\/system\/weaver-digest/);
-  assert.match(provision, /systemctl enable weaver-run weaver-serve weaver-digest\.timer/);
+  assert.match(provision, /systemctl enable weaver-run weaver-serve\n/);
+  assert.doesNotMatch(provision, /systemctl enable[^\n]*weaver-digest/);
   assert.match(provision, /systemctl disable --now weaver-run weaver-serve weaver-digest\.timer/);
 
   const { result, root } = run(['start'], undefined);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(call(root, 1, 'args'), /sudo systemctl enable --now weaver-run weaver-digest\.timer$/m);
+  assert.match(call(root, 1, 'args'), /sudo systemctl enable --now weaver-run$/m);
+  assert.doesNotMatch(call(root, 1, 'args'), /weaver-digest/);
 });
 
 test('a refused preflight never reaches systemctl on the host', () => {

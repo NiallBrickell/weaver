@@ -95,11 +95,17 @@ VM was down is sent at the next boot. It is deliberately independent of
 its launch preflight is the morning you most need the digest, and the digest
 launches no model and holds no action capability.
 
+The timer is opt-in. Provisioning, `weaver-gcp update`, and `weaver-gcp start`
+install the units but never enable the timer, so switching it off on the host
+sticks across self-updates and cutovers. Turn it on once, on the host, when
+you want the push:
+
 ```bash
 # On the operator laptop, after the secrets above are registered there:
 WEAVER_UI_PUBLIC_ORIGIN=https://your-workspace.example \
   bin/weaver-gcp.sh push-env        # the two digest secrets go only to the host's executor-only store
-bin/weaver-gcp.sh status            # "daily digest timer: active" once started
+bin/weaver-gcp.sh ssh --command 'sudo systemctl enable --now weaver-digest.timer'
+bin/weaver-gcp.sh status            # "daily digest timer: active" once enabled
 bin/weaver-gcp.sh ssh --command 'sudo -H -u weaver /usr/local/bin/weaver digest --dry-run'
 bin/weaver-gcp.sh logs weaver-digest
 ```

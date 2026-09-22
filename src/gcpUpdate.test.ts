@@ -138,12 +138,8 @@ test('install writes a oneshot service and a five-minute persistent timer and en
   assert.match(timer, /^OnUnitActiveSec=5min$/m);
   assert.match(timer, /^Persistent=true$/m);
   assert.match(timer, /^WantedBy=timers\.target$/m);
-  // The stub systemctl answers is-enabled with success: a live fleet.
-  assert.equal(
-    calls(f.calls),
-    'systemctl daemon-reload\nsystemctl enable --now weaver-update.timer\n' +
-      'systemctl is-enabled --quiet weaver-run\nsystemctl enable --now weaver-digest.timer\n',
-  );
+  // Only the updater's own timer is switched on; the digest timer is opt-in.
+  assert.equal(calls(f.calls), 'systemctl daemon-reload\nsystemctl enable --now weaver-update.timer\n');
 });
 
 test('install brings the daily digest units to an existing host, not only a new one', () => {
@@ -158,20 +154,17 @@ test('install brings the daily digest units to an existing host, not only a new 
   assert.match(timer, /\[Timer\]\nOnCalendar=\*-\*-\* 07:30:00 Europe\/London\nPersistent=true\n\[Install\]\nWantedBy=timers\.target/);
 });
 
-test('install leaves the digest timer off on a host that has not cut over', () => {
+test('install never enables the digest timer, live fleet or not', () => {
+  // An operator who switched the digest off must not find it back on after
+  // the next self-update; the timer is enabled once, by hand, on a fleet that
+  // wants the push. The stub answers is-enabled with success (a live fleet),
+  // and install still never touches the digest timer.
   const f = fixture();
-  const bin = path.join(f.root, 'bin');
-  fs.writeFileSync(
-    path.join(bin, 'systemctl'),
-    `#!/bin/bash\nprintf '%s %s\\n' systemctl "$*" >> "$WEAVER_GCP_UPDATE_TEST_CALLS/log"\n[ "$1" = is-enabled ] && exit 1\nexit 0\n`,
-    { mode: 0o755 },
-  );
   assert.equal(run(f.env, 'install').status, 0);
-  assert.equal(
-    calls(f.calls),
-    'systemctl daemon-reload\nsystemctl enable --now weaver-update.timer\nsystemctl is-enabled --quiet weaver-run\n',
-  );
-  assert.ok(fs.existsSync(path.join(f.units, 'weaver-digest.timer')), 'the units are still written for the cutover to enable');
+  const log = calls(f.calls);
+  assert.doesNotMatch(log, /weaver-digest/);
+  assert.doesNotMatch(log, /is-enabled/);
+  assert.ok(fs.existsSync(path.join(f.units, 'weaver-digest.timer')), 'the units are still written for the operator to enable');
 });
 
 test('an unknown subcommand and a non-checkout are refused before anything runs', () => {
