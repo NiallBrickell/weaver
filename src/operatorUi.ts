@@ -125,7 +125,7 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
  * cadence, well past any GC pause or transient network blip — has genuinely
  * stopped dispatching, not just missed one tick. Used only by the
  * unauthenticated `/healthz/fleet` external-monitor probe below. */
-const FLEET_HEALTH_STALE_SECONDS = 300;
+export const FLEET_HEALTH_STALE_SECONDS = 300;
 export { FLEET_ATTENTION_STEWARD_SOURCE_KEY } from './fleetHealth.js';
 
 class OperatorUiHttpError extends Error {

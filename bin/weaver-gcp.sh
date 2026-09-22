@@ -6,6 +6,7 @@
 #   weaver-gcp set-store          install an external Postgres URL from hidden stdin
 #   weaver-gcp push-env [--restart]  merge credentials/config (no restart by default)
 #   weaver-gcp push-worker-secrets NAME...  exactly sync selected global secrets
+#   weaver-gcp push-pilot-config FILE  replace the hosted Pilot's rules file exactly
 #   weaver-gcp db-tunnel INSTANCE ZONE [--port N] [--remote-port N] [--attach-identity]
 #                                            keep an IAP tunnel to a private database open on the VM
 #   weaver-gcp tunnel             forward Postgres + serve to localhost
@@ -62,7 +63,8 @@ UPDATER="$REPO/bin/weaver-gcp-update.sh"
 GC=()
 GSSH=()
 
-usage() { sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+# Everything from the title line down to the design notes: the command list.
+usage() { awk 'NR >= 3 && /^# Design notes/ { exit } NR >= 3' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 resolve_target() {
   if [ -z "$PROJECT" ]; then
@@ -435,15 +437,44 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
+# The daily needs-you digest has its own unit and timer, independent of
+# weaver-run: it must still reach the operator when the runner has crashed,
+# wedged, or is refused by its preflight — that is when it matters most. It is
+# a read-only, model-free render delivered to the operator's own configured
+# destination (see docs/harness.md), so it carries no execution preflight.
+# Persistent=true posts a missed 07:30 on the next boot; the command reads the
+# channel back first, so a late or repeated run never posts twice.
+install -o root -g root -m 644 /dev/stdin /etc/systemd/system/weaver-digest.service <<'UNIT'
+[Unit]
+Description=Weaver daily needs-you digest (model-free, readback-idempotent)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+User=weaver
+WorkingDirectory=/opt/weaver
+ExecStart=/usr/local/bin/weaver digest --post
+TimeoutStartSec=5min
+UNIT
+install -o root -g root -m 644 /dev/stdin /etc/systemd/system/weaver-digest.timer <<'UNIT'
+[Unit]
+Description=Push the Weaver needs-you digest to the operator every morning
+[Timer]
+OnCalendar=*-*-* 07:30:00 Europe/London
+Persistent=true
+[Install]
+WantedBy=timers.target
+UNIT
+
 systemctl daemon-reload
 /usr/local/sbin/weaver-gcp-update install
 if [ "$WEAVER_GCP_STORE_MODE" = "external" ]; then
   # The explicit `start` is the cutover and enables only execution. A reboot
   # between provisioning and that act must not start against an unset/old DB.
-  systemctl disable --now weaver-run weaver-serve >/dev/null 2>&1 || true
+  systemctl disable --now weaver-run weaver-serve weaver-digest.timer >/dev/null 2>&1 || true
   echo "✓ provisioned (units installed but disabled; no service started)"
 else
-  systemctl enable weaver-run weaver-serve
+  systemctl enable weaver-run weaver-serve weaver-digest.timer
   echo "✓ provisioned (units enabled; no service started)"
 fi
 PROVISION
@@ -563,7 +594,7 @@ cmd_push_env() {
       key = $1
       if (key ~ /_API_KEY$/ || key == "CLAUDE_CODE_OAUTH_TOKEN" ||
           key == "ANTHROPIC_AUTH_TOKEN" || key == "GH_TOKEN" ||
-          key == "GITHUB_TOKEN") next
+          key == "GITHUB_TOKEN" || key ~ /^WEAVER_DIGEST_SLACK_/) next
       print
     }
   ' "$PUSH_ENV_RAW_TMP" > "$PUSH_ENV_TMP"
@@ -578,7 +609,9 @@ cmd_push_env() {
     $1 == "WEAVER_GITHUB_APP_INSTALLATION_ID" ||
     $1 == "WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64" ||
     $1 == "WEAVER_PILOT_TOKEN" ||
-    $1 == "WEAVER_SERVE_TOKEN" { print }
+    $1 == "WEAVER_SERVE_TOKEN" ||
+    $1 == "WEAVER_DIGEST_SLACK_TOKEN" ||
+    $1 == "WEAVER_DIGEST_SLACK_CHANNEL" { print }
   ' "$PUSH_EXECUTOR_SECRETS_RAW_TMP" > "$PUSH_EXECUTOR_SECRETS_TMP"
   push_remote_installer
   "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env merge' < "$PUSH_ENV_TMP"
@@ -637,6 +670,29 @@ cmd_push_worker_secrets() {
   rm -f -- "$PUSH_WORKER_SECRETS_TMP"
   PUSH_WORKER_SECRETS_TMP=""
   trap - EXIT
+}
+
+# ── push-pilot-config ─────────────────────────────────────────────────────────
+# The hosted Pilot (weaver-pilot.service) judges every hosted action against
+# its own rules file. With no file it silently falls back to its built-in
+# default rules — which is how the hosted fleet's approval policy drifted from
+# the operator's without anyone noticing, and why the launch preflight now
+# refuses a runner whose Pilot has none. This replaces that file exactly with
+# the operator's copy: contents only on SSH stdin (never argv or metadata),
+# installed by the root-owned installer as weaver-pilot, mode 0600. Pilot
+# re-reads its config when the file changes, so nothing is restarted.
+cmd_push_pilot_config() {
+  [ "$#" -eq 1 ] && [ -n "$1" ] || {
+    echo "❌ usage: weaver-gcp push-pilot-config FILE" >&2; exit 1;
+  }
+  local file="$1"
+  [ -f "$file" ] && [ -r "$file" ] || { echo "❌ $file is not a readable file" >&2; exit 1; }
+  [ -s "$file" ] || {
+    echo "❌ $file is empty — it would leave the hosted Pilot on its built-in default rules" >&2; exit 1;
+  }
+  push_remote_installer
+  "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env pilot-config' < "$file"
+  echo "✓ hosted Pilot config replaced exactly (weaver-pilot, mode 0600); Pilot reloads it on its next request"
 }
 
 # ── tunnel ────────────────────────────────────────────────────────────────────
@@ -755,11 +811,16 @@ run_after_execution_preflight() {
   local action="$1" remote_systemctl
   [ -r "$PREFLIGHT" ] || { echo "❌ missing GCP execution preflight: $PREFLIGHT" >&2; exit 1; }
   case "$action" in
-    start) remote_systemctl='enable --now weaver-run' ;;
+    # The digest timer starts at the same cutover as the runner, never before
+    # the operator has pointed this host at the store it should report on.
+    start) remote_systemctl='enable --now weaver-run weaver-digest.timer' ;;
     restart) remote_systemctl='restart weaver-run weaver-serve' ;;
     *) echo "❌ internal error: unknown post-preflight action" >&2; exit 1 ;;
   esac
-  "${GSSH[@]}" --command "preflight=/tmp/weaver-gcp-preflight.\$\$; trap 'rm -f -- \"\$preflight\"' EXIT; umask 077; cat > \"\$preflight\"; sudo install -o root -g root -m 755 \"\$preflight\" /usr/local/sbin/weaver-gcp-preflight; sudo /usr/local/sbin/weaver-gcp-preflight; sudo systemctl $remote_systemctl" < "$PREFLIGHT"
+  # `&&`, not `;`: a refused preflight must leave systemd untouched. With `;`
+  # a failed gate still ran `systemctl restart`, stopping a live runner that
+  # the unit's own preflight then refused to start again.
+  "${GSSH[@]}" --command "preflight=/tmp/weaver-gcp-preflight.\$\$; trap 'rm -f -- \"\$preflight\"' EXIT; umask 077; cat > \"\$preflight\" && sudo install -o root -g root -m 755 \"\$preflight\" /usr/local/sbin/weaver-gcp-preflight && sudo /usr/local/sbin/weaver-gcp-preflight && sudo systemctl $remote_systemctl" < "$PREFLIGHT"
 }
 cmd_start()   { run_after_execution_preflight start; echo "✓ runner enabled + started"; }
 cmd_stop()    { "${GSSH[@]}" --command 'sudo systemctl stop weaver-run weaver-serve'; echo "✓ stopped"; }
@@ -791,6 +852,7 @@ cmd_status()  {
   "${GSSH[@]}" --command '
     systemctl is-active weaver-run weaver-serve docker | paste - - - | sed "s/^/services (run serve docker): /"
     systemctl is-active weaver-update.timer 2>/dev/null | sed "s/^/self-update timer: /"
+    systemctl is-active weaver-digest.timer 2>/dev/null | sed "s/^/daily digest timer: /"
     sudo -u weaver git -C /opt/weaver rev-parse --short=12 HEAD 2>/dev/null | sed "s/^/checkout: /"
     hb=/home/weaver/state/.runner.heartbeat
     if sudo test -f $hb; then echo "runner heartbeat: $(( $(date +%s) - $(sudo stat -c %Y $hb) ))s ago"; else echo "runner heartbeat: none yet"; fi
@@ -814,6 +876,7 @@ case "${1:-}" in
   set-store) shift; cmd_set_store "$@";;
   push-env) shift; cmd_push_env "$@";;
   push-worker-secrets) shift; cmd_push_worker_secrets "$@";;
+  push-pilot-config) shift; cmd_push_pilot_config "$@";;
   tunnel)   shift; cmd_tunnel "$@";;
   db-tunnel) shift; cmd_db_tunnel "$@";;
   join)     shift; cmd_join "$@";;

@@ -249,6 +249,10 @@ WEAVER_PILOT_URL=http://127.0.0.1:9721 \
 # selection replaces the previous hosted worker set; omitted names are revoked.
 bin/weaver-gcp.sh push-worker-secrets SENTRY_AUTH_TOKEN READONLY_DB_URL
 
+# The hosted Pilot judges every action by this exact rules file; start refuses
+# a runner whose Pilot has none.
+bin/weaver-gcp.sh push-pilot-config ~/.pilot/pilot.toml
+
 bin/weaver-gcp.sh update                   # roll forward now + install the self-update timer
 bin/weaver-gcp.sh start                    # starts weaver-run: the explicit cutover
 bin/weaver-gcp.sh status                   # services + runner heartbeat
@@ -302,7 +306,10 @@ the VM as absent. `status` likewise retains the authentication error instead of
 misreporting it as an uncreated VM.
 
 `start`, `restart`, `push-env --restart`, and `update --restart` all run the
-same fail-closed host preflight before systemd can launch the runner. This GCP
+same fail-closed host preflight before systemd can launch the runner; a refused
+preflight leaves systemd untouched, so a live runner keeps running. `start`
+also enables the [daily digest](./digest.md) timer, which runs independently of
+the runner so it still arrives when the runner is down. This GCP
 helper is deliberately narrower than Weaver's general executor support:
 ordinary work and every worker fallback must run inside the service user's
 rootless Docker daemon — either Claude Code itself in the pinned worker image
@@ -357,7 +364,19 @@ pilot-auth-check` as the service user, proving the exact shared client used by
 engine and worker actions can load the bearer and receive the authenticated
 204. Any failed proof refuses the systemd launch before an action-capable
 runner exists. The Pilot account, unit, and token are installation
-prerequisites rather than a bundled Pilot binary or configuration.
+prerequisites rather than a bundled Pilot binary.
+
+The Pilot's rules are the operator's, and the preflight refuses to launch
+without them. Pilot reads `PILOT_CONFIG`, else `$PILOT_HOME/pilot.toml`, else
+`~/.pilot/pilot.toml` of the `weaver-pilot` account (taking `PILOT_*` from the
+unit's `Environment=`), and when that file is missing it silently judges every
+action with its built-in default rules — a hosted fleet once ran on those,
+without the self-merge carve-out the operator's own rules grant, and nothing
+said so.
+`push-pilot-config FILE` replaces the file exactly with your copy: contents
+only on SSH stdin, owned by `weaver-pilot`, mode `0600`, and no restart, since
+Pilot re-reads a changed file. Push again whenever your local rules change;
+the preflight proves a file exists, and only this command makes it yours.
 
 The same preflight refuses a personal `gh` login, Git credential helper/store,
 SSH private key, credential-bearing workspace remote, GitHub MCP

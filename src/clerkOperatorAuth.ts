@@ -104,6 +104,19 @@ export function clerkOperatorAuthConfigFromEnv(
   };
 }
 
+/**
+ * The operator workspace's canonical public origin when one is configured:
+ * `WEAVER_UI_PUBLIC_ORIGIN`, else the Railway-assigned domain — the same
+ * derivation and validation Clerk's `authorizedParties` uses. Absent means no
+ * public workspace is known (links are omitted, never guessed).
+ */
+export function operatorPublicOrigin(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const explicit = env.WEAVER_UI_PUBLIC_ORIGIN?.trim();
+  if (explicit) return parsePublicOrigin(explicit);
+  const railwayDomain = env.RAILWAY_PUBLIC_DOMAIN?.trim();
+  return railwayDomain ? parseRailwayPublicOrigin(railwayDomain) : undefined;
+}
+
 function parseRailwayPublicOrigin(domain: string): string {
   if (!/^[a-z0-9.-]+(?::\d+)?$/i.test(domain)) {
     throw new Error('RAILWAY_PUBLIC_DOMAIN must be a bare hostname with an optional port');

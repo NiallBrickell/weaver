@@ -21,6 +21,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Operator workspace](./operator-workspace.md) — create work, inspect one Workstream, and add follow-up from a browser
 - [Fleet health for external monitoring](./fleet-health.md) — an unauthenticated `/healthz/fleet` endpoint an outside monitor can page on when every runner goes dark
 - [Printouts](./printouts.md) — an exact, copyable account since the last delivered printout
+- [The daily digest](./digest.md) — what needs you, pushed to your Slack at 07:30 with the exact command that answers each item
 - [Does each outcome need you less often?](./stats.md) — recorded human interventions beside quality and authority signals
 - [Routines](./routines.md) — standing loops that wake with their decision log, constraints, and learned policies intact
 - [Pausing work](./pausing.md) — stop one workstream or the active fleet without losing its durable position

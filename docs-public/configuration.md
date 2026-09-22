@@ -162,6 +162,12 @@ worker; a worker-visible `SENTRY_AUTH_TOKEN` in a workstream's secrets is never
 used for this. Without it, Sentry-declared cards simply stay open until the
 workstream or you close them. GitHub PR facts use the GitHub App below.
 
+The [daily digest](./digest.md) posts with the fleet's existing Slack bot
+(`SLACK_BOT_TOKEN`) to the channel you set once in the executor-only
+`WEAVER_DIGEST_SLACK_CHANNEL`; the executor-only `WEAVER_DIGEST_SLACK_TOKEN`
+overrides the bot. Neither is visible to a Workstream. `WEAVER_UI_PUBLIC_ORIGIN` (or Railway's
+assigned domain) supplies the digest's links to each Workstream page.
+
 Hosted GitHub access uses three executor-only values rather than a personal
 CLI login or PAT: `WEAVER_GITHUB_APP_ID`,
 `WEAVER_GITHUB_APP_INSTALLATION_ID`, and

@@ -18,7 +18,7 @@ export const KNOWN_COMMANDS = new Set([
   'do', 'ask', 'create', 'list', 'status', 'capacity', 'log', 'tail', 'show', 'steer', 'approve',
   'assign-action', 'constraint', 'approve-action', 'reject-action', 'reject-send', 'reply', 'observe',
   'adopt', 'budget', 'execution-safety', 'policies', 'backfill', 'secret', 'login', 'pilot-auth-check', 'github-app-setup', 'github-auth-check', 'github-clone', 'link', 'store', 'run', 'serve', 'ui', 'resolve', 'tag', 'pause', 'rename',
-  'resume', 'watch', 'inspect', 'printout', 'stats', 'advance', 'tick', 'help', '--help', 'priority',
+  'resume', 'watch', 'inspect', 'printout', 'digest', 'stats', 'advance', 'tick', 'help', '--help', 'priority',
   'placement', 'coordinator-runners', 'attention-hints',
 ]);
 
@@ -37,7 +37,7 @@ export const SLUG_FIRST_COMMANDS = new Set([
 // No-argument operator surfaces: `weaver do watch` almost certainly means
 // `weaver watch`, never a workstream about the word "watch". Only redispatched
 // when they stand alone, so "list the competitors and …" still onboards.
-export const DASHBOARD_COMMANDS = new Set(['watch', 'list', 'stats', 'inspect', 'printout', 'link', 'ui']);
+export const DASHBOARD_COMMANDS = new Set(['watch', 'list', 'stats', 'inspect', 'printout', 'digest', 'link', 'ui']);
 
 /**
  * A management command that reached the intake path because `w` was (or still
