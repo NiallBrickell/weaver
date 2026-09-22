@@ -42,7 +42,10 @@ PROJECT="${WEAVER_GCP_PROJECT:-}"
 ZONE="${WEAVER_GCP_ZONE:-europe-west2-a}"
 REGION="${ZONE%-*}"
 VM="${WEAVER_GCP_VM:-weaver-fleet}"
-MACHINE="${WEAVER_GCP_MACHINE:-e2-standard-2}"
+# 4 vCPU / 16 GB. On 2 vCPU the runner's own load throttled it to two to four
+# ticks at a time, so due work sat unserved for hours (2026-09-21); the fleet
+# was resized in place on 2026-09-22 and a re-provision must not undo that.
+MACHINE="${WEAVER_GCP_MACHINE:-e2-standard-4}"
 CONCURRENCY="${WEAVER_GCP_CONCURRENCY:-4}"
 # Boot disk in GB. Workers leave repository checkouts and container images
 # behind (an OpenHands image alone is ~6 GB) and the runner refuses to
@@ -437,34 +440,8 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# The daily needs-you digest has its own unit and timer, independent of
-# weaver-run: it must still reach the operator when the runner has crashed,
-# wedged, or is refused by its preflight — that is when it matters most. It is
-# a read-only, model-free render delivered to the operator's own configured
-# destination (see docs/harness.md), so it carries no execution preflight.
-# Persistent=true posts a missed 07:30 on the next boot; the command reads the
-# channel back first, so a late or repeated run never posts twice.
-install -o root -g root -m 644 /dev/stdin /etc/systemd/system/weaver-digest.service <<'UNIT'
-[Unit]
-Description=Weaver daily needs-you digest (model-free, readback-idempotent)
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=oneshot
-User=weaver
-WorkingDirectory=/opt/weaver
-ExecStart=/usr/local/bin/weaver digest --post
-TimeoutStartSec=5min
-UNIT
-install -o root -g root -m 644 /dev/stdin /etc/systemd/system/weaver-digest.timer <<'UNIT'
-[Unit]
-Description=Push the Weaver needs-you digest to the operator every morning
-[Timer]
-OnCalendar=*-*-* 07:30:00 Europe/London
-Persistent=true
-[Install]
-WantedBy=timers.target
-UNIT
+# The digest's unit and timer are written by the updater's `install` below,
+# so provisioning and `weaver-gcp update` install the same units.
 
 systemctl daemon-reload
 /usr/local/sbin/weaver-gcp-update install

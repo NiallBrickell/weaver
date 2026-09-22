@@ -21,7 +21,11 @@
 #     every in-flight action behind its lease.
 #
 # Installed by weaver-gcp.sh as /usr/local/sbin/weaver-gcp-update and run by
-# weaver-update.timer. `install` writes and enables that timer.
+# weaver-update.timer. `install` writes the host's periodic units — that timer
+# and the daily digest's — so `weaver-gcp update` brings an existing VM's units
+# up to date, not only a freshly provisioned one. The digest shipped in code on
+# 2026-09-21 and never reached the running fleet, because only provisioning
+# wrote its units.
 
 set -euo pipefail
 
@@ -50,7 +54,7 @@ as_service_user() {
   fi
 }
 
-install_timer() {
+install_units() {
   [ -d "$unit_dir" ] || fail "unit directory $unit_dir does not exist"
   cat > "$unit_dir/weaver-update.service" <<EOF
 [Unit]
@@ -74,9 +78,44 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+  # The daily needs-you digest has its own unit and timer, independent of
+  # weaver-run: it must still reach the operator when the runner has crashed,
+  # wedged, or is refused by its preflight — that is when it matters most. It is
+  # a read-only, model-free render delivered to the operator's own configured
+  # destination (see docs/harness.md), so it carries no execution preflight.
+  # Persistent=true posts a missed 07:30 on the next boot; the command reads the
+  # channel back first, so a late or repeated run never posts twice.
+  cat > "$unit_dir/weaver-digest.service" <<'EOF'
+[Unit]
+Description=Weaver daily needs-you digest (model-free, readback-idempotent)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+User=weaver
+WorkingDirectory=/opt/weaver
+ExecStart=/usr/local/bin/weaver digest --post
+TimeoutStartSec=5min
+EOF
+  cat > "$unit_dir/weaver-digest.timer" <<'EOF'
+[Unit]
+Description=Push the Weaver needs-you digest to the operator every morning
+[Timer]
+OnCalendar=*-*-* 07:30:00 Europe/London
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
   systemctl daemon-reload
   systemctl enable --now weaver-update.timer
   echo "✓ weaver-update.timer enabled (every 5 minutes, from origin/$branch)"
+  # A live fleet gets its digest now. A host still waiting for its cutover
+  # (weaver-run not enabled yet) leaves it to `weaver-gcp start`, which
+  # enables both together.
+  if systemctl is-enabled --quiet weaver-run; then
+    systemctl enable --now weaver-digest.timer
+    echo "✓ weaver-digest.timer enabled (07:30 Europe/London)"
+  fi
 }
 
 # One updater at a time. `systemctl enable --now` fires the timer's first run
@@ -129,7 +168,7 @@ update() {
 }
 
 case "${1:-}" in
-  install) install_timer ;;
+  install) install_units ;;
   ""|--quiet) update "${1:-}" ;;
   *) fail "usage: weaver-gcp-update [install|--quiet]" ;;
 esac
