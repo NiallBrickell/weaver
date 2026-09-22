@@ -19,6 +19,7 @@ import {
   githubRepositoryFromCwd,
   mintGitHubAppToken,
   parseGitHubRepositoryRemote,
+  workerGitIdentityEnv,
 } from './githubApp.js';
 import { setExecutorSecret } from './secrets.js';
 import type { Assignment } from './types.js';
@@ -506,4 +507,86 @@ test('commit identity fails closed on a bad metadata response without leaking ke
   assert.ok(error instanceof Error);
   assert.equal(error.message, 'GitHub App metadata request failed (HTTP 500)');
   assert.doesNotMatch(error.message, new RegExp(privateKeyBase64));
+});
+
+// The worker's git identity fragment: what every in-process executor (local-sdk,
+// codex-sdk, pi) merges into the worker's subprocess environment so a commit
+// carries the verifiable App bot rather than an unverifiable @erdo.ai alias git
+// would otherwise invent. GIT_COMMITTER_* is set alongside GIT_AUTHOR_* because
+// git honours both, and a bare author override would leave the committer wrong.
+test('workerGitIdentityEnv fixes author AND committer to the verifiable App bot', async () => {
+  delete process.env.WEAVER_GIT_AUTHOR_NAME;
+  delete process.env.WEAVER_GIT_AUTHOR_EMAIL;
+  configure();
+  __resetGitHubAppForTests();
+  __setGitHubAppTestDependencies({
+    now: () => fixedNow,
+    fetch: (async (input) => {
+      const url = String(input);
+      if (url.endsWith('/app')) {
+        return Response.json({ slug: 'weaver-fleet-production-912c84' }, { status: 200 });
+      }
+      if (url.includes('/access_tokens')) return tokenResponse('installation-token');
+      if (url.includes('/users/')) return Response.json({ id: 321406343 }, { status: 200 });
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof globalThis.fetch,
+  });
+
+  const bot = '321406343+weaver-fleet-production-912c84[bot]@users.noreply.github.com';
+  assert.deepEqual(await workerGitIdentityEnv(), {
+    GIT_AUTHOR_NAME: 'weaver-fleet-production-912c84[bot]',
+    GIT_AUTHOR_EMAIL: bot,
+    GIT_COMMITTER_NAME: 'weaver-fleet-production-912c84[bot]',
+    GIT_COMMITTER_EMAIL: bot,
+  });
+});
+
+test('workerGitIdentityEnv prefers the WEAVER_GIT_AUTHOR_* override without fetching', async () => {
+  configure();
+  process.env.WEAVER_GIT_AUTHOR_NAME = 'Deploy Bot';
+  process.env.WEAVER_GIT_AUTHOR_EMAIL = 'deploy@example.com';
+  let fetched = false;
+  __setGitHubAppTestDependencies({
+    now: () => fixedNow,
+    fetch: (async () => {
+      fetched = true;
+      throw new Error('must not fetch');
+    }) as typeof globalThis.fetch,
+  });
+  try {
+    assert.deepEqual(await workerGitIdentityEnv(), {
+      GIT_AUTHOR_NAME: 'Deploy Bot',
+      GIT_AUTHOR_EMAIL: 'deploy@example.com',
+      GIT_COMMITTER_NAME: 'Deploy Bot',
+      GIT_COMMITTER_EMAIL: 'deploy@example.com',
+    });
+    assert.equal(fetched, false);
+  } finally {
+    delete process.env.WEAVER_GIT_AUTHOR_NAME;
+    delete process.env.WEAVER_GIT_AUTHOR_EMAIL;
+  }
+});
+
+test('workerGitIdentityEnv rejects a half-set WEAVER_GIT_AUTHOR_* override', async () => {
+  process.env.WEAVER_GIT_AUTHOR_NAME = 'Only A Name';
+  delete process.env.WEAVER_GIT_AUTHOR_EMAIL;
+  try {
+    await assert.rejects(workerGitIdentityEnv(), /must be set together/);
+  } finally {
+    delete process.env.WEAVER_GIT_AUTHOR_NAME;
+  }
+});
+
+test('workerGitIdentityEnv is empty when no App is configured and no override is set', async () => {
+  delete process.env.WEAVER_GIT_AUTHOR_NAME;
+  delete process.env.WEAVER_GIT_AUTHOR_EMAIL;
+  let fetched = false;
+  __setGitHubAppTestDependencies({
+    fetch: (async () => {
+      fetched = true;
+      throw new Error('must not fetch');
+    }) as typeof globalThis.fetch,
+  });
+  assert.deepEqual(await workerGitIdentityEnv(), {});
+  assert.equal(fetched, false);
 });

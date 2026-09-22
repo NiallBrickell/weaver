@@ -21,7 +21,11 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { isIPv4 } from 'node:net';
 import { hostname, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { gitHubAppCommitIdentity, type GitCommitIdentity } from '../githubApp.js';
+import {
+  assertGitIdentityInjectable,
+  resolveWorkerGitIdentity,
+  type GitCommitIdentity,
+} from '../githubApp.js';
 import { loadExecutorSecrets, redactSecrets } from '../secrets.js';
 import { WORKER_MEMORY_LIMIT_ENV, workerMemoryLimitArgs } from './containerLimits.js';
 import { startMcpRelay, type McpRelay } from './mcpRelay.js';
@@ -213,7 +217,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
   private async resolveGitIdentityArgs(): Promise<string[]> {
     const identity = await this.gitIdentity();
     if (!identity) return [];
-    validateGitIdentity(identity);
+    assertGitIdentityInjectable(identity);
     return [
       '--env', `GIT_AUTHOR_NAME=${identity.name}`,
       '--env', `GIT_AUTHOR_EMAIL=${identity.email}`,
@@ -921,38 +925,6 @@ function parseDockerPort(output: string): string {
   const match = line?.match(/:(\d+)$/);
   if (!match) throw new Error(`could not parse Docker Agent Server port from ${JSON.stringify(output)}`);
   return `http://127.0.0.1:${match[1]}`;
-}
-
-/**
- * The git identity to inject into worker containers. An explicit operator
- * override wins (`WEAVER_GIT_AUTHOR_NAME` + `WEAVER_GIT_AUTHOR_EMAIL`, both
- * required together — e.g. to name an identity a deploy-author guard accepts);
- * otherwise the fleet's GitHub App bot, so commits match the principal that
- * opens the PRs. Null when neither resolves, leaving the image default.
- */
-async function resolveWorkerGitIdentity(): Promise<GitCommitIdentity | null> {
-  const name = process.env.WEAVER_GIT_AUTHOR_NAME?.trim();
-  const email = process.env.WEAVER_GIT_AUTHOR_EMAIL?.trim();
-  if (name || email) {
-    if (!name || !email) {
-      throw new Error(
-        'WEAVER_GIT_AUTHOR_NAME and WEAVER_GIT_AUTHOR_EMAIL must be set together',
-      );
-    }
-    return { name, email };
-  }
-  return gitHubAppCommitIdentity();
-}
-
-function validateGitIdentity(identity: GitCommitIdentity): void {
-  for (const [field, value] of Object.entries(identity)) {
-    if (value.length === 0) {
-      throw new Error(`git identity ${field} must not be empty`);
-    }
-    if (/[\r\n\0]/.test(value)) {
-      throw new Error(`git identity ${field} contains a newline or NUL byte`);
-    }
-  }
 }
 
 function validateWorkerVisibleEnv(env: Record<string, string>): void {
