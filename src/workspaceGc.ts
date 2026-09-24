@@ -108,10 +108,13 @@ export function newestContentMtimeMs(dir: string): number {
       continue;
     }
     for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
+      // `.git` is a directory in a checkout and a FILE in a worktree (a
+      // pointer git rewrites on its own schedule); neither is the worker's
+      // content, so neither says when the tree was last touched.
+      if (entry.isSymbolicLink() || entry.name === '.git') continue;
       const path = join(current, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name === '.git' || isRebuildableDirName(entry.name)) continue;
+        if (isRebuildableDirName(entry.name)) continue;
         stack.push(path);
         continue;
       }
@@ -269,10 +272,14 @@ export function gcWorkspaces(options: WorkspaceGcOptions): WorkspaceGcReport {
     }
     throw error;
   }
-  const remove = (path: string) => {
-    if (dryRun) return;
-    rmSync(path, { recursive: true, force: true, maxRetries: 3 });
-  };
+  // Judge every child BEFORE removing any. A git worktree in one child keeps
+  // its metadata inside a sibling child's .git (the checkout it was made
+  // from); removing that sibling first makes the worktree unreadable, and an
+  // unreadable repository is kept — so a one-pass loop turned six removable
+  // worktrees into permanent clutter on the first live run. Two phases also
+  // make the dry run's report exactly what the real run does.
+  const toRemove: string[] = [];
+  const toPrune: string[] = [];
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
     const child = entry.name;
@@ -289,7 +296,7 @@ export function gcWorkspaces(options: WorkspaceGcOptions): WorkspaceGcReport {
       .map((repo) => ({ repo, reason: unshippedWork(repo) }))
       .filter((entry): entry is { repo: string; reason: string } => entry.reason !== null);
     if (reasons.length === 0) {
-      remove(path);
+      toRemove.push(path);
       report.removed.push(child);
       continue;
     }
@@ -298,9 +305,12 @@ export function gcWorkspaces(options: WorkspaceGcOptions): WorkspaceGcReport {
       reason: reasons.map(({ repo, reason }) => `${relative(root, repo) || child}: ${reason}`).join('; '),
     });
     for (const rebuildable of rebuildableDirectoriesUnder(path)) {
-      remove(rebuildable);
+      toPrune.push(rebuildable);
       report.pruned.push(relative(root, rebuildable));
     }
+  }
+  if (!dryRun) {
+    for (const path of [...toRemove, ...toPrune]) rmSync(path, { recursive: true, force: true, maxRetries: 3 });
   }
   report.freeBytesAfter = dryRun ? report.freeBytesBefore : freeBytesAt(root);
   return report;
