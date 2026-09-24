@@ -138,8 +138,26 @@ test('install writes a oneshot service and a five-minute persistent timer and en
   assert.match(timer, /^OnUnitActiveSec=5min$/m);
   assert.match(timer, /^Persistent=true$/m);
   assert.match(timer, /^WantedBy=timers\.target$/m);
-  // Only the updater's own timer is switched on; the digest timer is opt-in.
-  assert.equal(calls(f.calls), 'systemctl daemon-reload\nsystemctl enable --now weaver-update.timer\n');
+  // The updater's own timer and the nightly workspace collection are switched
+  // on; the digest timer is opt-in.
+  assert.equal(
+    calls(f.calls),
+    'systemctl daemon-reload\nsystemctl enable --now weaver-update.timer\nsystemctl enable --now weaver-gc.timer\n',
+  );
+});
+
+test('install writes and enables the nightly workspace garbage collection units', () => {
+  // Nothing removed a resolved workstream's checkouts until 2026-09-24, when
+  // 71 GB of them filled the disk and the runner fell below its free-space
+  // floor. Collection is host hygiene, so it is on wherever the runner is.
+  const f = fixture();
+  assert.equal(run(f.env, 'install').status, 0);
+  const service = fs.readFileSync(path.join(f.units, 'weaver-gc.service'), 'utf8');
+  assert.match(service, /Type=oneshot\nUser=weaver\nWorkingDirectory=\/opt\/weaver\nExecStart=\/usr\/local\/bin\/weaver gc-workspaces\n/);
+  assert.doesNotMatch(service, /ExecStartPre|weaver-run|Restart=/);
+  const timer = fs.readFileSync(path.join(f.units, 'weaver-gc.timer'), 'utf8');
+  assert.match(timer, /\[Timer\]\nOnCalendar=\*-\*-\* 04:30:00 Europe\/London\nPersistent=true\n\[Install\]\nWantedBy=timers\.target/);
+  assert.match(calls(f.calls), /systemctl enable --now weaver-gc\.timer\n/);
 });
 
 test('install brings the daily digest units to an existing host, not only a new one', () => {

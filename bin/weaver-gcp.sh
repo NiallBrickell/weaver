@@ -450,7 +450,7 @@ systemctl daemon-reload
 if [ "$WEAVER_GCP_STORE_MODE" = "external" ]; then
   # The explicit `start` is the cutover and enables only execution. A reboot
   # between provisioning and that act must not start against an unset/old DB.
-  systemctl disable --now weaver-run weaver-serve weaver-digest.timer >/dev/null 2>&1 || true
+  systemctl disable --now weaver-run weaver-serve weaver-digest.timer weaver-gc.timer >/dev/null 2>&1 || true
   echo "✓ provisioned (units installed but disabled; no service started)"
 else
   systemctl enable weaver-run weaver-serve
@@ -790,9 +790,10 @@ run_after_execution_preflight() {
   local action="$1" remote_systemctl
   [ -r "$PREFLIGHT" ] || { echo "❌ missing GCP execution preflight: $PREFLIGHT" >&2; exit 1; }
   case "$action" in
-    # The cutover starts execution only. The digest timer is opt-in on the
-    # host and is never switched on by a fleet command.
-    start) remote_systemctl='enable --now weaver-run' ;;
+    # The cutover starts execution and the nightly workspace collection that
+    # keeps its disk usable. The digest timer is opt-in on the host and is
+    # never switched on by a fleet command.
+    start) remote_systemctl='enable --now weaver-run weaver-gc.timer' ;;
     restart) remote_systemctl='restart weaver-run weaver-serve' ;;
     *) echo "❌ internal error: unknown post-preflight action" >&2; exit 1 ;;
   esac
@@ -832,6 +833,8 @@ cmd_status()  {
     systemctl is-active weaver-run weaver-serve docker | paste - - - | sed "s/^/services (run serve docker): /"
     systemctl is-active weaver-update.timer 2>/dev/null | sed "s/^/self-update timer: /"
     systemctl is-active weaver-digest.timer 2>/dev/null | sed "s/^/daily digest timer: /"
+    systemctl is-active weaver-gc.timer 2>/dev/null | sed "s/^/workspace gc timer: /"
+    df -h /home/weaver 2>/dev/null | awk "NR==2 {print \"disk (/home/weaver): \" \$4 \" free of \" \$2 \" (\" \$5 \" used)\"}"
     sudo -u weaver git -C /opt/weaver rev-parse --short=12 HEAD 2>/dev/null | sed "s/^/checkout: /"
     hb=/home/weaver/state/.runner.heartbeat
     if sudo test -f $hb; then echo "runner heartbeat: $(( $(date +%s) - $(sudo stat -c %Y $hb) ))s ago"; else echo "runner heartbeat: none yet"; fi

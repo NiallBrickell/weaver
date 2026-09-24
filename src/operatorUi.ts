@@ -341,9 +341,18 @@ export interface FleetHealthSnapshot {
   last_completed_pass_age_seconds: number | null;
   oldest_unserved_due_seconds: number | null;
   capacity_blocked_workstreams: number;
+  /** Free MiB on the freshest healthy runner's state filesystem, or null when
+   * no healthy runner has published it. */
+  state_free_mib: number | null;
   problems: string[];
   unhealthy: 0 | 1;
 }
+
+// The runner stops dispatching at its 512 MiB floor (runner.ts). Warning at
+// 2 GiB gives the operator (or the nightly workspace collection) a day or two
+// of ordinary fleet churn to act before the fleet silently goes quiet — the
+// 2026-09-24 disk-full outage had no signal until the floor was crossed.
+export const FLEET_STATE_FREE_WARN_BYTES = 2 * 1024 * 1024 * 1024;
 
 // A runner can heartbeat while dispatching nothing (2026-09-21: a fleet
 // recorded 0 completed coordinator passes and 236 capacity backoffs in a day
@@ -420,6 +429,13 @@ export function fleetHealthSnapshot(presences: readonly RunnerPresence[], nowMs 
   ) {
     problems.push('no coordinator pass has completed in 12h while work is waiting on provider capacity');
   }
+  const stateFreeBytes = freshestOutput?.stateFreeBytes;
+  const stateFreeMib = typeof stateFreeBytes === 'number' && Number.isFinite(stateFreeBytes)
+    ? Math.round(stateFreeBytes / (1024 * 1024))
+    : null;
+  if (stateFreeMib !== null && stateFreeBytes! < FLEET_STATE_FREE_WARN_BYTES) {
+    problems.push(`the runner's state filesystem has ${stateFreeMib} MiB free, under the 2 GiB warning line; below 512 MiB it stops dispatching`);
+  }
 
   return {
     ok: problems.length === 0,
@@ -434,6 +450,7 @@ export function fleetHealthSnapshot(presences: readonly RunnerPresence[], nowMs 
     last_completed_pass_age_seconds: lastCompletedPassAgeSeconds,
     oldest_unserved_due_seconds: oldestUnservedDueSeconds,
     capacity_blocked_workstreams: capacityBlockedWorkstreams,
+    state_free_mib: stateFreeMib,
     problems,
     unhealthy: problems.length ? 1 : 0,
   };

@@ -829,6 +829,18 @@ export function runnerMinFreeBytes(env: NodeJS.ProcessEnv = process.env): number
  * full. Returned reasons are operator-facing: they are published in shared
  * presence and rendered by status/watch as the coordinator capacity reason.
  */
+/** Free bytes on the filesystem holding WEAVER_HOME, or undefined when it
+ * answers no statfs. Published in RunnerOutput so /healthz/fleet can warn
+ * before the floor below stops dispatch. */
+export function stateFreeBytes(): number | undefined {
+  try {
+    const stat = fs.statfsSync(weaverHome());
+    return Number(stat.bavail) * Number(stat.bsize);
+  } catch {
+    return undefined;
+  }
+}
+
 export function runnerHomeHealth(minFreeBytes = runnerMinFreeBytes()): RunnerHomeHealth {
   const home = weaverHome();
   try {
@@ -1106,7 +1118,8 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       const dispatchSignatures = new Map<string, string>();
       const docs = await workstreams.scan();
       dispatches.retain(new Set(docs.keys()));
-      lastOutput = runnerOutput(docs.values());
+      const free = stateFreeBytes();
+      lastOutput = { ...runnerOutput(docs.values()), ...(free === undefined ? {} : { stateFreeBytes: free }) };
       // Needs-you cards whose declared facts now hold (a PR merged, a Sentry
       // issue resolved, a capacity ask made moot) close themselves. Provider
       // reads run off the loop, one sweep at a time, over THIS scan's cached

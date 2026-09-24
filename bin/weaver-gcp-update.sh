@@ -110,9 +110,40 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+  # Workspace garbage collection is host hygiene, so unlike the digest it is
+  # switched on wherever the runner is installed: nothing ever removed a
+  # resolved workstream's checkouts, and on 2026-09-24 71 GB of them filled
+  # the disk and put the runner below its free-space floor (dispatching
+  # nothing). It reads the fleet once a day and removes only children no live
+  # work names, keeping anything with uncommitted or unpushed work (see
+  # src/workspaceGc.ts). 04:30 London is after the digest window's quietest
+  # hour and before the morning's dispatch.
+  cat > "$unit_dir/weaver-gc.service" <<'EOF'
+[Unit]
+Description=Weaver workspace garbage collection (removes checkouts no live workstream names)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+User=weaver
+WorkingDirectory=/opt/weaver
+ExecStart=/usr/local/bin/weaver gc-workspaces
+TimeoutStartSec=30min
+EOF
+  cat > "$unit_dir/weaver-gc.timer" <<'EOF'
+[Unit]
+Description=Collect the Weaver workspace root every night
+[Timer]
+OnCalendar=*-*-* 04:30:00 Europe/London
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
   systemctl daemon-reload
   systemctl enable --now weaver-update.timer
+  systemctl enable --now weaver-gc.timer
   echo "✓ weaver-update.timer enabled (every 5 minutes, from origin/$branch)"
+  echo "✓ weaver-gc.timer enabled (nightly workspace garbage collection)"
   echo "· weaver-digest.timer installed, not enabled (opt in: systemctl enable --now weaver-digest.timer)"
 }
 

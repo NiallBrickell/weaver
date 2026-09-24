@@ -1245,11 +1245,13 @@ test('provisioning installs the daily digest units but neither provisioning nor 
   assert.doesNotMatch(provision, /\/etc\/systemd\/system\/weaver-digest/);
   assert.match(provision, /systemctl enable weaver-run weaver-serve\n/);
   assert.doesNotMatch(provision, /systemctl enable[^\n]*weaver-digest/);
-  assert.match(provision, /systemctl disable --now weaver-run weaver-serve weaver-digest\.timer/);
+  assert.match(provision, /systemctl disable --now weaver-run weaver-serve weaver-digest\.timer weaver-gc\.timer/);
 
   const { result, root } = run(['start'], undefined);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(call(root, 1, 'args'), /sudo systemctl enable --now weaver-run$/m);
+  // The cutover enables execution and the nightly workspace collection that
+  // keeps its disk usable; the digest stays the operator's own choice.
+  assert.match(call(root, 1, 'args'), /sudo systemctl enable --now weaver-run weaver-gc\.timer$/m);
   assert.doesNotMatch(call(root, 1, 'args'), /weaver-digest/);
 });
 
