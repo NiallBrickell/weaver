@@ -61,8 +61,24 @@ its presence as **degraded** with the reason and no coordinator seats, so
 unknown", a standby can take the coordinator seat, and no tick is launched
 until the directory is writable again. The reason is logged on the transition
 and every ten minutes. Size the boot disk for what workers leave behind: an
-OpenHands image is ~6 GB, each repository checkout a few hundred MB, and
+OpenHands image is ~6 GB, each repository checkout a few hundred MB (several
+GB once a frontend's `node_modules` is installed in each worktree), and
 `bin/weaver-gcp.sh status` now shows disk usage beside the heartbeat.
+
+Checkouts are also collected. Nothing removed a resolved workstream's
+workspaces until 24 September 2026, when 71 GB of them filled a 100 GB disk
+and the runner crossed the floor above with no earlier warning. The hosted
+runner now runs `weaver gc-workspaces` nightly from `weaver-gc.timer`
+(04:30 Europe/London; enabled by `install`, provisioning and the `start`
+cutover): it reads the fleet once and removes a workspace-root child only when
+no live workstream or pending assignment names it, nothing in it was touched
+for a week (`--idle-days`), and every git repository inside is committed and
+on a remote.
+Anything with uncommitted or unpushed work is kept and only its build output
+(`node_modules`, `.next`, Go caches) is pruned, with the reason printed in the
+unit's journal (`bin/weaver-gcp.sh logs weaver-gc`). `weaver gc-workspaces
+--dry-run` shows what a run would do. [`/healthz/fleet`](./fleet-health.md)
+reports `state_free_mib` and flags a problem under 2 GiB, before the floor.
 
 Every signal above — the Fleet page, `weaver status`, the attention steward —
 runs on the runner itself, so a host that goes fully dark (not degraded, just

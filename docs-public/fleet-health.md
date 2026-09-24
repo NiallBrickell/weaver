@@ -35,6 +35,7 @@ the runner, independent of any deploy.
   "last_completed_pass_age_seconds": 42,
   "oldest_unserved_due_seconds": null,
   "capacity_blocked_workstreams": 0,
+  "state_free_mib": 162304,
   "problems": [],
   "unhealthy": 0
 }
@@ -78,6 +79,14 @@ the runner, independent of any deploy.
     nothing due is fine, and a coordinator pass can legitimately take hours
     while a provider is in backoff — but together they mean the fleet is
     stuck waiting on capacity, not just idle.
+  - **State filesystem under 2 GiB free.** `state_free_mib` (free space on
+    the freshest healthy runner's `WEAVER_HOME` filesystem, from the same
+    `RunnerOutput`; `null` when none has published it) is under **2048**
+    (`FLEET_STATE_FREE_WARN_BYTES`). The runner itself stops dispatching and
+    publishes `degraded` at 512 MiB, which the first condition already
+    catches — this one fires a day or two earlier, while there is still room
+    to act. On a hosted VM the nightly `weaver gc-workspaces` timer normally
+    keeps this from ever tripping (see [Hosting Weaver](./hosting.md)).
 
 The endpoint answers HTTP 200 for any completed check, healthy or not — the
 `unhealthy` field carries the verdict, not the status code. Only a failure to

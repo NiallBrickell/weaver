@@ -52,6 +52,12 @@ export interface RunnerOutput {
   lastCompletedPassAt?: string;
   oldestUnservedDueAt?: string;
   capacityBlocked: number;
+  /** Free bytes on the filesystem holding WEAVER_HOME at the last scan, so
+   * /healthz/fleet can warn BEFORE the runner reaches its free-space floor
+   * and goes degraded (2026-09-24: a disk filled by never-collected
+   * workspaces stopped dispatch with no earlier signal). Absent on presences
+   * from runners that predate the field or whose filesystem answers no statfs. */
+  stateFreeBytes?: number;
 }
 
 /** Ephemeral execution-host liveness shared through the StateStore. This is

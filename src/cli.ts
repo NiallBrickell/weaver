@@ -146,6 +146,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver watch --plain                       legacy read-only raw dashboard; q quits (use 'weaver printout [slug]' to catch up)
   weaver printout [slug] [--text]            open an HTML catch-up page; --text writes the plain report instead
   weaver digest [--post] [--dry-run]         daily needs-you digest as Slack mrkdwn (model-free); --post sends it to the operator-configured destination once per London day (readback-idempotent); --dry-run reads the destination back and says whether --post would send
+  weaver gc-workspaces [--dry-run] [--idle-days N]  remove workspace-root children no live workstream or pending assignment names and nothing touched for N days (default 7); a child with uncommitted or unpushed work is kept and only its build output (node_modules, .next, Go caches) is pruned
   weaver inspect [slug]                      visual work board → self-contained HTML: Workstreams, Assignments, evidence, and history
   weaver stats                               outcome scoreboard → self-contained HTML: interventions per adopted work product, approval split, policy evidence, per-workstream stats
   weaver ui [--host H] [--port N]            browser operator workspace (default 127.0.0.1:9724); non-loopback requires Clerk or WEAVER_UI_TOKEN
@@ -1299,6 +1300,32 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       if (unknown !== undefined) fail(`usage: weaver digest [--post] [--dry-run] — unknown argument '${unknown}'`);
       const { digestCommand } = await import('./digest.js');
       const result = await digestCommand({ post: rest.includes('--post'), dryRun: rest.includes('--dry-run') });
+      if (!result.ok) fail(result.message);
+      process.stdout.write(`${result.message}\n`);
+      break;
+    }
+
+    case 'gc-workspaces': {
+      // Host hygiene, not an action: it touches only the workspace root and
+      // never a remote, and it reads the fleet once to learn which children
+      // live work still names (see src/workspaceGc.ts).
+      const { WORKSPACE_GC_IDLE_DAYS_DEFAULT, gcWorkspacesCommand } = await import('./workspaceGc.js');
+      let idleDays = WORKSPACE_GC_IDLE_DAYS_DEFAULT;
+      let dryRun = false;
+      for (let i = 0; i < rest.length; i += 1) {
+        const flag = rest[i]!;
+        if (flag === '--dry-run') {
+          dryRun = true;
+        } else if (flag === '--idle-days') {
+          const value = rest[i + 1];
+          if (value === undefined) fail('usage: weaver gc-workspaces [--dry-run] [--idle-days N] — --idle-days needs a number');
+          idleDays = Number(value);
+          i += 1;
+        } else {
+          fail(`usage: weaver gc-workspaces [--dry-run] [--idle-days N] — unknown argument '${flag}'`);
+        }
+      }
+      const result = await gcWorkspacesCommand({ dryRun, idleDays });
       if (!result.ok) fail(result.message);
       process.stdout.write(`${result.message}\n`);
       break;
