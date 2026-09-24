@@ -113,11 +113,59 @@ test('only the Claude identity, SDK protocol names and declared secrets cross, b
   assert.ok(!plan.args.join(' ').includes('sntrys'), 'no secret value in argv');
 });
 
+// The container's HOME is an empty /root: with no identity in its environment
+// git refuses every commit and the model invents an author to get past it.
+// The four names the worker pinned to the App bot cross by name; the rest of
+// git's environment (config injection, ssh command) never does.
+test('the worker-pinned git author and committer cross by name; no other GIT_* does', () => {
+  const bot = '321406343+weaver-fleet-production-912c84[bot]@users.noreply.github.com';
+  const plan = planContainerRun(spawnOptions({
+    env: {
+      ...spawnOptions().env,
+      GIT_AUTHOR_NAME: 'weaver-fleet-production-912c84[bot]',
+      GIT_AUTHOR_EMAIL: bot,
+      GIT_COMMITTER_NAME: 'weaver-fleet-production-912c84[bot]',
+      GIT_COMMITTER_EMAIL: bot,
+      GIT_CONFIG_PARAMETERS: "'core.sshCommand=touch /pwned'",
+      GIT_SSH_COMMAND: 'ssh -i /home/weaver/.ssh/id_ed25519',
+      GIT_AUTHOR_DATE: '2026-09-22T00:00:00Z',
+      GIT_DIR: '/home/weaver/state/.git',
+    },
+  }), { assignmentId: 'asg_git', cwd: '/w', additionalDirectories: [], workerVisibleEnv: {} }, config);
+  const forwarded = plan.args.filter((_, i) => plan.args[i - 1] === '--env');
+  assert.deepEqual(forwarded, [
+    'HOME=/root',
+    'IS_SANDBOX=1',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'CLAUDE_CODE_ENTRYPOINT',
+    'CLAUDE_AGENT_SDK_VERSION',
+    'GIT_AUTHOR_NAME',
+    'GIT_AUTHOR_EMAIL',
+    'GIT_COMMITTER_NAME',
+    'GIT_COMMITTER_EMAIL',
+  ]);
+  assert.equal(plan.env.GIT_AUTHOR_EMAIL, bot);
+  assert.equal(plan.env.GIT_COMMITTER_EMAIL, bot);
+  assert.equal(plan.env.GIT_AUTHOR_NAME, 'weaver-fleet-production-912c84[bot]');
+  for (const never of ['GIT_CONFIG_PARAMETERS', 'GIT_SSH_COMMAND', 'GIT_AUTHOR_DATE', 'GIT_DIR']) {
+    assert.equal(plan.env[never], undefined, `${never} must not reach the docker CLI environment`);
+    assert.ok(!plan.args.includes(never), `${never} must not be forwarded`);
+  }
+});
+
+test('a declared worker secret cannot replace the pinned git identity', () => {
+  const run = { assignmentId: 'a', cwd: '/w', additionalDirectories: [], workerVisibleEnv: {} };
+  assert.throws(
+    () => planContainerRun(spawnOptions(), { ...run, workerVisibleEnv: { GIT_AUTHOR_EMAIL: 'agent@erdo.ai' } }, config),
+    /GIT_AUTHOR_EMAIL collides with a reserved Claude\/Anthropic or git identity name/,
+  );
+});
+
 test('a declared secret cannot impersonate the identity, and a non-native command or relative path is refused', () => {
   const run = { assignmentId: 'a', cwd: '/w', additionalDirectories: [], workerVisibleEnv: {} };
   assert.throws(
     () => planContainerRun(spawnOptions(), { ...run, workerVisibleEnv: { ANTHROPIC_API_KEY: 'x' } }, config),
-    /collides with a reserved Claude\/Anthropic name/,
+    /collides with a reserved Claude\/Anthropic or git identity name/,
   );
   assert.throws(() => planContainerRun(spawnOptions({ command: 'node' }), run, config), /absolute Claude Code binary path/);
   assert.throws(() => planContainerRun(spawnOptions(), { ...run, cwd: 'relative' }, config), /cwd must be absolute/);

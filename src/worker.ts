@@ -814,8 +814,12 @@ export async function runWorker(
     // to an account, so Vercel refuses to build previews for such commits. The
     // in-process executors (local-sdk, codex-sdk, pi) run the worker's git in
     // this subprocess environment; GIT_AUTHOR_*/GIT_COMMITTER_* here override
-    // any on-disk user.* or ambient value. OpenHands ignores this and injects
-    // the same identity through its own container --env args.
+    // any on-disk user.* or ambient value. The containerized local-sdk worker
+    // forwards exactly these four names across its credential boundary
+    // (claudeContainer.ts FORWARDED_NAME) — it dropped them until 2026-09-24,
+    // and every Claude-seat commit from that empty-HOME container carried an
+    // identity the model made up. OpenHands ignores this and injects the same
+    // identity through its own container --env args.
     const gitIdentityEnv = await workerGitIdentityEnv();
     const outcome = await executor.execute({
       workstreamSlug: slug,

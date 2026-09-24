@@ -137,6 +137,25 @@ service account has a GitHub CLI login, Git credential helper/store, SSH
 private key, credential-bearing remote, GitHub MCP configuration, or a static
 GitHub token in Weaver's secret files.
 
+## Commit identity
+
+Every commit a worker makes is authored and committed as the installed App's
+bot account (`<app-id>+<slug>[bot]@users.noreply.github.com`), because that is
+the one identity GitHub can attribute to an account and Vercel can therefore
+map to a team member. The runner resolves it once per worker
+(`workerGitIdentityEnv`) and sets `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
+`GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` in the worker's environment,
+where they override any `user.*` a checkout or a model may have configured.
+Each substrate must carry them across its own boundary: the in-process
+executors inherit the subprocess environment, the OpenHands container gets
+them as `--env` pairs, and the containerized local-sdk worker forwards exactly
+those four names (nothing else under `GIT_`, which can execute commands or
+redirect credentials). A substrate that drops them leaves git with no identity
+in an empty container HOME, and a model asked "who are you" by `git commit`
+answers with an address it made up. `WEAVER_GIT_AUTHOR_NAME`/`_EMAIL` on the
+host override the App identity for deployments that need a different
+verified author.
+
 ## Rotation and removal
 
 Generate a new App private key, replace the executor-only base64 value, push
