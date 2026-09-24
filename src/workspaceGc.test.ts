@@ -220,6 +220,21 @@ test('collection removes idle unreferenced children with nothing unshipped, prun
   assert.match(text, /pruned unpushed-stream\/node_modules/);
 });
 
+test('a worktree whose checkout is a sibling child is judged before that sibling is removed', () => {
+  // The first live run removed `a-main` first (alphabetical), which left the
+  // worktree in `b-wt` pointing at a .git that no longer existed; git could
+  // not read it, so it was kept forever. Every child is judged first now.
+  const root = tmpRoot();
+  const main = clonedRepo(root, 'a-main');
+  git(main, 'worktree', 'add', '-q', '-b', 'wt-branch', path.join(root, 'b-wt'));
+  age(main, 10);
+  age(path.join(root, 'b-wt'), 10);
+  const report = gcWorkspaces({ root, referenced: new Set(), idleMs: 3 * DAY_MS, nowMs: NOW });
+  assert.deepEqual(report.removed, ['a-main', 'b-wt']);
+  assert.deepEqual(report.kept, []);
+  assert.ok(!fs.existsSync(main) && !fs.existsSync(path.join(root, 'b-wt')));
+});
+
 test('the filesystem root and the home directory are refused as a root; a missing root is an empty report', () => {
   assert.throws(() => gcWorkspaces({ root: '/', referenced: new Set(), idleMs: 0 }), /refusing to collect/);
   assert.throws(() => gcWorkspaces({ root: os.homedir(), referenced: new Set(), idleMs: 0 }), /refusing to collect/);
