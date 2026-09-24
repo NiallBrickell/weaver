@@ -103,9 +103,21 @@ export interface PlannedContainerRun {
   containerName: string;
 }
 
-/** Names the SDK sets for its own protocol, and the Claude identity/provider
- * names sdkEnv resolved for this run. Everything else stays on the host. */
-const FORWARDED_NAME = /^(CLAUDE_CODE_|CLAUDE_AGENT_SDK_|ANTHROPIC_)/;
+/** Names the SDK sets for its own protocol, the Claude identity/provider
+ * names sdkEnv resolved for this run, and the four git identity names the
+ * worker pinned to the verifiable App bot (githubApp.ts workerGitIdentityEnv).
+ * Everything else stays on the host.
+ *
+ * The git identity MUST cross: the container's HOME is an empty /root with no
+ * user.* config, so without GIT_AUTHOR_* and GIT_COMMITTER_* every `git commit`
+ * fails with "Author identity unknown" and the model answers by inventing a
+ * name and an @erdo.ai address to get past it — which is how weeks of fleet
+ * commits by "Weaver Agent <agent@erdo.ai>" and friends reached GitHub, where
+ * no account owns them and Vercel refuses to build them. Only these exact
+ * four names are forwarded: GIT_CONFIG_*, GIT_SSH_COMMAND and the rest of
+ * git's environment can execute commands or redirect credentials, so they
+ * stay on the host with everything else. */
+const FORWARDED_NAME = /^(CLAUDE_CODE_|CLAUDE_AGENT_SDK_|ANTHROPIC_|GIT_(?:AUTHOR|COMMITTER)_(?:NAME|EMAIL)$)/;
 const NEVER_FORWARDED = new Set(['CLAUDE_CONFIG_DIR']);
 
 function assertEnvName(name: string): void {
@@ -167,9 +179,10 @@ export function planContainerRun(
   }
   for (const [name, value] of Object.entries(rewriteLoopbackHostsForContainer(run.workerVisibleEnv))) {
     if (FORWARDED_NAME.test(name)) {
-      // A declared worker secret must not be able to replace the identity or
-      // protocol variables the harness resolved for this run.
-      throw new Error(`container worker secret ${name} collides with a reserved Claude/Anthropic name`);
+      // A declared worker secret must not be able to replace the Claude
+      // identity, the protocol variables or the git identity the harness
+      // resolved for this run.
+      throw new Error(`container worker secret ${name} collides with a reserved Claude/Anthropic or git identity name`);
     }
     forward(name, value);
   }
