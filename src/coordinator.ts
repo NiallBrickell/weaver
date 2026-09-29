@@ -33,7 +33,7 @@ import {
   directManagedWorkstream,
   inspectManagedWorkstream,
 } from './managedWorkstreams.js';
-import { loadSecrets, sdkEnv, selectNamedSecrets } from './secrets.js';
+import { claudeCredentialFingerprint, loadSecrets, sdkEnv, selectNamedSecrets } from './secrets.js';
 import { tailMessage } from './tail.js';
 import { armWall } from './wall.js';
 import { workerDirectoryRefusal, workerWorkspaceRoot } from './executor/workspaceMounts.js';
@@ -56,6 +56,7 @@ import {
   resolveCapacityAttention,
   resolveCapacityAttentionForRole,
   SdkFailureTracker,
+  stampClaudeCredential,
 } from './capacity.js';
 import { noteFleetRecovery } from './fleetCapacity.js';
 import { MAX_RESOLVES_WHEN_FACTS, describeExternalFact, parseExternalFacts } from './attentionReadback.js';
@@ -1727,7 +1728,13 @@ export async function runCoordinatorPass(
     wallNow: new Date(),
     wallFired: wall.fired(),
   } as const;
-  const infrastructure = sdkFailure.classify(capacitySource);
+  // A Claude auth wait carries the runner and a non-secret fingerprint of the
+  // credential it failed on, so replacing that credential releases it.
+  const infrastructure = stampClaudeCredential(
+    sdkFailure.classify(capacitySource),
+    runnerClaimIdentity().id,
+    claudeCredentialFingerprint(),
+  );
   const capacityObservations = sdkFailure.capacityObservations(capacitySource);
   if (infrastructure) {
     hadError = true;

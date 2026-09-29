@@ -410,6 +410,19 @@ export interface InfrastructureWait {
    * source's detectedAt/retryAt, never counts as this stream's backoff, raises
    * no attention, and is released when the fleet no longer holds the wait. */
   observedIn?: string;
+  /** Claude SDK auth waits only: which runner's credential was refused, and a
+   * NON-SECRET fingerprint of the credential that runner would present
+   * (`sha256:` + 16 hex of a hash of the registered setup-token/API key, or of
+   * the credential file's metadata; null when neither is observable, e.g. a
+   * macOS keychain login). The secret itself is never stored. A later
+   * fingerprint on the same runner that differs means the operator replaced
+   * the credential, which releases the wait for one real retry. */
+  credential?: { runnerId: string; fingerprint: string | null };
+  /** Set when the harness made this wait due without any evidence that the
+   * provider recovered, keeping the record as history: nobody offers the
+   * exact target any more (`unseated`), or the credential it failed on has
+   * been replaced (`credential_changed`). The next real attempt is the proof. */
+  released?: { at: Iso; reason: 'unseated' | 'credential_changed' };
 }
 
 export interface CapacityBackoff {

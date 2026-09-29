@@ -92,6 +92,7 @@ export async function heartbeatRunner(
   coordinatorSeats?: readonly CapacityTarget[],
   degraded?: string,
   output?: RunnerOutput,
+  workerSeats?: readonly CapacityTarget[],
 ): Promise<void> {
   assertRunnerId(runnerId);
   if (!Number.isFinite(Date.parse(heartbeatAt))) throw new Error(`invalid runner heartbeat timestamp '${heartbeatAt}'`);
@@ -101,6 +102,9 @@ export async function heartbeatRunner(
     heartbeatAt,
     ...(coordinatorSeats
       ? { coordinatorSeats: coordinatorSeats.map(({ executor, provider, model }) => ({ executor, provider, model })) }
+      : {}),
+    ...(workerSeats
+      ? { workerSeats: workerSeats.map(({ executor, provider, model }) => ({ executor, provider, model })) }
       : {}),
     ...(degraded !== undefined ? { degraded } : {}),
     ...(output !== undefined ? { output } : {}),

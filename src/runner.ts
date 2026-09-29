@@ -18,7 +18,6 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { fleetLaunchTargetKeys, runActionCommand, tick } from './engine.js';
 import { RUNNER_PRESENCE_TTL_MS, coordinatorRunnerEligibility } from './coordinatorRunner.js';
 import { isLegacyDollarBudgetAttention, isWakeDue } from './executionSafety.js';
@@ -26,7 +25,7 @@ import { runnerOutput } from './fleetHealth.js';
 import { sweepPrConflicts } from './prConflicts.js';
 import { sweepAttentionReadbacks } from './attentionReadback.js';
 import { probeAwaitingPilot, sweepProbes } from './probe.js';
-import { sdkEnv } from './secrets.js';
+import { claudeCredentialFingerprint } from './secrets.js';
 import {
   arrive,
   heartbeatRunner,
@@ -45,14 +44,20 @@ import {
   capacityTargetKey,
   clearCapacityBackoff,
   fleetSeatView,
-  isClaudeSdkWait,
+  hasCredentialReplacedWaits,
+  hasUnseatedWaits,
+  liveSeats,
+  releaseCredentialReplacedWaits,
+  releaseUnseatedWaits,
+  type CurrentCredential,
   type FleetSeatView,
+  type LiveSeats,
   resolveCapacityAttention,
   retryCapacityTargetNow,
 } from './capacity.js';
 import { readFleetCapacity, supersededByFleetRecovery } from './fleetCapacity.js';
 import { coordinatorTargets, targetOfWait, type CapacityTarget } from './modelConfig.js';
-import { runnerExecutorCapabilities } from './modelRouting.js';
+import { runnerExecutorCapabilities, runnerWorkerSeats } from './modelRouting.js';
 import { acquireProcessLock, liveProcessLockPid, pidIsLive } from './processLock.js';
 import { assertRunnerEnabled, runnerClaimIdentity, runnerDisabled, type RunnerClaimIdentity } from './runnerIdentity.js';
 import type { WorkstreamDoc } from './types.js';
@@ -295,27 +300,79 @@ export function promoteOnRunnerVacancy(
 }
 
 /**
- * Infra-backoff recovery. When passes fail on limits or auth, streams park
- * behind provider-timed backoff wakes — but an auth outage usually ends the
- * moment the operator re-authenticates. While a backoff wake is pending, the
- * runner watches credential-file metadata and performs one bounded probe when
- * that metadata changes. It never polls model capacity: scheduled wakes do the
- * ordinary retry, and `weaver capacity retry` is the explicit path after a
- * provider-side billing change. Success expedites only that model's waits.
+ * Streams holding a wait that nothing will ever observe recovering, keyed to
+ * what releases them. Two causes, both judged over the runner's cached
+ * documents plus the shared presence rows — never a load() per stream:
+ *
+ * - `unseated`: the wait's exact target is in no live runner's published
+ *   seats for its role (a model the fleet moved off). Nothing launches there,
+ *   so without this the held work waits out its full timer for nothing.
+ * - `credential`: a Claude auth wait this runner stamped with a credential
+ *   fingerprint that no longer matches the credential it presents now — the
+ *   operator replaced the setup-token or logged in again. This replaced a
+ *   runner-memory credential-file mtime baseline that a restart reset (and
+ *   `push-env` restarts the runner) and that a registered setup-token, which
+ *   has no credential file, could never move.
  */
-export async function infraBackoffSlugs(cache = new RunnerWorkstreamCache()): Promise<string[]> {
-  const out: string[] = [];
+export async function staleWaitSlugs(
+  seats: LiveSeats,
+  credential: CurrentCredential,
+  cache = new RunnerWorkstreamCache(),
+): Promise<Set<string>> {
   const now = virtualNow().toISOString();
-  for (const [slug, d] of await cache.scan()) {
-    if (d.workstream.status !== 'active') continue;
-    if (Object.values(d.capacity?.byModel ?? {}).some(
-      (entry) => isClaudeSdkWait(entry.wait) && entry.wait.retryAt > now,
-    )) {
-      out.push(slug);
-    }
+  const out = new Set<string>();
+  for (const [slug, doc] of await cache.scan()) {
+    if (doc.workstream.status !== 'active') continue;
+    if (hasUnseatedWaits(doc, seats, now) || hasCredentialReplacedWaits(doc, credential, now)) out.add(slug);
   }
   return out;
 }
+
+/** Release the waits staleWaitSlugs found, each re-derived inside a
+ * serialized arrival against the current revision (a concurrent write simply
+ * means the mutator sees newer state), with a typed event per cause. */
+export async function releaseStaleWaits(
+  slugs: Iterable<string>,
+  seats: LiveSeats,
+  credential: CurrentCredential,
+  log: (l: string) => void,
+): Promise<void> {
+  const now = virtualNow().toISOString();
+  for (const slug of slugs) {
+    try {
+      let released: string[] = [];
+      await arrive(slug, (d, event) => {
+        released = [];
+        const unseated = releaseUnseatedWaits(d, seats, now);
+        const replaced = releaseCredentialReplacedWaits(d, credential, now);
+        // Re-derived against the revision this arrival sees: a concurrent
+        // write may already have re-parked or cleared it, and then there is
+        // nothing to record — abandon rather than bump the revision (which
+        // would make every runner re-read the body for nothing).
+        if (!unseated.length && !replaced.length) throw new UnchangedRelease();
+        for (const model of unseated) {
+          event('capacity.unseated_released', `wait for ${model} released: no runner offers that model any more`, []);
+        }
+        for (const model of replaced) {
+          event(
+            'capacity.credential_changed_released',
+            `Claude auth wait for ${model} released: the credential on runner ${credential.runnerId} changed since the wait was recorded — the next real attempt proves it`,
+            [],
+          );
+        }
+        released = [...unseated, ...replaced];
+      });
+      if (released.length) log(`[run] ${slug}: released stale provider wait(s) for ${[...new Set(released)].join(', ')}`);
+    } catch {
+      // UnchangedRelease: nothing stale remained. Anything else (a store
+      // blip): the next poll re-derives it from fresh state.
+    }
+  }
+}
+
+/** Thrown inside the release mutator when the current revision holds nothing
+ * stale any more, abandoning a write that would change nothing. */
+class UnchangedRelease extends Error {}
 
 /**
  * Streams still parked on a target the fleet has since proved healthy, with
@@ -490,108 +547,9 @@ export function allocateSlots(
   return highGranted.concat(rotation.slice(0, Math.min(fleetFloor, cap - highGranted.length)));
 }
 
-function credentialsMtime(): number {
-  try {
-    const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
-    return fs.statSync(path.join(configDir, '.credentials.json')).mtimeMs;
-  } catch {
-    return 0; // e.g. macOS keychain storage — use the explicit retry command
-  }
-}
-
-async function infraBackoffModels(slugs: string[]): Promise<string[]> {
-  const models = new Set<string>();
-  const now = virtualNow().toISOString();
-  for (const slug of slugs) {
-    for (const entry of Object.values((await load(slug)).capacity?.byModel ?? {})) {
-      if (isClaudeSdkWait(entry.wait) && entry.wait.retryAt > now) models.add(entry.wait.model);
-    }
-  }
-  return [...models].sort();
-}
-
-async function capacityProbe(model: string): Promise<boolean> {
-  try {
-    for await (const m of query({
-      prompt: 'Reply with the single word: ok',
-      options: {
-        model,
-        tools: [],
-        maxTurns: 1,
-        allowedTools: [],
-        permissionMode: 'dontAsk',
-        settingSources: [],
-        strictMcpConfig: true,
-        persistSession: false,
-        env: sdkEnv(),
-      },
-    })) {
-      if (m.type === 'result') return m.subtype === 'success' && !m.is_error;
-    }
-  } catch { /* fall through */ }
-  return false;
-}
-
-export async function expediteBackoffWakes(
-  slugs: string[],
-  log: (l: string) => void,
-  recoveredModel?: string,
-): Promise<void> {
-  const now = virtualNow().toISOString();
-  for (const slug of slugs) {
-    try {
-      const before = await load(slug);
-      const hasMatchingWait = Object.values(before.capacity?.byModel ?? {}).some(
-        (entry) => isClaudeSdkWait(entry.wait) && (!recoveredModel || entry.wait.model === recoveredModel),
-      );
-      if (!hasMatchingWait) continue;
-      await arrive(slug, (d, event) => {
-        const wakeIds = d.wakes
-          .filter((wake) =>
-            wake.status === 'pending' &&
-            wake.condition.type === 'time' &&
-            wake.infrastructure &&
-            isClaudeSdkWait(wake.infrastructure) &&
-            (!recoveredModel || wake.infrastructure.model === recoveredModel))
-          .map((wake) => wake.id);
-        const recoveredModels = [...new Set(
-          Object.values(d.capacity?.byModel ?? {})
-            .map((entry) => entry.wait)
-            .filter((wait) => isClaudeSdkWait(wait) && (!recoveredModel || wait.model === recoveredModel))
-            .map((wait) => wait.model),
-        )];
-        for (const wakeId of wakeIds) {
-          event('wake.expedited', `${wakeId} pulled forward — credential-change probe confirmed provider recovery`, [wakeId]);
-        }
-        for (const item of d.attention) {
-          if (item.status === 'open' && item.refId && wakeIds.includes(item.refId)) {
-            item.status = 'resolved';
-            item.resolvedAt = new Date().toISOString();
-            item.resolvedBy = 'capacity-probe';
-          }
-        }
-        for (const model of recoveredModels) {
-          // Credential probing is Claude-only, so retain the exact local SDK
-          // identity instead of rebuilding a target through whatever
-          // coordinator executor happens to be configured now.
-          const target: CapacityTarget = {
-            executor: 'local-sdk',
-            provider: 'anthropic',
-            model,
-          };
-          retryCapacityTargetNow(d, now, target);
-          clearCapacityBackoff(d, target);
-          resolveCapacityAttention(d, target, 'capacity-probe');
-        }
-      });
-      log(`[run] ${slug}: infra-backoff wake expedited — provider recovered${recoveredModel ? ` for ${recoveredModel}` : ''}`);
-    } catch { /* stream's own tick will retry on schedule */ }
-  }
-}
-
 /**
- * Release parks the fleet has already disproved. Unlike the credential probe,
- * nothing is spent here: another stream's successful call is the evidence, and
+ * Release parks the fleet has already disproved. Like every release in this
+ * file, nothing is spent: another stream's successful call is the evidence, and
  * the targets are known exactly rather than derived from a model name, so a
  * worker pool and a coordinator pool on the same model never release each
  * other. Making the waits due (rather than deleting them) keeps the recovery
@@ -1012,8 +970,6 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   // this iteration's scan already holds — never a load() per workstream.
   let probeSweepInFlight = false;
   let lastProbeSweepAt = 0;
-  let probing = false;
-  let lastCredMtime = credentialsMtime();
   // Presence carries this host's coordinator seats so a standby can tell a
   // live preferred runner from a seated one: a host whose whole chain is
   // parked on a Workstream yields that stream's claim (coordinatorRunner.ts).
@@ -1027,8 +983,21 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       return [];
     }
   })();
+  // Worker seats let the fleet tell a wait on a target nobody offers any more
+  // from a live one. A misconfigured ladder publishes none — unknown, which
+  // never releases anything.
+  const workerSeats = ((): CapacityTarget[] | undefined => {
+    try {
+      return runnerWorkerSeats();
+    } catch (error) {
+      logError(`[run] worker seats are misconfigured — publishing none: ${error instanceof Error ? error.message : error}`);
+      return undefined;
+    }
+  })();
   const publishPresence = opts.heartbeat ?? ((runnerId: string, degraded?: string, output?: RunnerOutput) =>
-    heartbeatRunner(runnerId, undefined, degraded === undefined ? coordinatorSeats : [], degraded, output));
+    degraded === undefined
+      ? heartbeatRunner(runnerId, undefined, coordinatorSeats, undefined, output, workerSeats)
+      : heartbeatRunner(runnerId, undefined, [], degraded, output));
   const homeHealth = opts.homeHealth ?? runnerHomeHealth;
   // What the previous scan actually produced. Presence is published before the
   // scan below (so a preferred coordinator host is visible before a standby
@@ -1090,33 +1059,20 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
       // machine-local pid heartbeat. Publish before scanning so a preferred
       // coordinator host is visible before any standby considers a claim.
       await publishPresence(runner.id, undefined, lastOutput);
-      // Auth recovery: one probe (never concurrently) when credential-file
-      // metadata changes. Usage/rate recovery waits for the stored wake or an
-      // explicit `weaver capacity retry`; blind probes only consume capacity.
       // Free recovery first: any stream still parked on a pool another stream
       // has since used successfully is released without spending a call.
       const fleetRecovered = await fleetRecoveredSlugs(workstreams);
       if (fleetRecovered.size) await releaseFleetRecovered(fleetRecovered, log);
-      const backedOff = probing ? [] : await infraBackoffSlugs(workstreams);
-      if (backedOff.length) {
-        const credMtime = credentialsMtime();
-        const credChanged = credMtime !== lastCredMtime;
-        if (credChanged) {
-          lastCredMtime = credMtime;
-          probing = true;
-          const models = await infraBackoffModels(backedOff);
-          log(`[run] credentials changed — probing ${models.join(', ')} for ${backedOff.length} stream(s) in infra-backoff`);
-          void Promise.all(models.map(async (model) => ({ model, ok: await capacityProbe(model) })))
-            .then(async (results) => {
-              for (const result of results) {
-                if (result.ok) await expediteBackoffWakes(backedOff, log, result.model);
-              }
-            })
-            .finally(() => { probing = false; });
-        }
-      } else {
-        lastCredMtime = credentialsMtime();
-      }
+      // Then waits nothing will ever observe recovering: a target no live
+      // runner offers any more, or a Claude auth wait whose credential this
+      // runner has since replaced. Seats come from the presence rows; the
+      // credential is a non-secret fingerprint. No model call is spent: the
+      // released wait's next real attempt is the proof.
+      const presences = await listRunnerPresence();
+      const offered = liveSeats(presences, Date.now(), RUNNER_PRESENCE_TTL_MS);
+      const credential: CurrentCredential = { runnerId: runner.id, fingerprint: claudeCredentialFingerprint() };
+      const stale = await staleWaitSlugs(offered, credential, workstreams);
+      if (stale.size) await releaseStaleWaits(stale, offered, credential, log);
       const due: string[] = [];
       const priority = new Map<string, number>();
       const dispatchSignatures = new Map<string, string>();
@@ -1158,7 +1114,6 @@ export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
           .catch((e) => logError(`[run] PR conflict sweep failed: ${e instanceof Error ? e.message : e}`))
           .finally(() => { prConflictSweepInFlight = false; });
       }
-      const presences = await listRunnerPresence();
       // The store answered a full scan: any running outage clock stops here.
       outageSince = null;
       outageFailures = 0;

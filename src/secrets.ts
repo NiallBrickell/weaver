@@ -12,7 +12,9 @@
  * directly. Every value joins the redaction/store-refusal set.
  */
 
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { weaverHome, workstreamDir } from './store.js';
 
@@ -63,6 +65,45 @@ export function loadSecrets(slug?: string): Record<string, string> {
 /** Provider credentials consumed only by executor adapters, never workers. */
 export function loadExecutorSecrets(): Record<string, string> {
   return parseEnvFile(executorSecretsPath());
+}
+
+/** The shape every stored credential fingerprint takes: a truncated SHA-256,
+ * never the credential. Exported so tests and readers can assert it. */
+export const CREDENTIAL_FINGERPRINT_RE = /^sha256:[0-9a-f]{16}$/;
+
+function credentialFingerprintOf(material: string): string {
+  return `sha256:${createHash('sha256').update(material).digest('hex').slice(0, 16)}`;
+}
+
+/**
+ * A non-secret fingerprint of the Claude identity this host's local-sdk runs
+ * would present right now, in the same precedence sdkEnv and the coordinator
+ * executor use: a registered executor-only setup-token, else a registered API
+ * key, else the file-backed Claude Code login's metadata (mtime + size — the
+ * file is never read). Null when none is observable (a macOS keychain login),
+ * which means "unknown", never "changed". Only a truncated hash is returned:
+ * enough to notice that `push-env` or `claude auth login` replaced the
+ * credential, never enough to use or recover it.
+ */
+export function claudeCredentialFingerprint(): string | null {
+  // Never throws: it runs while a failed pass or attempt is being finalized,
+  // and an unreadable store must cost only the fingerprint, not that write.
+  try {
+    const registered = loadExecutorSecrets();
+    for (const name of ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'] as const) {
+      const value = registered[name];
+      if (value) return credentialFingerprintOf(`registered\0${name}\0${value}`);
+    }
+  } catch {
+    return null;
+  }
+  try {
+    const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
+    const stat = fs.statSync(path.join(configDir, '.credentials.json'));
+    return credentialFingerprintOf(`file\0${stat.mtimeMs}\0${stat.size}`);
+  } catch {
+    return null;
+  }
 }
 
 function addRetainingCollision(

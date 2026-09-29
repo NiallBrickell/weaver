@@ -51,7 +51,12 @@ pool whose work has already continued. Worker retries, scheduled organizational
 checks, and new failures remain pending; a failed or conflicted reconciliation
 does not retire its retry timers.
 
-There are no periodic model probes: polling a limited account would consume scarce capacity and amplify an outage. Weaver performs one bounded, model-specific Claude SDK probe when Claude credential-file metadata changes, without reading the credential. Non-Claude executor waits are never sent through that probe. After changing usage or billing settings, make the stored wait due explicitly:
+There are no periodic model probes: polling a limited account would consume scarce capacity and amplify an outage. Two kinds of wait are released automatically instead, because nothing would ever observe them recovering:
+
+- **A model no runner offers any more.** Every runner publishes the exact coordinator and worker seats it can launch on. When you move a seat (say Fable 5 to Fable 5.1), a wait recorded for the old model is released on the runner's next poll and the work continues on the seat you offer now. The wait stays in the record, marked released, and the workstream's history says `wait for claude-fable-5 released: no runner offers that model any more`. While any live runner is too old to publish its seats, or cannot write its state directory, nothing is released on that basis.
+- **A replaced Claude credential.** A Claude login failure records which runner failed and a fingerprint of the credential it presented — a short hash, never the credential. Replacing the credential that runner uses (a new setup-token pushed to the hosted VM, or `claude auth login` with a file-backed login) changes the fingerprint, and the next poll makes the wait due. A restart does not lose this. A macOS keychain login has no observable fingerprint; use `weaver capacity retry` there.
+
+In both cases the next real run is the proof: success clears the wait, another rejection records a fresh one. After changing usage or billing settings, make the stored wait due explicitly:
 
 ```bash
 weaver capacity retry <slug>
@@ -67,9 +72,9 @@ On a shared fleet, status, terminal watch, and browser views use the selected
 runner's freshly published coordinator seats, not the operator laptop's model
 settings. A missing/stale heartbeat or an older runner that publishes no seats
 means capacity is **unknown**, never that the laptop's fallback is available.
-Runner presence currently publishes no worker seats, so a remote worker's
-fallback availability is also unknown; a stored running attempt still proves
-that work started. Pending provider retry timers remain visible even when
+Runner presence also publishes worker seats, which release waits on models no
+runner offers; a remote worker's fallback availability is not yet projected
+into these views, and a stored running attempt still proves that work started. Pending provider retry timers remain visible even when
 capacity cannot be determined, rather than making scheduled work look dormant.
 These are read-only projections: execution routing and the provider's billing
 controls are unchanged.
@@ -78,7 +83,7 @@ controls are unchanged.
 
 - **Plan or session limit:** inspect `/usage`, then wait for Claude's reset. Weaver resumes from durable state.
 - **Explicit paid continuation:** enable usage credits or a usage bundle in Claude **Settings > Usage**, set the provider spending limit, then run `weaver capacity retry <slug>`.
-- **Login expired or changed:** run `claude auth login`. File-backed credential metadata triggers one recovery probe; `weaver capacity retry <slug>` is the fallback when credentials live elsewhere.
+- **Login expired or changed:** run `claude auth login` (or, on a hosted runner, register a new `claude setup-token` and push it). A changed credential releases the runner's auth waits on its next poll; `weaver capacity retry <slug>` is the fallback when the credential lives in the macOS keychain.
 - **Deliberate production billing:** use an Anthropic Platform account and API-key deployment designed for the organization. Weaver's local subscription mode never silently switches to an exported API credential.
 
 Multiple paid accounts are an uncommon operator situation, not the product model. Whatever entitlements an operator holds, Weaver does not aggregate them into a transferable balance or automate account cycling around limits. That keeps the ordinary recovery path legible and avoids building behavior that could bypass provider controls. Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) also require account credentials to remain private and prohibit bypassing protective measures.

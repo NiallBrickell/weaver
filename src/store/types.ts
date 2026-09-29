@@ -71,6 +71,12 @@ export interface RunnerPresence {
    * coordinator claim to the next runner in order. Absent on presences from
    * runners that predate the field, which count as seated. */
   coordinatorSeats?: CapacityTarget[];
+  /** Every exact worker target this runner could launch an attempt on: the
+   * configured worker seat (standard and complex models), the reviewed routes
+   * on that executor, the explicit fallback ladder, and the action target.
+   * Absent on presences from runners that predate the field, which make the
+   * fleet's worker seats unknown — never "nobody offers it". */
+  workerSeats?: CapacityTarget[];
   /** Why this runner can commit nothing right now (its state directory is
    * unwritable or below the free-space floor). A degraded presence publishes
    * no seats; the reason is rendered wherever capacity is shown so a fresh
