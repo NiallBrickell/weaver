@@ -19,7 +19,7 @@ import {
   revisionMemo,
   TOP_LEVEL_LABEL,
 } from './overview.js';
-import type { Assignment, Attempt, PassRecord, WorkstreamDoc } from './types.js';
+import type { Assignment, Attempt, ConclusionDisposition, PassRecord, WorkstreamDoc } from './types.js';
 
 const NOW = new Date('2026-09-29T12:00:00Z');
 
@@ -52,7 +52,9 @@ function doc(slug: string, opts: {
           atVirtual: opts.conclusion.at,
           summary: opts.conclusion.summary ?? 'done',
           evidenceIds: ['d1'],
-          ...(opts.conclusion.disposition !== undefined ? { disposition: opts.conclusion.disposition } : {}),
+          // Deliberately untyped: the defensive read must survive values the
+          // schema would refuse (e.g. a stored 'mystery').
+          ...(opts.conclusion.disposition !== undefined ? { disposition: opts.conclusion.disposition as ConclusionDisposition } : {}),
         },
       } : {}),
       createdAt: '2026-09-01T00:00:00Z',
