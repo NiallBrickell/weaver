@@ -28,7 +28,7 @@ The remaining input failure is distinct from capacity: one routine still named
 a nonexistent workstation-era source path. An existing clean hosted checkout
 was verified through a deterministic action, and that evidence was delivered
 to the owner for replacement of failed ordinary work. Historical action commands
-and founder pauses remain untouched.
+and human pauses remain untouched.
 
 The final local suite passed 814 tests with two optional PostgreSQL skips (816
 total); typecheck, UI build, and diff checks passed. Read-only live status from

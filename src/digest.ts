@@ -5,7 +5,7 @@
  * typed projections the operator workspace shows (the fleet Needs-you queue,
  * runner presence, fleet incidents, pending wakes) with no model anywhere in
  * the loop (kernel rules 4 and 10). Every item carries the exact CLI command
- * that answers it, so the founder can clear the queue without first opening a
+ * that answers it, so the human can clear the queue without first opening a
  * dashboard — the queue only ever moved when someone pulled it.
  *
  * Delivery is operator notification, not an outbound action (kernel rule 7):

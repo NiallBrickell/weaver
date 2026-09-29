@@ -34,13 +34,13 @@ The house pack is machine-local config, not source: put a `house.json` under `WE
 
 ```json
 {
-  "constraints": ["Open pull requests only — merging is the founder's act"],
+  "constraints": ["Open pull requests only — merging is the human's act"],
   "repoMap": "Known repos under ~/work:\n- shop — the storefront (Next.js). Default guess for product features.\n- shop-api — the backend.",
   "tags": ["myapp"]
 }
 ```
 
-The same derivation pass de-dupes against your fleet. If the message is really an update to, a duplicate of, or a direct follow-up on work an existing workstream already owns — "we shipped X but it isn't working" when a stream shipped X — it is **delivered to that workstream as founder steering** instead of forking a near-duplicate stream, and a done or paused stream is reopened with its history intact (the CLI prints `↪ <slug>` instead of `▶ <slug>` when this happens). Merely related topics still get their own stream, and when in doubt Weaver creates rather than attaches; `weaver steer <slug> "<msg>"` remains the way to target a stream explicitly.
+The same derivation pass de-dupes against your fleet. If the message is really an update to, a duplicate of, or a direct follow-up on work an existing workstream already owns — "we shipped X but it isn't working" when a stream shipped X — it is **delivered to that workstream as human steering** instead of forking a near-duplicate stream, and a done or paused stream is reopened with its history intact (the CLI prints `↪ <slug>` instead of `▶ <slug>` when this happens). Merely related topics still get their own stream, and when in doubt Weaver creates rather than attaches; `weaver steer <slug> "<msg>"` remains the way to target a stream explicitly.
 
 Derivation degrades safely: if the model pass fails (offline, capacity), the workstream still starts immediately — the slug and title become the first words of your message, the objective is your message verbatim, and the CLI prints a warning saying the deterministic fallback named the stream. A failed derivation never blocks starting work, and never silently changes what the stream will do — only what it is called.
 
@@ -63,7 +63,7 @@ weaver create --slug lead-follow-up \
   --title "Follow up with new leads by email" \
   --objective "When a lead submits the form, send a follow-up email with a scheduling link. Design it, build it, open a PR with before/after evidence." \
   --constraint "Repository work happens in a fresh worktree; opening, merging, and deploying remain gated actions" \
-  --constraint "Open pull requests only — merging is the founder's act"
+  --constraint "Open pull requests only — merging is the human's act"
 ```
 
 The coordinator researches the current code first, records the chosen design, then keeps the feature moving through implementation, review and revision, merge when authorized, the required tests, and any agreed post-change check. It concludes only when the done-bar is met. Weeks later, "why is it built this way?" still has an answer rather than a guess.
