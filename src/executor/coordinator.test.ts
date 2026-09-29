@@ -84,6 +84,7 @@ describe('ClaudeCoordinatorExecutor', () => {
       PATH: '/usr/bin',
       CLAUDE_CONFIG_DIR: '/tmp/fresh-setup-token-home',
       CLAUDE_CODE_OAUTH_TOKEN: 'registered-setup-token',
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     });
   });
 
@@ -161,6 +162,7 @@ describe('ClaudeCoordinatorExecutor', () => {
       PATH: '/usr/bin',
       CLAUDE_CONFIG_DIR: '/tmp/fresh-direct-claude-home',
       ANTHROPIC_API_KEY: 'registered-anthropic-key',
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     });
   });
 
@@ -198,6 +200,7 @@ describe('ClaudeCoordinatorExecutor', () => {
       ANTHROPIC_BASE_URL: 'https://openrouter.ai/api',
       ANTHROPIC_AUTH_TOKEN: 'registered-router-key',
       ANTHROPIC_API_KEY: '',
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     });
     assert.deepEqual(captured.options.tools, []);
     assert.deepEqual(captured.options.allowedTools, ['mcp__weaver__*']);
@@ -282,6 +285,7 @@ describe('the projection cache marker', () => {
     assert.equal(env.ENABLE_PROMPT_CACHING_1H, '1');
     assert.equal(env.DISABLE_GROWTHBOOK, '1');
     assert.equal(env.FORCE_PROMPT_CACHING_5M, undefined);
+    assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
   });
 
   test(`${PROJECTION_CACHE_MARKER_ENV}=0 restores the single string prompt and the untouched env`, async () => {
@@ -290,7 +294,7 @@ describe('the projection cache marker', () => {
       const { prompt, env, turns } = await launch({});
       assert.equal(prompt, STABLE + VOLATILE);
       assert.equal(turns.length, 0);
-      assert.deepEqual(env, { PATH: '/usr/bin', FORCE_PROMPT_CACHING_5M: '1' });
+      assert.deepEqual(env, { PATH: '/usr/bin', FORCE_PROMPT_CACHING_5M: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' });
     } finally {
       delete process.env[PROJECTION_CACHE_MARKER_ENV];
     }
@@ -313,6 +317,8 @@ describe('the projection cache marker', () => {
           assert.equal(args.prompt, STABLE + VOLATILE, JSON.stringify(overrides));
           assert.equal(args.options.env.DISABLE_GROWTHBOOK, undefined);
           assert.equal(args.options.env.ENABLE_PROMPT_CACHING_1H, undefined);
+          // No session-title side call on any seat, marker or not.
+          assert.equal(args.options.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
           return (async function* () {})();
         }) as any,
       });

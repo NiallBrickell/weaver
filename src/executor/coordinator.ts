@@ -225,6 +225,12 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
         // Code and would put 5m breakpoints after our 1h one: a 400.
         delete env.FORCE_PROMPT_CACHING_5M;
       }
+      // Claude Code otherwise sends each pass's whole first prompt (the full
+      // projection, ~60k chars) to a small model just to title the session,
+      // at every pass. A coordinator session is never browsed by title, and
+      // the rest of what this switches off (telemetry, error reporting,
+      // update checks) is equally nothing a controller pass needs.
+      env = { ...env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
       for await (const message of this.runQuery({
         prompt: blocks ? singleUserTurn(blocks) : req.prompt,
         options: {
