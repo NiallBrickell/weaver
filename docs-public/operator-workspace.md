@@ -21,7 +21,9 @@ weaver ui --host 0.0.0.0 --port 9724
 The **Jobs** page is the work overview: scan how many jobs need attention, are
 working, are waiting, or are done. **Fleet** is a separate compact system view
 for shared data, execution visibility, and grouped operational incidents; those
-facts do not become more sections inside a job. On desktop the left sidebar uses the
+facts do not become more sections inside a job. **Overview** is the read-only
+[team overview](./overview.md) for teammates new to Weaver: how it works, where
+the fleet's work comes from, how outcomes ended, and what it costs. On desktop the left sidebar uses the
 same groups and stays available when you open a job; on mobile **All jobs**
 returns to that list without repeating it above the selected job.
 

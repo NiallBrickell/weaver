@@ -12,7 +12,9 @@ import type {
   Steering,
   Wake,
 } from '../../types.js';
+import type { OverviewPayload } from '../../overview.js';
 import { Badge, Card, CardContent, CardHeader, CardTitle, cn } from '../components/index.js';
+import { OverviewPage } from './overview-page.js';
 import {
   displayText,
   firstLine,
@@ -85,6 +87,10 @@ export interface OperatorBaseRenderProps {
 export interface OperatorBoardRenderProps extends OperatorBaseRenderProps {}
 
 export interface OperatorFleetRenderProps extends OperatorBaseRenderProps {}
+
+export interface OperatorOverviewRenderProps extends OperatorBaseRenderProps {
+  overview: OverviewPayload;
+}
 
 export interface OperatorNewRenderProps extends OperatorBaseRenderProps {
   requestId: string;
@@ -424,7 +430,7 @@ function WorkstreamSidebar({
   actor: string;
   signOutAction?: string;
   currentSlug?: string;
-  currentPage: 'board' | 'fleet' | 'new' | 'workspace';
+  currentPage: 'board' | 'fleet' | 'overview' | 'new' | 'workspace';
 }) {
   const selectedDone = currentSlug
     ? fleet.board.done.find((item) => item.slug === currentSlug)
@@ -453,7 +459,7 @@ function WorkstreamSidebar({
         </div>
         <p data-testid="fleet-scope" className="mt-2 text-[11px] font-medium text-emerald-300" title={fleet.scope.detail}>{fleet.scope.label}</p>
       </div>
-      <nav aria-label="Operator" className="grid grid-cols-3 gap-2 border-b border-zinc-900 p-3">
+      <nav aria-label="Operator" className="grid grid-cols-2 gap-2 border-b border-zinc-900 p-3">
         <a
           data-testid="overview-link"
           href="/"
@@ -469,6 +475,14 @@ function WorkstreamSidebar({
           className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-center text-xs font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-white"
         >
           Fleet
+        </a>
+        <a
+          data-testid="team-overview-link"
+          href="/overview"
+          aria-current={currentPage === 'overview' ? 'page' : undefined}
+          className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-center text-xs font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-white"
+        >
+          Overview
         </a>
         <a
           data-testid="new-work-link"
@@ -591,7 +605,7 @@ function OperatorShell({
   revisionEndpoint: string;
   initialRevision: string;
   currentSlug?: string;
-  currentPage: 'board' | 'fleet' | 'new' | 'workspace';
+  currentPage: 'board' | 'fleet' | 'overview' | 'new' | 'workspace';
   children: ReactNode;
 }) {
   return (
@@ -1643,6 +1657,20 @@ export function renderOperatorFleetHtml(props: OperatorFleetRenderProps): string
       currentPage="fleet"
     >
       <FleetPage fleet={props.fleet} />
+    </OperatorShell>,
+  );
+}
+
+export function renderOperatorOverviewHtml(props: OperatorOverviewRenderProps): string {
+  return documentHtml(
+    <OperatorShell
+      {...props}
+      title="Weaver · Overview"
+      revisionEndpoint="/api/fleet-revision"
+      initialRevision={props.fleet.revision}
+      currentPage="overview"
+    >
+      <OverviewPage overview={props.overview} scopeLabel={props.fleet.scope.label} />
     </OperatorShell>,
   );
 }
