@@ -273,8 +273,14 @@ test('worked example is the most recent conclusion with at least five assignment
   assert.equal(example.summary, 'Merged the fix');
   assert.equal(example.assignments, 6);
   assert.equal(example.actions, 1);
-  assert.deepEqual(example.steps.map((s) => s.id), ['c5', 'c4', 'c3', 'c2', 'c1', 'c0']);
-  assert.equal(example.steps.at(-1)!.kind, 'action');
+  // The example is the shared workstream timeline (src/timeline.ts): the
+  // assignments in created order, then the conclusion with its disposition.
+  const rows = example.timeline.entries.filter((e) => e.type !== 'gap');
+  assert.deepEqual(rows.map((e) => e.type === 'assignment' ? e.assignment.id : e.type), ['c5', 'c4', 'c3', 'c2', 'c1', 'c0', 'conclusion']);
+  const last = rows.at(-2)!;
+  assert.equal(last.type === 'assignment' && last.assignment.kind, 'action');
+  const conclusion = rows.at(-1)!;
+  assert.equal(conclusion.type === 'conclusion' && conclusion.disposition, 'delivered');
 
   assert.equal(computeOverview([doc('none')], [], NOW).example, undefined);
 });

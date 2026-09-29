@@ -27,7 +27,7 @@ The page also states what it cannot tell you. It cannot say whether merged code 
 
 **What it costs.** The page adds up the cost recorded on every coordinator pass and every worker attempt. It shows the split between coordinator and worker spend, a breakdown by parent (a parent's own runs plus the workstreams it opened directly), and the total and median cost per concluded outcome, overall and by disposition. It also groups cost by executor and provider and labels each group with its billing basis. Anthropic runs through the Claude SDK (`local-sdk`) report a list-price figure even on a subscription, so that cost is *notional*. OpenRouter bills per token, so its figure is *cash*. Every other target is labelled *unknown* rather than guessed, and that includes records old enough to have no target at all.
 
-**One worked example.** The most recently concluded workstream with at least five assignments is picked automatically. The page renders it as a timeline: each assignment's kind, creation time, objective, state and adoption, followed by the conclusion.
+**One worked example.** The most recently concluded workstream with at least five assignments is picked automatically. The page renders it with the same timeline a job page opens on (see [operator workspace](./operator-workspace.md)): assignments with their kind, time, objective, state and adoption, decisions, human acts, waits, folded retries, and the conclusion with its disposition. It shows the most recent 40 rows, with a link to the full timeline.
 
 ## Why it does not slow the fleet down
 

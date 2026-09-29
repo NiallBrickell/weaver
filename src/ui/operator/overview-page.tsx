@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react';
 
-import type { ExampleStep, OriginRow, OverviewPayload } from '../../overview.js';
-import { Badge, Card, CardContent, CardHeader, CardTitle, cn } from '../components/index.js';
+import type { OriginRow, OverviewPayload } from '../../overview.js';
+import { Badge, Card, CardContent, CardHeader, CardTitle } from '../components/index.js';
 import { formatTimestamp } from '../inspect/model.js';
+import { Timeline } from './timeline.js';
 
 // Only timeless copy is written here. Every number on the page comes from the
 // computed overview, which is derived from typed state on each fleet revision.
@@ -506,12 +507,6 @@ function Cost({ overview }: { overview: OverviewPayload }) {
   );
 }
 
-function stepTone(step: ExampleStep): string {
-  if (step.adoption === 'accepted' || (step.kind === 'action' && step.state === 'completed')) return 'border-emerald-400 bg-emerald-400';
-  if (step.adoption === 'rejected' || step.state === 'failed' || step.state === 'cancelled') return 'border-rose-400 bg-zinc-950';
-  return 'border-zinc-500 bg-zinc-950';
-}
-
 function Example({ overview }: { overview: OverviewPayload }) {
   const example = overview.example;
   if (!example) {
@@ -536,31 +531,10 @@ function Example({ overview }: { overview: OverviewPayload }) {
       }
     >
       <p className="max-w-3xl text-sm leading-6 text-zinc-300">{example.objective}</p>
-      <ol className="ml-1.5 border-l-2 border-zinc-800">
-        {example.steps.map((step) => (
-          <li key={step.id} className="relative grid gap-1 py-2 pl-5 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
-            <span className={cn('absolute -left-[7px] top-3.5 h-3 w-3 rounded-full border-2', stepTone(step))} />
-            <span className="pt-0.5 font-mono text-[11px] tabular-nums text-zinc-500">{formatTimestamp(step.at)}</span>
-            <span className="text-sm leading-6 text-zinc-200">
-              <Badge variant={step.kind === 'action' ? 'accent' : 'neutral'} className="mr-2 font-mono text-[10px] uppercase">{step.kind}</Badge>
-              {step.objective}
-              <span className="block text-xs text-zinc-500">
-                {step.state}{step.adoption !== 'none' ? ` · ${step.adoption}` : ''}{step.attempts > 1 ? ` · ${step.attempts} attempts` : ''}
-              </span>
-            </span>
-          </li>
-        ))}
-        {example.omittedSteps ? <li className="py-2 pl-5 text-xs text-zinc-500">{example.omittedSteps} later assignments not shown.</li> : null}
-        <li className="relative grid gap-1 py-2 pl-5 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
-          <span className="absolute -left-[7px] top-3.5 h-3 w-3 rounded-full border-2 border-amber-400 bg-amber-400" />
-          <span className="pt-0.5 font-mono text-[11px] tabular-nums text-zinc-500">{formatTimestamp(example.concludedAt)}</span>
-          <span className="text-sm leading-6 text-zinc-200">
-            <Badge variant="warning" className="mr-2 font-mono text-[10px] uppercase">concluded</Badge>
-            {example.summary}
-            <span className="block text-xs text-zinc-500">Disposition: {example.outcome.replace(/_/g, ' ')}</span>
-          </span>
-        </li>
-      </ol>
+      <Timeline
+        timeline={example.timeline}
+        earlierHref={`${workstreamHref(example.slug)}?tab=timeline&all=1`}
+      />
     </Section>
   );
 }

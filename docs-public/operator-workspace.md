@@ -27,9 +27,31 @@ the fleet's work comes from, how outcomes ended, and what it costs. On desktop t
 same groups and stays available when you open a job; on mobile **All jobs**
 returns to that list without repeating it above the selected job.
 
-Each job has four task-oriented tabs. Only the selected tab body is rendered,
-so scrolling is never the way you navigate between unrelated parts of a job:
+Each job has five task-oriented tabs. Only the selected tab body is rendered,
+so scrolling is never the way you navigate between unrelated parts of a job.
+Opening a job without choosing a tab lands on **Timeline**:
 
+- **Timeline** (the default) is the job's history, one row per step, oldest
+  first: each assignment with its creation time, kind, objective, work state,
+  adoption (accepted green, rejected red, pending muted), number of runs, and
+  the executor and model of its latest run; each decision, with what it
+  replaced, what superseded it, or why it was closed; human acts (steers, with
+  withdrawn ones struck through, approvals and rejections of actions and sends,
+  results a person accepted or rejected, and every question asked of you and
+  when it was resolved); the start of a routine's current cycle; and the
+  conclusion with its disposition. Long objectives are cut to one line and
+  expand in place. A quiet stretch of six hours or more between two rows shows
+  as one row, such as "waited 2d 4h", with the reason of the scheduled check
+  that ended it when one was recorded. Consecutive assignments of the same
+  kind, with nothing else recorded between them, fold into one row ("5 attempts
+  · 4 rejected · then accepted") when every one before the last was rejected
+  or failed; the row expands to the individual steps. The most recent 60 rows
+  show by default and **Show earlier** (`?tab=timeline&all=1`) shows them all.
+  When the job needs you, the same decision card as Overview sits above the
+  timeline, and an active job ends with its next move. Every row comes from a
+  typed record, never from the bounded event log or a transcript. A routine's
+  progress is overwritten in place, so only its current cycle's start is
+  marked; earlier cycle boundaries live in [printouts](./printouts.md).
 - **Overview** shows one current decision or one next-state card. Labelled
   choices are clickable, and every response can carry an optional condition;
   **Something else** accepts a different answer. The complete decision question
@@ -44,7 +66,7 @@ so scrolling is never the way you navigate between unrelated parts of a job:
   and the full typed chronology in separate disclosures.
 
 The active tab is part of the URL, so a link or live revision refresh returns
-to the same view. The server sends one-way revision events and the browser
+to the same view, including **Show earlier** on the timeline. The server sends one-way revision events and the browser
 replaces the page's coherent server-rendered snapshot in place, including the
 job list and fleet state; no manual reload is needed. A bounded revision poll
 repairs a dropped event stream. Unsaved form input is never discarded: if an

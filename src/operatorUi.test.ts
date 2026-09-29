@@ -454,9 +454,14 @@ test('board, new-work, and workspace pages are live typed views with secure head
   const html = await workspace.text();
   assert.match(html, /Repair the carousel producer/);
   assert.match(html, /data-testid="workspace-tabs"/);
-  assert.match(html, /data-testid="workspace-tab-overview"[^>]*aria-current="page"/);
-  assert.match(html, /data-testid="workspace-overview"/);
-  assert.doesNotMatch(html, /data-testid="workspace-work"|data-testid="workspace-activity"|data-testid="job-details"/);
+  // A workstream link without ?tab= opens the Timeline: the decision is a
+  // timeline row, and the next move closes it.
+  assert.match(html, /data-testid="workspace-tab-timeline"[^>]*aria-current="page"/);
+  assert.match(html, /data-testid="workspace-timeline"/);
+  assert.match(html, /data-testid="timeline-decision"/);
+  assert.match(html, /data-testid="timeline-next"/);
+  assert.match(html, /data-testid="timeline-caption"/);
+  assert.doesNotMatch(html, /data-testid="workspace-overview"|data-testid="workspace-work"|data-testid="workspace-activity"|data-testid="job-details"/);
   assert.doesNotMatch(html, /Work and deliverables|workspace-inspector|five-question-position/);
   assert.doesNotMatch(html, /WEAVER_SERVE_TOKEN|WEAVER_UI_TOKEN/);
   assert.doesNotMatch(html, /DISPOSABLE_PASS_SUMMARY|DISPOSABLE_SESSION/);
@@ -466,11 +471,20 @@ test('board, new-work, and workspace pages are live typed views with secure head
   assert.match(html, /root\.replaceWith\(nextRoot\)/);
   assert.doesNotMatch(html, /window\.location\.reload/);
 
+  const overviewHtml = await (await fetch(`${base}/workstreams/${created.slug}?tab=overview`)).text();
+  assert.match(overviewHtml, /data-testid="workspace-tab-overview"[^>]*aria-current="page"/);
+  assert.match(overviewHtml, /data-testid="workspace-overview"/);
+  assert.doesNotMatch(overviewHtml, /data-testid="workspace-timeline"/);
+
+  const allHtml = await (await fetch(`${base}/workstreams/${created.slug}?tab=timeline&all=1`)).text();
+  assert.match(allHtml, /data-testid="workspace-tab-timeline"[^>]*aria-current="page"/);
+  assert.match(allHtml, /data-testid="timeline-decision"/);
+
   const activityHtml = await (await fetch(`${base}/workstreams/${created.slug}?tab=activity`)).text();
   assert.match(activityHtml, /data-testid="workspace-tab-activity"[^>]*aria-current="page"/);
   assert.match(activityHtml, /Add context or answer a question/);
   assert.match(activityHtml, /Recent updates/);
-  assert.doesNotMatch(activityHtml, /data-testid="workspace-overview"|data-testid="workspace-work"|data-testid="job-details"/);
+  assert.doesNotMatch(activityHtml, /data-testid="workspace-overview"|data-testid="workspace-work"|data-testid="job-details"|data-testid="workspace-timeline"/);
 
   const detailsHtml = await (await fetch(`${base}/workstreams/${created.slug}?tab=details`)).text();
   assert.match(detailsHtml, /data-testid="workspace-tab-details"[^>]*aria-current="page"/);
@@ -478,7 +492,7 @@ test('board, new-work, and workspace pages are live typed views with secure head
   assert.doesNotMatch(detailsHtml, /data-testid="workspace-overview"|data-testid="workspace-work"|data-testid="workspace-activity"/);
 
   const unknownHtml = await (await fetch(`${base}/workstreams/${created.slug}?tab=unknown`)).text();
-  assert.match(unknownHtml, /data-testid="workspace-tab-overview"[^>]*aria-current="page"/);
+  assert.match(unknownHtml, /data-testid="workspace-tab-timeline"[^>]*aria-current="page"/);
 
   const revision = await fetch(`${base}/api/workstreams/${created.slug}/revision`);
   assert.deepEqual(await revision.json(), { revision: String((await load(created.slug)).revision) });
@@ -1444,6 +1458,25 @@ test('the team overview is a read-only typed view linked from the nav, recompute
     doc.workstream.status = 'paused';
   });
   assert.match(await (await fetch(`${base}/overview`)).text(), /1 paused\./);
+
+  // The worked example renders the same timeline component the workstream
+  // page defaults to, retries folded and the conclusion's disposition shown.
+  await arrive(child.slug, (doc) => {
+    const at = (h: number) => new Date(Date.parse('2026-09-02T00:00:00Z') + h * 3_600_000).toISOString();
+    doc.assignments = Array.from({ length: 5 }, (_, i) => ({
+      id: `a_example_${i}`, objective: `Attempt the repair ${i}`, briefing: 'b', kind: 'work' as const,
+      acceptanceCriteria: [], dependsOn: [], state: 'completed' as const, attempts: [],
+      adoption: { state: i < 3 ? 'rejected' as const : 'accepted' as const }, createdAtVirtual: at(i),
+    }));
+    doc.workstream.status = 'done';
+    doc.workstream.conclusion = { passId: 'p_example', atVirtual: at(30), summary: 'Repaired the 500', evidenceIds: [], disposition: 'delivered' };
+  });
+  const exampleHtml = await (await fetch(`${base}/overview`)).text();
+  assert.match(exampleHtml, /data-testid="overview-example"[\s\S]*data-testid="workstream-timeline"/);
+  assert.match(exampleHtml, /data-testid="timeline-retries"/);
+  assert.match(exampleHtml, /4 attempts · 3 rejected · then accepted/);
+  assert.match(exampleHtml, /data-testid="timeline-gap"/);
+  assert.match(exampleHtml, /Disposition: <span[^>]*>delivered<\/span>/);
 
   // A read surface only: no write route exists under it.
   assert.equal((await fetch(`${base}/overview`, form({}))).status, 404);

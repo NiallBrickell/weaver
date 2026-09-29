@@ -14,8 +14,10 @@ import type {
   Wake,
 } from '../../types.js';
 import type { OverviewPayload } from '../../overview.js';
+import type { WorkstreamTimeline } from '../../timeline.js';
 import { Badge, Card, CardContent, CardHeader, CardTitle, cn } from '../components/index.js';
 import { OverviewPage } from './overview-page.js';
+import { Timeline } from './timeline.js';
 import {
   displayText,
   firstLine,
@@ -97,11 +99,16 @@ export interface OperatorNewRenderProps extends OperatorBaseRenderProps {
   requestId: string;
 }
 
-export type WorkspaceTab = 'overview' | 'work' | 'activity' | 'details';
+export type WorkspaceTab = 'timeline' | 'overview' | 'work' | 'activity' | 'details';
+
+/** The tab a workstream link without `?tab=` opens. */
+export const DEFAULT_WORKSPACE_TAB: WorkspaceTab = 'timeline';
 
 export interface OperatorWorkspaceRenderProps extends OperatorBaseRenderProps {
   view: WorkstreamPageView;
   tab: WorkspaceTab;
+  /** Computed by the route for the timeline tab only (src/timeline.ts). */
+  timeline?: WorkstreamTimeline;
   responseId: string;
   needVersion?: string;
 }
@@ -1524,6 +1531,7 @@ function JobDetails({ view, facts }: { view: WorkstreamPageView; facts: TypedFac
 }
 
 const workspaceTabs: Array<{ id: WorkspaceTab; label: string }> = [
+  { id: 'timeline', label: 'Timeline' },
   { id: 'overview', label: 'Overview' },
   { id: 'work', label: 'Work & results' },
   { id: 'activity', label: 'Activity' },
@@ -1582,16 +1590,50 @@ function WorkspaceRelationships({ view }: { view: WorkstreamPageView }) {
   );
 }
 
+function TimelineTab({ view, timeline, responseId, needVersion }: {
+  view: WorkstreamPageView;
+  timeline: WorkstreamTimeline;
+  responseId: string;
+  needVersion?: string;
+}) {
+  const ws = view.doc.workstream;
+  const earlierHref = `/workstreams/${encodeURIComponent(ws.slug)}?tab=timeline&all=1`;
+  // The default view must never hide a pending ask: the same decision card
+  // the Overview tab renders leads here whenever the person is needed.
+  return (
+    <section data-testid="workspace-timeline" className="space-y-5">
+      {view.needs.length ? <DecisionCard view={view} responseId={responseId} needVersion={needVersion} /> : null}
+      <Card className="bg-zinc-900/20">
+        <CardContent className="p-4">
+          <Timeline
+            timeline={timeline}
+            earlierHref={earlierHref}
+            footer={ws.status !== 'done' ? (
+              <li data-testid="timeline-next" className="relative grid gap-1 py-2 pl-5 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
+                <span className="absolute -left-[7px] top-3.5 h-3 w-3 rounded-full border-2 border-violet-400 bg-zinc-950" />
+                <span className="pt-0.5 font-mono text-[11px] uppercase tracking-wide text-violet-300">Now · {view.position.state}</span>
+                <span className="min-w-0 break-words text-sm leading-6 text-zinc-300">{view.position.next}</span>
+              </li>
+            ) : undefined}
+          />
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
 function WorkspacePage({
   view,
   actor,
   tab,
+  timeline,
   responseId,
   needVersion,
 }: {
   view: WorkstreamPageView;
   actor: string;
   tab: WorkspaceTab;
+  timeline?: WorkstreamTimeline;
   responseId: string;
   needVersion?: string;
 }) {
@@ -1612,6 +1654,7 @@ function WorkspacePage({
         <WorkspaceTabs slug={ws.slug} active={tab} />
         <div className="mt-5 space-y-5">
           <WorkspaceRelationships view={view} />
+          {tab === 'timeline' && timeline ? <TimelineTab view={view} timeline={timeline} responseId={responseId} needVersion={needVersion} /> : null}
           {tab === 'overview' ? (
             <section data-testid="workspace-overview">
               {view.needs.length
@@ -1736,6 +1779,7 @@ export function renderOperatorWorkspaceHtml(props: OperatorWorkspaceRenderProps)
         view={props.view}
         actor={props.actor}
         tab={props.tab}
+        {...(props.timeline ? { timeline: props.timeline } : {})}
         responseId={props.responseId}
         needVersion={props.needVersion}
       />
