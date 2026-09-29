@@ -1502,7 +1502,7 @@ test('the team overview is a read-only typed view linked from the nav, recompute
   // Each section leads with computed takeaway sentences, in plain English.
   assert.match(html, /data-testid="overview-insights"/);
   assert.match(html, /Half the jobs were started by other jobs and half directly by people: 1 each\./);
-  assert.match(html, /2 jobs are active\./);
+  assert.match(html, /The board has 2 open jobs\./);
   assert.match(html, /This counts merges, not whether the code was good\./);
   assert.doesNotMatch(html, /What this page cannot tell you yet/);
   assert.match(html, /No examples yet/);

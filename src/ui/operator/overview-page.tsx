@@ -93,7 +93,7 @@ function HowItWorksDiagram({ workstreams }: { workstreams: number }) {
     <svg
       viewBox="0 0 1140 520"
       role="img"
-      aria-label="A person gives Weaver a new job or a message. Each job has one record in a shared database. Every few seconds the engine, which uses no AI model, starts a fresh model for a check-in: it reads the job's record, decides what to do next and saves its changes. It sends agents to do pieces of work and runs approved actions such as merging code. Agents hand back results that only count once Weaver accepts them; actions count once Weaver has checked they happened. Anything that needs a person comes back to the needs-you list."
+      aria-label="A person gives Weaver a new job or a message. Each job has one record in a shared database. Every few seconds the engine, which uses no AI model, starts a fresh model for a planning run: it reads the job's record, decides what to do next and saves its changes. It sends agents to do pieces of work and runs approved actions such as merging code. Agents hand back results that only count once Weaver accepts them; actions count once Weaver has checked they happened. Anything that needs a person comes back to the needs-you list."
       className="block h-auto w-full min-w-[820px]"
     >
       <defs>
@@ -144,7 +144,7 @@ function HowItWorksDiagram({ workstreams }: { workstreams: number }) {
       <text className={sub} x="316" y="462">version it was read from</text>
 
       <rect className={box} x="640" y="70" width="330" height="110" rx="8" />
-      <text className={title} x="656" y="98">Check-in</text>
+      <text className={title} x="656" y="98">Planning run</text>
       <text className={sub} x="656" y="122">a fresh model every time, no memory of the last</text>
       <text className={sub} x="656" y="144">reads · checks results · accepts or rejects</text>
       <text className={sub} x="656" y="166">plans the next step · sets a wake-up · stops</text>
@@ -164,7 +164,7 @@ function HowItWorksDiagram({ workstreams }: { workstreams: number }) {
       <rect className={box} x="640" y="380" width="330" height="90" rx="8" />
       <text className={title} x="656" y="408">Engine</text>
       <text className={sub} x="656" y="432">every few seconds, no AI model involved:</text>
-      <text className={sub} x="656" y="452">checks → sends → agents → wake-ups → check-ins</text>
+      <text className={sub} x="656" y="452">checks → sends → agents → wake-ups → planning</text>
       <line className="stroke-zinc-400" strokeWidth="1.4" x1="717" y1="380" x2="717" y2="344" markerEnd="url(#ov-h)" />
       <line className="stroke-zinc-400" strokeWidth="1.4" x1="892" y1="380" x2="892" y2="344" markerEnd="url(#ov-h)" />
       <text className={label} x="724" y="366">starts</text>
@@ -208,9 +208,9 @@ const GLOSSARY: Array<[string, string]> = [
   ['Job', 'Something Weaver has been asked to get done, with everything needed to finish it. Weaver\'s own code calls it a workstream. A job can last days or months.'],
   ['Routine', 'A job that wakes up on a schedule, looks for problems in one place and opens a new job for each real one.'],
   ['Piece of work', 'One bounded task inside a job, with a clear test for when it is done. If an attempt fails, the piece of work stays and gets another attempt.'],
-  ['Check-in', 'A short run where a fresh model reads a job\'s record, decides what to do next, saves its changes and stops. Weaver\'s code calls it a coordinator pass.'],
+  ['Planning run', 'Each time Weaver\'s planner looks at a job: a fresh model reads the job\'s record, decides the next step, saves its changes and stops. Weaver\'s code calls it a coordinator pass.'],
   ['Accepted or rejected result', 'An agent finishing is not enough. Weaver checks what came back and either accepts it, which makes it count, or rejects it.'],
-  ['Current plan', 'The course a job is committed to right now, and why. A later check-in can replace it, but only openly, keeping the old one on record.'],
+  ['Current plan', 'The course a job is committed to right now, and why. A later planning run can replace it, but only openly, keeping the old one on record.'],
   ['Action', 'A change to the outside world, like merging code. It runs as an exact command, often needs approval first, and only counts once Weaver has checked it happened.'],
   ['Lesson', 'Something learned from a person\'s correction. It starts as a trial and applies more widely only once it has worked. It can never give Weaver more permission.'],
 ];
@@ -230,7 +230,7 @@ function Explainer({ overview, insights }: { overview: OverviewPayload; insights
         </CardContent>
       </Card>
       <p className="max-w-3xl text-xs leading-5 text-zinc-500">
-        The job record in the middle is the only thing that lasts. At each check-in a fresh model reads it, decides what to do and saves its changes. If a message or a result arrived in the meantime, the save is refused and the next check-in starts from the newer record. Results from agents only count once Weaver accepts them. Changes to the outside world, like merging code, run as exact commands and only count once Weaver has checked they really happened.
+        The job record in the middle is the only thing that lasts. At each planning run a fresh model reads it, decides what to do and saves its changes. If a message or a result arrived in the meantime, the save is refused and the next planning run starts from the newer record. Results from agents only count once Weaver accepts them. Changes to the outside world, like merging code, run as exact commands and only count once Weaver has checked they really happened.
       </p>
       <dl data-testid="overview-glossary" className="grid gap-px overflow-hidden rounded-xl border border-zinc-800 bg-zinc-800 sm:grid-cols-2 xl:grid-cols-4">
         {GLOSSARY.map(([term, definition]) => (
@@ -243,7 +243,7 @@ function Explainer({ overview, insights }: { overview: OverviewPayload; insights
       <div className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-3 xl:grid-cols-5">
         <Stat value={overview.totals.workstreams.toLocaleString('en-GB')} label="jobs" detail={`${overview.totals.active} active · ${overview.totals.paused} paused · ${overview.totals.done} finished`} />
         <Stat value={overview.totals.assignments.toLocaleString('en-GB')} label="pieces of work" detail={`${overview.totals.actionAssignments.toLocaleString('en-GB')} actions · ${overview.totals.workAssignments.toLocaleString('en-GB')} done by agents`} />
-        <Stat value={overview.totals.passes.toLocaleString('en-GB')} label="check-ins" detail="including ones that had to wait or failed" />
+        <Stat value={overview.totals.passes.toLocaleString('en-GB')} label="planning runs" detail="including ones that had to wait or failed" />
         <Stat value={overview.totals.steers.toLocaleString('en-GB')} label="messages from people" detail="across every job" />
         <Stat value={money(overview.cost.totalUsd)} label="model cost recorded" detail="the cost section says how much is real money" />
       </div>
@@ -473,7 +473,7 @@ function Signals({ overview, insights }: { overview: OverviewPayload; insights: 
         />
         <Stat
           value={pct(passes.completed, passes.total)}
-          label="of check-ins completed"
+          label="of planning runs completed"
           detail={`${passes.completed.toLocaleString('en-GB')} of ${passes.total.toLocaleString('en-GB')}; ${passes.providerBackoff.toLocaleString('en-GB')} waited for model capacity and ${passes.logicalFailure.toLocaleString('en-GB')} failed for other reasons.`}
         />
       </div>
@@ -496,10 +496,10 @@ function Cost({ overview, insights }: { overview: OverviewPayload; insights: Ins
       eyebrow="06 · What it costs"
       title="Model cost"
       insights={insights}
-      lede="Added up from every check-in and every agent run. Not all of it is money actually spent: runs through the Claude SDK on a subscription report a list price that isn't charged, while OpenRouter charges for every use."
+      lede="Added up from every planning run and every agent run. Not all of it is money actually spent: runs through the Claude SDK on a subscription report a list price that isn't charged, while OpenRouter charges for every use."
     >
       <div className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
-        <Stat value={cost.coordinatorShare === null ? '—' : pct(cost.coordinatorUsd, cost.totalUsd)} label="spent deciding what to do next" detail={`${money(cost.coordinatorUsd)} on check-ins · ${money(cost.workerUsd)} on agents doing the work`} />
+        <Stat value={cost.coordinatorShare === null ? '—' : pct(cost.coordinatorUsd, cost.totalUsd)} label="spent deciding what to do next" detail={`${money(cost.coordinatorUsd)} on planning runs · ${money(cost.workerUsd)} on agents doing the work`} />
         <Stat value={money(cost.byBasis.cash)} label="real money" detail="OpenRouter" />
         <Stat value={money(cost.byBasis['subscription-notional'])} label="estimate, on a subscription" detail="Anthropic through the Claude SDK" />
         <Stat
@@ -535,7 +535,7 @@ function Cost({ overview, insights }: { overview: OverviewPayload; insights: Ins
           <CardHeader className="pb-2"><CardTitle className="text-sm">By where the model ran</CardTitle></CardHeader>
           <CardContent className="pt-0">
             <table className="w-full text-left text-xs">
-              <thead className="text-zinc-500"><tr className="border-b border-zinc-800"><th className="py-1.5 font-medium">Where</th><th className="py-1.5 font-medium">Billing</th><th className="py-1.5 pl-3 text-right font-medium">Check-ins</th><th className="py-1.5 pl-3 text-right font-medium">Agents</th></tr></thead>
+              <thead className="text-zinc-500"><tr className="border-b border-zinc-800"><th className="py-1.5 font-medium">Where</th><th className="py-1.5 font-medium">Billing</th><th className="py-1.5 pl-3 text-right font-medium">Planning runs</th><th className="py-1.5 pl-3 text-right font-medium">Agents</th></tr></thead>
               <tbody>
                 {cost.byProvider.map((row) => (
                   <tr key={row.key} data-testid="overview-cost-provider" className="border-b border-zinc-900 align-top last:border-0">
@@ -582,7 +582,7 @@ function Examples({ overview, tabs }: { overview: OverviewPayload; tabs: { now?:
       id="example"
       eyebrow="07 · Examples, start to finish"
       title="How a job ends, step by step"
-      lede="One recent example for each way a job can end, picked automatically. Weaver prefers one that is easy to follow (at most 30 pieces of work and 60 check-ins, with no more than a quarter of results rejected) over simply the newest."
+      lede="One recent example for each way a job can end, picked automatically. Weaver prefers one that is easy to follow (at most 30 pieces of work and 60 planning runs, with no more than a quarter of results rejected) over simply the newest."
     >
       <nav aria-label="Examples" data-testid="overview-example-tabs" className="-mx-1 flex gap-1 overflow-x-auto border-b border-zinc-800 px-1">
         {examples.map((example) => {
@@ -605,7 +605,7 @@ function Examples({ overview, tabs }: { overview: OverviewPayload; tabs: { now?:
         <h3 className="text-base font-semibold text-zinc-100">{current.title}</h3>
         <p className="text-sm leading-6 text-zinc-400">
           {current.parent ? <>Started by <span className="font-mono text-zinc-300">{current.parent}</span>. </> : 'Started directly by a person. '}
-          {plural(current.passes, 'check-in')}, {plural(current.assignments, 'piece of work', 'pieces of work')} ({current.actions} of them actions), {plural(current.steers, 'message from people', 'messages from people')}, {money(current.costUsd)} of model cost.{' '}
+          {plural(current.passes, 'planning run')}, {plural(current.assignments, 'piece of work', 'pieces of work')} ({current.actions} of them actions), {plural(current.steers, 'message from people', 'messages from people')}, {money(current.costUsd)} of model cost.{' '}
           <a href={workstreamHref(current.slug)} className="text-violet-300 hover:text-violet-200">Open it</a>
         </p>
         <p className="max-w-3xl text-sm leading-6 text-zinc-300">{current.objective}</p>

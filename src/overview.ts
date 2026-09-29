@@ -23,7 +23,7 @@ import type { PolicyRecord } from './policies.js';
 import { computeStats } from './stats.js';
 import { workstreamTimeline, type WorkstreamTimeline } from './timeline.js';
 import type { Assignment, Attempt, PassRecord, WorkstreamDoc } from './types.js';
-import { fleetNeeds } from './ui/inspect/model.js';
+import { fleetBoard, fleetGlance, fleetRunnerLine, type FleetBucket } from './ui/inspect/model.js';
 
 /** How a concluded workstream ended. Added to `conclusion` by a parallel
  * change; read defensively so this page works before and after it lands. */
@@ -130,16 +130,20 @@ export interface NowItem {
   decision?: string;
 }
 
-/** What an active job is waiting on right now, in the board's precedence:
- * a person first, then work in flight, then the kind of wait. */
-export type NowState = 'needsYou' | 'working' | 'capacity' | 'scheduled' | 'ready';
+/** The board's own status bucket for open jobs (everything but done), with
+ * the board's label, so the overview, the board tiles and the sidebar can
+ * never show different numbers for the same fleet. */
+export type OpenBucket = Exclude<FleetBucket, 'done'>;
 
-export interface NowBreakdown {
-  needsYou: number;
-  working: number;
-  capacity: number;
-  scheduled: number;
-  ready: number;
+export interface OpenBucketCount {
+  key: OpenBucket;
+  label: string;
+  count: number;
+}
+
+/** The slice of `fleetGlance` the overview reads. */
+export interface GlanceBuckets {
+  buckets: ReadonlyArray<{ key: FleetBucket; label: string; count: number }>;
 }
 
 export interface NowGroup {
@@ -235,7 +239,10 @@ export interface OverviewPayload {
   };
   now: {
     active: number;
-    breakdown: NowBreakdown;
+    /** Open jobs on the board: the sum of `buckets`. */
+    open: number;
+    /** The board's buckets, in its order, done excluded. */
+    buckets: OpenBucketCount[];
     groups: NowGroup[];
   };
   outcomes: {
@@ -322,27 +329,20 @@ function daysBetween(from: string, to: Date): number {
 }
 
 /**
- * Where an active job stands, mirroring the board's precedence so the two
- * pages agree: a need for a person wins, then work in flight (a running or
- * in-review assignment, or a live pass lease), then a wait on model capacity,
- * then a scheduled check; anything else is ready for its next step.
+ * The board's classification of this fleet when the caller has none to hand
+ * (the route passes the glance it already built, with runner presence).
+ * Never a second classifier: it runs the board's own `fleetBoard` and
+ * `fleetGlance` over the same documents.
  */
-export function nowStateOf(doc: WorkstreamDoc, needsYou: ReadonlySet<string>, now: Date): NowState {
-  if (needsYou.has(doc.workstream.slug)) return 'needsYou';
-  const inFlight = doc.assignments.some((a) => a.state === 'running' || a.state === 'awaiting_review');
-  const leased = !!doc.lease && Date.parse(doc.lease.expiresAt) > now.getTime();
-  if (inFlight || leased) return 'working';
-  const pending = doc.wakes.filter((w) => w.status === 'pending');
-  if (pending.some((w) => w.infrastructure)) return 'capacity';
-  if (pending.some((w) => w.condition.type === 'time' || w.condition.type === 'wall_time' || w.condition.type === 'probe')) return 'scheduled';
-  return 'ready';
+function glanceFor(docs: WorkstreamDoc[], policies: PolicyRecord[], now: Date): GlanceBuckets {
+  return fleetGlance(fleetBoard(docs, policies, new Map(), [], now, now), fleetRunnerLine([], undefined, now), now);
 }
 
 function byCountThenName<T extends { parent: string | null; label: string }>(count: (row: T) => number) {
   return (a: T, b: T) => count(b) - count(a) || a.label.localeCompare(b.label);
 }
 
-export function computeOverview(docs: WorkstreamDoc[], policies: PolicyRecord[], now: Date): OverviewPayload {
+export function computeOverview(docs: WorkstreamDoc[], policies: PolicyRecord[], now: Date, glance?: GlanceBuckets): OverviewPayload {
   const bySlug = new Map(docs.map((d) => [d.workstream.slug, d]));
   const stats = computeStats(docs, policies, now);
   const managesSomething = new Set(docs.map(parentOf).filter((p): p is string => p !== null));
@@ -369,13 +369,13 @@ export function computeOverview(docs: WorkstreamDoc[], policies: PolicyRecord[],
   }
   const topLevel = origins.get(null)?.count ?? 0;
 
-  // Now: active work grouped by parent, and what each job is waiting on.
+  // Now: active work grouped by parent; open jobs by the board's buckets.
+  const openBuckets: OpenBucketCount[] = (glance ?? glanceFor(docs, policies, now)).buckets
+    .filter((bucket): bucket is OpenBucketCount => bucket.key !== 'done')
+    .map(({ key, label, count }) => ({ key, label, count }));
   const nowGroups = new Map<string | null, NowGroup>();
-  const needsYou = new Set(fleetNeeds(docs).map((need) => need.slug));
-  const breakdown: NowBreakdown = { needsYou: 0, working: 0, capacity: 0, scheduled: 0, ready: 0 };
   for (const doc of docs) {
     if (doc.workstream.status !== 'active') continue;
-    breakdown[nowStateOf(doc, needsYou, now)] += 1;
     const parent = parentOf(doc);
     const group = nowGroups.get(parent) ?? { parent, label: parent ?? TOP_LEVEL_LABEL, items: [] };
     const decision = latestStandingDecision(doc);
@@ -545,7 +545,8 @@ export function computeOverview(docs: WorkstreamDoc[], policies: PolicyRecord[],
     },
     now: {
       active: docs.filter((d) => d.workstream.status === 'active').length,
-      breakdown,
+      open: openBuckets.reduce((n, bucket) => n + bucket.count, 0),
+      buckets: openBuckets,
       groups: [...nowGroups.values()].sort(byCountThenName((g) => g.items.length)),
     },
     outcomes: {
@@ -700,9 +701,9 @@ const DISPOSITION_PHRASES: Record<Disposition, [string, string]> = {
 const REJECTION_FLAG_MIN_JUDGED = 20;
 const REJECTION_FLAG_MIN_GAP = 0.1;
 const REJECTION_FLAG_MIN_RATIO = 1.5;
-/** Shares of check-ins, active jobs or managed jobs worth flagging. */
+/** Shares of planning runs, open jobs or managed jobs worth flagging. */
 const CAPACITY_FLAG_SHARE = 0.2;
-const ACTIVE_CAPACITY_FLAG_SHARE = 0.25;
+const BLOCKED_FLAG_SHARE = 0.25;
 const FAILURE_FLAG_SHARE = 0.1;
 const REPAIR_FLAG_SHARE = 0.1;
 /** A top job below this share of all spend is not called out. */
@@ -742,36 +743,44 @@ function originInsights(o: OverviewPayload): Insight[] {
   return out;
 }
 
-const NOW_PHRASES: Array<[keyof NowBreakdown, string, string]> = [
-  ['working', 'is being worked on right now', 'are being worked on right now'],
-  ['scheduled', 'is waiting for a scheduled check', 'are waiting for a scheduled check'],
-  ['capacity', 'is waiting for model capacity', 'are waiting for model capacity'],
-  ['ready', 'is ready for its next step', 'are ready for their next step'],
-  ['needsYou', 'needs you', 'need you'],
-];
+/** How each board bucket reads in a sentence; the tiles use the board's own
+ * labels (Needs you, Blocked, Degraded, Working, Waiting, Paused). */
+const BUCKET_PHRASES: Record<OpenBucket, [string, string]> = {
+  'needs-you': ['needs you', 'need you'],
+  blocked: ['is blocked', 'are blocked'],
+  degraded: ['is running on a backup model', 'are running on a backup model'],
+  working: ['is being worked on right now', 'are being worked on right now'],
+  waiting: ['is waiting for its next scheduled step', 'are waiting for their next scheduled step'],
+  paused: ['is paused', 'are paused'],
+};
 
 function nowInsights(o: OverviewPayload): Insight[] {
-  const { active, breakdown, groups } = o.now;
-  if (!active) return [{ text: 'Nothing is active right now.' }];
+  const { open, buckets, active, groups } = o.now;
+  if (!open) return [{ text: 'Nothing is open on the board right now.' }];
   const out: Insight[] = [];
-  const parts = NOW_PHRASES.filter(([key]) => breakdown[key] > 0);
-  const opening = `${jobs(active)} ${active === 1 ? 'is' : 'are'} active.`;
+  const parts = buckets.filter((bucket) => bucket.count > 0);
+  const opening = `The board has ${counted(open, 'open job', 'open jobs')}.`;
   if (parts.length === 1) {
-    const [, singular, plural] = parts[0]!;
-    out.push({ text: `${opening} ${active === 1 ? `It ${singular}` : `All of them ${plural}`}.` });
+    const [singular, plural] = BUCKET_PHRASES[parts[0]!.key];
+    out.push({ text: `${opening} ${open === 1 ? `It ${singular}` : `All of them ${plural}`}.` });
   } else {
-    out.push({ text: `${opening} ${capitalise(listOf(parts.map(([key, singular, plural]) => counted(breakdown[key], singular, plural))))}.` });
+    out.push({ text: `${opening} ${capitalise(listOf(parts.map((bucket) => {
+      const [singular, plural] = BUCKET_PHRASES[bucket.key];
+      return counted(bucket.count, singular, plural);
+    })))}.` });
   }
-  if (!breakdown.needsYou) out.push({ text: 'Nothing needs you right now.' });
-  if (breakdown.capacity && breakdown.capacity / active >= ACTIVE_CAPACITY_FLAG_SHARE) {
-    out.push({ text: `Model capacity is holding up a lot of work: ${count(breakdown.capacity)} of ${count(active)} active jobs are waiting for it.`, flag: true });
+  const needsYou = buckets.find((bucket) => bucket.key === 'needs-you')?.count ?? 0;
+  const blocked = buckets.find((bucket) => bucket.key === 'blocked')?.count ?? 0;
+  if (!needsYou) out.push({ text: 'Nothing needs you right now.' });
+  if (blocked && blocked / open >= BLOCKED_FLAG_SHARE) {
+    out.push({ text: `A lot of work is stuck: ${count(blocked)} of ${count(open)} open jobs are blocked because no model or runner can take them right now.`, flag: true });
   }
   const sorted = [...groups].sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label));
   const [top, next] = sorted;
   if (top && next) {
     out.push({
       text: top.parent === null
-        ? `The largest group, ${count(top.items.length)}, was started directly by people; ${next.label} has the next most with ${count(next.items.length)}.`
+        ? `Of the ${counted(active, 'active job', 'active jobs')}, the largest group, ${count(top.items.length)}, was started directly by people; ${next.label} has the next most with ${count(next.items.length)}.`
         : `The most active jobs sit under ${top.label}: ${count(top.items.length)} of ${count(active)}.`,
     });
   }
@@ -830,7 +839,7 @@ function signalInsights(o: OverviewPayload): Insight[] {
     const needed = interventions.jobsWithIntervention;
     const perJob = interventions.perOutcome === null
       ? ''
-      : ` Across the fleet that is ${interventions.perOutcome.toFixed(1)} interventions per successfully finished job, the number Weaver is trying to push down.`;
+      : ` Across the fleet, a person stepped in (answering, approving, rejecting, steering or correcting) ${interventions.perOutcome.toFixed(1)} times per successfully finished job, the number Weaver is trying to push down.`;
     out.push({ text: `${capitalise(quantify(needed, total, 'jobs'))} needed a person to step in: ${count(needed)} of ${count(total)}.${perJob}` });
   }
   if (adoption.judged && adoptionByFamily.length >= 2) {
@@ -849,12 +858,12 @@ function signalInsights(o: OverviewPayload): Insight[] {
   }
   if (passes.total && passes.providerBackoff / passes.total >= CAPACITY_FLAG_SHARE) {
     out.push({
-      text: `${capitalise(quantify(passes.providerBackoff, passes.total, 'check-ins'))} had to wait because the model provider was out of capacity: ${count(passes.providerBackoff)} of ${count(passes.total)}. That slows work down, but nothing is lost.`,
+      text: `${capitalise(quantify(passes.providerBackoff, passes.total, 'planning runs'))} had to wait because the model provider was out of capacity: ${count(passes.providerBackoff)} of ${count(passes.total)}. That slows work down, but nothing is lost.`,
       flag: true,
     });
   }
   if (passes.total && passes.logicalFailure / passes.total >= FAILURE_FLAG_SHARE) {
-    out.push({ text: `${count(passes.logicalFailure)} check-ins (${percent(passes.logicalFailure, passes.total)}) failed for reasons other than capacity.`, flag: true });
+    out.push({ text: `${count(passes.logicalFailure)} planning runs (${percent(passes.logicalFailure, passes.total)}) failed for reasons other than capacity.`, flag: true });
   }
   if (repairsOfRepairs.count && repairsOfRepairs.managed) {
     const share = repairsOfRepairs.count / repairsOfRepairs.managed;

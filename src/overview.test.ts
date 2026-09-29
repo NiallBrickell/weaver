@@ -27,6 +27,7 @@ import {
   type OverviewInsights,
 } from './overview.js';
 import type { Assignment, Attempt, ConclusionDisposition, PassRecord, WorkstreamDoc } from './types.js';
+import { fleetBoard, fleetGlance, fleetRunnerLine } from './ui/inspect/model.js';
 import { OverviewPage } from './ui/operator/overview-page.js';
 
 const NOW = new Date('2026-09-29T12:00:00Z');
@@ -350,7 +351,7 @@ test('insights on an empty fleet say so plainly, with no numbers that are not th
   const insights = overviewInsights(computeOverview([], [], NOW));
   assert.deepEqual(texts(insights.intro), ["Weaver hasn't taken on any jobs yet."]);
   assert.deepEqual(texts(insights.origins), ['There are no jobs yet, so nothing has started any work.']);
-  assert.deepEqual(texts(insights.now), ['Nothing is active right now.']);
+  assert.deepEqual(texts(insights.now), ['Nothing is open on the board right now.']);
   assert.deepEqual(texts(insights.outcomes), ['No job has finished yet.']);
   assert.deepEqual(texts(insights.signals), ['Weaver has not checked any results yet.']);
   assert.deepEqual(texts(insights.cost), ['No cost has been recorded yet.']);
@@ -379,14 +380,19 @@ test('insights lead with what the numbers support: where work comes from and wha
     doc('ready-one'),
   ];
   const o = computeOverview(docs, [], NOW);
-  assert.deepEqual(o.now.breakdown, { needsYou: 1, working: 1, capacity: 1, scheduled: 1, ready: 1 });
+  // The overview's job counts are the board's: the same buckets, labels and
+  // numbers fleetGlance gives the board tiles and the sidebar.
+  const glance = fleetGlance(fleetBoard(docs, [], new Map(), [], NOW, NOW), fleetRunnerLine([], undefined, NOW), NOW);
+  const boardOpen = glance.buckets.filter((b) => b.key !== 'done').map(({ key, label, count }) => ({ key, label, count }));
+  assert.deepEqual(o.now.buckets, boardOpen);
+  assert.deepEqual(computeOverview(docs, [], NOW, glance).now.buckets, boardOpen);
   const insights = overviewInsights(o);
   assert.deepEqual(texts(insights.origins), [
     'Most jobs are started by other jobs, not by people: 4 of 7.',
     'The jobs that started the most others are sentry-sweep (3) and thread-review (1).',
   ]);
   assert.deepEqual(texts(insights.now), [
-    '5 jobs are active. 1 is being worked on right now, 1 is waiting for a scheduled check, 1 is waiting for model capacity, 1 is ready for its next step and 1 needs you.',
+    'The board has 6 open jobs. 1 needs you, 1 is being worked on right now, 3 are waiting for their next scheduled step and 1 is paused.',
     'The most active jobs sit under sentry-sweep: 3 of 5.',
   ]);
   assert.deepEqual(texts(insights.intro), [
@@ -396,7 +402,7 @@ test('insights lead with what the numbers support: where work comes from and wha
 
   // One bucket: every active job in the same state, one parent.
   const one = overviewInsights(computeOverview([doc('routine'), doc('child-a', { parent: 'routine' }), doc('child-b', { parent: 'routine' })], [], NOW));
-  assert.deepEqual(texts(one.now), ['3 jobs are active. All of them are ready for their next step.', 'Nothing needs you right now.', 'The most active jobs sit under routine: 2 of 3.']);
+  assert.deepEqual(texts(one.now), ['The board has 3 open jobs. All of them are waiting for their next scheduled step.', 'Nothing needs you right now.', 'The most active jobs sit under routine: 2 of 3.']);
   assert.deepEqual(texts(one.origins), ['Most jobs are started by other jobs, not by people: 2 of 3.', 'All 2 of those came from routine.']);
 
   // People-led fleet.
@@ -404,11 +410,19 @@ test('insights lead with what the numbers support: where work comes from and wha
   assert.equal(texts(people.origins)[0], 'Most jobs were started directly by people: 2 of 3. Other jobs started the remaining 1.');
   const solo = overviewInsights(computeOverview([doc('a')], [], NOW));
   assert.deepEqual(texts(solo.origins), ['Every job so far was started directly by a person: 1 of 1.']);
-  assert.deepEqual(texts(solo.now), ['1 job is active. It is ready for its next step.', 'Nothing needs you right now.']);
+  assert.deepEqual(texts(solo.now), ['The board has 1 open job. It is waiting for its next scheduled step.', 'Nothing needs you right now.']);
 
-  // Capacity holding up a large share of active work is flagged.
-  const stuck = overviewInsights(computeOverview([capacity, doc('ready-one')], [], NOW));
-  assert.deepEqual(stuck.now.filter((i) => i.flag).map((i) => i.text), ['Model capacity is holding up a lot of work: 1 of 2 active jobs are waiting for it.']);
+  // A large blocked share of open work is flagged. The counts come from the
+  // board's glance, so the rule is tested over a glance directly.
+  const blockedGlance = { buckets: [
+    { key: 'needs-you' as const, label: 'Needs you', count: 0 },
+    { key: 'blocked' as const, label: 'Blocked', count: 1 },
+    { key: 'waiting' as const, label: 'Waiting', count: 1 },
+    { key: 'done' as const, label: 'Done', count: 4 },
+  ] };
+  const stuck = overviewInsights(computeOverview([capacity, doc('ready-one')], [], NOW, blockedGlance));
+  assert.deepEqual(texts(stuck.now).slice(0, 2), ['The board has 2 open jobs. 1 is blocked and 1 is waiting for its next scheduled step.', 'Nothing needs you right now.']);
+  assert.deepEqual(stuck.now.filter((i) => i.flag).map((i) => i.text), ['A lot of work is stuck: 1 of 2 open jobs are blocked because no model or runner can take them right now.']);
 });
 
 test('insights on how jobs ended separate the unrecorded past from what was recorded since', () => {
@@ -446,7 +460,7 @@ test('usefulness insights state the share with its figures and flag what looks o
   assert.deepEqual(texts(signals.filter((i) => !i.flag)), [
     '4 in 5 results were accepted when Weaver checked them: 72 of 90.',
     'All finished pieces of work succeeded on the first try: 90 of 90.',
-    '1 in 3 jobs needed a person to step in: 1 of 3. Across the fleet that is 1.0 interventions per successfully finished job, the number Weaver is trying to push down.',
+    '1 in 3 jobs needed a person to step in: 1 of 3. Across the fleet, a person stepped in (answering, approving, rejecting, steering or correcting) 1.0 times per successfully finished job, the number Weaver is trying to push down.',
   ]);
   assert.deepEqual(texts(signals.filter((i) => i.flag)), [
     'Rejections are higher than usual for the work under sweep: 50% of their results were rejected, against 20% across all jobs.',
@@ -472,7 +486,7 @@ test('usefulness insights state the share with its figures and flag what looks o
     doc('repair-of-repair', { parent: 'repair' }),
   ], [], NOW);
   const flags = texts(overviewInsights(busy).signals.filter((i) => i.flag));
-  assert.ok(flags.includes('Half the check-ins had to wait because the model provider was out of capacity: 1 of 2. That slows work down, but nothing is lost.'), flags.join('\n'));
+  assert.ok(flags.includes('Half the planning runs had to wait because the model provider was out of capacity: 1 of 2. That slows work down, but nothing is lost.'), flags.join('\n'));
   assert.ok(flags.includes('1 job was opened by a job that another job had opened: 50% of the jobs started by other jobs. A rising share would mean fixes are causing more fixes.'), flags.join('\n'));
   assert.ok(flags.includes('Weaver tried to merge 4 pull requests. 1 was confirmed merged when checked on GitHub afterwards, 2 didn\'t go through and 1 haven\'t run.'), flags.join('\n'));
 });
