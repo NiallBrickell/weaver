@@ -1891,6 +1891,44 @@ test('read_policy returns the full record of a matching policy and nothing outsi
   });
 });
 
+test('consecutive passes hand the executor the same stable prefix, marked where §3 begins', async () => {
+  await arrive('coordinator-capacity', (doc) => { doc.workstream.tags = ['acme']; });
+  await proposePolicy({
+    statement: 'Confirm the rollout state by readback before adopting a rollout result',
+    tags: ['acme'], effectKind: 'add_verification', effectDescription: 'add a readback before adoption',
+    workstreamSlug: 'ws-src', passId: 'pass_src', interventionSummary: 'the human asked for a readback',
+  });
+  const seen: { prompt: string; stablePrefixLength?: number }[] = [];
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      seen.push({ prompt: req.prompt, ...(req.stablePrefixLength !== undefined ? { stablePrefixLength: req.stablePrefixLength } : {}) });
+      await req.tools.find((definition) => definition.name === 'finish_pass')!.handler({ summary: 'Reconciled.' }, {});
+      return { costUsd: 0 };
+    },
+  };
+  await runCoordinatorPass('coordinator-capacity', ['first wake'], executor);
+  // A trivial arrival between the passes: new history, a new revision.
+  await arrive('coordinator-capacity', (_doc, event) => { event('observation.recorded', 'ARRIVAL_BETWEEN_PASSES'); });
+  advanceClock('2h');
+  await runCoordinatorPass('coordinator-capacity', ['second wake'], executor);
+
+  assert.equal(seen.length, 2);
+  const [first, second] = seen.map(({ prompt, stablePrefixLength }) => {
+    assert.ok(stablePrefixLength && stablePrefixLength > 0 && stablePrefixLength < prompt.length);
+    return { stable: prompt.slice(0, stablePrefixLength), volatile: prompt.slice(stablePrefixLength) };
+  });
+  // Claude Code fingerprints characters of the fixed opening line.
+  assert.ok(first!.stable.startsWith('A wake fired for this workstream. Reconcile: make the bounded progress this wake justifies, then finish_pass.\n\n'));
+  assert.match(first!.stable, /Confirm the rollout state by readback/);
+  assert.match(first!.stable, /# Workstream projection: Coordinator capacity \(coordinator-capacity\)[\s\S]*## 1\. Objective[\s\S]*## 2\. Authority/);
+  assert.ok(first!.volatile.startsWith('\n## 3. Current operating state'));
+  assert.equal(second!.stable, first!.stable, 'the cached prefix survives an arrival, a new revision and two hours');
+  assert.notEqual(second!.volatile, first!.volatile);
+  assert.match(second!.volatile, /ARRIVAL_BETWEEN_PASSES/);
+  assert.match(second!.volatile, /second wake/);
+});
+
 test('the prompt makes a step progress, not a decision', () => {
   assert.match(COORDINATOR_SYSTEM_PROMPT, /A step or cycle advance is PROGRESS, not a decision: record_progress updates the standing course in place/);
   assert.match(COORDINATOR_SYSTEM_PROMPT, /Supersede ONLY when the commitment itself/);
