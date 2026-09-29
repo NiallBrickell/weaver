@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { getEventListeners } from 'node:events';
 import { after, describe, it } from 'node:test';
 import { setExecutorSecret } from '../../secrets.js';
 import type { SubmitBridge } from '../../executor/submitBridge.js';
@@ -824,6 +825,99 @@ describe('OpenHands eval executor', () => {
     assert.ok(seenFetch.some(({ url }) => url.endsWith('/conversation-abort/pause')));
     assert.ok(commands.some(({ args }) => args[0] === 'stop'));
     assert.equal(bridgeClosed, 1);
+  });
+
+  it('never leaves per-request abort listeners on the run signal across a long status poll', async () => {
+    const abort = new AbortController();
+    const fetchSignals: AbortSignal[] = [];
+    let statusReads = 0;
+    const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = String(input);
+      // Stand-in for undici, which attaches a listener to every fetch's
+      // signal and drops it only when the Request is garbage-collected.
+      assert.ok(init.signal);
+      init.signal.addEventListener('abort', () => undefined);
+      fetchSignals.push(init.signal);
+      if (url.endsWith('/health')) return response({ status: 'ok' });
+      if (url.endsWith('/api/conversations') && init.method === 'POST') {
+        return response({ id: 'conversation-long', execution_status: 'idle' });
+      }
+      if (url.endsWith('/run')) return response({ success: true });
+      if (url.endsWith('/api/conversations/conversation-long')) {
+        statusReads += 1;
+        return response({ id: 'conversation-long', execution_status: statusReads < 2_000 ? 'running' : 'finished' });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof globalThis.fetch;
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
+      runCommand: async (_command, args) => args[0] === 'port'
+        ? { exitCode: 0, stdout: '127.0.0.1:49154\n', stderr: '' }
+        : { exitCode: 0, stdout: '', stderr: '' },
+      fetch: fetchImpl,
+      startSubmitBridge: async () => ({
+        url: 'http://host.docker.internal:41875/mcp',
+        token: 'token',
+        async close() {},
+      }),
+      startProviderProxy: async () => fakeProviderProxy(),
+      sleep: async () => undefined,
+      now: () => 1_000,
+    });
+    const req = request();
+    req.abort = abort;
+
+    await executor.execute(req);
+
+    assert.equal(statusReads, 2_000);
+    assert.ok(fetchSignals.every((signal) => signal !== abort.signal));
+    assert.equal(getEventListeners(abort.signal, 'abort').length, 0);
+  });
+
+  it('forwards a run abort to the in-flight request signal', async () => {
+    const abort = new AbortController();
+    let inFlight: AbortSignal | undefined;
+    const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.endsWith('/health')) return response({ status: 'ok' });
+      if (url.endsWith('/api/conversations') && init.method === 'POST') {
+        return response({ id: 'conversation-forward', execution_status: 'idle' });
+      }
+      if (url.endsWith('/run') || url.endsWith('/pause')) return response({ success: true });
+      if (url.endsWith('/api/conversations/conversation-forward')) {
+        inFlight = init.signal ?? undefined;
+        abort.abort();
+        assert.equal(inFlight?.aborted, true);
+        const error = new Error('request aborted');
+        error.name = 'AbortError';
+        throw error;
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof globalThis.fetch;
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
+      runCommand: async (_command, args) => args[0] === 'port'
+        ? { exitCode: 0, stdout: '127.0.0.1:49155\n', stderr: '' }
+        : { exitCode: 0, stdout: '', stderr: '' },
+      fetch: fetchImpl,
+      startSubmitBridge: async () => ({
+        url: 'http://host.docker.internal:41876/mcp',
+        token: 'token',
+        async close() {},
+      }),
+      startProviderProxy: async () => fakeProviderProxy(),
+      sleep: async () => undefined,
+      now: () => 1_000,
+    });
+    const req = request();
+    req.abort = abort;
+
+    await executor.execute(req);
+
+    assert.ok(inFlight && inFlight !== abort.signal);
+    assert.equal(executor.lastTelemetry()?.terminalReason, 'aborted');
   });
 
   it('best-effort stops the unique container name when docker run itself fails', async () => {

@@ -829,7 +829,8 @@ export class OpenHandsExecutor implements WorkerExecutor {
     while (this.now() <= deadline) {
       if (signal.aborted) throw abortError();
       try {
-        const response = await this.fetchImpl(`${baseUrl}/health`, { signal });
+        const response = await withRequestSignal(signal, (requestSignal) =>
+          this.fetchImpl(`${baseUrl}/health`, { signal: requestSignal }));
         if (response.ok) return;
         lastError = `HTTP ${response.status}`;
       } catch (caught) {
@@ -875,23 +876,25 @@ export class OpenHandsExecutor implements WorkerExecutor {
     init: RequestInit,
     signal: AbortSignal,
   ): Promise<T> {
-    const response = await this.fetchImpl(`${baseUrl}${path}`, {
-      ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-API-Key': sessionApiKey,
-        ...init.headers,
-      },
-      signal,
+    return withRequestSignal(signal, async (requestSignal) => {
+      const response = await this.fetchImpl(`${baseUrl}${path}`, {
+        ...init,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-API-Key': sessionApiKey,
+          ...init.headers,
+        },
+        signal: requestSignal,
+      });
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error(
+          `OpenHands ${init.method ?? 'GET'} ${path} failed: HTTP ${response.status}${detail ? ` ${detail}` : ''}`,
+        );
+      }
+      const text = await response.text();
+      return (text ? JSON.parse(text) : undefined) as T;
     });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      throw new Error(
-        `OpenHands ${init.method ?? 'GET'} ${path} failed: HTTP ${response.status}${detail ? ` ${detail}` : ''}`,
-      );
-    }
-    const text = await response.text();
-    return (text ? JSON.parse(text) : undefined) as T;
   }
 }
 
@@ -1153,6 +1156,31 @@ function sumOrNull(values: number[]): number | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * One fetch's view of a run-long signal. Node's fetch (undici) attaches an
+ * abort listener to the signal it is given and removes it only when that
+ * Request is garbage-collected, so handing the run's own signal to the
+ * 250 ms status poll piled listeners onto it faster than a quiet runner
+ * collects — two concurrent runs each crossed undici's 1500-listener warning
+ * on the fleet (2026-09-21, 2026-09-28). A per-request child takes undici's
+ * listener and dies with the request; the run signal only ever holds our one
+ * forwarder, removed deterministically when the request settles.
+ */
+async function withRequestSignal<T>(
+  signal: AbortSignal,
+  request: (requestSignal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const child = new AbortController();
+  const forward = () => child.abort(signal.reason);
+  if (signal.aborted) forward();
+  else signal.addEventListener('abort', forward, { once: true });
+  try {
+    return await request(child.signal);
+  } finally {
+    signal.removeEventListener('abort', forward);
+  }
 }
 
 function abortableSleep(milliseconds: number, signal: AbortSignal): Promise<void> {
