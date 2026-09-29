@@ -7,7 +7,15 @@
  * remain authoritative.
  */
 
-import { describeEgressGate, workstreamOriginForDisplay } from './egressGate.js';
+import { describeEgressGate, untrustedMergePolicy, workstreamOriginForDisplay } from './egressGate.js';
+
+function untrustedMergeSetting(): string {
+  try {
+    return `${untrustedMergePolicy() === 'person' ? 'a person' : 'Pilot on non-sensitive paths'} (WEAVER_UNTRUSTED_MERGE=${untrustedMergePolicy()})`;
+  } catch {
+    return 'invalid WEAVER_UNTRUSTED_MERGE; the runner refuses to start';
+  }
+}
 import { dispositionLabel } from './conclusion.js';
 import * as fs from 'node:fs';
 import type {
@@ -217,7 +225,7 @@ function currentBoundary(doc: WorkstreamDoc): string[] {
     ...(doc.workstream.suggestedConstraints?.length
       ? [`- Suggested constraints (untrusted author, not authority): ${doc.workstream.suggestedConstraints.map(flat).join('; ')}`]
       : []),
-    `- Origin: ${workstreamOriginForDisplay(doc.workstream)}${workstreamOriginForDisplay(doc.workstream) === 'untrusted' ? ' — may push and open PRs; every merge or deploy needs a person' : ''}`,
+    `- Origin: ${workstreamOriginForDisplay(doc.workstream)}${workstreamOriginForDisplay(doc.workstream) === 'untrusted' ? ` — may push and open PRs; merges and deploys: ${untrustedMergeSetting()}` : ''}`,
     `- Tags: ${doc.workstream.tags.length ? doc.workstream.tags.join(', ') : 'none'}`,
     `- Authority: outbound sends ${doc.workstream.autonomy.sendsRequireApproval ? 'require approval' : 'may proceed within assigned authority'}`,
     `- Execution safety: ${safety.count}/${safety.limit} model starts in rolling ${Math.round(safety.windowSeconds / 60)}m · automatic pause/resume`,

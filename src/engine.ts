@@ -91,6 +91,7 @@ import {
   egressGateSeam,
   evaluateEgressGate,
   isWorkflowPermissionRefusal,
+  untrustedMergePolicy,
   workstreamOriginForAuthority,
   type EgressGateResult,
 } from './egressGate.js';
@@ -1911,6 +1912,8 @@ export async function tick(
   } = {},
 ): Promise<TickReport> {
   assertRunnerEnabled();
+  // Refuse to execute anything under an unknown WEAVER_UNTRUSTED_MERGE.
+  untrustedMergePolicy();
   const runner = runnerClaimIdentity();
   const maxPasses = opts.maxPasses ?? 3;
   if (opts.engineOnly && !runner.placementOnly) {

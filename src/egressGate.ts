@@ -194,6 +194,30 @@ export function childOrigin(
   return workstreamOriginForAuthority(parent);
 }
 
+/**
+ * Who clears a MERGE or DEPLOY from an untrusted-origin workstream — the one
+ * part of this gate the operator may relax without a code change, because it
+ * withdraws self-merge from most of a fleet whose jobs are customer-derived.
+ *
+ *   - `person` (default): always a person.
+ *   - `pilot`: the ordinary Pilot-or-human path again, but ONLY for an act the
+ *     rest of the gate already clears. The sensitive-path gate, the
+ *     cannot-compute and cannot-classify fail-closed rules, and the missing
+ *     `workflows` permission stay unconditional.
+ *
+ * Any other value is a configuration error and refuses to start: a typo must
+ * never silently read as either setting.
+ */
+export type UntrustedMergePolicy = 'person' | 'pilot';
+
+export function untrustedMergePolicy(env: NodeJS.ProcessEnv = process.env): UntrustedMergePolicy {
+  const raw = env.WEAVER_UNTRUSTED_MERGE;
+  if (raw === undefined || raw.trim() === '') return 'person';
+  const value = raw.trim();
+  if (value === 'person' || value === 'pilot') return value;
+  throw new Error(`WEAVER_UNTRUSTED_MERGE must be 'person' or 'pilot', got '${raw}' — refusing to start rather than guess who may merge untrusted work`);
+}
+
 // ---------------------------------------------------------------------------
 // Command classification
 
@@ -684,12 +708,18 @@ export interface EgressGateInput {
   env?: Record<string, string>;
   io?: EgressDiffIO;
   globs?: readonly string[];
+  /** Defaults to WEAVER_UNTRUSTED_MERGE; throws on an unknown value. */
+  untrustedMerge?: UntrustedMergePolicy;
 }
 
 export function evaluateEgressGate(input: EgressGateInput): EgressGateResult {
   const io = input.io ?? liveEgressDiffIO;
   const env = input.env ?? {};
   const globs = input.globs ?? humanReviewPathGlobs();
+  // Only the untrusted-origin merge/deploy rule reads this; every other
+  // reason below is unconditional.
+  const untrustedNeedsPerson = input.origin === 'untrusted'
+    && (input.untrustedMerge ?? untrustedMergePolicy()) === 'person';
   const shapes = classifyEgressCommand(input.command);
   const reasons: EgressGateReason[] = [];
   const identities: string[] = [];
@@ -701,7 +731,7 @@ export function evaluateEgressGate(input: EgressGateInput): EgressGateResult {
     }
     if (shape.class === 'deploy') {
       identities.push(`deploy:${shape.command}`);
-      if (input.origin === 'untrusted') reasons.push({ kind: 'untrusted-origin', egress: 'deploy' });
+      if (untrustedNeedsPerson) reasons.push({ kind: 'untrusted-origin', egress: 'deploy', setting: 'person' });
       continue;
     }
     const cwd = shape.dir ?? input.cwd;
@@ -717,7 +747,7 @@ export function evaluateEgressGate(input: EgressGateInput): EgressGateResult {
     } else {
       result = io.mergePaths(cwd, shape, env);
     }
-    if (merges && input.origin === 'untrusted') reasons.push({ kind: 'untrusted-origin', egress: 'merge' });
+    if (merges && untrustedNeedsPerson) reasons.push({ kind: 'untrusted-origin', egress: 'merge', setting: 'person' });
     if (!result.ok) {
       reasons.push({ kind: 'diff-unavailable', detail: result.error });
       continue;
@@ -763,7 +793,7 @@ export function describeEgressGateReason(reason: EgressGateReason): string {
       return `touches ${shown}${more}, ${reason.paths.length === 1 ? 'a sensitive path' : 'sensitive paths'}: needs a person`;
     }
     case 'untrusted-origin':
-      return `this workstream came from untrusted input, so a ${reason.egress} is a person's act`;
+      return `${reason.egress === 'merge' ? 'merges' : 'deploys'} from customer-derived jobs need a person (WEAVER_UNTRUSTED_MERGE=${reason.setting ?? 'person'})`;
     case 'unclassified-egress':
       return `the engine cannot classify this repo write (${reason.detail}), so it fails closed to a person`;
     case 'diff-unavailable':

@@ -3,7 +3,19 @@
  * Now · Since you left · Needs you · Next · Why.
  */
 
-import { describeEgressGate, workstreamOriginForDisplay } from './egressGate.js';
+import { describeEgressGate, untrustedMergePolicy, workstreamOriginForDisplay } from './egressGate.js';
+
+/** The active WEAVER_UNTRUSTED_MERGE setting on this host, stated plainly. A
+ * status read never crashes on a bad value; it says the runner will refuse. */
+function untrustedMergeLine(): string {
+  try {
+    return untrustedMergePolicy() === 'person'
+      ? 'merges and deploys need a person (WEAVER_UNTRUSTED_MERGE=person)'
+      : 'merges and deploys on non-sensitive paths go through Pilot (WEAVER_UNTRUSTED_MERGE=pilot)';
+  } catch {
+    return `WEAVER_UNTRUSTED_MERGE='${process.env.WEAVER_UNTRUSTED_MERGE}' is invalid, so a runner on this host refuses to start`;
+  }
+}
 import { dispositionLabel } from './conclusion.js';
 import type { WorkstreamDoc } from './types.js';
 import { virtualNow } from './clock.js';
@@ -114,7 +126,7 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
     : undefined;
   const nowLines = [
     ...(workstreamOriginForDisplay(doc.workstream) === 'untrusted'
-      ? ['origin: untrusted — this workstream may push and open PRs; every merge or deploy needs a person']
+      ? [`origin: untrusted — this workstream may push and open PRs; ${untrustedMergeLine()}`]
       : []),
     ...(pilotUnavailable.length
       ? [`WAITING — approval service unavailable; ${pilotUnavailable.length} gated action${pilotUnavailable.length === 1 ? ' remains' : 's remain'} safe`]

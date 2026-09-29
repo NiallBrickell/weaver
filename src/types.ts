@@ -820,7 +820,9 @@ export type WorkstreamOrigin = 'operator' | 'untrusted';
 /** Why the engine's repo-egress gate routed an act to a person. */
 export type EgressGateReason =
   | { kind: 'sensitive-path'; paths: string[] }
-  | { kind: 'untrusted-origin'; egress: 'merge' | 'deploy' }
+  /** `setting` is the WEAVER_UNTRUSTED_MERGE value that made it a person's
+   * act; absent on reasons recorded before the setting existed. */
+  | { kind: 'untrusted-origin'; egress: 'merge' | 'deploy'; setting?: 'person' }
   | { kind: 'unclassified-egress'; detail: string }
   | { kind: 'diff-unavailable'; detail: string }
   /** GitHub refused a push touching workflow files: the fleet's token has no

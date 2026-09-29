@@ -12,6 +12,7 @@
  * freely.
  */
 
+import { untrustedMergePolicy } from './egressGate.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -948,6 +949,9 @@ export const PROBE_HOLD_MS = 5 * 60_000;
 /** The poll loop. Headless runners omit `signal`; embedded dashboards own one. */
 export async function runLoop(opts: RunnerOptions): Promise<RunLoopExit> {
   assertRunnerEnabled();
+  // Fail closed at start: an unknown WEAVER_UNTRUSTED_MERGE must never be
+  // read as either setting by a runner that merges.
+  untrustedMergePolicy();
   const log = opts.log ?? ((l: string) => process.stdout.write(l + '\n'));
   const logError = opts.logError ?? ((l: string) => process.stderr.write(l + '\n'));
   const loadSample = opts.loadSample ?? (() => ({ load1: os.loadavg()[0]!, cores: os.cpus().length }));

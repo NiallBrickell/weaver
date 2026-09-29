@@ -23,6 +23,7 @@ import {
   humanReviewPathGlobs,
   liveEgressDiffIO,
   sensitivePaths,
+  untrustedMergePolicy,
   workstreamOriginForAuthority,
   workstreamOriginForDisplay,
   type EgressDiffIO,
@@ -32,6 +33,7 @@ import { approveAction } from './humanActs.js';
 import { createManagedWorkstream, createWorkstreamUnderParent } from './managedWorkstreams.js';
 import { buildProjection } from './projection.js';
 import { validateProbeRequest } from './probe.js';
+import { renderStatus } from './status.js';
 import { arrive, createWorkstream, load } from './store.js';
 import { virtualNow } from './clock.js';
 import { __resetGitHubAppForTests } from './githubApp.js';
@@ -126,6 +128,7 @@ beforeEach(() => {
   freshHome();
   process.env.WEAVER_PILOT_URL = 'http://127.0.0.1:1';
   delete process.env.WEAVER_HUMAN_REVIEW_PATHS;
+  delete process.env.WEAVER_UNTRUSTED_MERGE;
   delete process.env.WEAVER_RUNNER_ID;
   delete process.env.WEAVER_RUNNER_PLACEMENT_ONLY;
   __resetGitHubAppForTests();
@@ -134,6 +137,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.WEAVER_HUMAN_REVIEW_PATHS;
+  delete process.env.WEAVER_UNTRUSTED_MERGE;
   egressGateSeam.io = liveEgressDiffIO;
 });
 
@@ -298,14 +302,82 @@ test('an untrusted stream may push and open PRs through Pilot, but its merge is 
     const merge = await action('untrusted-merge');
     assert.equal(asked.length, before, 'Pilot never saw the merge');
     assert.equal(merge.exec!.approvalMode, 'human-only');
-    assert.deepEqual(merge.exec!.egressGate!.reasons, [{ kind: 'untrusted-origin', egress: 'merge' }]);
+    assert.deepEqual(merge.exec!.egressGate!.reasons, [{ kind: 'untrusted-origin', egress: 'merge', setting: 'person' }]);
 
     // A push straight onto main is a merge by another name.
     await makeStream('untrusted-trunk', 'untrusted');
     await addAction('untrusted-trunk', 'git push origin HEAD:main');
     await tick('untrusted-trunk', { maxPasses: 0 });
-    assert.deepEqual((await action('untrusted-trunk')).exec!.egressGate!.reasons, [{ kind: 'untrusted-origin', egress: 'merge' }]);
+    assert.deepEqual((await action('untrusted-trunk')).exec!.egressGate!.reasons, [{ kind: 'untrusted-origin', egress: 'merge', setting: 'person' }]);
   });
+});
+
+test('WEAVER_UNTRUSTED_MERGE=person (default) keeps untrusted merges with a person and says so on the card', async () => {
+  for (const value of [undefined, 'person']) {
+    if (value === undefined) delete process.env.WEAVER_UNTRUSTED_MERGE;
+    else process.env.WEAVER_UNTRUSTED_MERGE = value;
+    assert.equal(untrustedMergePolicy(), 'person');
+  }
+  await withPilot(() => 'approve', async (asked) => {
+    await makeStream('um-person', 'untrusted');
+    await addAction('um-person', 'gh pr merge 12 --merge --repo octo/repo');
+    await tick('um-person', { maxPasses: 0 });
+    const asg = await action('um-person');
+    assert.equal(asked.length, 0);
+    assert.equal(asg.exec!.approvalMode, 'human-only');
+    const card = (await load('um-person')).attention.find((a) => a.refId === 'asg_egress' && a.status === 'open')!;
+    assert.match(card.summary, /merges from customer-derived jobs need a person \(WEAVER_UNTRUSTED_MERGE=person\)/);
+  });
+  assert.match(renderStatus(await load('um-person')), /merges and deploys need a person \(WEAVER_UNTRUSTED_MERGE=person\)/);
+  delete process.env.WEAVER_UNTRUSTED_MERGE;
+});
+
+test('WEAVER_UNTRUSTED_MERGE=pilot returns clean untrusted merges to Pilot, while every other rule stays unconditional', async () => {
+  process.env.WEAVER_UNTRUSTED_MERGE = 'pilot';
+  try {
+    await withPilot(() => 'approve', async (asked) => {
+      await makeStream('um-pilot', 'untrusted');
+      await addAction('um-pilot', 'true gh pr merge 12 --merge --repo octo/repo');
+      await tick('um-pilot', { maxPasses: 0 });
+      const merged = await action('um-pilot');
+      assert.ok(asked.length > 0, 'Pilot judged the clean merge');
+      assert.equal(merged.exec!.approval?.by, 'pilot');
+      assert.deepEqual(merged.exec!.egressGate!.reasons, []);
+
+      // Sensitive paths still need a person.
+      egressGateSeam.io = stubIO({ merge: ['.github/workflows/deploy.yml'] });
+      const before = asked.length;
+      await makeStream('um-pilot-sensitive', 'untrusted');
+      await addAction('um-pilot-sensitive', 'gh pr merge 13 --merge --repo octo/repo');
+      await tick('um-pilot-sensitive', { maxPasses: 0 });
+      assert.equal(asked.length, before);
+      assert.deepEqual((await action('um-pilot-sensitive')).exec!.egressGate!.reasons, [
+        { kind: 'sensitive-path', paths: ['.github/workflows/deploy.yml'] },
+      ]);
+    });
+    // An uncomputable change and an unclassifiable shape still fail closed.
+    const unknown = evaluateEgressGate({ origin: 'untrusted', command: 'gh pr merge 5', cwd: '/x', io: stubIO({ merge: new Error('no PR') }) });
+    assert.deepEqual(unknown.reasons, [{ kind: 'diff-unavailable', detail: 'no PR' }]);
+    const opaque = evaluateEgressGate({ origin: 'untrusted', command: 'hub merge https://github.com/o/r/pull/5', cwd: '/x', io: stubIO() });
+    assert.equal(opaque.humanOnly, true);
+    assert.match(renderStatus(await load('um-pilot')), /non-sensitive paths go through Pilot \(WEAVER_UNTRUSTED_MERGE=pilot\)/);
+  } finally {
+    delete process.env.WEAVER_UNTRUSTED_MERGE;
+  }
+});
+
+test('an unknown WEAVER_UNTRUSTED_MERGE refuses to start rather than guess', async () => {
+  process.env.WEAVER_UNTRUSTED_MERGE = 'Pilot-ish';
+  try {
+    assert.throws(() => untrustedMergePolicy(), /must be 'person' or 'pilot'/);
+    await makeStream('um-bad', 'untrusted');
+    await addAction('um-bad', 'gh pr merge 12 --merge');
+    await assert.rejects(tick('um-bad', { maxPasses: 0 }), /WEAVER_UNTRUSTED_MERGE/);
+    assert.equal((await action('um-bad')).exec!.egressGate, undefined, 'nothing was judged or executed');
+    assert.match(renderStatus(await load('um-bad')), /is invalid, so a runner on this host refuses to start/);
+  } finally {
+    delete process.env.WEAVER_UNTRUSTED_MERGE;
+  }
 });
 
 test('a legacy managed document without origin is untrusted for merges but displays as operator', async () => {
@@ -318,7 +390,7 @@ test('a legacy managed document without origin is untrusted for merges but displ
   assert.equal(workstreamOriginForAuthority((await load('legacy-parent')).workstream), 'operator');
   await addAction('legacy-child', 'gh pr merge 3 --merge');
   await tick('legacy-child', { maxPasses: 0 });
-  assert.deepEqual((await action('legacy-child')).exec!.egressGate!.reasons, [{ kind: 'untrusted-origin', egress: 'merge' }]);
+  assert.deepEqual((await action('legacy-child')).exec!.egressGate!.reasons, [{ kind: 'untrusted-origin', egress: 'merge', setting: 'person' }]);
 });
 
 test('revalidation just before egress catches a change set that moved after approval', async () => {
