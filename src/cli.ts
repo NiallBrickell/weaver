@@ -152,6 +152,7 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver ui [--host H] [--port N]            browser operator workspace (default 127.0.0.1:9724); non-loopback requires Clerk or WEAVER_UI_TOKEN
   weaver observe <slug> --source <s> --summary <text>                 record an external observation
   weaver attention-hints [--apply]   read back PRs cited by open needs-you cards; post one hint Observation per card citing a MERGED/CLOSED PR (dry run without --apply; never resolves a card)
+  weaver shadow-report [--since <ISO>]       read-only: how a measurement-only shadow coordinator seat agreed with the real one, per pass class, with cost and the disagreeing pass ids
   weaver advance <duration>                  advance the virtual clock (5d, 3h, 30m)
   weaver tick <slug> [--max-passes N]        reconcile: sends, workers, due wakes → coordinator
   weaver tick <slug> --engine-only           placed exact actions/readback only (requires placement-only env)
@@ -1361,6 +1362,19 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
         const { spawn } = await import('node:child_process');
         spawn('open', [out], { detached: true, stdio: 'ignore' }).unref();
       }
+      break;
+    }
+
+    case 'shadow-report': {
+      // Read-only evaluation evidence for a shadow coordinator seat. One
+      // operator-invoked scan of the fleet — never on a runner's hot path.
+      const since = opt(rest, 'since');
+      if (since !== undefined && !Number.isFinite(Date.parse(since))) fail('usage: weaver shadow-report [--since <ISO time>]');
+      const { aggregateShadowReport, renderShadowReport } = await import('./shadowReport.js');
+      const docs = [];
+      for (const s of await listWorkstreams()) docs.push(await load(s));
+      const sinceIso = since === undefined ? undefined : new Date(Date.parse(since)).toISOString();
+      process.stdout.write(`${renderShadowReport(aggregateShadowReport(docs, sinceIso))}\n`);
       break;
     }
 

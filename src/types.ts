@@ -622,6 +622,53 @@ export interface PassRecord {
    * designed) — a fresh pass reconciles from the newer state. */
   outcome: 'completed' | 'error' | 'no_finish' | 'running' | 'conflicted';
   infrastructure?: InfrastructureWait;
+  /** Measurement-only record of a shadow coordinator seat that saw this pass's
+   * exact projection with capture-only tools (see src/shadowCoordinator.ts).
+   * Evaluation evidence, never authority: nothing a coordinator reads — the
+   * projection, stats success counts, spend — may consult it. */
+  shadow?: ShadowPassRecord;
+}
+
+/** One typed coordinator move: a write tool and the existing ids it named.
+ * Ids and tool names only — never prose. */
+export interface ShadowMove {
+  tool: string;
+  targets: string[];
+}
+
+/** The real pass's shape, derived from its typed moves, so shadow agreement is
+ * reported per kind of pass rather than averaged across unlike ones. */
+export type ShadowPassClass = 'verify-then-dispatch' | 'dispatch-only' | 'wait-only' | 'conclude' | 'other';
+
+export interface ShadowAgreement {
+  /** Headline: every assignment either seat adopted or rejected got the same verdict from both. */
+  adoptReject: { agree: boolean; real: { adopt: string[]; reject: string[] }; shadow: { adopt: string[]; reject: string[] } };
+  dispatch: { agree: boolean; real: number; shadow: number };
+  /** Headline: both concluded, or neither did. */
+  conclude: { agree: boolean; real: boolean; shadow: boolean };
+  /** Headline: both raised human attention, or neither did. */
+  raiseAttention: { agree: boolean; real: number; shadow: number };
+  /** Decision/policy ids each seat superseded. */
+  supersede: { agree: boolean; real: string[]; shadow: string[] };
+  /** Same multiset of write-tool names. */
+  toolMultiset: boolean;
+  /** adoptReject && conclude && raiseAttention. */
+  headline: boolean;
+}
+
+export interface ShadowPassRecord {
+  /** `executor:model` of the shadow seat. */
+  seat: string;
+  at: Iso;
+  passClass: ShadowPassClass;
+  /** The real pass's typed moves, kept so agreement can be recomputed. */
+  realMoves: ShadowMove[];
+  /** What the shadow seat would have done. Captured, never applied. */
+  moves: ShadowMove[];
+  costUsd?: number;
+  /** A failed shadow run is recorded and swallowed; it has no agreement. */
+  error?: string;
+  agreement?: ShadowAgreement;
 }
 
 export interface EventRecord {

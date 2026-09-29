@@ -65,6 +65,8 @@ and keeps reconciling while the earlier seats' retries are pending (see
 | `WEAVER_COORDINATOR_FALLBACKS` | *(unset → legacy pair below)* | Ordered fallback seats tried after the primary, as comma-separated `executor:model` entries — e.g. `local-sdk:claude-opus-5,codex-sdk:gpt-5.6-sol`. When set, the legacy pair below is ignored |
 | `WEAVER_COORDINATOR_FALLBACK_MODEL` | `claude-opus-5` | Legacy single fallback model, used only while `WEAVER_COORDINATOR_FALLBACKS` is unset |
 | `WEAVER_COORDINATOR_FALLBACK_EXECUTOR` | primary executor | Runtime for that legacy fallback; may differ from the primary |
+| `WEAVER_SHADOW_COORDINATOR` | *(unset → off)* | One `executor:model` (`local-sdk` or `codex-sdk`) that shadows sampled coordinator passes. It is measured only and never coordinates. See [Shadow coordinator seats](./model-routing.md#shadow-coordinator-seats-measurement-only) |
+| `WEAVER_SHADOW_RATE` | `0` | Fraction (0–1) of completed coordinator passes the shadow seat replays. `0` or unset runs nothing. An invalid value disables the shadow and logs why; it never affects the real pass |
 | `WEAVER_WORKER_MODEL` | `sonnet` | Fallback model for general/unmatched work; reviewed typed routes may select another exact target |
 | `WEAVER_WORKER_MODEL_COMPLEX` | *(unset → `WEAVER_WORKER_MODEL`)* | Stronger worker seat for assignments the coordinator declares `complexity: high` — same `WEAVER_EXECUTOR` substrate, only the model changes |
 | `WEAVER_WORKER_FALLBACKS` | *(unset → no ladder)* | Ordered worker seats tried after the configured `WEAVER_EXECUTOR`/`WEAVER_WORKER_MODEL` seat when earlier targets are capacity-parked — e.g. `codex-sdk:gpt-5.6-sol,pi:zai-coding-plan/glm-5.3,pi:openrouter/moonshotai/kimi-k3`. See [Where workers run](./executors.md) |
