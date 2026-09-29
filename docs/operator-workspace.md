@@ -67,6 +67,37 @@ labelled as jobs; a per-row count is labelled as asks so those two quantities
 cannot look contradictory. Runs, sessions, pass counts and model tokens remain
 detail, not work identity. Empty groups do not consume space.
 
+### Fleet status buckets
+
+Lanes answer "where does this job sit in the list"; the fleet-status bucket
+answers "is the fleet OK". They are deliberately separate fields on one card,
+both set in `cardFor` (`src/ui/inspect/model.ts`) from the same facts, so the
+at-a-glance counts can never come from a second classifier that disagrees
+with the cards. The bucket precedence (needs-you > paused > blocked >
+degraded > working > waiting) differs from the lane order in one place: a
+running job whose next transition is capacity-blocked or on a fallback stays
+in the moving lane but is counted blocked/degraded, and its state label gains
+"· next step blocked" / "· on fallback" so the filtered board never shows a
+card whose label contradicts its bucket. `fleetGlance` only groups cards;
+`fleetHealth` (the board notice) takes its blocked/degraded job counts from
+the glance rather than recomputing capacity per document, which previously
+also counted paused and concluded jobs. Capacity *unknown* is counted as
+blocked: on a shared store it means no eligible runner is visible (or it is
+degraded), so nothing can be shown to advance. The runner line comes from
+`RunnerPresence` (TTL 120 s like `liveRunnerIds`); presences silent for a day
+are treated as retired so a decommissioned host does not keep the strip
+amber forever. A runner's `degraded` reason is part of `fleetRevision`, so a
+runner going degraded refreshes open boards even when its seats list does not
+change.
+
+Status copy is for a teammate, not for the harness: it says what is wrong in
+jobs ("2 jobs are running on a backup model because the main model is
+limited", "3 routines are behind schedule"), never "outcomes", "execution
+capacity", "routine health gaps", "durable", or "gated external effect". The
+only reassurance sentence is "Nothing is lost; jobs resume when this clears",
+and only where something is actually stuck. The strip test asserts the
+harness vocabulary stays out.
+
 ### Workstream workspace
 
 Selecting a Workstream opens a two-level workspace with one visual centre:

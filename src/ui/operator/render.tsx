@@ -25,6 +25,8 @@ import {
   formatTimestamp,
   presentNeed,
   type FleetBoardView,
+  type FleetBucket,
+  type FleetGlanceView,
   type WorkstreamCardView,
   type WorkstreamPageView,
 } from '../inspect/model.js';
@@ -34,6 +36,9 @@ const CSS = fs.readFileSync(new URL('../inspect/tailwind.generated.css', import.
 export interface OperatorFleetView {
   board: FleetBoardView;
   groups: Array<{ label: string; cards: WorkstreamCardView[] }>;
+  /** The one fleet-status model: buckets, headline, and runner line shared
+   * by the sidebar block, the board strip, and the fleet notice. */
+  glance: FleetGlanceView;
   scope: {
     label: string;
     detail: string;
@@ -87,7 +92,10 @@ export interface OperatorBaseRenderProps {
   signOutAction?: string;
 }
 
-export interface OperatorBoardRenderProps extends OperatorBaseRenderProps {}
+export interface OperatorBoardRenderProps extends OperatorBaseRenderProps {
+  /** `?state=` filter: show only the jobs in this fleet-status bucket. */
+  filter?: FleetBucket;
+}
 
 export interface OperatorFleetRenderProps extends OperatorBaseRenderProps {}
 
@@ -502,18 +510,93 @@ export function renderOperatorClerkAuthHtml(
   return documentHtml(<ClerkAuthDocument assets={assets} kind={kind} returnTo={returnTo} />);
 }
 
+/** One colour per fleet-status bucket, shared by the sidebar block, the
+ * board tiles, and every job's dot, so a colour means the same thing
+ * everywhere: rose needs a person, amber is blocked, orange is on a fallback,
+ * violet is running, sky is scheduled, zinc is paused, emerald is done. */
+const BUCKET_COLOURS: Record<FleetBucket, { dot: string; text: string; border: string }> = {
+  'needs-you': { dot: 'bg-rose-400', text: 'text-rose-300', border: 'border-rose-500/40' },
+  blocked: { dot: 'bg-amber-400', text: 'text-amber-300', border: 'border-amber-500/40' },
+  degraded: { dot: 'bg-orange-400', text: 'text-orange-300', border: 'border-orange-500/40' },
+  working: { dot: 'bg-violet-400', text: 'text-violet-300', border: 'border-violet-500/40' },
+  waiting: { dot: 'bg-sky-400', text: 'text-sky-300', border: 'border-sky-500/40' },
+  paused: { dot: 'bg-zinc-500', text: 'text-zinc-300', border: 'border-zinc-600' },
+  done: { dot: 'bg-emerald-400', text: 'text-emerald-300', border: 'border-emerald-500/40' },
+};
+
 function laneDot(card: WorkstreamCardView): string {
-  if (card.lane === 'needs-you') return 'bg-rose-400';
-  if (card.lane === 'moving') return 'bg-violet-400';
-  if (card.lane === 'waiting') return 'bg-amber-400';
-  return 'bg-zinc-500';
+  return BUCKET_COLOURS[card.bucket].dot;
 }
 
-function stateVariant(card: WorkstreamCardView): 'attention' | 'accent' | 'warning' | 'outline' {
-  if (card.lane === 'needs-you') return 'attention';
-  if (card.lane === 'moving') return 'accent';
-  if (card.lane === 'waiting') return 'warning';
+function stateVariant(card: WorkstreamCardView): 'attention' | 'accent' | 'warning' | 'caution' | 'outline' {
+  if (card.bucket === 'needs-you') return 'attention';
+  if (card.bucket === 'blocked') return 'warning';
+  if (card.bucket === 'degraded') return 'caution';
+  if (card.bucket === 'working') return 'accent';
   return 'outline';
+}
+
+function toneDot(tone: FleetGlanceView['tone']): string {
+  return tone === 'critical' ? 'bg-rose-400' : tone === 'warning' ? 'bg-amber-400' : 'bg-emerald-400';
+}
+
+function bucketHref(key: FleetBucket, active?: FleetBucket): string {
+  return active === key ? '/board' : `/board?state=${key}`;
+}
+
+/** The compact status block at the top of every page's sidebar. Only
+ * non-empty buckets render, so a quiet fleet stays one line. */
+function SidebarFleetStatus({ fleet, onBoard, filter }: { fleet: OperatorFleetView; onBoard: boolean; filter?: FleetBucket }) {
+  const { glance } = fleet;
+  const inplace = onBoard ? { 'data-inplace': '' } : {};
+  const visible = glance.buckets.filter((bucket) => bucket.count > 0);
+  return (
+    <section data-testid="sidebar-fleet-status" aria-label="Fleet status" className="border-b border-zinc-900 px-3 py-3">
+      <a
+        href="/board"
+        {...inplace}
+        data-testid="sidebar-fleet-headline"
+        title={glance.runners.summary}
+        className="flex min-w-0 items-start gap-2 rounded-md px-1 text-xs font-medium text-zinc-200 hover:text-white"
+      >
+        <span className={cn('mt-1 h-2 w-2 shrink-0 rounded-full', toneDot(glance.tone))} />
+        <span className="min-w-0 leading-4">{glance.headline}</span>
+      </a>
+      {glance.runners.degraded.length ? (
+        <a
+          href="/fleet"
+          data-testid="sidebar-runner-degraded"
+          title={glance.runners.summary}
+          className="mt-2 block truncate rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[11px] font-medium text-rose-200"
+        >
+          {glance.runners.degraded.length === 1 ? 'Runner' : 'Runners'} {glance.runners.degraded.map((runner) => runner.id).join(', ')} stopped taking jobs
+        </a>
+      ) : null}
+      {visible.length ? (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {visible.map((bucket) => (
+            <a
+              key={bucket.key}
+              href={bucketHref(bucket.key, onBoard ? filter : undefined)}
+              {...inplace}
+              data-testid={`sidebar-bucket-${bucket.key}`}
+              data-count={bucket.count}
+              title={bucket.description}
+              aria-current={onBoard && filter === bucket.key ? 'true' : undefined}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] text-zinc-300 transition hover:border-zinc-600 hover:text-white',
+                onBoard && filter === bucket.key ? BUCKET_COLOURS[bucket.key].border : 'border-zinc-800',
+              )}
+            >
+              <span className={cn('h-1.5 w-1.5 rounded-full', BUCKET_COLOURS[bucket.key].dot)} />
+              <span className={cn('font-semibold tabular-nums', BUCKET_COLOURS[bucket.key].text)}>{bucket.count}</span>
+              {bucket.label}
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 function WorkstreamSidebar({
@@ -522,12 +605,14 @@ function WorkstreamSidebar({
   signOutAction,
   currentSlug,
   currentPage,
+  filter,
 }: {
   fleet: OperatorFleetView;
   actor: string;
   signOutAction?: string;
   currentSlug?: string;
   currentPage: 'board' | 'fleet' | 'overview' | 'new' | 'workspace';
+  filter?: FleetBucket;
 }) {
   const selectedDone = currentSlug
     ? fleet.board.done.find((item) => item.slug === currentSlug)
@@ -556,6 +641,7 @@ function WorkstreamSidebar({
         </div>
         <p data-testid="fleet-scope" className="mt-2 text-[11px] font-medium text-emerald-300" title={fleet.scope.detail}>{fleet.scope.label}</p>
       </div>
+      <SidebarFleetStatus fleet={fleet} onBoard={currentPage === 'board'} filter={filter} />
       <nav aria-label="Operator" className="grid grid-cols-2 gap-2 border-b border-zinc-900 p-3">
         <a
           data-testid="overview-link"
@@ -696,6 +782,7 @@ function OperatorShell({
   initialRevision,
   currentSlug,
   currentPage,
+  filter,
   children,
 }: OperatorBaseRenderProps & {
   title: string;
@@ -703,6 +790,7 @@ function OperatorShell({
   initialRevision: string;
   currentSlug?: string;
   currentPage: 'board' | 'fleet' | 'overview' | 'new' | 'workspace';
+  filter?: FleetBucket;
   children: ReactNode;
 }) {
   return (
@@ -722,7 +810,7 @@ function OperatorShell({
           data-revision-events-endpoint="/api/fleet-events"
           className="min-h-screen lg:grid lg:h-screen lg:grid-cols-[18rem_minmax(0,1fr)]"
         >
-          <WorkstreamSidebar fleet={fleet} actor={actor} signOutAction={signOutAction} currentSlug={currentSlug} currentPage={currentPage} />
+          <WorkstreamSidebar fleet={fleet} actor={actor} signOutAction={signOutAction} currentSlug={currentSlug} currentPage={currentPage} filter={filter} />
           <main data-operator-scroll="" className="min-h-0 min-w-0 overflow-y-auto">
             {notice ? (
               <div data-testid="operator-notice" role="status" className="m-4 mb-0 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-3 text-sm text-violet-200 sm:m-6 sm:mb-0">
@@ -755,32 +843,72 @@ function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; 
   );
 }
 
-function HealthCard({ fleet }: { fleet: OperatorFleetView }) {
-  const tone = fleet.health.tone;
+/** The board's at-a-glance strip: one headline, the runner line, and a
+ * tile per fleet-status bucket that filters the board (`?state=`). */
+function FleetStatusStrip({ fleet, filter }: { fleet: OperatorFleetView; filter?: FleetBucket }) {
+  const { glance, health } = fleet;
+  const runnerCritical = glance.runners.degraded.length > 0;
   return (
-    <Card
-      data-testid="fleet-health"
+    <section
+      data-testid="fleet-status-strip"
+      aria-label="Fleet status"
       className={cn(
-        'bg-zinc-900/30',
-        tone === 'healthy' && 'border-emerald-500/30',
-        tone === 'warning' && 'border-amber-500/30',
-        tone === 'critical' && 'border-rose-500/40',
+        'rounded-xl border bg-zinc-900/30 p-4 sm:p-5',
+        glance.tone === 'healthy' && 'border-emerald-500/30',
+        glance.tone === 'warning' && 'border-amber-500/30',
+        glance.tone === 'critical' && 'border-rose-500/50',
       )}
     >
-      <CardContent className="flex items-start gap-3 p-4">
-        <span className={cn(
-          'mt-1 h-2.5 w-2.5 shrink-0 rounded-full',
-          tone === 'healthy' && 'bg-emerald-400',
-          tone === 'warning' && 'bg-amber-400',
-          tone === 'critical' && 'bg-rose-400',
-        )} />
+      <div data-testid="fleet-health" className="flex items-start gap-3">
+        <span className={cn('mt-2 h-3 w-3 shrink-0 rounded-full', toneDot(glance.tone))} />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-zinc-100">{fleet.health.headline}</p>
-          <p className="mt-1 text-sm leading-6 text-zinc-400">{fleet.health.detail}</p>
+          <p data-testid="fleet-status-headline" className="text-lg font-semibold tracking-tight text-white">{glance.headline}</p>
+          {health.detail ? <p data-testid="fleet-health-detail" className="mt-1 text-sm leading-6 text-zinc-400">{health.detail}</p> : null}
         </div>
         <a href="/fleet" className="shrink-0 text-xs font-medium text-violet-300 hover:text-violet-200">Fleet details</a>
-      </CardContent>
-    </Card>
+      </div>
+      <p
+        data-testid="fleet-runner-line"
+        data-tone={glance.runners.tone}
+        role={runnerCritical ? 'alert' : undefined}
+        className={cn(
+          'mt-3 rounded-lg border px-3 py-2 text-sm',
+          runnerCritical
+            ? 'border-rose-500/60 bg-rose-500/15 font-semibold text-rose-100'
+            : glance.runners.tone === 'warning'
+              ? 'border-amber-500/30 bg-amber-500/5 text-amber-200'
+              : 'border-zinc-800 bg-zinc-950/40 text-zinc-400',
+        )}
+      >
+        <span className="mr-1.5 text-xs font-medium uppercase tracking-[0.12em] opacity-70">Runners</span>
+        {glance.runners.summary}
+      </p>
+      <nav aria-label="Filter jobs by status" className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
+        {glance.buckets.map((bucket) => (
+          <a
+            key={bucket.key}
+            href={bucketHref(bucket.key, filter)}
+            data-inplace=""
+            data-testid={`fleet-bucket-${bucket.key}`}
+            data-count={bucket.count}
+            title={bucket.description}
+            aria-current={filter === bucket.key ? 'true' : undefined}
+            className={cn(
+              'block rounded-xl border px-3 py-3 transition hover:border-zinc-600',
+              filter === bucket.key ? cn(BUCKET_COLOURS[bucket.key].border, 'bg-zinc-900/70') : 'border-zinc-900 bg-zinc-950/50',
+              !bucket.count && filter !== bucket.key && 'opacity-60',
+            )}
+          >
+            <p className="flex items-center gap-1.5 text-xs text-zinc-400">
+              <span className={cn('h-2 w-2 rounded-full', BUCKET_COLOURS[bucket.key].dot)} />
+              {bucket.label}
+            </p>
+            <p className={cn('mt-1 text-2xl font-semibold tabular-nums', bucket.count ? BUCKET_COLOURS[bucket.key].text : 'text-zinc-600')}>{bucket.count}</p>
+            <p className="mt-1 hidden text-[11px] leading-4 text-zinc-500 sm:block">{bucket.description}</p>
+          </a>
+        ))}
+      </nav>
+    </section>
   );
 }
 
@@ -811,15 +939,15 @@ function BoardWorkstreamCard({ card }: { card: WorkstreamCardView }) {
   );
 }
 
-function BoardPage({ fleet }: { fleet: OperatorFleetView }) {
+function BoardPage({ fleet, filter }: { fleet: OperatorFleetView; filter?: FleetBucket }) {
   const live = fleet.groups.reduce((sum, group) => sum + group.cards.length, 0);
-  const stats = [
-    ['Needs you', fleet.board.lanes['needs-you'].length, 'text-rose-300'],
-    ['Working', fleet.board.lanes.moving.length, 'text-violet-300'],
-    ['Waiting', fleet.board.lanes.waiting.length, 'text-amber-300'],
-    ['Ready', fleet.board.lanes.ready.length, 'text-sky-300'],
-    ['Done', fleet.board.done.length, 'text-emerald-300'],
-  ] as const;
+  const selected = filter ? fleet.glance.buckets.find((bucket) => bucket.key === filter) : undefined;
+  const filteredCards = selected && selected.key !== 'done'
+    ? fleet.groups.flatMap((group) => group.cards).filter((card) => card.bucket === selected.key)
+    : [];
+  const filteredDone = selected?.key === 'done'
+    ? fleet.board.done.filter((item) => selected.slugs.includes(item.slug))
+    : [];
   return (
     <div data-testid="operator-board-page">
       <PageHeader
@@ -829,54 +957,83 @@ function BoardPage({ fleet }: { fleet: OperatorFleetView }) {
         action={<a href="/new" className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400">New job</a>}
       />
       <div className="space-y-6 p-5 sm:p-8">
-        <HealthCard fleet={fleet} />
+        <FleetStatusStrip fleet={fleet} filter={filter} />
         {fleet.board.unreadable.length ? (
           <div data-testid="unreadable-workstreams" className="rounded-xl border border-rose-500/30 bg-rose-500/5 px-4 py-3 text-sm text-rose-200">
             Some Workstream state could not be read: {fleet.board.unreadable.join(', ')}
           </div>
         ) : null}
-        <section aria-label="Fleet position" className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-          {stats.map(([label, count, color]) => (
-            <div key={label} className="rounded-xl border border-zinc-900 bg-zinc-900/30 px-4 py-3">
-              <p className="text-xs text-zinc-500">{label}</p>
-              <p className={cn('mt-1 text-2xl font-semibold tabular-nums', color)}>{count}</p>
-            </div>
-          ))}
-        </section>
-        <div className="grid items-start gap-4 xl:grid-cols-2">
-          {fleet.groups.filter((group) => group.cards.length).map((group, index) => (
-            <section key={`${group.label}-${index}`} data-testid="board-workstream-group" data-group-label={group.label}>
-              <header className="mb-2 flex items-center justify-between px-1">
-                <h2 className="text-sm font-medium text-zinc-300">{group.label}</h2>
-                <span className="text-xs text-zinc-600">{group.cards.length} job{group.cards.length === 1 ? '' : 's'}</span>
-              </header>
-              <div className="space-y-2">
-                {group.cards.map((card) => <BoardWorkstreamCard key={card.slug} card={card} />)}
+        {selected ? (
+          <section data-testid="board-filtered" data-filter={selected.key}>
+            <header className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1">
+              <h2 className="flex flex-wrap items-center gap-2 text-sm font-medium text-zinc-300">
+                <span className={cn('h-2 w-2 rounded-full', BUCKET_COLOURS[selected.key].dot)} />
+                {selected.label}
+                <span className="text-xs font-normal text-zinc-600">{selected.count} job{selected.count === 1 ? '' : 's'} · {selected.description}</span>
+              </h2>
+              <a href="/board" data-inplace="" data-testid="board-filter-clear" className="text-xs font-medium text-violet-300 hover:text-violet-200">Show all jobs</a>
+            </header>
+            {selected.key === 'done' ? (
+              filteredDone.length ? (
+                <div className="divide-y divide-zinc-900 rounded-xl border border-zinc-900 bg-zinc-900/20">
+                  {filteredDone.map((item) => (
+                    <a
+                      key={item.slug}
+                      data-testid={`board-workstream-${item.slug}`}
+                      href={`/workstreams/${encodeURIComponent(item.slug)}`}
+                      className="grid gap-1 px-4 py-3 hover:bg-zinc-900/50 sm:grid-cols-[minmax(12rem,1fr)_2fr_auto] sm:gap-4"
+                    >
+                      <span className="text-sm font-medium text-zinc-200">{item.title}</span>
+                      <span className="truncate text-sm text-zinc-500">{item.outcome}</span>
+                      <span className="text-xs text-zinc-600">{item.adoptedDeliverableCount} adopted</span>
+                    </a>
+                  ))}
+                </div>
+              ) : <p className="px-1 text-sm text-zinc-600">No job concluded in the last 7 days.</p>
+            ) : filteredCards.length ? (
+              <div className="grid items-start gap-2 xl:grid-cols-2">
+                {filteredCards.map((card) => <BoardWorkstreamCard key={card.slug} card={card} />)}
               </div>
-            </section>
-          ))}
-        </div>
-        {fleet.board.done.length ? (
-          <details data-testid="board-done-workstreams" className="rounded-xl border border-zinc-900 bg-zinc-900/20">
-            <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-zinc-400">
-              Done <span className="ml-1 text-zinc-600">{fleet.board.done.length}</span>
-            </summary>
-            <div className="divide-y divide-zinc-900 border-t border-zinc-900">
-              {fleet.board.done.map((item) => (
-                <a
-                  key={item.slug}
-                  data-testid={`board-workstream-${item.slug}`}
-                  href={`/workstreams/${encodeURIComponent(item.slug)}`}
-                  className="grid gap-1 px-4 py-3 hover:bg-zinc-900/50 sm:grid-cols-[minmax(12rem,1fr)_2fr_auto] sm:gap-4"
-                >
-                  <span className="text-sm font-medium text-zinc-200">{item.title}</span>
-                  <span className="truncate text-sm text-zinc-500">{item.outcome}</span>
-                  <span className="text-xs text-zinc-600">{item.adoptedDeliverableCount} adopted</span>
-                </a>
+            ) : <p className="px-1 text-sm text-zinc-600">No job is in {selected.label} right now.</p>}
+          </section>
+        ) : (
+          <>
+            <div className="grid items-start gap-4 xl:grid-cols-2">
+              {fleet.groups.filter((group) => group.cards.length).map((group, index) => (
+                <section key={`${group.label}-${index}`} data-testid="board-workstream-group" data-group-label={group.label}>
+                  <header className="mb-2 flex items-center justify-between px-1">
+                    <h2 className="text-sm font-medium text-zinc-300">{group.label}</h2>
+                    <span className="text-xs text-zinc-600">{group.cards.length} job{group.cards.length === 1 ? '' : 's'}</span>
+                  </header>
+                  <div className="space-y-2">
+                    {group.cards.map((card) => <BoardWorkstreamCard key={card.slug} card={card} />)}
+                  </div>
+                </section>
               ))}
             </div>
-          </details>
-        ) : null}
+            {fleet.board.done.length ? (
+              <details data-testid="board-done-workstreams" className="rounded-xl border border-zinc-900 bg-zinc-900/20">
+                <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-zinc-400">
+                  Done <span className="ml-1 text-zinc-600">{fleet.board.done.length}</span>
+                </summary>
+                <div className="divide-y divide-zinc-900 border-t border-zinc-900">
+                  {fleet.board.done.map((item) => (
+                    <a
+                      key={item.slug}
+                      data-testid={`board-workstream-${item.slug}`}
+                      href={`/workstreams/${encodeURIComponent(item.slug)}`}
+                      className="grid gap-1 px-4 py-3 hover:bg-zinc-900/50 sm:grid-cols-[minmax(12rem,1fr)_2fr_auto] sm:gap-4"
+                    >
+                      <span className="text-sm font-medium text-zinc-200">{item.title}</span>
+                      <span className="truncate text-sm text-zinc-500">{item.outcome}</span>
+                      <span className="text-xs text-zinc-600">{item.adoptedDeliverableCount} adopted</span>
+                    </a>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+          </>
+        )}
       </div>
     </div>
   );
@@ -916,14 +1073,14 @@ function FleetPage({ fleet }: { fleet: OperatorFleetView }) {
         <div className="grid items-start gap-4 lg:grid-cols-2">
           <Card data-testid="fleet-incidents" className="bg-zinc-900/20">
             <CardHeader>
-              <CardTitle>Incidents</CardTitle>
+              <CardTitle>Shared problems</CardTitle>
             </CardHeader>
             <CardContent className="pt-0">
               {fleet.incidents.length ? fleet.incidents.map((incident) => (
                 <article key={incident.key} data-testid={`fleet-incident-${incident.key}`} className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-sm font-semibold text-amber-200">{incident.title}</p>
-                    <Badge variant="warning">Operational</Badge>
+                    <Badge variant="warning">Ongoing</Badge>
                   </div>
                   <p className="mt-2 text-sm leading-6 text-zinc-300">{incident.detail}</p>
                   <p className="mt-2 text-xs leading-5 text-zinc-500">{incident.recovery}</p>
@@ -937,7 +1094,7 @@ function FleetPage({ fleet }: { fleet: OperatorFleetView }) {
                   </details>
                 </article>
               )) : (
-                <p className="text-sm leading-6 text-zinc-500">No shared dependency incident is visible in typed fleet state.</p>
+                <p className="text-sm leading-6 text-zinc-500">No shared problems right now.</p>
               )}
             </CardContent>
           </Card>
@@ -958,7 +1115,7 @@ function FleetPage({ fleet }: { fleet: OperatorFleetView }) {
                   <button data-testid="enable-attention-steward" type="submit" className="rounded-lg bg-violet-500 px-3 py-2 text-sm font-semibold text-white transition hover:bg-violet-400">Start attention steward</button>
                 </form>
               )}
-              <p className="mt-3 text-xs leading-5 text-zinc-600">The steward may investigate and repair reversible causes. It cannot approve sends, merges, deploys, spending, or any other external effect.</p>
+              <p className="mt-3 text-xs leading-5 text-zinc-600">It can look into problems and fix what can be undone. It cannot send messages, merge, deploy, or spend money.</p>
             </CardContent>
           </Card>
         </div>
@@ -1806,7 +1963,7 @@ export function renderOperatorBoardHtml(props: OperatorBoardRenderProps): string
       initialRevision={props.fleet.revision}
       currentPage="board"
     >
-      <BoardPage fleet={props.fleet} />
+      <BoardPage fleet={props.fleet} filter={props.filter} />
     </OperatorShell>,
   );
 }

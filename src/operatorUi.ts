@@ -21,7 +21,7 @@ import type {
   ClerkOperatorAuthenticator,
 } from './clerkOperatorAuth.js';
 import { virtualNow } from './clock.js';
-import { liveRunnerIds, operatorCapacityPresentation } from './coordinatorRunner.js';
+import { liveRunnerIds } from './coordinatorRunner.js';
 import {
   FLEET_ATTENTION_STEWARD_SOURCE_KEY,
   fleetAttentionEvidence,
@@ -58,11 +58,15 @@ import type { WorkstreamDoc } from './types.js';
 import { assertRunnerId } from './runnerIdentity.js';
 import {
   fleetBoard,
+  fleetGlance,
   fleetNeeds,
+  fleetRunnerLine,
+  isFleetBucket,
   presentNeed,
   workstreamNeeds,
   workstreamPage,
   type FleetBoardView,
+  type FleetGlanceView,
   type FleetNeed,
   type ManagedWorkstreamLink,
   type WorkstreamCardView,
@@ -339,7 +343,7 @@ interface RunnerObservation {
   stale: boolean;
   healthy: boolean;
   sharedLiveRunnerIds: string[];
-  sharedCoordinatorSeats?: Array<{ runnerId: string; seats?: RunnerPresence['coordinatorSeats'] }>;
+  sharedCoordinatorSeats?: Array<{ runnerId: string; seats?: RunnerPresence['coordinatorSeats']; degraded?: string }>;
 }
 
 function observeRunner(sharedLiveRunnerIds: string[], presences: readonly RunnerPresence[] = []): RunnerObservation {
@@ -347,11 +351,13 @@ function observeRunner(sharedLiveRunnerIds: string[], presences: readonly Runner
   const stale = pid !== null && runnerSourceStale();
   return {
     pid, stale, healthy: pid !== null && runnerLoopHealthy() && !stale, sharedLiveRunnerIds,
-    sharedCoordinatorSeats: sharedLiveRunnerIds.map((runnerId) => ({
-      runnerId,
-      seats: presences.filter((presence) => presence.runnerId === runnerId)
-        .sort((a, b) => b.heartbeatAt.localeCompare(a.heartbeatAt))[0]?.coordinatorSeats,
-    })),
+    sharedCoordinatorSeats: sharedLiveRunnerIds.map((runnerId) => {
+      const latest = presences.filter((presence) => presence.runnerId === runnerId)
+        .sort((a, b) => b.heartbeatAt.localeCompare(a.heartbeatAt))[0];
+      // A runner going degraded (or recovering) changes what the fleet status
+      // says, so it must change the revision the browser refreshes on.
+      return { runnerId, seats: latest?.coordinatorSeats, ...(latest?.degraded ? { degraded: latest.degraded } : {}) };
+    }),
   };
 }
 
@@ -635,23 +641,21 @@ function fleetScope(): OperatorFleetView['scope'] {
   };
 }
 
-function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: string[], runner: RunnerObservation, presences: readonly RunnerPresence[]): OperatorFleetView['health'] {
-  const { pid, stale: staleRunner, healthy: healthyRunner } = runner;
+/** The fleet notice. Its job counts come from the fleet-status model
+ * (`fleetGlance`) so the notice, the board strip, and the sidebar can never
+ * show different numbers; it adds only fleet-level facts the buckets do not
+ * carry (unreadable state, a stalled local runner, the approval-service
+ * incident, routine health). */
+function fleetHealth(docs: WorkstreamDoc[], unreadable: string[], runner: RunnerObservation, glance: FleetGlanceView): OperatorFleetView['health'] {
+  const { pid, healthy: healthyRunner } = runner;
   const sharedRunnerHealthy = /^postgres(?:ql)?:\/\//.test(process.env.WEAVER_STORE ?? '') &&
     runner.sharedLiveRunnerIds.length > 0;
   const stalledRunner = pid !== null && !healthyRunner;
   const incidents = fleetIncidents(docs);
   const pilotIncident = incidents.find((incident) => incident.key === 'approval-service-unavailable');
-  const now = virtualNow().toISOString();
-  const capacityBlocked = docs.filter((doc) => {
-    const position = operatorCapacityPresentation(doc, now, presences);
-    return !!position.blocking || !!position.executorUnavailable;
-  });
-  const degraded = docs.filter((doc) => {
-    const position = operatorCapacityPresentation(doc, now, presences);
-    return !position.blocking && !position.executorUnavailable && !!position.degraded;
-  });
-  const unknownCapacity = docs.filter((doc) => operatorCapacityPresentation(doc, now, presences).unknown);
+  const bucketCount = (key: string) => glance.buckets.find((bucket) => bucket.key === key)?.count ?? 0;
+  const blocked = bucketCount('blocked');
+  const degraded = bucketCount('degraded');
   const unhealthyRoutines = fleetAttentionEvidence(docs, unreadable).workstreams.filter(({ routineHealth }) =>
     !!routineHealth && (
       routineHealth.dormant ||
@@ -660,53 +664,50 @@ function fleetHealth(docs: WorkstreamDoc[], board: FleetBoardView, unreadable: s
     ),
   );
 
+  const jobs = (count: number) => `${count} job${count === 1 ? '' : 's'}`;
+  const are = (count: number) => (count === 1 ? 'is' : 'are');
+  // Plain sentences a teammate reads at a glance: what is wrong, in jobs.
+  // Runner problems are spelled out on the runner line right below this.
   const details: string[] = [];
-  if (unreadable.length) details.push(`${unreadable.length} unreadable Workstream${unreadable.length === 1 ? '' : 's'}`);
-  if (pilotIncident) details.push(`approval service affects ${pilotIncident.affectedWorkstreams.length} outcome${pilotIncident.affectedWorkstreams.length === 1 ? '' : 's'}`);
-  if (capacityBlocked.length) details.push(`execution capacity blocks ${capacityBlocked.length} outcome${capacityBlocked.length === 1 ? '' : 's'}`);
-  if (unknownCapacity.length) details.push(`execution capacity is unknown for ${unknownCapacity.length} outcome${unknownCapacity.length === 1 ? '' : 's'}`);
-  if (degraded.length) details.push(`${degraded.length} outcome${degraded.length === 1 ? '' : 's'} using fallbacks`);
-  if (unhealthyRoutines.length) details.push(`routine health gaps affect ${unhealthyRoutines.length} outcome${unhealthyRoutines.length === 1 ? '' : 's'}`);
-  details.push(`${Object.values(board.lanes).flat().length} live · ${board.done.length} done`);
+  if (unreadable.length) details.push(`${jobs(unreadable.length)} can't be read from storage.`);
+  if (pilotIncident) {
+    details.push(`The approval service isn't responding, so ${jobs(pilotIncident.affectedWorkstreams.length)} can't get approvals.`);
+  }
+  if (blocked) details.push(`${jobs(blocked)} ${are(blocked)} blocked and can't continue right now.`);
+  if (degraded) details.push(`${jobs(degraded)} ${are(degraded)} running on a backup model because the main model is limited.`);
+  if (unhealthyRoutines.length) {
+    details.push(`${unhealthyRoutines.length} routine${unhealthyRoutines.length === 1 ? ' is' : 's are'} behind schedule.`);
+  }
+  const say = (...extra: string[]) => [...details, ...extra].join(' ');
 
   if (unreadable.length || stalledRunner) {
     return {
       tone: 'critical',
-      headline: unreadable.length ? 'Some durable state is unreadable' : 'Runner is stalled',
-      detail: `${details.join(' · ')}. Stored work is retained; execution needs operator attention.`,
+      headline: unreadable.length ? 'Some jobs can\'t be read' : 'The runner is stuck',
+      detail: say('Nothing is lost; jobs resume once this is fixed.'),
     };
   }
-  if (pilotIncident || capacityBlocked.length || degraded.length || unhealthyRoutines.length || unknownCapacity.length) {
+  if (glance.runners.degraded.length) {
+    return { tone: 'critical', headline: 'A runner has stopped taking jobs', detail: say() };
+  }
+  if (pilotIncident || blocked || degraded || unhealthyRoutines.length) {
     return {
       tone: 'warning',
-      headline: pilotIncident || capacityBlocked.length
-        ? 'Fleet has blocked dependencies'
+      headline: pilotIncident || blocked
+        ? 'Some jobs are blocked'
         : unhealthyRoutines.length
-          ? 'Fleet has stalled routines'
-          : degraded.length
-            ? 'Fleet is using fallback capacity'
-            : 'Fleet capacity is not fully observable',
-      detail: `${details.join(' · ')}. Intended work remains durable; no gated external effect is assumed to have happened.`,
+          ? 'Some routines are behind schedule'
+          : 'Some jobs are on a backup model',
+      detail: pilotIncident || blocked ? say('Nothing is lost; jobs resume when this clears.') : say(),
     };
   }
-  if (sharedRunnerHealthy) {
-    return {
-      tone: 'healthy',
-      headline: 'Weaver is running',
-      detail: `${details.join(' · ')}. Fresh shared runner heartbeat${runner.sharedLiveRunnerIds.length === 1 ? '' : 's'}: ${runner.sharedLiveRunnerIds.join(', ')}.`,
-    };
-  }
-  if (!healthyRunner) {
-    return {
-      tone: 'warning',
-      headline: 'Runner is offline',
-      detail: `${details.join(' · ')}. New requests are stored safely and will advance when a runner starts.`,
-    };
+  if (sharedRunnerHealthy || healthyRunner) {
+    return { tone: 'healthy', headline: 'Weaver is running', detail: say() };
   }
   return {
-    tone: 'healthy',
-    headline: 'Weaver is running',
-    detail: details.join(' · '),
+    tone: 'warning',
+    headline: 'No runner is running',
+    detail: say('Nothing is lost; jobs resume when a runner starts.'),
   };
 }
 
@@ -727,21 +728,29 @@ function fleetStatus(docs: WorkstreamDoc[], board: FleetBoardView, runner: Runne
       label: 'Agent execution',
       value: runner.sharedLiveRunnerIds.length
         ? `Running · ${runner.sharedLiveRunnerIds.join(', ')}`
-        : 'Offline · no fresh runner heartbeat',
+        : 'Offline · no runner online',
       detail: runner.sharedLiveRunnerIds.length
-        ? 'Shared TTL heartbeats prove which execution hosts are currently available.'
-        : 'Stored work is safe; no execution host has published a fresh shared heartbeat.',
+        ? 'Runners check in every few seconds; these are the ones online now.'
+        : 'No runner is online. Nothing is lost; jobs resume when one starts.',
       tone: runner.sharedLiveRunnerIds.length ? 'healthy' : 'warning',
     } : {
       label: 'Agent execution',
-      value: healthy ? 'Running' : pid === null ? 'Offline' : 'Stalled',
-      detail: healthy ? 'The local runner heartbeat is current.' : pid === null ? 'Stored work is safe and advances when a runner starts.' : 'A runner process exists, but its loop heartbeat is not healthy.',
+      value: healthy ? 'Running' : pid === null ? 'Offline' : 'Stuck',
+      detail: healthy
+        ? 'The runner on this machine is checking in.'
+        : pid === null
+          ? 'No runner is running. Nothing is lost; jobs resume when one starts.'
+          : 'A runner process exists but has stopped checking in.',
       tone: healthy ? 'healthy' : stale || pid !== null ? 'critical' : 'warning',
     },
     attention: {
       label: 'Attention',
-      value: board.needs.length ? `${board.needs.length} open ask${board.needs.length === 1 ? '' : 's'} across ${needJobs} job${needJobs === 1 ? '' : 's'}` : 'No human asks waiting',
-      detail: affected ? `${affected} routine approval${affected === 1 ? ' is' : 's are'} grouped below as shared operational state.` : 'Shared dependency failures are grouped as incidents instead of repeated per job.',
+      value: board.needs.length
+        ? `${board.needs.length} question${board.needs.length === 1 ? '' : 's'} for you across ${needJobs} job${needJobs === 1 ? '' : 's'}`
+        : 'Nothing needs you',
+      detail: affected
+        ? `${affected} approval${affected === 1 ? ' is' : 's are'} waiting on the approval service; see below.`
+        : 'Problems shared by many jobs show here once, not on every job.',
       tone: board.needs.length ? 'warning' : 'healthy',
     },
   };
@@ -767,6 +776,15 @@ async function loadFleet(): Promise<LoadedFleet> {
     ? Object.values(board.lanes).flat().find((card) => card.slug === stewardDoc.workstream.slug)
     : undefined;
   const runner = observeRunner(liveRunnerIds(presences), presences);
+  const glance = fleetGlance(board, fleetRunnerLine(presences, {
+    state: runner.healthy ? 'running' : runner.pid !== null ? 'stalled' : 'offline',
+  }));
+  const health = fleetHealth(docs, unreadable, runner, glance);
+  // "All clear" must never sit beside a fleet notice that says otherwise
+  // (a stalled routine, unreadable state): the notice's headline wins then.
+  const reconciledGlance: FleetGlanceView = glance.headline === 'All clear' && health.tone !== 'healthy'
+    ? { ...glance, tone: health.tone, headline: health.headline }
+    : glance;
   const revision = fleetRevision(
     docs.map((doc) => ({ slug: doc.workstream.slug, revision: doc.revision })),
     runner,
@@ -781,18 +799,19 @@ async function loadFleet(): Promise<LoadedFleet> {
       board,
       groups: fleetGroups(board),
       scope: fleetScope(),
-      health: fleetHealth(docs, board, unreadable, runner, presences),
+      glance: reconciledGlance,
+      health,
       status: fleetStatus(docs, board, runner),
       incidents,
       steward: stewardDoc ? {
         state: stewardDoc.workstream.status,
         title: 'Attention steward',
-        detail: stewardCard?.next ?? stewardDoc.workstream.conclusion?.summary ?? 'Its durable position is available in the steward job.',
+        detail: stewardCard?.next ?? stewardDoc.workstream.conclusion?.summary ?? 'Open the steward job to see what it is doing.',
         slug: stewardDoc.workstream.slug,
       } : {
         state: 'not-configured',
         title: 'Attention steward',
-        detail: 'A recurring Workstream can audit grouped incidents, repair reversible causes, and surface only the judgment that genuinely needs a person.',
+        detail: 'A recurring job that looks into these problems, fixes what it safely can, and asks you only when it needs a decision.',
       },
       intakeParents: docs
         .filter((doc) => doc.workstream.status === 'active')
@@ -1137,8 +1156,11 @@ async function handle(
 
   if (method === 'GET' && url.pathname === '/board') {
     const fleet = await loadFleet();
+    // An unknown or absent ?state= shows every job rather than an error.
+    const state = url.searchParams.get('state');
     return sendHtml(res, 200, renderOperatorBoardHtml({
       fleet: fleet.view,
+      ...(isFleetBucket(state) ? { filter: state } : {}),
       actor,
       notice: noticeFrom(url),
       ...(clerk ? { signOutAction: '/sign-out' } : {}),

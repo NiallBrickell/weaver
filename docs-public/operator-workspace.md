@@ -76,6 +76,51 @@ scrolls horizontally rather than turning into another tall section list.
 
 These are two views over typed Workstream state. The workspace may look conversational, but a conversation is never the durable container and its prose cannot silently change authoritative state.
 
+### Fleet status at a glance
+
+The top of **Jobs** is a status strip, and a compact copy of it sits at the top
+of the sidebar on every page. Both say in one line how the whole fleet is
+doing: **All clear**, or a headline such as "3 need you · 1 blocked · 2 on a
+backup model". Under the headline, a few plain sentences say what is wrong,
+for example "2 jobs are running on a backup model because the main model is
+limited." or "3 routines are behind schedule."
+
+The **Runners** line lists the runners that are online. A runner that is still
+checking in but can no longer save its work (for example, its disk is full)
+has **stopped taking jobs**; the line names it with the reason it reported and
+turns red, and the sidebar shows it too, so it cannot hide behind healthy job
+counts. A runner that has not checked in for over two minutes is listed as not
+checking in. Runners silent for more than a day are treated as retired and left
+out.
+
+Every job that is not finished is counted in exactly one bucket:
+
+| Bucket | Meaning |
+| --- | --- |
+| **Needs you** | Waiting for your answer, approval, or review. |
+| **Blocked** | Stuck for now: every model it can use is at its limit, no runner can run it, the approval service is down, or no runner is online to take it. |
+| **Degraded** | Running on a backup model because the main model is limited. |
+| **Working** | An agent is working on it right now. |
+| **Waiting** | Nothing wrong. The next step is scheduled. |
+| **Paused** | Paused by someone. Nothing runs until it is resumed. |
+| **Done** | Finished in the last 7 days (older ones stay in the Done list). |
+
+When more than one applies, the first match wins: **needs you > paused >
+blocked > degraded > working > waiting**. A paused job asks you nothing, so the
+first two never compete. A job with an agent still working while its next step
+is blocked, or can only use a backup model, counts as blocked or degraded, and
+its card says so ("Working · next step blocked", "Working · on backup model"),
+so a card's label always matches the bucket it is counted in. The strip, the
+sidebar, and the sentences under the headline all read the same counts, so
+they never disagree.
+
+Click a tile, or a count in the sidebar, to show only that bucket's jobs: the
+address becomes `/board?state=needs-you`, `blocked`, `degraded`, `working`,
+`waiting`, `paused`, or `done`. Click the active tile, or **Show all jobs**, to
+clear it; an unknown value shows every job. The filter stays in place while
+the page refreshes itself, and the counts update whenever a job changes or a
+runner goes up or down.
+
 ## Start new work
 
 Use **New job** to describe an outcome. Weaver creates a durable Workstream for it, then the separate runner picks it up. Creating a Workstream does not keep a browser request or model session alive; fresh coordinator and worker runs continue from stored state. **Advanced** offers an execution-host selector: **Automatic (default)** lets any capable live host claim the job, while an exact host binds both coordinator passes and intended work before the first wake. This chooses the machine, not the model executor configured on it. The optional parent selector also lives there because most requests are standalone jobs.
