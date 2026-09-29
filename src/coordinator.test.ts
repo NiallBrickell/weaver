@@ -331,7 +331,7 @@ function wait(category: CapacityCategory, index: number): InfrastructureWait {
         : 'automatic_retry',
     source: 'coordinator',
     sourceId: `pass_${index}`,
-    model: 'claude-fable-5',
+    model: 'claude-fable-5-1',
     executor: 'local-sdk',
     provider: 'anthropic',
     detectedAt: virtualNow().toISOString(),
@@ -373,7 +373,7 @@ test('session limits wait quietly until the twelfth consecutive backoff', async 
 test('a recovered coordinator model clears typed state and resolves its card', async () => {
   await backoff('auth', 1);
   await arrive('coordinator-capacity', (doc) => {
-    clearCoordinatorCapacityBackoff(doc, 'claude-fable-5');
+    clearCoordinatorCapacityBackoff(doc, 'claude-fable-5-1');
   });
   const doc = await load('coordinator-capacity');
   assert.equal(doc.capacity, null);
@@ -392,26 +392,26 @@ test('a limited primary model degrades the pass to the fallback, and only then',
   const doc = await load('coordinator-capacity');
 
   // No capacity state at all → primary.
-  assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5');
+  assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5-1');
 
   // Primary limited, fallback clear → fallback.
-  const capacity = { state: 'backoff' as const, byModel: { 'claude-fable-5': { wait: wait('claude-fable-5', future), consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now } } };
+  const capacity = { state: 'backoff' as const, byModel: { 'claude-fable-5-1': { wait: wait('claude-fable-5-1', future), consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now } } };
   doc.capacity = capacity;
-  assert.equal(pickCoordinatorModel(doc, now), 'claude-opus-4-8');
+  assert.equal(pickCoordinatorModel(doc, now), 'claude-opus-5-5');
 
   // Primary limited but its retryAt has passed → primary again (probe/retry).
-  capacity.byModel['claude-fable-5']!.wait = wait('claude-fable-5', past);
-  assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5');
+  capacity.byModel['claude-fable-5-1']!.wait = wait('claude-fable-5-1', past);
+  assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5-1');
 
   // Both pools limited → primary (normal backoff machinery owns it).
-  capacity.byModel['claude-fable-5']!.wait = wait('claude-fable-5', future);
-  (capacity.byModel as Record<string, unknown>)['claude-opus-4-8'] = { wait: wait('claude-opus-4-8', future), consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now };
-  assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5');
+  capacity.byModel['claude-fable-5-1']!.wait = wait('claude-fable-5-1', future);
+  (capacity.byModel as Record<string, unknown>)['claude-opus-5-5'] = { wait: wait('claude-opus-5-5', future), consecutiveBackoffs: 1, firstBackoffAtVirtual: now, lastBackoffAtVirtual: now };
+  assert.equal(pickCoordinatorModel(doc, now), 'claude-fable-5-1');
 });
 
 test('a limited Anthropic primary can degrade to an exact Codex/OpenAI target', async () => {
   process.env.WEAVER_COORDINATOR_EXECUTOR = 'local-sdk';
-  process.env.WEAVER_COORDINATOR_MODEL = 'claude-fable-5';
+  process.env.WEAVER_COORDINATOR_MODEL = 'claude-fable-5-1';
   process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR = 'codex-sdk';
   process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = 'gpt-5.6-sol';
   const now = virtualNow().toISOString();
@@ -419,11 +419,11 @@ test('a limited Anthropic primary can degrade to an exact Codex/OpenAI target', 
   doc.capacity = {
     state: 'backoff',
     byModel: {
-      'local-sdk:anthropic:claude-fable-5': {
+      'local-sdk:anthropic:claude-fable-5-1': {
         wait: {
           kind: 'usage_limit', recovery: 'wait_or_enable_usage_credits',
           source: 'coordinator', sourceId: 'pass_primary',
-          executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+          executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1',
           detectedAt: now,
           retryAt: new Date(virtualNow().getTime() + 60 * 60_000).toISOString(),
         },
@@ -447,9 +447,9 @@ test('a limited Anthropic primary can degrade to an exact Codex/OpenAI target', 
   );
   assert.equal(pickCoordinatorTargetForExecutors(doc, now, new Set(['openhands'])), null);
 
-  doc.capacity!.byModel['local-sdk:anthropic:claude-fable-5']!.wait.retryAt = now;
+  doc.capacity!.byModel['local-sdk:anthropic:claude-fable-5-1']!.wait.retryAt = now;
   assert.deepEqual(pickCoordinatorTargetForExecutors(doc, now, new Set(['local-sdk'])), {
-    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1',
   });
   assert.equal(
     pickCoordinatorTargetForExecutors(doc, now, new Set(['codex-sdk'])),
@@ -474,14 +474,14 @@ test('the production chain degrades Claude to Codex to non-Claude OpenRouter', a
 
   // No capacity state → primary.
   assert.deepEqual(pickCoordinatorTarget(doc, now), {
-    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1',
   });
 
   // Primary parked → the second seat.
   doc.capacity = {
     state: 'backoff',
     byModel: {
-      'local-sdk:anthropic:claude-fable-5': parked('local-sdk', 'anthropic', 'claude-fable-5'),
+      'local-sdk:anthropic:claude-fable-5-1': parked('local-sdk', 'anthropic', 'claude-fable-5-1'),
     },
   };
   assert.deepEqual(pickCoordinatorTarget(doc, now), {
@@ -497,7 +497,7 @@ test('the production chain degrades Claude to Codex to non-Claude OpenRouter', a
   // Every seat parked → the primary; the normal backoff machinery owns it.
   doc.capacity.byModel['local-sdk:openrouter:openrouter/z-ai/glm-5.2'] = parked('local-sdk', 'openrouter', 'openrouter/z-ai/glm-5.2');
   assert.deepEqual(pickCoordinatorTarget(doc, now), {
-    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1',
   });
 });
 
@@ -526,7 +526,7 @@ test('a mid-chain capacity failure wakes immediately for non-Claude OpenRouter',
   const parkedTargets = Object.values(doc.capacity!.byModel).map((entry) =>
     `${entry.wait.executor}:${entry.wait.model}`,
   ).sort();
-  assert.deepEqual(parkedTargets, ['codex-sdk:gpt-5.6-sol', 'local-sdk:claude-fable-5']);
+  assert.deepEqual(parkedTargets, ['codex-sdk:gpt-5.6-sol', 'local-sdk:claude-fable-5-1']);
   // ...and the degrade wake names the third seat, so the next pass continues.
   const degradeWake = doc.wakes.find((w) =>
     w.status === 'pending' && w.condition.type === 'immediate' &&
@@ -580,7 +580,7 @@ test('a successful fallback retires covered coordinator retries without clearing
   }
   assert.deepEqual(completed.capacity, capacityBefore, 'fallback success does not claim primary recovery');
   assert.equal(pickCoordinatorTarget(completed, virtualNow().toISOString()).model, 'claude-opus-5');
-  assert.equal(pickCoordinatorTarget(completed, retry.infrastructure!.retryAt).model, 'claude-fable-5',
+  assert.equal(pickCoordinatorTarget(completed, retry.infrastructure!.retryAt).model, 'claude-fable-5-1',
     'the next real wake after reset may use the primary without a separate probe');
   assert.ok(completed.events.some((event) => event.type === 'wake.coordinator_retry_superseded'));
 });
@@ -627,7 +627,7 @@ test('a completed pass on any seat closes open coordinator capacity cards but ke
   const card = parked.attention.find((item) => item.kind === 'capacity' && item.id !== 'att_worker_capacity')!;
   assert.deepEqual(card.resolvesWhen, { any: [{
     kind: 'capacity_target_unblocked', role: 'coordinator',
-    target: { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' },
+    target: { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1' },
   }] }, 'new capacity cards declare their typed fact');
   const interventionsBefore = parked.spend.humanInterventions;
 

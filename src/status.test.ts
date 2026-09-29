@@ -27,7 +27,7 @@ let previousFallback: string | undefined;
 
 beforeEach(() => {
   previousFallback = process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
-  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = 'claude-fable-5';
+  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = 'claude-fable-5-1';
 });
 
 afterEach(() => {
@@ -45,7 +45,7 @@ function infrastructure(
     recovery,
     source: 'coordinator',
     sourceId: 'pass_capacity',
-    model: 'claude-fable-5',
+    model: 'claude-fable-5-1',
     executor: 'local-sdk',
     provider: 'anthropic',
     detectedAt: NOW,
@@ -184,8 +184,8 @@ test('legacy credit state renders the current plan-usage recovery contract', () 
   };
   const status = renderStatus(doc([infrastructureWake('wake_credit', credit), ordinary]));
 
-  assert.match(status, /WAITING — coordinator Claude claude-fable-5 usage limited/);
-  assert.match(status, /Claude plan usage is limited for claude-fable-5; dependent work is parked/);
+  assert.match(status, /WAITING — coordinator Claude claude-fable-5-1 usage limited/);
+  assert.match(status, /Claude plan usage is limited for claude-fable-5-1; dependent work is parked/);
   assert.match(status, /Check `\/usage` in Claude Code/);
   assert.match(status, /enable usage credits in Claude Settings > Usage/);
   assert.match(status, /weaver capacity retry capacity-status/);
@@ -199,8 +199,8 @@ test('authentication failure gives the manual Claude login recovery and no token
   const auth = infrastructure('auth', 'reauthenticate');
   const status = renderStatus(doc([infrastructureWake('wake_auth', auth)]));
 
-  assert.match(status, /WAITING — coordinator Claude claude-fable-5 login required/);
-  assert.match(status, /Claude authentication needs attention for claude-fable-5/);
+  assert.match(status, /WAITING — coordinator Claude claude-fable-5-1 login required/);
+  assert.match(status, /Claude authentication needs attention for claude-fable-5-1/);
   assert.match(status, /Run `claude auth login` in a terminal/);
   assert.match(status, /Weaver never accepts credentials or tokens/);
   assert.doesNotMatch(status, /switch accounts|rotate|mint|pool/i);
@@ -256,7 +256,7 @@ test('a wait whose retry is still ahead is reported as a live block', () => {
   const rate = infrastructure('rate_limit', 'automatic_retry', { retryAt: FUTURE_1 });
   const status = renderStatus(doc([infrastructureWake('wake_rate', rate)]));
 
-  assert.match(status, /WAITING — coordinator Claude claude-fable-5 rate limited/);
+  assert.match(status, /WAITING — coordinator Claude claude-fable-5-1 rate limited/);
   assert.match(status, /provider retry scheduled at/);
 });
 
@@ -314,7 +314,7 @@ test('a live coordinator lease is shown as active work instead of idle', () => {
     startedAt,
     baseRevision: coordinating.revision,
     wakeReasons: ['human steering arrived'],
-    model: 'claude-fable-5',
+    model: 'claude-fable-5-1',
     changes: [],
     outcome: 'running',
   });
@@ -338,7 +338,7 @@ test('an expired coordinator lease is shown as awaiting recovery instead of idle
     startedAt,
     baseRevision: recovering.revision,
     wakeReasons: ['scheduled reconciliation'],
-    model: 'claude-fable-5',
+    model: 'claude-fable-5-1',
     changes: [],
     outcome: 'running',
   });

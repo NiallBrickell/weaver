@@ -201,7 +201,7 @@ export function renderRemoteEnvLines(
   const needsClaudeIdentity = (() => {
     if ((config.WEAVER_EXECUTOR ?? 'local-sdk') === 'local-sdk') return true;
     const coordinatorExecutor = config.WEAVER_COORDINATOR_EXECUTOR ?? 'local-sdk';
-    const coordinatorModel = config.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5';
+    const coordinatorModel = config.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5-1';
     if (coordinatorExecutor === 'local-sdk' && !coordinatorModel.startsWith('openrouter/')) return true;
     const fallbacks = config.WEAVER_COORDINATOR_FALLBACKS;
     if (fallbacks !== undefined) {
@@ -212,7 +212,7 @@ export function renderRemoteEnvLines(
       }
     } else {
       const fallbackExecutor = config.WEAVER_COORDINATOR_FALLBACK_EXECUTOR ?? coordinatorExecutor;
-      const fallbackModel = config.WEAVER_COORDINATOR_FALLBACK_MODEL ?? 'claude-opus-4-8';
+      const fallbackModel = config.WEAVER_COORDINATOR_FALLBACK_MODEL ?? 'claude-opus-5-5';
       if (fallbackExecutor === 'local-sdk' && !fallbackModel.startsWith('openrouter/')) return true;
     }
     return (config.WEAVER_ACTION_EXECUTOR ?? 'local-sdk') === 'local-sdk' &&
@@ -512,7 +512,7 @@ const MODEL_PROMPTS: Record<(typeof CONFIG_NAMES)[number], { label: string; sugg
   },
   WEAVER_COORDINATOR_MODEL: {
     label: 'coordinator model',
-    suggest: 'claude-fable-5 / claude-opus-4-8 / gpt-5.6-sol',
+    suggest: 'claude-fable-5-1 / claude-opus-5-5 / gpt-5.6-sol',
   },
   WEAVER_COORDINATOR_EXECUTOR: {
     label: 'coordinator executor',
@@ -520,7 +520,7 @@ const MODEL_PROMPTS: Record<(typeof CONFIG_NAMES)[number], { label: string; sugg
   },
   WEAVER_COORDINATOR_FALLBACK_MODEL: {
     label: 'coordinator fallback model',
-    suggest: 'claude-opus-4-8 / gpt-5.6-sol',
+    suggest: 'claude-opus-5-5 / gpt-5.6-sol',
   },
   WEAVER_COORDINATOR_FALLBACK_EXECUTOR: {
     label: 'coordinator fallback executor',

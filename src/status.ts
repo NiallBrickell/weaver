@@ -115,7 +115,9 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
     ...(pilotUnavailable.length
       ? [`WAITING — approval service unavailable; ${pilotUnavailable.length} gated action${pilotUnavailable.length === 1 ? ' remains' : 's remain'} safe`]
       : []),
-    ...(capacity.blocking ? [`WAITING — ${capacity.blocking.summary}. ${capacity.blocking.recovery}`] : []),
+    // The recovery gets its own line: joined to the summary, a long model id
+    // or slug pushed the one actionable command past the line clip.
+    ...(capacity.blocking ? [`WAITING — ${capacity.blocking.summary}.`, `  → ${capacity.blocking.recovery}`] : []),
     ...(capacity.executorUnavailable ? [`WAITING — ${capacity.executorUnavailable.summary}`] : []),
     ...(capacity.unknown ? [`UNKNOWN — ${capacity.unknown.summary}`] : []),
     ...capacity.details
