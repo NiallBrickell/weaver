@@ -1140,6 +1140,7 @@ async function handle(
     return sendHtml(res, 200, renderOperatorOverviewHtml({
       fleet: fleet.view,
       overview: payload,
+      ...(url.searchParams.get('now') ? { nowTab: url.searchParams.get('now')! } : {}),
       actor,
       notice: noticeFrom(url),
       ...(clerk ? { signOutAction: '/sign-out' } : {}),

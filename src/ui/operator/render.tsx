@@ -93,6 +93,8 @@ export interface OperatorFleetRenderProps extends OperatorBaseRenderProps {}
 
 export interface OperatorOverviewRenderProps extends OperatorBaseRenderProps {
   overview: OverviewPayload;
+  /** Which parent's tab the "What it is doing now" section shows. */
+  nowTab?: string;
 }
 
 export interface OperatorNewRenderProps extends OperatorBaseRenderProps {
@@ -1745,7 +1747,7 @@ export function renderOperatorOverviewHtml(props: OperatorOverviewRenderProps): 
       initialRevision={props.fleet.revision}
       currentPage="overview"
     >
-      <OverviewPage overview={props.overview} scopeLabel={props.fleet.scope.label} />
+      <OverviewPage overview={props.overview} scopeLabel={props.fleet.scope.label} {...(props.nowTab ? { nowTab: props.nowTab } : {})} />
     </OperatorShell>,
   );
 }

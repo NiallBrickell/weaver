@@ -277,35 +277,53 @@ function Origins({ overview }: { overview: OverviewPayload }) {
   );
 }
 
-function Now({ overview }: { overview: OverviewPayload }) {
+/** The tab key of a group: its parent slug, or the top level. */
+function nowKey(group: { parent: string | null }): string {
+  return group.parent ?? 'top-level';
+}
+
+function Now({ overview, selected }: { overview: OverviewPayload; selected?: string }) {
+  const groups = [...overview.now.groups].sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label));
+  // A plain link per group (?now=<parent>), so the choice survives the shell's
+  // live refresh, which re-fetches the current URL. Unknown or absent keys
+  // fall back to the busiest group.
+  const current = groups.find((group) => nowKey(group) === selected) ?? groups[0];
   return (
     <Section
       id="now"
       eyebrow="03 · What it is doing now"
       title={`${plural(overview.now.active, 'active workstream')}`}
-      lede="Grouped by the parent that opened them. Each shows its objective and the latest standing decision, the course the fleet is currently committed to."
+      lede="One tab per parent: the routine or workstream that opened them, or the top level for work a person started. Each shows its objective and the latest standing decision, the course the fleet is currently committed to."
     >
-      {overview.now.groups.length ? (
-        <div className="grid items-start gap-4 lg:grid-cols-2">
-          {overview.now.groups.map((group) => (
-            <Card key={group.parent ?? 'top-level'} className="bg-zinc-900/20">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center justify-between gap-3 text-sm">
-                  <span className="truncate font-mono text-zinc-200">{group.label}</span>
-                  <span className="shrink-0 text-xs font-normal tabular-nums text-zinc-500">{group.items.length}</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 pt-0">
-                {group.items.map((item) => (
-                  <a key={item.slug} href={workstreamHref(item.slug)} className="block rounded-lg border border-zinc-800 px-3 py-2 transition hover:border-zinc-700">
-                    <p className="text-sm font-medium text-zinc-100">{item.title}</p>
-                    <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-zinc-400">{item.objective}</p>
-                    {item.decision ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-violet-300/90">Standing: {item.decision}</p> : null}
-                  </a>
-                ))}
-              </CardContent>
-            </Card>
-          ))}
+      {current ? (
+        <div className="space-y-4">
+          <nav aria-label="Active workstreams by parent" data-testid="overview-now-tabs" className="-mx-1 flex gap-1 overflow-x-auto border-b border-zinc-800 px-1">
+            {groups.map((group) => {
+              const key = nowKey(group);
+              const isCurrent = group === current;
+              return (
+                <a
+                  key={key}
+                  href={`?now=${encodeURIComponent(key)}#now`}
+                  data-testid={`overview-now-tab-${key}`}
+                  aria-current={isCurrent ? 'page' : undefined}
+                  className={`-mb-px flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-xs transition ${isCurrent ? 'border-violet-400 text-zinc-100' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}
+                >
+                  <span className="font-mono">{group.label}</span>
+                  <span className="tabular-nums text-zinc-500">{group.items.length}</span>
+                </a>
+              );
+            })}
+          </nav>
+          <div data-testid="overview-now-items" className="grid items-start gap-3 lg:grid-cols-2">
+            {current.items.map((item) => (
+              <a key={item.slug} href={workstreamHref(item.slug)} className="block rounded-lg border border-zinc-800 px-3 py-2 transition hover:border-zinc-700">
+                <p className="text-sm font-medium text-zinc-100">{item.title}</p>
+                <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-zinc-400">{item.objective}</p>
+                {item.decision ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-violet-300/90">Standing: {item.decision}</p> : null}
+              </a>
+            ))}
+          </div>
         </div>
       ) : <p className="text-sm text-zinc-500">Nothing is active.</p>}
     </Section>
@@ -539,7 +557,7 @@ function Example({ overview }: { overview: OverviewPayload }) {
   );
 }
 
-export function OverviewPage({ overview, scopeLabel }: { overview: OverviewPayload; scopeLabel: string }) {
+export function OverviewPage({ overview, scopeLabel, nowTab }: { overview: OverviewPayload; scopeLabel: string; nowTab?: string }) {
   return (
     <div data-testid="operator-overview-page">
       <header className="border-b border-zinc-900 px-5 py-6 sm:px-8">
@@ -554,7 +572,7 @@ export function OverviewPage({ overview, scopeLabel }: { overview: OverviewPaylo
       <div className="mx-auto max-w-6xl space-y-12 p-5 sm:p-8">
         <Explainer overview={overview} />
         <Origins overview={overview} />
-        <Now overview={overview} />
+        <Now overview={overview} selected={nowTab} />
         <Outcomes overview={overview} />
         <Signals overview={overview} />
         <Cost overview={overview} />

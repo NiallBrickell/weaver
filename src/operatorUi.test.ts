@@ -1453,6 +1453,18 @@ test('the team overview is a read-only typed view linked from the nav, recompute
 
   assert.match(await (await fetch(`${base}/board`)).text(), /data-testid="team-overview-link" href="\/overview"/);
 
+  // "What it is doing now" is one tab per parent; the chosen tab is a plain
+  // link, so it survives the shell's live refresh of the current URL.
+  assert.match(html, /data-testid="overview-now-tab-top-level"/);
+  assert.match(html, new RegExp(`data-testid="overview-now-tab-${parent}"`));
+  const underParent = await (await fetch(`${base}/overview?now=${encodeURIComponent(parent)}`)).text();
+  assert.match(underParent, new RegExp(`data-testid="overview-now-tab-${parent}"[^>]*aria-current="page"`));
+  const items = underParent.slice(underParent.indexOf('data-testid="overview-now-items"'));
+  assert.match(items.slice(0, items.indexOf('</div>')), new RegExp(`/workstreams/${child.slug}`));
+  const topLevel = await (await fetch(`${base}/overview?now=top-level`)).text();
+  const topItems = topLevel.slice(topLevel.indexOf('data-testid="overview-now-items"'));
+  assert.doesNotMatch(topItems.slice(0, topItems.indexOf('</div>')), new RegExp(`/workstreams/${child.slug}"`));
+
   // A durable write moves the fleet revision, so the memo cannot serve a stale view.
   await arrive(child.slug, (doc) => {
     doc.workstream.status = 'paused';
