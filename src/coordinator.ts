@@ -68,8 +68,21 @@ import {
   coordinatorFallbackModel,
   coordinatorModel,
   coordinatorTargets,
+  shadowCoordinatorConfig,
   type CapacityTarget,
+  type ShadowCoordinatorConfig,
 } from './modelConfig.js';
+import {
+  moveOf,
+  passClassOf,
+  pushMove,
+  runShadowCoordinator,
+  seatLabel,
+  type ShadowReadPort,
+} from './shadowCoordinator.js';
+import type { BridgeToolDefinition } from './executor/toolBridge.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { PolicyRecord } from './policies.js';
 import { deterministicActionsOnly, runnerExecutorCapabilities } from './modelRouting.js';
 import {
   PROBE_MAX_WATCHING_PER_WORKSTREAM,
@@ -96,7 +109,7 @@ import {
   sha256,
   verifyArtifact,
 } from './store.js';
-import type { Assignment, CourseProgress, ExternalFact, InfrastructureWait, PassRecord, Wake, WorkstreamDoc } from './types.js';
+import type { Assignment, CourseProgress, ExternalFact, InfrastructureWait, PassRecord, ShadowMove, ShadowPassRecord, Wake, WorkstreamDoc } from './types.js';
 
 const LEASE_MS = 15 * 60_000;
 
@@ -321,11 +334,20 @@ export function passOutcome(args: {
   return 'no_finish';
 }
 
+export interface CoordinatorPassOptions {
+  /** Test seam: the shadow seat's executor (defaults to the coordinator's own
+   * executor construction for the configured shadow executor). */
+  shadowExecutor?: CoordinatorExecutor;
+  /** Test seam: the sampling draw in [0, 1). */
+  shadowSample?: () => number;
+}
+
 export async function runCoordinatorPass(
   slug: string,
   wakeReasons: string[],
   providedExecutor?: CoordinatorExecutor,
   executorCapabilities?: ReadonlySet<string>,
+  options: CoordinatorPassOptions = {},
 ): Promise<PassOutcome> {
   assertRunnerEnabled();
   const runner = runnerClaimIdentity();
@@ -1596,6 +1618,29 @@ export async function runCoordinatorPass(
       ),
   ];
 
+  // Shadow measurement (off unless configured): the real pass's typed moves
+  // are recorded beside its handlers, and the projection snapshot is kept so a
+  // sampled shadow seat later sees exactly what this pass saw. A bad shadow
+  // config is reported and ignored — it can never touch the real pass.
+  let shadowConfig: ShadowCoordinatorConfig | null = null;
+  try {
+    shadowConfig = shadowCoordinatorConfig();
+  } catch (e) {
+    process.stderr.write(`shadow coordinator disabled: ${e instanceof Error ? e.message : String(e)}\n`);
+  }
+  const realMoves: ShadowMove[] = [];
+  const shadowSnapshot = shadowConfig ? structuredClone(doc) : undefined;
+  const passTools: BridgeToolDefinition[] = shadowConfig
+    ? coordinatorTools.map((definition) => ({
+        ...definition,
+        async handler(args: unknown, extra: unknown) {
+          const result = await definition.handler(args as never, extra);
+          if (!result.isError) pushMove(realMoves, moveOf(definition.name, args));
+          return result;
+        },
+      }))
+    : coordinatorTools;
+
   const prompt = [
     `A wake fired for this workstream. Reconcile: make the bounded progress this wake justifies, then finish_pass.`,
     ``,
@@ -1619,7 +1664,7 @@ export async function runCoordinatorPass(
       prompt,
       model: passModel,
       systemPrompt: systemPromptForWorkstream(doc),
-      tools: coordinatorTools,
+      tools: passTools,
       env: sdkEnv(),
       abort,
       onClaudeMessage(message) {
@@ -1832,5 +1877,162 @@ export async function runCoordinatorPass(
     }
   });
 
+  if (shadowConfig && shadowSnapshot && outcome === 'completed') {
+    launchShadowIfSampled({
+      slug,
+      passId,
+      config: shadowConfig,
+      prompt,
+      systemPrompt: systemPromptForWorkstream(shadowSnapshot),
+      tools: coordinatorTools,
+      snapshot: shadowSnapshot,
+      policies: matchedPolicies,
+      realMoves,
+      ...(options.shadowExecutor ? { executor: options.shadowExecutor } : {}),
+      sample: options.shadowSample ?? Math.random,
+    });
+  }
+
   return { passId, outcome, costUsd, ...(summary ? { summary } : {}) };
+}
+
+const toolText = (text: string): CallToolResult => ({ content: [{ type: 'text', text }] });
+const toolError = (text: string): CallToolResult => ({ content: [{ type: 'text', text }], isError: true });
+
+/** Read-only views over the pass's projection snapshot — the whole of what a
+ * shadow seat can reach. Every function here only reads: artifacts are
+ * content-addressed and hash-verified, policies and wakes come from the
+ * snapshot, and inspection is the same read-only managed-workstream summary
+ * the real tool serves. */
+function shadowReadPort(slug: string, snapshot: WorkstreamDoc, policies: readonly PolicyRecord[]): ShadowReadPort {
+  return {
+    async readDeliverable(deliverableId) {
+      const del = snapshot.deliverables.find((x) => x.id === deliverableId);
+      if (!del) return toolError(`no deliverable ${deliverableId}`);
+      if (!(await verifyArtifact(slug, del.path, del.contentHash))) {
+        return toolError(`INTEGRITY FAILURE: ${del.id} on-disk content no longer matches its recorded hash — do not adopt; raise_attention instead`);
+      }
+      return toolText(await readArtifact(slug, del.path));
+    },
+    async readProbeArtifact(artifactPath) {
+      const observation = [...snapshot.observations].reverse().find((o) => o.probe?.artifactPath === artifactPath);
+      if (!observation?.probe) return toolError(`no probe observation recorded artifact_path "${artifactPath}"`);
+      if (!(await verifyArtifact(slug, observation.probe.artifactPath, observation.probe.fingerprint))) {
+        return toolError(`INTEGRITY FAILURE: probe output for ${observation.id} no longer matches its recorded fingerprint — do not rely on it`);
+      }
+      return toolText(await readArtifact(slug, observation.probe.artifactPath));
+    },
+    readPolicy(policyId) {
+      const policy = policies.find((p) => p.id === policyId);
+      if (!policy) return toolError(`no policy ${policyId} matches this workstream's tags`);
+      return toolText(JSON.stringify({ ...policy, doctrine: isDoctrine(policy) }, null, 2));
+    },
+    listCancellableWakes(afterWakeId) {
+      const page = coordinatorCancellableWakePage(snapshot, { ...(afterWakeId ? { afterWakeId } : {}), limit: 25 });
+      return toolText(JSON.stringify({
+        ...page,
+        wakes: page.wakes.map((wake) => ({ ...wake, reason: excerptForTool(wake.reason, 600) })),
+      }));
+    },
+    async inspectWorkstream(target) {
+      try {
+        return toolText(JSON.stringify(await inspectManagedWorkstream(slug, target), null, 2));
+      } catch (e) {
+        return toolError(e instanceof Error ? e.message : String(e));
+      }
+    },
+  };
+}
+
+/** At most this many shadow runs in flight per process: each is a model loop
+ * outside the runner's slot and memory accounting, so it stays tiny. A pass
+ * sampled while one is running is simply not shadowed. */
+const SHADOW_MAX_IN_FLIGHT = 1;
+const shadowRuns = new Set<Promise<void>>();
+
+/** Resolves once every detached shadow run this process started has recorded
+ * (or dropped) its result. Tests await it; nothing on a real path does. */
+export async function settleShadowRuns(): Promise<void> {
+  while (shadowRuns.size) await Promise.all([...shadowRuns]);
+}
+
+class ShadowRecordSkipped extends Error {}
+
+/**
+ * Sample this completed pass for the shadow seat and, if drawn, run it
+ * DETACHED: the real pass has already finalized, released its lease, and is
+ * returning — the shadow holds no tick lock, delays no write, and contends for
+ * no revision the real pass needs. Its result is stored by one harness write
+ * that adds only `PassRecord.shadow` (no event, no wake), and that write is
+ * skipped whenever another coordinator pass holds a live lease, so a shadow can
+ * never make a running pass conflict. Never retried; any failure is recorded
+ * or logged and swallowed.
+ */
+function launchShadowIfSampled(args: {
+  slug: string;
+  passId: string;
+  config: ShadowCoordinatorConfig;
+  prompt: string;
+  systemPrompt: string;
+  tools: readonly BridgeToolDefinition[];
+  snapshot: WorkstreamDoc;
+  policies: readonly PolicyRecord[];
+  realMoves: ShadowMove[];
+  executor?: CoordinatorExecutor;
+  sample: () => number;
+}): void {
+  try {
+    if (!(args.sample() < args.config.rate)) return;
+    // A parked shadow seat is parked: spending a launch to rediscover the
+    // limit measures nothing (the same rule the real seats follow).
+    const parked = capacityBackoffFor(args.snapshot, args.config.target)?.wait;
+    if (parked && parked.retryAt > virtualNow().toISOString()) return;
+    if (shadowRuns.size >= SHADOW_MAX_IN_FLIGHT) {
+      process.stderr.write(`[shadow] ${args.passId} sampled but a shadow run is already in flight — not shadowed\n`);
+      return;
+    }
+  } catch {
+    return;
+  }
+  const run = (async () => {
+    let record: ShadowPassRecord;
+    try {
+      record = await runShadowCoordinator({
+        seat: args.config.target,
+        executor: args.executor ?? selectCoordinatorExecutor(args.config.target.executor),
+        prompt: args.prompt,
+        systemPrompt: args.systemPrompt,
+        tools: args.tools,
+        snapshot: args.snapshot,
+        reads: shadowReadPort(args.slug, args.snapshot, args.policies),
+        env: sdkEnv(),
+        realMoves: args.realMoves,
+      });
+    } catch (e) {
+      // Executor construction or env failed before the run began.
+      record = {
+        seat: seatLabel(args.config.target),
+        at: new Date().toISOString(),
+        passClass: passClassOf(args.realMoves),
+        realMoves: args.realMoves.slice(0, 80),
+        moves: [],
+        error: (e instanceof Error ? e.message : String(e)).slice(0, 500),
+      };
+    }
+    try {
+      await arrive(args.slug, (d) => {
+        const lease = d.lease;
+        if (lease && lease.passId !== args.passId && Date.parse(lease.expiresAt) > Date.now()) {
+          throw new ShadowRecordSkipped(`coordinator pass ${lease.passId} is in flight`);
+        }
+        const rec = d.passes.find((p) => p.id === args.passId);
+        if (!rec) throw new ShadowRecordSkipped('the pass record is gone');
+        rec.shadow = record;
+      });
+    } catch (e) {
+      process.stderr.write(`[shadow] ${args.passId} result not recorded: ${e instanceof Error ? e.message : String(e)}\n`);
+    }
+  })().catch(() => {});
+  shadowRuns.add(run);
+  void run.finally(() => shadowRuns.delete(run));
 }

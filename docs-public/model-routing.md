@@ -34,6 +34,27 @@ Today only `bounded-code-repair` has reviewed routes; `evidence-synthesis` and `
 
 This is also why the vocabulary is closed: a value enters it as a deliberate schema decision, routes earn their way in with evidence, and nothing in between lets a fluent brief influence execution.
 
+## Shadow coordinator seats: measurement only
+
+The coordinator always runs on the strongest seat in its configured chain (`WEAVER_COORDINATOR_MODEL`, then `WEAVER_COORDINATOR_FALLBACKS`). Many of its passes look mechanical: adopt a result whose checks passed, then dispatch the step the standing course already named. Whether a cheaper model could take those passes is a question for evidence, so Weaver can measure a candidate seat without giving it any authority:
+
+```bash
+WEAVER_SHADOW_COORDINATOR=local-sdk:claude-sonnet-5   # one executor:model, local-sdk or codex-sdk
+WEAVER_SHADOW_RATE=0.1                                 # fraction of completed passes to shadow; 0 or unset = off
+```
+
+After a real pass completes, Weaver samples it at that rate. A sampled pass is replayed once by the shadow seat, detached from the real pass, with the same system prompt, the same projection text the real coordinator saw, and the same tool schemas. It runs through the coordinator's own isolated executor construction; only the tool set is swapped. Every tool is a capture twin: reads are served from the pass's snapshot, and writes are checked against that snapshot, recorded as `{tool, target ids}`, and answered with a plausible success. The twin never calls the real tool's code, so a shadow cannot write the Workstream, fire a wake, dispatch an assignment, or reach anything outside Weaver.
+
+Weaver stores the comparison on the pass record as `shadow`. It holds the class of the real pass (verify-then-dispatch, dispatch-only, wait-only, conclude, or other), both seats' moves, the shadow's cost, and the agreement for each move type. The headline numbers are adopt/reject agreement for each assignment, and conclude and raise-attention agreement. Dispatch count, supersession, and the exact multiset of tools are reported beside them. Nothing a coordinator reads looks at this record: not the projection, the success counts, or spend. If a shadow run fails, Weaver records the failure and doesn't retry. The shadow's result is dropped rather than written while another pass holds the lease, so measurement can never make a real pass conflict.
+
+```bash
+weaver shadow-report [--since 2026-09-15T00:00:00Z]
+```
+
+The report prints agreement for each pass class with its denominators, the real and shadow cost on the same passes, and the disagreeing pass ids so you can read what each seat did.
+
+**Promoting a seat is your decision, never Weaver's.** No agreement rate moves a class of passes onto the shadow seat automatically. The shadow seat is not a coordinator seat: it never joins the capacity chain, the runner's executor declaration, or the seats a runner publishes. It does spend real quota on its own seat, and that spend appears only in `weaver shadow-report`, not in coordinator spend. Keep the rate small.
+
 ## Where to read next
 
 - [Where model loops run](./executors.md) — the executor substrates and their contracts

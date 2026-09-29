@@ -168,6 +168,44 @@ export function workerCapacityTarget(
   return { executor, provider: providerForExecutor(executor, model), model };
 }
 
+export interface ShadowCoordinatorConfig {
+  target: CapacityTarget;
+  /** Fraction of completed coordinator passes shadowed, in (0, 1]. */
+  rate: number;
+}
+
+/**
+ * The measurement-only shadow coordinator seat (`WEAVER_SHADOW_COORDINATOR`,
+ * one `executor:model`) and the fraction of completed passes it shadows
+ * (`WEAVER_SHADOW_RATE`, 0–1, default 0). Null when either leaves nothing to
+ * run. A shadow seat never coordinates: it sees a pass's exact projection with
+ * capture-only tools and its moves are compared, never applied. It is NOT a
+ * coordinator seat, so it never joins the capacity chain, the runner's
+ * executor capability declaration, or published presence seats. Invalid values
+ * throw; the caller swallows that so a shadow misconfiguration can never touch
+ * the real pass.
+ */
+export function shadowCoordinatorConfig(): ShadowCoordinatorConfig | null {
+  const rawSeat = process.env.WEAVER_SHADOW_COORDINATOR?.trim();
+  const rawRate = process.env.WEAVER_SHADOW_RATE?.trim();
+  if (!rawSeat) return null;
+  const rate = rawRate ? Number(rawRate) : 0;
+  if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
+    throw new Error(`WEAVER_SHADOW_RATE '${rawRate}' must be a number from 0 to 1`);
+  }
+  const targets = parseCapacityTargetList(rawSeat, 'WEAVER_SHADOW_COORDINATOR');
+  if (targets.length !== 1) {
+    throw new Error('WEAVER_SHADOW_COORDINATOR must name exactly one executor:model seat');
+  }
+  const target = targets[0]!;
+  if (!SUPPORTED_COORDINATOR_EXECUTORS.has(target.executor)) {
+    throw new Error(
+      `WEAVER_SHADOW_COORDINATOR executor '${target.executor}' is not a coordinator executor — supported: local-sdk, codex-sdk`,
+    );
+  }
+  return rate > 0 ? { target, rate } : null;
+}
+
 /** A legacy coordinator always ran through the local Claude Agent SDK. A
  * legacy worker might have run through any configured executor, so guessing
  * its provider would risk blocking or clearing the wrong pool. */
