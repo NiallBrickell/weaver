@@ -148,7 +148,18 @@ export interface FamilyCost {
   totalUsd: number;
 }
 
+/** Why an example was picked: each tab shows a different way work ends. */
+export type ExampleKind = 'delivered' | 'investigated' | 'corrected' | 'stopped';
+
+export const EXAMPLE_KIND_LABELS: Record<ExampleKind, string> = {
+  delivered: 'Delivered',
+  investigated: 'Investigated, no code needed',
+  corrected: 'A person corrected it',
+  stopped: 'Stopped without delivery',
+};
+
 export interface WorkedExample {
+  kind: ExampleKind;
   slug: string;
   title: string;
   parent: string | null;
@@ -214,7 +225,8 @@ export interface OverviewPayload {
     byProvider: ProviderCost[];
     byBasis: Record<BillingBasis, number>;
   };
-  example?: WorkedExample;
+  /** Up to one example per kind, in EXAMPLE_KIND order; empty when none qualify. */
+  examples: WorkedExample[];
 }
 
 export const TOP_LEVEL_LABEL = 'Top level (a person or intake)';
@@ -404,7 +416,7 @@ export function computeOverview(docs: WorkstreamDoc[], policies: PolicyRecord[],
     families.set(family, row);
   }
   const totalUsd = coordinatorUsd + workerUsd;
-  const example = workedExample(docs, now);
+  const examples = workedExamples(docs, now);
   const byProvider = [...providers.values()].sort((a, b) => b.totalUsd - a.totalUsd || a.key.localeCompare(b.key));
   const byBasis: Record<BillingBasis, number> = { 'subscription-notional': 0, cash: 0, unknown: 0 };
   for (const row of byProvider) byBasis[row.basis] += row.totalUsd;
@@ -479,22 +491,46 @@ export function computeOverview(docs: WorkstreamDoc[], policies: PolicyRecord[],
       byProvider,
       byBasis,
     },
-    ...(example ? { example } : {}),
+    examples,
   };
 }
 
-/** The most recently concluded workstream with enough assignments to show the
- * loop at work. Chosen by typed conclusion time, never by hand. */
-export function workedExample(docs: WorkstreamDoc[], now: Date): WorkedExample | undefined {
-  let chosen: WorkstreamDoc | undefined;
-  for (const doc of docs) {
-    const conclusion = doc.workstream.conclusion;
-    if (!conclusion || doc.assignments.length < EXAMPLE_MIN_ASSIGNMENTS) continue;
-    if (!chosen || conclusion.atVirtual > chosen.workstream.conclusion!.atVirtual) chosen = doc;
-  }
-  if (!chosen) return undefined;
+const EXAMPLE_ORDER: ExampleKind[] = ['delivered', 'investigated', 'corrected', 'stopped'];
+/** A readable example: enough steps to show the loop, few enough to follow. */
+const EXAMPLE_CLEAN_MAX_ASSIGNMENTS = 30;
+const EXAMPLE_CLEAN_MAX_REJECTED_SHARE = 0.25;
+const EXAMPLE_CLEAN_MAX_PASSES = 60;
+
+function exampleKinds(doc: WorkstreamDoc): Set<ExampleKind> {
+  const kinds = new Set<ExampleKind>();
+  const outcome = outcomeClassOf(doc);
+  if (!outcome) return kinds;
+  const success = outcome === 'delivered' || outcome === 'no_change_needed' || outcome === 'unclassified';
+  if (outcome === 'delivered' || (outcome === 'unclassified' && hasConfirmedMerge(doc))) kinds.add('delivered');
+  if (outcome === 'no_change_needed' || (outcome === 'unclassified' && !doc.assignments.some(isMergeAction))) kinds.add('investigated');
+  if (success && doc.steering.some((st) => !st.revokedAt)) kinds.add('corrected');
+  if (outcome === 'not_worth_doing' || outcome === 'duplicate' || outcome === 'directed_closed') kinds.add('stopped');
+  return kinds;
+}
+
+function hasConfirmedMerge(doc: WorkstreamDoc): boolean {
+  return doc.assignments.some((a) => isMergeAction(a) && a.exec?.verified?.ok === true);
+}
+
+/** Few enough steps and few enough rejected results that a newcomer can
+ * follow the story; a long retry-heavy run is a poor first example. */
+function isCleanExample(doc: WorkstreamDoc): boolean {
+  const judged = doc.assignments.filter((a) => a.adoption.state === 'accepted' || a.adoption.state === 'rejected');
+  const rejected = judged.filter((a) => a.adoption.state === 'rejected').length;
+  return doc.assignments.length <= EXAMPLE_CLEAN_MAX_ASSIGNMENTS
+    && doc.passes.length <= EXAMPLE_CLEAN_MAX_PASSES
+    && (judged.length === 0 || rejected / judged.length <= EXAMPLE_CLEAN_MAX_REJECTED_SHARE);
+}
+
+function toExample(kind: ExampleKind, chosen: WorkstreamDoc, now: Date): WorkedExample {
   const conclusion = chosen.workstream.conclusion!;
   return {
+    kind,
     slug: chosen.workstream.slug,
     title: chosen.workstream.title,
     parent: parentOf(chosen),
@@ -509,6 +545,34 @@ export function workedExample(docs: WorkstreamDoc[], now: Date): WorkedExample |
     costUsd: docCost(chosen).totalUsd,
     timeline: workstreamTimeline(chosen, { now, limit: EXAMPLE_MAX_ROWS }),
   };
+}
+
+/**
+ * One worked example per way work ends — delivered (preferring a merged fix), investigated with no
+ * code needed, corrected by a person, stopped without delivery — each the most
+ * recent concluded workstream of that kind with at least five assignments,
+ * preferring a clean one (at most 30 assignments and 60 coordinator passes, at most a
+ * quarter of judged results rejected) over a merely recent one. Chosen from typed state only,
+ * never by hand; a workstream appears under at most one tab.
+ */
+export function workedExamples(docs: WorkstreamDoc[], now: Date): WorkedExample[] {
+  const recentFirst = docs
+    .filter((doc) => doc.workstream.conclusion && doc.assignments.length >= EXAMPLE_MIN_ASSIGNMENTS)
+    .sort((a, b) => b.workstream.conclusion!.atVirtual.localeCompare(a.workstream.conclusion!.atVirtual));
+  const used = new Set<string>();
+  const examples: WorkedExample[] = [];
+  for (const kind of EXAMPLE_ORDER) {
+    const eligible = recentFirst.filter((doc) => !used.has(doc.workstream.slug) && exampleKinds(doc).has(kind));
+    // A delivered example that merged code shows the whole loop, so it is
+    // preferred over one that delivered only a report.
+    const chosen = (kind === 'delivered' ? eligible.find((doc) => isCleanExample(doc) && hasConfirmedMerge(doc)) : undefined)
+      ?? eligible.find(isCleanExample)
+      ?? eligible[0];
+    if (!chosen) continue;
+    used.add(chosen.workstream.slug);
+    examples.push(toExample(kind, chosen, now));
+  }
+  return examples;
 }
 
 /**

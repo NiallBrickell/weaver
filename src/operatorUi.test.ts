@@ -1448,7 +1448,7 @@ test('the team overview is a read-only typed view linked from the nav, recompute
   assert.match(html, /href="\/overview" aria-current="page"/);
   assert.match(html, /1 of 2 workstreams were opened by other workstreams/);
   assert.match(html, /What this page cannot tell you yet/);
-  assert.match(html, /No worked example yet/);
+  assert.match(html, /No worked examples yet/);
   assert.match(html, /0 paused\./);
 
   assert.match(await (await fetch(`${base}/board`)).text(), /data-testid="team-overview-link" href="\/overview"/);

@@ -1141,6 +1141,7 @@ async function handle(
       fleet: fleet.view,
       overview: payload,
       ...(url.searchParams.get('now') ? { nowTab: url.searchParams.get('now')! } : {}),
+      ...(url.searchParams.get('example') ? { exampleTab: url.searchParams.get('example')! } : {}),
       actor,
       notice: noticeFrom(url),
       ...(clerk ? { signOutAction: '/sign-out' } : {}),
