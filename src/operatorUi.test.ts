@@ -133,6 +133,7 @@ test('the client swaps a fresh coherent snapshot in place when a live revision a
     querySelectorAll(): FakeElement[] { return []; }
     querySelector(): FakeElement | null { return null; }
     addEventListener(): void {}
+    contains(): boolean { return true; }
     replaceWith(next: FakeElement): void { this.replacedWith = next; }
   }
 
@@ -154,15 +155,29 @@ test('the client swaps a fresh coherent snapshot in place when a live revision a
   };
   const nextRoot = new FakeElement();
   nextRoot.dataset = { ...currentRoot.dataset, revision: 'revision-after' };
+  class FakeAnchor extends FakeElement {
+    constructor(readonly href: string) { super(); }
+  }
+  class FakeTarget {
+    constructor(readonly anchor: FakeAnchor | null) {}
+    closest(): FakeAnchor | null { return this.anchor; }
+  }
+  const documentListeners = new Map<string, (event: unknown) => void>();
   const fakeDocument = {
     title: 'Before',
     hidden: false,
     activeElement: { matches: () => true },
     querySelector: () => currentRoot,
+    addEventListener: (type: string, listener: (event: unknown) => void) => { documentListeners.set(type, listener); },
   };
+  const replaced: string[] = [];
+  const fetched: string[] = [];
   const fakeWindow = {
     EventSource: FakeEventSource,
-    location: { href: 'http://workspace.test/board' },
+    location: { href: 'http://workspace.test/overview', origin: 'http://workspace.test', pathname: '/overview', search: '', assign: () => { throw new Error('an in-place tab must not navigate'); } },
+    history: { replaceState: (_state: unknown, _title: string, href: string) => { replaced.push(href); } },
+    scrollY: 0,
+    scrollTo: () => {},
     setTimeout,
     clearTimeout,
   };
@@ -171,12 +186,16 @@ test('the client swaps a fresh coherent snapshot in place when a live revision a
     document: fakeDocument,
     EventSource: FakeEventSource,
     HTMLElement: FakeElement,
+    HTMLAnchorElement: FakeAnchor,
+    Element: FakeTarget,
+    URL,
+    sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
     DOMParser: class {
       parseFromString(): { title: string; querySelector(): FakeElement } {
         return { title: 'After', querySelector: () => nextRoot };
       }
     },
-    fetch: async () => ({ ok: true, text: async () => '<html></html>' }),
+    fetch: async (href: string) => { fetched.push(href); return { ok: true, text: async () => '<html></html>' }; },
     AbortController,
     JSON,
   });
@@ -186,6 +205,19 @@ test('the client swaps a fresh coherent snapshot in place when a live revision a
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(currentRoot.replacedWith, nextRoot);
   assert.equal(fakeDocument.title, 'After');
+
+  // A tab marked data-inplace swaps the page without navigating: the address
+  // changes (so the live refresh renders the same tab) and nothing reloads.
+  let prevented = false;
+  documentListeners.get('click')?.({
+    defaultPrevented: false, button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false,
+    target: new FakeTarget(new FakeAnchor('http://workspace.test/overview?example=investigated')),
+    preventDefault: () => { prevented = true; },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(prevented, true);
+  assert.deepEqual(replaced, ['/overview?example=investigated']);
+  assert.equal(fetched.at(-1), '/overview?example=investigated');
 });
 
 test('New work stores a durable request immediately and an exact retry is idempotent', async () => {
@@ -1257,6 +1289,25 @@ test('Clerk mode replaces the browser password and keeps identity, domain denial
   const allowed = await fetch(`${base}/board`, { headers: { 'x-test-clerk': 'allowed' } });
   assert.equal(allowed.status, 200, 'a stale Basic token cannot replace or bypass Clerk');
   assert.doesNotMatch(allowed.headers.get('content-security-policy') ?? '', /clerk\.accounts/, 'ordinary pages do not admit Clerk scripts');
+  const signedInHtml = await allowed.clone().text();
+  // The signed-in page renews its session through a hidden same-origin frame,
+  // so Clerk's SDK never runs beside workstream content.
+  assert.match(signedInHtml, /<iframe src="\/session-keepalive"[^>]*hidden=""/);
+  assert.doesNotMatch(signedInHtml, /data-clerk-js-script/);
+  assert.match(allowed.headers.get('content-security-policy') ?? '', /frame-src 'self'/);
+  assert.match(allowed.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
+  assert.equal(allowed.headers.get('x-frame-options'), 'DENY');
+  const keepAlive = await fetch(`${base}/session-keepalive`, { headers: { 'x-test-clerk': 'allowed' } });
+  assert.equal(keepAlive.status, 200);
+  const keepAliveHtml = await keepAlive.text();
+  assert.match(keepAliveHtml, /data-clerk-publishable-key="pk_test_browser-safe"/);
+  assert.match(keepAliveHtml, /window\.Clerk\?\.load\(\)/);
+  assert.doesNotMatch(keepAliveHtml, /data-operator-root|<iframe/);
+  assert.match(keepAlive.headers.get('content-security-policy') ?? '', /script-src[^;]*https:\/\/example\.clerk\.accounts\.dev/);
+  assert.match(keepAlive.headers.get('content-security-policy') ?? '', /frame-ancestors 'self'/);
+  assert.equal(keepAlive.headers.get('x-frame-options'), 'SAMEORIGIN');
+  const keepAliveSignedOut = await fetch(`${base}/session-keepalive`, { redirect: 'manual' });
+  assert.equal(keepAliveSignedOut.status, 303, 'a lapsed session gets no keep-alive page, only the sign-in redirect');
   assert.deepEqual(allowed.headers.getSetCookie(), [
     '__session=one; Path=/; Secure; HttpOnly',
     '__client=two; Path=/; Secure; HttpOnly',
@@ -1456,6 +1507,11 @@ test('the team overview is a read-only typed view linked from the nav, recompute
   // "What it is doing now" is one tab per parent; the chosen tab is a plain
   // link, so it survives the shell's live refresh of the current URL.
   assert.match(html, /data-testid="overview-now-tab-top-level"/);
+  // Tabs swap in place (no navigation, so no scroll jump), and each section
+  // carries a real id for its anchor.
+  assert.match(html, /data-inplace=""[^>]*data-testid="overview-now-tab-top-level"/);
+  assert.match(html, /<section id="now"/);
+  assert.doesNotMatch(html, /session-keepalive/, 'without Clerk there is no keep-alive frame');
   assert.match(html, new RegExp(`data-testid="overview-now-tab-${parent}"`));
   const underParent = await (await fetch(`${base}/overview?now=${encodeURIComponent(parent)}`)).text();
   assert.match(underParent, new RegExp(`data-testid="overview-now-tab-${parent}"[^>]*aria-current="page"`));
