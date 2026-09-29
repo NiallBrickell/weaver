@@ -18,7 +18,7 @@ weaver create --slug fix-onboarding \
   --title "Fix the onboarding drop-off" \
   --objective "Find why signups stall at step 3, fix it, open a PR with evidence." \
   --constraint "Research first; repository work happens in a fresh worktree; PR and merge are gated actions" \
-  --constraint "Open pull requests only — merging is the founder's act"
+  --constraint "Open pull requests only — merging is the human's act"
 ```
 
 Constraints are hard rules the coordinator must respect; they're yours alone to change (`weaver constraint <slug> add|remove`).

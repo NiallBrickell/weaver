@@ -9,7 +9,7 @@
  * route because a process sharing the `weaver` UID can read absolute
  * credential paths (executor-secrets.env: GitHub App key, Pilot bearer,
  * OpenRouter key, the setup-token itself), so the subscription — the seat the
- * founder pays for and wants used first — was reachable only by the
+ * human pays for and wants used first — was reachable only by the
  * coordinator. When the single OpenRouter account ran dry, all 194 worker
  * attempts in a day parked on `usage_limit` and every intake routine went
  * blind while the subscription sat idle.

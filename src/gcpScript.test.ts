@@ -1272,7 +1272,7 @@ test('push-env delivers the digest destination only into the executor-only store
   const rendered = [
     'WEAVER_EXECUTOR=pi',
     'WEAVER_DIGEST_SLACK_TOKEN=xoxb-digest-secret',
-    'WEAVER_DIGEST_SLACK_CHANNEL=D0FOUNDER',
+    'WEAVER_DIGEST_SLACK_CHANNEL=D0OPERATOR',
     '',
   ].join('\n');
   const { result, root } = run(['push-env'], undefined, rendered);
@@ -1280,7 +1280,7 @@ test('push-env delivers the digest destination only into the executor-only store
   assert.match(call(root, 2, 'args'), /weaver-install-env merge/);
   assert.ok(!call(root, 2, 'stdin').includes('WEAVER_DIGEST_SLACK'), 'never the ambient service env');
   assert.match(call(root, 3, 'args'), /weaver-install-env executor-secrets/);
-  assert.equal(call(root, 3, 'stdin'), 'WEAVER_DIGEST_SLACK_TOKEN=xoxb-digest-secret\nWEAVER_DIGEST_SLACK_CHANNEL=D0FOUNDER\n');
+  assert.equal(call(root, 3, 'stdin'), 'WEAVER_DIGEST_SLACK_TOKEN=xoxb-digest-secret\nWEAVER_DIGEST_SLACK_CHANNEL=D0OPERATOR\n');
   assert.ok(!allCallArgs(root).includes('xoxb-digest-secret'));
 });
 

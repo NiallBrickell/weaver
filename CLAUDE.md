@@ -126,6 +126,8 @@ Document surprises as you find them: the moment something is non-obvious or cost
 
 Two audiences, two places (org-wide convention): `docs-public/` is plain GitHub-rendered markdown (no Mintlify, no `docs.json`, no build step) — any user-visible capability ships a `docs-public/*.md` page plus a link in `docs-public/README.md` in the same PR. `docs/*.md` is internal (invariant maps, surprises, working notes) and never substitutes for a public page.
 
+The person the fleet answers to is "the human" or "the operator" in code, docs, prompts and examples — never "founder". Stored history still carries the old word and fresh passes imitate what they read, so the coordinator and worker prompts forbid it explicitly and `src/vocabulary.test.ts` keeps it out of the repo.
+
 ## Commands
 
 ```bash

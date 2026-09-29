@@ -15,7 +15,7 @@ recommended sequence to the merged work:
 | PR 3 + 4 — policy integrity, correction & authority | #41 | Cross-workstream attributable promotion (different workstream + applying-decision link); negative evidence → `contested` (out of active guidance, never auto-demote); atomic single-mutation `supersede_policy` (tool + CLI); grant-text refusal on live proposals | Auto-detection/auto-resolution of the two pre-existing contradictory active merge policies — now prevented at ingress and contestable/supersedable, but existing pairs need a manual supersede pass |
 | PR 5 — bounded organizational projection | #40 | Completed/cancelled assignments counted not enumerated; older adopted deliverables and retired decisions collapse to a bounded lineage tail; standing rationales excerpted; new `closed` decision state + `close_decision` so cycle-courses stop masquerading as standing; convergence nudge; 80-cycle size-bound test | **Typed deliverable head/relevance relation** for projecting exactly the current heads (recent-window + count used instead, safe for routines) |
 | PR 6 — dependency & intake integrity | #44 | A dependency unblocks only when the upstream is completed **and** accepted; unknown dep id fails closed + raises one integrity blocker; atomic source-key uniqueness moved into `StateStore.create` across fs/sqlite/pg, proved by a real cross-process race test | — |
-| PR 7 — outcome metrics & stable evaluation | #45 | Success denominator = qualified typed conclusion; adopted products reported as an explicit leading indicator; provider backoff split from logical failure (`conflicted` is neither); actor buckets (founder / session / pilot / unattributed) split, pilot reported separately from learned-policy effects; worker first-attempt + cost-per-outcome | **Matched / randomized policy-on-vs-off (or frozen-store) counterfactual evaluation** and the **longitudinal chaos benchmark**; a **stable post-fix cohort** before making trend/causality claims |
+| PR 7 — outcome metrics & stable evaluation | #45 | Success denominator = qualified typed conclusion; adopted products reported as an explicit leading indicator; provider backoff split from logical failure (`conflicted` is neither); actor buckets (human / session / pilot / unattributed) split, pilot reported separately from learned-policy effects; worker first-attempt + cost-per-outcome | **Matched / randomized policy-on-vs-off (or frozen-store) counterfactual evaluation** and the **longitudinal chaos benchmark**; a **stable post-fix cohort** before making trend/causality claims |
 
 Cross-cutting follow-ups still open (all surfaced in the PRs, none silently dropped):
 
@@ -134,7 +134,7 @@ The 18 typed conclusions cited 80 evidence IDs. Every reference passed the curre
 
 `roadmap-intake` is the strongest proof that Weaver is managing work rather than merely running prompts. Accepted worker reports show repeated Linear inspection; typed parent state proves that it kept a bounded number of child workstreams in flight, created children idempotently from source keys, inspected child conclusions, and topped the fleet back up. GitHub outcomes were independently checked; Linear was not independently re-read during this audit.
 
-Eight child issues (ISSUE-1 … ISSUE-8) concluded over roughly 31 hours. Parent and children together recorded about `$186` of spend, produced 33 adopted deliverables, and counted seven interventions: one `niall`, three `niall-via-claude-session`, and three `claude-session`. These are not seven direct-founder interruptions. The children opened eight verified PRs:
+Eight child issues (ISSUE-1 … ISSUE-8) concluded over roughly 31 hours. Parent and children together recorded about `$186` of spend, produced 33 adopted deliverables, and counted seven interventions: one `niall`, three `niall-via-claude-session`, and three `claude-session`. These are not seven direct-human interruptions. The children opened eight verified PRs:
 
 - ISSUE-1 / PR #1957 (verified merged)
 - ISSUE-2 / PR #1958 (verified merged)
@@ -147,7 +147,7 @@ Eight child issues (ISSUE-1 … ISSUE-8) concluded over roughly 31 hours. Parent
 
 ISSUE-1 demonstrates assignment-over-run durability particularly well. A monolithic implementation exhausted its turn budget. A fresh coordinator recorded the failure, split the implementation into two sequential assignments, adopted both outputs, and then opened the PR with SHA and body readback. The intended work survived replacement of the failed run.
 
-ISSUE-5 stopped at a legal-copy boundary, accepted founder-supplied wording, verified semantics, and continued. ISSUE-7 stopped for a missing Google Maps credential, resumed after provisioning, and completed. These are appropriate authority boundaries rather than failures of autonomy.
+ISSUE-5 stopped at a legal-copy boundary, accepted human-supplied wording, verified semantics, and continued. ISSUE-7 stopped for a missing Google Maps credential, resumed after provisioning, and completed. These are appropriate authority boundaries rather than failures of autonomy.
 
 ### Other representative outcomes
 
@@ -155,7 +155,7 @@ ISSUE-5 stopped at a legal-copy boundary, accepted founder-supplied wording, ver
 - `growth-engine-pause-strategy` found a genuine pause-first optimizer defect, incorporated three substantive review corrections, merged PR #1924, updated knowledge through the supported surface, and verified the next optimizer run behaved differently.
 - `fix-pr-1942-comments` inventoried one unresolved DevBot thread, recovered from an oversized implementation by splitting fix and tests, pushed the fix, replied, resolved the thread, and verified the result in about 42 minutes.
 - `daily-engineering-update` produced accepted submissions reporting exactly-once publication, with deterministic readback proving the dated posts were present. The verifier checked presence rather than cardinality, so exact-once is not independently proven. On a later cycle the worker reported that another process had already published and posted, and Weaver made no new egress.
-- `approvals-cleanup` eventually gathered read-only production counts and proposed a purge. When the founder declined, Weaver performed no mutation. The result was safe and useful decision support, although expensive.
+- `approvals-cleanup` eventually gathered read-only production counts and proposed a purge. When the human declined, Weaver performed no mutation. The result was safe and useful decision support, although expensive.
 
 A manual conservative classification found at least 46 explicit readback-confirmed PR-opening submissions by requiring a successful latest readback and submission/objective text that explicitly said the action opened or created a PR/pull request. Because external effect subtype is not structured, this count is evidence rather than a reproducible schema query. Broader text classification found more; 46 is the defensible lower bound.
 
@@ -167,7 +167,7 @@ Exactly 269 action assignments were Pilot-approved and 42 human-approved. Among 
 
 It does not mean Weaver learned permission to act. The actions were consistent with projected workstream constraints and standing human direction, while Pilot/human approval was the actual enforcement/delegation point. Current constraints are plain strings rather than a structural gate. Policy evidence must not take credit for approval-ratio improvements caused by Pilot rules.
 
-### The intervention metric is not founder-interruption burden
+### The intervention metric is not human-interruption burden
 
 The lifetime counter was 272, but only 138 intervention acts could be placed on the durable timeline:
 
@@ -178,7 +178,7 @@ The lifetime counter was 272, but only 138 intervention acts could be placed on 
 | `niall-via-claude-session` | 21 |
 | unattributed | 22 |
 
-The durable data cannot reconstruct direct-founder interruption burden. Session actors operate on the founder's behalf and may embody founder supervision, while nearly half the lifetime numerator is residual and undated. The table establishes attribution labels, not how many times the founder was personally interrupted.
+The durable data cannot reconstruct direct-human interruption burden. Session actors operate on the human's behalf and may embody human supervision, while nearly half the lifetime numerator is residual and undated. The table establishes attribution labels, not how many times the human was personally interrupted.
 
 ### Communication and evaluated-business-result continuity are unproven
 
@@ -193,7 +193,7 @@ The current fleet had 424 decisions: 353 standing and 71 superseded. Including a
 The lineage helped in concrete cases:
 
 - `mail-reply-routing` preserved the sequence from local-test failure, through daemon recovery and a CI pivot, to a DevBot semantic correction and eventual merge.
-- `approvals-cleanup` explicitly replaced “ask the founder to run counts” with read-only retrieval, then replaced the purge course when the founder declined it.
+- `approvals-cleanup` explicitly replaced “ask the human to run counts” with read-only retrieval, then replaced the purge course when the human declined it.
 - `growth-engineer-e2e` preserved why the manual-merge/outage course changed.
 - `managed-workstreams` retained lineage while oversized research and implementation shapes were corrected.
 
@@ -248,7 +248,7 @@ The practical system is therefore a useful core of a few dozen rules surrounded 
 - `pol_2659a75b`: after four multi-issue Sentry workers exhausted their turn budget, five one-issue workers submitted first try. Later decisions cited the split in another workstream. It had 19 coordinator-authored intervention-free evidence rows across seven workstreams.
 - `pol_23d7f506`: after one eight-repository gather died after 49 turns without submission, four per-repository gathers produced durable adoptable evidence. The approach was later reused.
 - `pol_c4b51480`: read-only questions should be retried through supervised actions before raising an access card. Twelve evidence rows across eight workstreams include successful PostHog, Axiom, and DevBot probes.
-- `pol_114df4c4`: when a workstream already had the relevant founder grant and the evidence bar was satisfied, 14 exact `gh pr merge` executions across eight workstreams were readback-confirmed and adopted.
+- `pol_114df4c4`: when a workstream already had the relevant human grant and the evidence bar was satisfied, 14 exact `gh pr merge` executions across eight workstreams were readback-confirmed and adopted.
 - `pol_75582bdb`: direct verifiable links were repeatedly required across 17 workstreams, although most of its evidence is coordinator-authored self-attestation rather than a before/after failure trace.
 
 The assignment traces show a sequence in which `pol_2659a75b` and `pol_23d7f506` were cited as work shape changed after concrete failures, followed by successful submissions. That is stronger case evidence than repeated coordinator-authored outcome notes, but a citation does not prove the policy caused the coordinator to choose the shape rather than independently reaching the same plan. The decomposition and read-only-recovery rules are the best evidence consistent with improvement; none of these episodes is a controlled causal comparison.
@@ -290,7 +290,7 @@ The clearest contradiction is:
 
 Both remain projected. Some applying decisions explicitly state that the former is knowingly not followed.
 
-The authority firewall is structurally closed only at the field-shape level. All policies use allowed effect kinds and `widensAuthority: false`, but `pol_114df4c4` literally says a workstream “MAY merge its own PR” and describes “Founder-granted merge authority.” Live policy proposal does not run the authority-text refusal used by import/backfill.
+The authority firewall is structurally closed only at the field-shape level. All policies use allowed effect kinds and `widensAuthority: false`, but `pol_114df4c4` literally says a workstream “MAY merge its own PR” and describes “Human-granted merge authority.” Live policy proposal does not run the authority-text refusal used by import/backfill.
 
 Actual merges were consistent with recorded workstream constraints and remained gated by Pilot/human approval and deterministic readback; action creation does not structurally validate those constraint strings. Nevertheless, authority-shaped policy prose is representable and can influence a coordinator, contrary to the stronger documentation claim.
 
@@ -340,7 +340,7 @@ Forty-four accepted assignments required more than one attempt. Recent code rais
 
 - Total recorded spend was approximately `$2,337.36` over about 5.3 elapsed days, spanning six calendar dates.
 - `sentry-sweep` alone recorded about `$512`, with 159 pass records, 83 error passes, 105 assignments, 15 failed assignments, 78 accepted assignments, 12 rejected submissions, and 37 interventions.
-- `approvals-cleanup` recorded about `$51`, 59 coordinator passes, and 22 interventions to gather read-only counts and ultimately perform no purge after founder direction.
+- `approvals-cleanup` recorded about `$51`, 59 coordinator passes, and 22 interventions to gather read-only counts and ultimately perform no purge after human direction.
 
 These are lower bounds on model usage: 100 worker attempts and 18 coordinator pass records lacked `costUsd`; engine actions legitimately have no model cost, but crashed/dead processes may have consumed unrecorded usage. The nominal recorded `$5.84` per adopted deliverable is a leading process indicator, not cost per outcome. Research notes, intermediate evidence, implementation artifacts, and external effects are not equivalent units.
 
@@ -393,7 +393,7 @@ This happened in live state:
 - 35 passes were `completed` with no summary.
 - `pass_06071527` made three writes and never landed its finish summary.
 - `pass_a2400021` made four writes and never landed its finish summary.
-- `pass_88d4d14c` was woken by founder steering, made zero writes, and was still recorded completed.
+- `pass_88d4d14c` was woken by human steering, made zero writes, and was still recorded completed.
 - `edp-sync-health/pass_1e6a5df1` remained `running` without a lease; current crash recovery only repairs the pass referenced by a present expired lease.
 
 Later arrivals and backstops repaired progress in the observed examples, but provenance is false and steering can be delayed.
@@ -412,7 +412,7 @@ Later arrivals and backstops repaired progress in the observed examples, but pro
 
 - Inject an arrival between projection read and `finish_pass`; the pass is not completed and an immediate wake exists.
 - Three consecutive revision conflicts do not increment the logical failure streak or page the human.
-- Inject founder steering immediately before `finish_pass`; the steering remains unconsumed for the next fresh pass.
+- Inject human steering immediately before `finish_pass`; the steering remains unconsumed for the next fresh pass.
 - A later successful pass consumes the steering exactly once.
 - A `running` pass without a current lease is repaired on the next tick.
 - A `running` pass with a matching unexpired live lease is not repaired by the orphan sweep.
@@ -612,7 +612,7 @@ No bypass incident was found in live state. The structural claim is nevertheless
 
 1. After the conclusion-evidence P0 is repaired, make a qualified typed conclusion or evaluated business result the success denominator.
 2. Report adopted work products as a separate leading indicator.
-3. Split direct founder acts, founder-via-session acts, autonomous-agent acts, and unattributed legacy residuals.
+3. Split direct human acts, human-via-session acts, autonomous-agent acts, and unattributed legacy residuals.
 4. Separate provider backoff from logical coordinator failure.
 5. Report worker first-attempt completion, recovery rate, elapsed time, and cost per successful outcome.
 6. Compare policy effects only within comparable workstream tags/shapes and only after a stable application boundary.
@@ -843,7 +843,7 @@ The research sharpens the repair programme in six ways:
 3. **Counterfactual policy value.** Randomly withhold eligible shadow policies from matched workstreams, or compare against a frozen policy store. Report the assignment/decision delta and task-native result. Policy citations alone are not evidence of causal help.
 4. **Primitive-boundary authority.** Use Agent-libOS/CaMeL-style trusted enforcement at the executor and egress primitives. Tool presence, prompt instructions, policy prose, and model self-description are not authority.
 5. **Canonical actions and effect receipts.** Bind approval to a canonical action identity, transactionally claim it immediately before egress, retain each invocation attempt separately from provider effect, and reconcile ambiguous results from provider truth.
-6. **Task-native longitudinal evaluation.** Evaluate qualified Workstream outcomes, not adoption volume or session duration. Include human-equivalent task difficulty, founder effort, Pilot acts, agent acts, cost, false completion, duplicate/unauthorized effects, recovery, and state growth.
+6. **Task-native longitudinal evaluation.** Evaluate qualified Workstream outcomes, not adoption volume or session duration. Include human-equivalent task difficulty, human effort, Pilot acts, agent acts, cost, false completion, duplicate/unauthorized effects, recovery, and state growth.
 
 ## Recommended implementation sequence
 
@@ -924,7 +924,7 @@ The programme is complete when:
 9. A long-running routine's coordinator projection remains within a deterministic bound without losing current commitments or authority.
 10. Rejected or unknown dependency output cannot silently unlock downstream work.
 11. Conclusion and managed-source identities satisfy their stronger structural checks.
-12. The outcome dashboard separates successful outcomes, adopted products, provider backoff, worker failures, Pilot approvals, and direct founder interventions.
+12. The outcome dashboard separates successful outcomes, adopted products, provider backoff, worker failures, Pilot approvals, and direct human interventions.
 13. The full deterministic suite, PostgreSQL store contracts, and a fresh pass-and-wake acceptance cycle are green.
 14. A stable post-fix live cohort demonstrates outcome quality, cost, reliability, and intervention trends without mixing materially different harness versions.
 15. A matched or randomized policy evaluation can distinguish policy reuse from task mix and coordinator rediscovery, attributes each tested policy to a concrete decision delta, and checks protected regressions rather than treating citation or one self-reported success as causal evidence.

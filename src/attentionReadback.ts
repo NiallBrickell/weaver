@@ -1,7 +1,7 @@
 /**
  * Needs-you cards that close themselves from facts.
  *
- * The founder is the fleet's bottleneck, and the queue drifted from reality:
+ * The human is the fleet's bottleneck, and the queue drifted from reality:
  * cards asking about a PR stayed open for days after the PR merged, and
  * capacity cards outlived the outage that raised them by dozens of passes.
  * Nothing wrong was asked — the world simply moved and no one told the card.
