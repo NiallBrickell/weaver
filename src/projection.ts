@@ -118,6 +118,22 @@ function lastPassEnd(doc: WorkstreamDoc): string | undefined {
  * Derived by the caller (listManagedBy) so the builder stays pure over the doc. */
 export type ManagedChild = { slug: string; status: WorkstreamDoc['workstream']['status'] };
 
+/**
+ * The projection in two parts, in the order a coordinator reads them.
+ *
+ * `stable` holds what changes only on a real write — the policies and doctrine
+ * matching this workstream's tags, the title, §1 and §2 — and carries nothing
+ * clock-relative, no revision, no wake reason and no counter. `volatile` holds
+ * everything else (§3–§9). `stable + volatile` is the whole projection; the
+ * split exists only so a provider can cache the stable part across passes (a
+ * Claude cache breakpoint after it, Codex's automatic prefix cache). It is a
+ * transport boundary, never a difference in what the coordinator is told.
+ */
+export interface ProjectionParts {
+  stable: string;
+  volatile: string;
+}
+
 export function buildProjection(
   doc: WorkstreamDoc,
   wakeReasons: string[],
@@ -127,6 +143,17 @@ export function buildProjection(
    * it is engine bookkeeping, never organizational truth. */
   probeCursors: ProbeCursor[] = [],
 ): string {
+  const parts = buildProjectionParts(doc, wakeReasons, policies, managed, probeCursors);
+  return parts.stable + parts.volatile;
+}
+
+export function buildProjectionParts(
+  doc: WorkstreamDoc,
+  wakeReasons: string[],
+  policies: PolicyRecord[] = [],
+  managed: ManagedChild[] = [],
+  probeCursors: ProbeCursor[] = [],
+): ProjectionParts {
   const ws = doc.workstream;
   const now = virtualNow().toISOString();
 
@@ -256,7 +283,6 @@ export function buildProjection(
       `CHURN: ${c.headId}'s lineage (from ${c.rootId}) was superseded ${c.count} times in the last 24h — that is a step log, not changing commitments. Keep ${c.headId} as the ONE standing course and advance it with record_progress (cycle, step, awaiting, basis); supersede only when the commitment itself changes.`,
     ),
     ...(retLines.length ? [``, `Retired (lineage — context only, not authoritative):`, fmtList(retLines, '')] : []),
-    renderPoliciesForProjection(policies),
   ].join('\n');
 
   // 5. Assignments. Only LIVE work — a completed assignment carries no open
@@ -449,9 +475,19 @@ export function buildProjection(
     `- you may be a different model than previous passes — the state above, not any prior transcript, is your position`,
   ].join('\n');
 
-  return [
+  // Stable first. The policy block leads because it depends only on the tag
+  // set, so workstreams sharing tags share it byte for byte (Codex's prefix
+  // cache can reuse it across streams). It used to close §4; it is the same
+  // block under its own heading. Nothing here may read the clock, the
+  // revision, wake reasons, or anything else that moves without a write —
+  // those belong below the split, or every pass re-pays the whole prefix.
+  const policyBlock = renderPoliciesForProjection(policies);
+  const stable = [
+    ...(policyBlock ? [`# Policies and doctrine matching this workstream's tags`, policyBlock, ``] : []),
     `# Workstream projection: ${ws.title} (${ws.slug})`,
     ``,
-    s1, ``, s2, ``, s3, ``, s4, ``, s5, ``, s6, ``, s7, ``, s8, ``, s9,
+    s1, ``, s2, ``,
   ].join('\n');
+  const volatile = [``, s3, ``, s4, ``, s5, ``, s6, ``, s7, ``, s8, ``, s9].join('\n');
+  return { stable, volatile };
 }

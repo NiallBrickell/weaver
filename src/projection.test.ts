@@ -12,7 +12,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildProjection } from './projection.js';
+import { buildProjection, buildProjectionParts } from './projection.js';
+import { renderPoliciesForProjection, type PolicyRecord } from './policies.js';
 import type { WorkstreamDoc, Decision, Deliverable, Assignment } from './types.js';
 import { virtualNow } from './clock.js';
 
@@ -595,5 +596,120 @@ test('the lossless tightenings leave every typed fact of a representative projec
   }
   for (const d of doc.decisions.filter((x) => x.status === 'standing')) assert.ok(projection.includes(`"${d.title}"`), d.title);
   assert.match(projection, /att_open \[blocker\] OPEN_LOOP needs the human/);
+  assert.deepEqual(new Set(facts.events), eventFactsBefore(doc));
+});
+
+/** One doctrine rule and one learned policy, as the policy store holds them. */
+function projectionPolicies(): PolicyRecord[] {
+  const base = {
+    scope: { tags: ['routine'] },
+    widensAuthority: false as const,
+    evidence: [],
+    createdAt: NOW,
+  };
+  return [
+    {
+      ...base,
+      id: 'pol_doctrine',
+      statement: 'DOCTRINE_STATEMENT: merge with a merge commit',
+      effect: { kind: 'add_verification', description: 'check the merge method' },
+      status: 'active',
+      provenance: { source: 'backfill:rules', ref: 'CLAUDE.md § Git', interventionSummary: 'seeded' },
+    },
+    {
+      ...base,
+      id: 'pol_learned',
+      statement: 'LEARNED_STATEMENT: read the runbook first',
+      mechanism: 'open docs/runbook.md',
+      effect: { kind: 'advisory', description: 'advise reading the runbook' },
+      status: 'shadow',
+      provenance: { workstreamSlug: 'other', passId: 'pass_x', interventionSummary: 'the human pointed at the runbook' },
+    },
+  ];
+}
+
+/** A representative document with every volatile section populated. */
+function representativeDoc(): WorkstreamDoc {
+  const doc = withHistory(routineDoc(30), 40, 5);
+  doc.workstream.tags = ['routine'];
+  doc.workstream.successCriteria = ['CRITERION_ONE holds', 'CRITERION_TWO holds'];
+  doc.workstream.constraints = ['CONSTRAINT_ONE'];
+  doc.attention.push({ id: 'att_open', kind: 'blocker', summary: 'OPEN_LOOP needs the human', status: 'open', createdAt: NOW });
+  return doc;
+}
+
+const nonBlankLines = (text: string): string[] =>
+  text.split('\n').filter((line) => line.trim() !== '' && !line.startsWith('- virtual now: ')).sort();
+
+test('the stable prefix is byte-identical across passes whose only changes are volatile', () => {
+  const doc = representativeDoc();
+  const policies = projectionPolicies();
+  const first = buildProjectionParts(doc, ['a worker completed'], policies);
+
+  // What moves between two passes without a write to the stable sections:
+  // the clock, a finished pass, a new arrival, the revision, the wake reason,
+  // the course's recorded position, and a new live assignment.
+  const next = structuredClone(doc);
+  const later = new Date(Date.parse(NOW) + 3 * 60 * 60_000).toISOString();
+  next.passes.push({ id: 'pass_next', startedAt: later, endedAt: later, baseRevision: next.revision, wakeReasons: [], changes: [], outcome: 'completed' });
+  next.events.push({ at: later, atVirtual: later, type: 'submission.received', summary: 'NEW_ARRIVAL', refs: [] });
+  next.revision += 7;
+  next.decisions.find((d) => d.id === 'dec_course')!.progress!.step += 1;
+  next.assignments.push({ ...next.assignments.find((a) => a.state !== 'completed')!, id: 'asg_new_live' });
+  const realNow = Date.now;
+  Date.now = () => realNow() + 3 * 60 * 60_000;
+  let second;
+  try {
+    second = buildProjectionParts(next, ['a different wake'], policies);
+  } finally {
+    Date.now = realNow;
+  }
+
+  assert.equal(second.stable, first.stable, 'nothing in the stable prefix changed, so not one byte of it may');
+  assert.notEqual(second.volatile, first.volatile);
+  assert.match(second.volatile, /NEW_ARRIVAL/);
+  // Nothing clock-relative, no revision and no wake reason sits above the split.
+  for (const volatileText of ['revision=', 'virtual now', 'woken because', 'a worker completed', '## 3.', '## 9.']) {
+    assert.ok(!first.stable.includes(volatileText), `stable prefix carries "${volatileText}"`);
+  }
+  // A real write to a stable section does change it.
+  const edited = structuredClone(doc);
+  edited.workstream.constraints.push('CONSTRAINT_TWO');
+  assert.notEqual(buildProjectionParts(edited, ['a worker completed'], policies).stable, first.stable);
+});
+
+test('the projection is stable-first: policies, title, §1, §2, then §3–§9 in order, each once', () => {
+  const policies = projectionPolicies();
+  const parts = buildProjectionParts(representativeDoc(), ['a worker completed'], policies);
+  const whole = parts.stable + parts.volatile;
+  assert.equal(buildProjection(representativeDoc(), ['a worker completed'], policies).replace(/virtual now: .*/, ''), whole.replace(/virtual now: .*/, ''));
+  const headings = whole.split('\n').filter((line) => /^#{1,2} /.test(line));
+  assert.deepEqual(headings.map((h) => h.replace(/^(#+ \d\.|# [A-Z][a-z]+).*/, '$1')), [
+    '# Policies', '# Workstream', '## 1.', '## 2.', '## 3.', '## 4.', '## 5.', '## 6.', '## 7.', '## 8.', '## 9.',
+  ]);
+  assert.ok(parts.stable.endsWith('\n') && parts.volatile.startsWith('\n## 3. '), 'the split falls on the blank line before §3');
+  assert.ok(parts.stable.includes(renderPoliciesForProjection(policies)), 'the policy block moved whole');
+  // Doctrine still renders ahead of learned policy, inside the block.
+  assert.ok(parts.stable.indexOf('DOCTRINE_STATEMENT') < parts.stable.indexOf('LEARNED_STATEMENT'));
+  // Without policies there is no policy heading, and the title leads.
+  assert.ok(buildProjectionParts(representativeDoc(), [], []).stable.startsWith('# Workstream projection: '));
+});
+
+test('moving the policy block to the stable prefix changes no fact the coordinator is shown', () => {
+  const doc = representativeDoc();
+  const policies = projectionPolicies();
+  const withPolicies = buildProjection(doc, ['a worker completed'], policies);
+  const withoutPolicies = buildProjection(doc, ['a worker completed'], []);
+  // Every line of the policy-free projection, every line of the policy block,
+  // and one heading: nothing added, dropped, or rewritten by the move.
+  assert.deepEqual(
+    nonBlankLines(withPolicies),
+    [...nonBlankLines(withoutPolicies), ...nonBlankLines(renderPoliciesForProjection(policies)), "# Policies and doctrine matching this workstream's tags"].sort(),
+  );
+  const facts = renderedFacts(withPolicies);
+  for (const id of ['pol_doctrine', 'pol_learned', 'att_open', 'del_live', ...doc.decisions.filter((d) => d.status === 'standing').map((d) => d.id)]) {
+    assert.ok(facts.ids.has(id), `${id} missing`);
+  }
+  for (const line of ['- CRITERION_ONE holds', '- CRITERION_TWO holds', '- CONSTRAINT_ONE']) assert.ok(facts.lines.has(line), line);
   assert.deepEqual(new Set(facts.events), eventFactsBefore(doc));
 });

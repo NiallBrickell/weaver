@@ -11,6 +11,8 @@ import { z } from 'zod';
 import {
   ClaudeCoordinatorExecutor,
   CodexCoordinatorExecutor,
+  PROJECTION_CACHE_MARKER_ENV,
+  resetProjectionCacheMarkerRejection,
   selectCoordinatorExecutor,
   type CoordinatorExecutionRequest,
 } from './coordinator.js';
@@ -218,6 +220,159 @@ describe('ClaudeCoordinatorExecutor', () => {
 
     assert.equal(queried, false);
     assert.match(outcome.error ?? '', /requires OPENROUTER_API_KEY in executor-only secrets/);
+  });
+});
+
+describe('the projection cache marker', () => {
+  const STABLE = 'A wake fired for this workstream. Reconcile…\n\n# Policies and doctrine\nSTABLE PART\n';
+  const VOLATILE = '\n## 3. Current operating state\nVOLATILE PART';
+  const noUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+
+  /** Runs one Claude pass through a fake Claude Code boundary and returns
+   * what it was handed: the prompt (a string, or the streamed user turns)
+   * and the env. */
+  async function launch(
+    overrides: Partial<CoordinatorExecutionRequest>,
+    result: Record<string, unknown> = { type: 'result', subtype: 'success', is_error: false, result: 'ok', num_turns: 1, session_id: 's', total_cost_usd: 0, usage: noUsage },
+  ) {
+    let prompt: unknown;
+    let env: Record<string, string | undefined> = {};
+    const turns: any[] = [];
+    const executor = new ClaudeCoordinatorExecutor({
+      loadExecutorSecrets: () => ({}),
+      runQuery: ((args: any) => {
+        prompt = args.prompt;
+        env = args.options.env;
+        return (async function* () {
+          if (typeof args.prompt !== 'string') for await (const turn of args.prompt) turns.push(turn);
+          yield result;
+        })();
+      }) as any,
+    });
+    const outcome = await executor.execute(request({
+      model: 'claude-opus-5',
+      prompt: STABLE + VOLATILE,
+      stablePrefixLength: STABLE.length,
+      env: { PATH: '/usr/bin', FORCE_PROMPT_CACHING_5M: '1' },
+      ...overrides,
+    }));
+    return { prompt, env, turns, outcome };
+  }
+
+  const breakpoints = (value: unknown): number => JSON.stringify(value).split('"cache_control"').length - 1;
+
+  test('sends the stable prefix and the volatile tail as two blocks with exactly one added breakpoint, pinned to 1h', async () => {
+    const { prompt, env, turns } = await launch({});
+    assert.notEqual(typeof prompt, 'string');
+    assert.equal(turns.length, 1, 'one user turn');
+    const [turn] = turns;
+    assert.equal(turn.type, 'user');
+    assert.equal(turn.parent_tool_use_id, null);
+    assert.deepEqual(turn.message, {
+      role: 'user',
+      content: [
+        { type: 'text', text: STABLE, cache_control: { type: 'ephemeral', ttl: '1h' } },
+        { type: 'text', text: VOLATILE },
+      ],
+    });
+    assert.equal(breakpoints(turn), 1, 'Weaver adds one breakpoint; Claude Code spends the other three');
+    assert.equal(turn.message.content.map((block: { text: string }) => block.text).join(''), STABLE + VOLATILE, 'the model reads the same text');
+    // Claude Code's own markers must be 1h too (a 1h breakpoint may not
+    // follow a 5m one), and its remote flags off so it adds no fifth.
+    assert.equal(env.ENABLE_PROMPT_CACHING_1H, '1');
+    assert.equal(env.DISABLE_GROWTHBOOK, '1');
+    assert.equal(env.FORCE_PROMPT_CACHING_5M, undefined);
+  });
+
+  test(`${PROJECTION_CACHE_MARKER_ENV}=0 restores the single string prompt and the untouched env`, async () => {
+    process.env[PROJECTION_CACHE_MARKER_ENV] = '0';
+    try {
+      const { prompt, env, turns } = await launch({});
+      assert.equal(prompt, STABLE + VOLATILE);
+      assert.equal(turns.length, 0);
+      assert.deepEqual(env, { PATH: '/usr/bin', FORCE_PROMPT_CACHING_5M: '1' });
+    } finally {
+      delete process.env[PROJECTION_CACHE_MARKER_ENV];
+    }
+  });
+
+  test('is not sent without a stable prefix, on an OpenRouter seat, or when the operator disabled prompt caching', async () => {
+    const cases: Partial<CoordinatorExecutionRequest>[] = [
+      { stablePrefixLength: undefined },
+      { stablePrefixLength: 0 },
+      { stablePrefixLength: (STABLE + VOLATILE).length },
+      { model: 'openrouter/anthropic/claude-opus-5' },
+      { env: { PATH: '/usr/bin', DISABLE_PROMPT_CACHING: '1' } },
+      { env: { PATH: '/usr/bin', DISABLE_PROMPT_CACHING_OPUS: 'true' } },
+    ];
+    for (const overrides of cases) {
+      const executor = new ClaudeCoordinatorExecutor({
+        loadExecutorSecrets: () => ({ OPENROUTER_API_KEY: 'router-key' }),
+        prepareApiHome: () => ({ path: '/tmp/router-home', cleanup() {} }),
+        runQuery: ((args: any) => {
+          assert.equal(args.prompt, STABLE + VOLATILE, JSON.stringify(overrides));
+          assert.equal(args.options.env.DISABLE_GROWTHBOOK, undefined);
+          assert.equal(args.options.env.ENABLE_PROMPT_CACHING_1H, undefined);
+          return (async function* () {})();
+        }) as any,
+      });
+      await executor.execute(request({
+        model: 'claude-opus-5',
+        prompt: STABLE + VOLATILE,
+        stablePrefixLength: STABLE.length,
+        env: { PATH: '/usr/bin' },
+        ...overrides,
+      }));
+    }
+  });
+
+  test('a provider rejecting the marker fails that pass and sends later passes in the process as one block', async () => {
+    resetProjectionCacheMarkerRejection();
+    try {
+      const rejected = await launch({}, {
+        type: 'result', subtype: 'success', is_error: true, num_turns: 2, session_id: 's', total_cost_usd: 0,
+        result: 'API Error: 400 A maximum of 4 blocks with cache_control may be provided. Found 5.',
+        usage: noUsage,
+      });
+      assert.match(rejected.outcome.error ?? '', /rejected the projection cache marker .*Found 5/);
+      const next = await launch({});
+      assert.equal(next.prompt, STABLE + VOLATILE);
+      assert.equal(next.env.DISABLE_GROWTHBOOK, undefined);
+    } finally {
+      resetProjectionCacheMarkerRejection();
+    }
+    // An unrelated failure trips nothing.
+    const other = await launch({}, {
+      type: 'result', subtype: 'success', is_error: true, num_turns: 1, session_id: 's', total_cost_usd: 0,
+      result: 'API Error: 529 overloaded',
+      usage: noUsage,
+    });
+    assert.equal(other.outcome.error, 'Claude coordinator result reported an error');
+    assert.notEqual(typeof (await launch({})).prompt, 'string');
+  });
+
+  test('Codex receives the same stable-first text as one plain string, with no marker', async () => {
+    let input: unknown;
+    const executor = new CodexCoordinatorExecutor({
+      startBridge: async () => ({ url: 'http://127.0.0.1:1/mcp', token: 't', async close() {} }),
+      prepareHome: () => ({ path: '/tmp/codex-home', cleanup() {} }),
+      createCodex: () => ({
+        startThread: () => ({
+          async runStreamed(value: string) {
+            input = value;
+            return streamed((async function* (): AsyncGenerator<ThreadEvent> {
+              yield {
+                type: 'turn.completed',
+                usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 },
+              };
+            })());
+          },
+        }),
+      }),
+    });
+    await executor.execute(request({ prompt: STABLE + VOLATILE, stablePrefixLength: STABLE.length }));
+    assert.equal(input, STABLE + VOLATILE);
+    assert.equal(breakpoints(input), 0);
   });
 });
 

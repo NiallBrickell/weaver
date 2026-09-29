@@ -3,6 +3,7 @@ import {
   query,
   type SDKMessage,
   type SDKResultMessage,
+  type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import {
   Codex,
@@ -27,6 +28,11 @@ const CODEX_COORDINATOR_TOKEN_ENV = 'WEAVER_CODEX_COORDINATOR_TOKEN';
 
 export interface CoordinatorExecutionRequest {
   prompt: string;
+  /** Length of the prompt's leading part that changes only on a real write
+   * (the fixed opening line, policies, title, §1, §2). An executor may cache
+   * it across passes; it never changes the text the model reads. Absent means
+   * the prompt has no stable part worth marking. */
+  stablePrefixLength?: number;
   systemPrompt: string;
   model: string;
   tools: BridgeToolDefinition[];
@@ -49,6 +55,69 @@ export interface CoordinatorExecutor {
   readonly id: string;
   execute(req: CoordinatorExecutionRequest): Promise<CoordinatorExecutionOutcome>;
 }
+
+export const PROJECTION_CACHE_MARKER_ENV = 'WEAVER_PROJECTION_CACHE_MARKER';
+
+/** A provider rejected the marker in this process (the Messages API allows
+ * four cache breakpoints per request; Claude Code already spends three). Every
+ * later pass in the process sends the projection as one block, the behaviour
+ * before the marker existed, so one rejection costs one pass, not the fleet. */
+let projectionCacheMarkerRejected = false;
+
+/** Test seam: forget an in-process rejection. */
+export function resetProjectionCacheMarkerRejection(): void {
+  projectionCacheMarkerRejected = false;
+}
+
+/** On unless the operator sets WEAVER_PROJECTION_CACHE_MARKER=0. */
+export function projectionCacheMarkerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[PROJECTION_CACHE_MARKER_ENV]?.trim() !== '0';
+}
+
+type TextBlock = { type: 'text'; text: string; cache_control?: { type: 'ephemeral'; ttl: '1h' } };
+
+/**
+ * The user content blocks for a pass whose stable prefix gets its own cache
+ * breakpoint, or null to send the prompt as the single block it always was.
+ *
+ * Claude Code marks two system blocks and the end of the last message on
+ * every request, so this marker is the fourth and last breakpoint the
+ * Messages API allows (docs/cost-reduction-plan.md#pass-anatomy-measured-2026-09-29
+ * has the captured requests), and only while its remote flags are off — the
+ * caller disables them. The TTL is pinned to one hour: the prefix only
+ * pays off when this workstream's next pass reads it, which is minutes to
+ * hours away, and the API requires every 1h breakpoint to precede every 5m
+ * one, so the caller also pins Claude Code's own markers to 1h. Only the
+ * first-party Anthropic path gets it: OpenRouter seats run other providers'
+ * models and cash billing, and have never been verified with it.
+ */
+export function projectionCacheBlocks(
+  req: Pick<CoordinatorExecutionRequest, 'prompt' | 'stablePrefixLength' | 'model'>,
+  env: Record<string, string | undefined>,
+): TextBlock[] | null {
+  if (!projectionCacheMarkerEnabled() || projectionCacheMarkerRejected) return null;
+  if (req.model.startsWith('openrouter/')) return null;
+  const at = req.stablePrefixLength;
+  if (at === undefined || at <= 0 || at >= req.prompt.length) return null;
+  // The operator turned caching off for Claude Code; a lone marker of ours
+  // would turn it back on at the write price.
+  const cachingDisabled = Object.entries(env).some(([name, value]) =>
+    name.startsWith('DISABLE_PROMPT_CACHING') && value !== undefined && value.trim() !== '' &&
+    !/^(0|false|no|off)$/i.test(value.trim()));
+  if (cachingDisabled) return null;
+  return [
+    { type: 'text', text: req.prompt.slice(0, at), cache_control: { type: 'ephemeral', ttl: '1h' } },
+    { type: 'text', text: req.prompt.slice(at) },
+  ];
+}
+
+/** One user turn carrying explicit content blocks. With an SDK MCP server the
+ * SDK keeps stdin open until the first result, as it does for a string. */
+async function* singleUserTurn(content: TextBlock[]): AsyncGenerator<SDKUserMessage> {
+  yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null };
+}
+
+const CACHE_MARKER_REJECTION = /cache_control/i;
 
 interface PreparedClaudeApiHome {
   path: string;
@@ -143,8 +212,21 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
           env[identity.name] = identity.value;
         }
       }
+      const blocks = projectionCacheBlocks(req, env);
+      if (blocks) {
+        // Claude Code's remote feature flags are bucketed per config dir, and
+        // a fresh one (every hosted pass) drew tengu_basalt_spur in 3 of 8
+        // sessions: it marks the second-to-last message too, which with our
+        // marker is five breakpoints and a 400 on every turn after the first.
+        // Code defaults keep the count at four; the captured request bodies
+        // were otherwise identical.
+        env = { ...env, ENABLE_PROMPT_CACHING_1H: '1', DISABLE_GROWTHBOOK: '1' };
+        // FORCE_PROMPT_CACHING_5M outranks ENABLE_PROMPT_CACHING_1H in Claude
+        // Code and would put 5m breakpoints after our 1h one: a 400.
+        delete env.FORCE_PROMPT_CACHING_5M;
+      }
       for await (const message of this.runQuery({
-        prompt: req.prompt,
+        prompt: blocks ? singleUserTurn(blocks) : req.prompt,
         options: {
           model,
           systemPrompt: req.systemPrompt,
@@ -170,7 +252,14 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
           sessionId = message.session_id;
           costUsd = 'total_cost_usd' in message ? message.total_cost_usd : 0;
           usage = claudePassUsage(message, toolCalls);
-          if (message.is_error) error = 'Claude coordinator result reported an error';
+          if (message.is_error) {
+            error = 'Claude coordinator result reported an error';
+            const detail = message.subtype === 'success' ? message.result : message.errors.join('; ');
+            if (blocks && CACHE_MARKER_REJECTION.test(detail)) {
+              projectionCacheMarkerRejected = true;
+              error = `${error}: the provider rejected the projection cache marker (${redactSecrets(detail, redactions).slice(0, 300)}); later passes in this process send the projection as one block`;
+            }
+          }
         }
       }
     } catch (caught) {

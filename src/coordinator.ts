@@ -25,7 +25,7 @@ import {
   wakeCancellationBasisLabels,
 } from './clock.js';
 import { CONCLUSION_DISPOSITIONS, conclusionDispositionLabels, progressBasisLabels, recordConclusion } from './conclusion.js';
-import { buildProjection } from './projection.js';
+import { buildProjectionParts } from './projection.js';
 import { isDoctrine, loadPolicies, matchPolicies, proposePolicy, recordPolicyOutcome, revisePolicyMechanism, supersedePolicy, validatePolicyCitations } from './policies.js';
 import {
   ManagedWorkstreamError,
@@ -461,7 +461,7 @@ export async function runCoordinatorPass(
   // Probe cursors are engine bookkeeping ("last check"), read only when this
   // stream has a probe to describe — one narrow row read, no bodies.
   const probeCursors = doc.wakes.some(isWatchingProbe) ? await listProbeCursors(slug) : [];
-  const projection = buildProjection(doc, wakeReasons, matchedPolicies, await listManagedBy(slug), probeCursors);
+  const projection = buildProjectionParts(doc, wakeReasons, matchedPolicies, await listManagedBy(slug), probeCursors);
   // A successful reconciliation covers earlier failed coordinator attempts,
   // even when a fallback supplied it. Keep their capacity facts, but do not
   // wake a model just to recheck a pool after its work has already continued.
@@ -1656,11 +1656,16 @@ export async function runCoordinatorPass(
       }))
     : coordinatorTools;
 
-  const prompt = [
+  // The opening line is fixed (Claude Code fingerprints characters of it),
+  // and it plus the projection's stable part form the prefix a provider can
+  // cache across this workstream's passes. The prompt text is the same either
+  // way; only the executor decides whether to mark the boundary.
+  const stablePrompt = [
     `A wake fired for this workstream. Reconcile: make the bounded progress this wake justifies, then finish_pass.`,
     ``,
-    projection,
+    projection.stable,
   ].join('\n');
+  const prompt = stablePrompt + projection.volatile;
 
   let costUsd = 0;
   let sessionId: string | undefined;
@@ -1678,6 +1683,7 @@ export async function runCoordinatorPass(
   try {
     const execution = await executor.execute({
       prompt,
+      stablePrefixLength: stablePrompt.length,
       model: passModel,
       systemPrompt: systemPromptForWorkstream(doc),
       tools: passTools,
