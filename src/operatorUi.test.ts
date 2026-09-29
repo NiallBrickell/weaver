@@ -1384,3 +1384,31 @@ test('the live view renders composition relationships, parent selection, and ass
   assert.match(newHtml, /new-work-under/);
   assert.match(newHtml, new RegExp(`${parent.slug} — `));
 });
+
+test('the team overview is a read-only typed view linked from the nav, recomputed when the fleet revision moves', async () => {
+  await createTeamWorkstream({ message: 'Sweep new production errors into repairs', requestId: 'overview-parent', actor: 'alice' });
+  const parent = (await listWorkstreams())[0]!;
+  const child = await createTeamWorkstream({ message: 'Repair the lead-capture 500', requestId: 'overview-child', actor: 'alice', under: parent });
+
+  const response = await fetch(`${base}/overview`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-security-policy') ?? '', /default-src 'none'/);
+  const html = await response.text();
+  assert.match(html, /data-testid="operator-overview-page"/);
+  assert.match(html, /href="\/overview" aria-current="page"/);
+  assert.match(html, /1 of 2 workstreams were opened by other workstreams/);
+  assert.match(html, /What this page cannot tell you yet/);
+  assert.match(html, /No worked example yet/);
+  assert.match(html, /0 paused\./);
+
+  assert.match(await (await fetch(`${base}/board`)).text(), /data-testid="team-overview-link" href="\/overview"/);
+
+  // A durable write moves the fleet revision, so the memo cannot serve a stale view.
+  await arrive(child.slug, (doc) => {
+    doc.workstream.status = 'paused';
+  });
+  assert.match(await (await fetch(`${base}/overview`)).text(), /1 paused\./);
+
+  // A read surface only: no write route exists under it.
+  assert.equal((await fetch(`${base}/overview`, form({}))).status, 404);
+});

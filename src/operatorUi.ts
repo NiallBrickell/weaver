@@ -35,7 +35,8 @@ import {
 } from './ingress.js';
 import { ManagedWorkstreamError } from './managedWorkstreams.js';
 import { deriveFallback, loadHouse } from './onboard.js';
-import { loadPolicies } from './policies.js';
+import { computeOverview, revisionMemo, type OverviewPayload } from './overview.js';
+import { loadPolicies, type PolicyRecord } from './policies.js';
 import { liveRunnerPid, runnerLoopHealthy, runnerSourceStale } from './runner.js';
 import { loadAllSecrets, redactSecrets } from './secrets.js';
 import {
@@ -67,6 +68,7 @@ import {
   renderOperatorBoardHtml,
   renderOperatorClerkAuthHtml,
   renderOperatorFleetHtml,
+  renderOperatorOverviewHtml,
   renderOperatorNewHtml,
   renderOperatorWorkspaceHtml,
   type OperatorFleetView,
@@ -111,6 +113,30 @@ interface LoadedFleet {
   managed: Map<string, ManagedWorkstreamLink[]>;
   view: OperatorFleetView;
   presences: RunnerPresence[];
+  policies: PolicyRecord[];
+}
+
+type OverviewSource = () => Promise<{ fleet: LoadedFleet; overview: OverviewPayload }>;
+
+/**
+ * The overview reads every document, like the board, so it must not add a
+ * second full-fleet load per view. It reuses the board's single loadFleet()
+ * and keeps the result until the cheap head-only revision probe changes: any
+ * number of viewers within one revision cost one fleet load. The key is the
+ * revision loadFleet itself observed, so a write that lands mid-load is a miss
+ * on the next view rather than a stale hit.
+ */
+function overviewSource(): OverviewSource {
+  return revisionMemo(
+    () => currentFleetRevision(),
+    async () => {
+      const fleet = await loadFleet();
+      return {
+        revision: fleet.view.revision,
+        value: { fleet, overview: computeOverview(fleet.docs, fleet.policies, new Date()) },
+      };
+    },
+  );
 }
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -744,6 +770,7 @@ async function loadFleet(): Promise<LoadedFleet> {
     unreadable,
     managed,
     presences,
+    policies,
     view: {
       board,
       groups: fleetGroups(board),
@@ -990,6 +1017,7 @@ async function handle(
   token?: string,
   clerk?: ClerkOperatorAuthenticator,
   revisionEvents?: FleetRevisionEvents,
+  overview?: OverviewSource,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
@@ -1096,6 +1124,17 @@ async function handle(
     const fleet = await loadFleet();
     return sendHtml(res, 200, renderOperatorFleetHtml({
       fleet: fleet.view,
+      actor,
+      notice: noticeFrom(url),
+      ...(clerk ? { signOutAction: '/sign-out' } : {}),
+    }));
+  }
+
+  if (method === 'GET' && url.pathname === '/overview') {
+    const { fleet, overview: payload } = await (overview ?? overviewSource())();
+    return sendHtml(res, 200, renderOperatorOverviewHtml({
+      fleet: fleet.view,
+      overview: payload,
       actor,
       notice: noticeFrom(url),
       ...(clerk ? { signOutAction: '/sign-out' } : {}),
@@ -1246,8 +1285,9 @@ export async function startOperatorUi(opts: OperatorUiOptions = {}): Promise<Run
     throw new Error('Clerk authentication or WEAVER_UI_TOKEN is required when weaver ui binds beyond loopback');
   }
   const revisionEvents = new FleetRevisionEvents();
+  const overview = overviewSource();
   const server = createServer((req, res) => {
-    handle(req, res, opts.token, opts.clerk, revisionEvents).catch((error: unknown) => {
+    handle(req, res, opts.token, opts.clerk, revisionEvents, overview).catch((error: unknown) => {
       if (res.headersSent) {
         res.destroy();
         return;
