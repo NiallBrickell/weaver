@@ -70,6 +70,8 @@ import {
 import {
   renderOperatorBoardHtml,
   renderOperatorClerkAuthHtml,
+  renderOperatorClerkKeepAliveHtml,
+  OPERATOR_KEEPALIVE_FRAME,
   renderOperatorFleetHtml,
   renderOperatorOverviewHtml,
   renderOperatorNewHtml,
@@ -803,9 +805,17 @@ async function loadFleet(): Promise<LoadedFleet> {
 }
 
 const clerkBrowserByResponse = new WeakMap<ServerResponse, ClerkBrowserAssets>();
+/** Signed-in Clerk responses: their operator pages carry the keep-alive frame. */
+const clerkSessionPages = new WeakSet<ServerResponse>();
+/** The keep-alive page, the one response a same-origin frame may embed. */
+const framedBySameOrigin = new WeakSet<ServerResponse>();
 
 function secureHeaders(contentType: string, res?: ServerResponse): Record<string, string> {
   const clerk = res ? clerkBrowserByResponse.get(res) : undefined;
+  // Only the content-free keep-alive page may be framed, and only by this
+  // origin; a signed-in page may frame only this origin (that page).
+  const framed = res ? framedBySameOrigin.has(res) : false;
+  const frameAncestors = framed ? "frame-ancestors 'self'" : "frame-ancestors 'none'";
   const contentSecurityPolicy = clerk
     ? [
       "default-src 'none'",
@@ -817,22 +827,27 @@ function secureHeaders(contentType: string, res?: ServerResponse): Record<string
       "frame-src https://challenges.cloudflare.com https://*.protect.clerk.com",
       "form-action 'self'",
       "base-uri 'none'",
-      "frame-ancestors 'none'",
+      frameAncestors,
     ].join('; ')
-    : "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+    : `default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-src 'self'; form-action 'self'; base-uri 'none'; ${frameAncestors}`;
   return {
     'content-type': contentType,
     'content-security-policy': contentSecurityPolicy,
     'referrer-policy': 'no-referrer',
     'x-content-type-options': 'nosniff',
-    'x-frame-options': 'DENY',
+    'x-frame-options': framed ? 'SAMEORIGIN' : 'DENY',
     'strict-transport-security': 'max-age=31536000',
     'cache-control': 'no-store',
   };
 }
 
 function sendHtml(res: ServerResponse, status: number, html: string): void {
-  const body = redactSecrets(html, loadAllSecrets());
+  // A signed-in operator page (Clerk mode) embeds the hidden keep-alive frame
+  // that renews the session cookie; see renderOperatorClerkKeepAliveHtml.
+  const page = clerkSessionPages.has(res) && html.includes('data-operator-root') && html.includes('</body>')
+    ? html.replace('</body>', `${OPERATOR_KEEPALIVE_FRAME}</body>`)
+    : html;
+  const body = redactSecrets(page, loadAllSecrets());
   res.writeHead(status, { ...secureHeaders('text/html; charset=utf-8', res), 'content-length': String(Buffer.byteLength(body)) });
   res.end(body);
 }
@@ -1080,6 +1095,11 @@ async function handle(
       return redirect(res, '/access-denied');
     }
     actor = safeActor(result.actor);
+    if (method === 'GET' && url.pathname === '/session-keepalive') {
+      framedBySameOrigin.add(res);
+      return sendClerkHtml(res, 200, renderOperatorClerkKeepAliveHtml(clerk.browser), clerk.browser);
+    }
+    clerkSessionPages.add(res);
     if (method === 'GET' && url.pathname === '/sign-in') {
       return redirect(res, localReturnTo(url.searchParams.get('return_to')));
     }

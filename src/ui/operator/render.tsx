@@ -161,6 +161,35 @@ export const OPERATOR_SCRIPT = `
     if (status instanceof HTMLElement) status.hidden = false;
   };
 
+  // Swap in a freshly rendered page without navigating, keeping both scroll
+  // positions. The scroll containers are replaced along with the root, so
+  // their offsets are carried across explicitly.
+  const swapFrom = async (href) => {
+    const response = await fetch(href, {
+      cache: 'no-store',
+      headers: { Accept: 'text/html' },
+    });
+    if (!response.ok) return false;
+    const nextDocument = new DOMParser().parseFromString(await response.text(), 'text/html');
+    const nextRoot = nextDocument.querySelector('[data-operator-root]');
+    if (!(nextRoot instanceof HTMLElement) || !root) return false;
+    const oldMain = root.querySelector('[data-operator-scroll]');
+    const oldSidebar = root.querySelector('[data-operator-sidebar-scroll]');
+    const mainScroll = oldMain instanceof HTMLElement ? oldMain.scrollTop : 0;
+    const sidebarScroll = oldSidebar instanceof HTMLElement ? oldSidebar.scrollTop : 0;
+    const windowScroll = window.scrollY;
+    root.replaceWith(nextRoot);
+    root = nextRoot;
+    const nextMain = root.querySelector('[data-operator-scroll]');
+    const nextSidebar = root.querySelector('[data-operator-sidebar-scroll]');
+    if (nextMain instanceof HTMLElement) nextMain.scrollTop = mainScroll;
+    if (nextSidebar instanceof HTMLElement) nextSidebar.scrollTop = sidebarScroll;
+    window.scrollTo(0, windowScroll);
+    document.title = nextDocument.title;
+    bindControls();
+    return true;
+  };
+
   const refresh = async (revision) => {
     if (!root || !revision || revision === root.dataset.revision || refreshInFlight) return;
     pendingRevision = revision;
@@ -170,34 +199,59 @@ export const OPERATOR_SCRIPT = `
     }
     refreshInFlight = true;
     try {
-      const response = await fetch(window.location.href, {
-        cache: 'no-store',
-        headers: { Accept: 'text/html' },
-      });
-      if (!response.ok) return;
-      const nextDocument = new DOMParser().parseFromString(await response.text(), 'text/html');
-      const nextRoot = nextDocument.querySelector('[data-operator-root]');
-      if (!(nextRoot instanceof HTMLElement)) return;
-      const oldMain = root.querySelector('[data-operator-scroll]');
-      const oldSidebar = root.querySelector('[data-operator-sidebar-scroll]');
-      const mainScroll = oldMain instanceof HTMLElement ? oldMain.scrollTop : 0;
-      const sidebarScroll = oldSidebar instanceof HTMLElement ? oldSidebar.scrollTop : 0;
-      root.replaceWith(nextRoot);
-      root = nextRoot;
-      const nextMain = root.querySelector('[data-operator-scroll]');
-      const nextSidebar = root.querySelector('[data-operator-sidebar-scroll]');
-      if (nextMain instanceof HTMLElement) nextMain.scrollTop = mainScroll;
-      if (nextSidebar instanceof HTMLElement) nextSidebar.scrollTop = sidebarScroll;
-      document.title = nextDocument.title;
-      pendingRevision = '';
-      dirty = false;
-      bindControls();
+      if (await swapFrom(window.location.href)) {
+        pendingRevision = '';
+        dirty = false;
+      }
     } catch (_) {
       // The event stream or bounded fallback poll will retry from durable state.
     } finally {
       refreshInFlight = false;
     }
   };
+
+  // Links marked data-inplace (tabs within a page) swap the page in place
+  // rather than navigating, so choosing a tab never scrolls the page away.
+  // The address still changes, so the live refresh renders the same tab.
+  document.addEventListener('click', (event) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const link = event.target instanceof Element ? event.target.closest('a[data-inplace]') : null;
+    if (!(link instanceof HTMLAnchorElement) || !root?.contains(link)) return;
+    const target = new URL(link.href, window.location.href);
+    if (target.origin !== window.location.origin) return;
+    event.preventDefault();
+    const href = target.pathname + target.search;
+    window.history.replaceState(null, '', href);
+    void swapFrom(href).catch(() => window.location.assign(href));
+  });
+
+  // A reload the page cannot avoid (a lapsed session) comes back to the same
+  // place: scroll offsets are kept per path for one reload.
+  const scrollKey = 'weaver-scroll:' + window.location.pathname + window.location.search;
+  const reloadInPlace = () => {
+    try {
+      const main = root?.querySelector('[data-operator-scroll]');
+      sessionStorage.setItem(scrollKey, JSON.stringify({
+        main: main instanceof HTMLElement ? main.scrollTop : 0,
+        window: window.scrollY,
+      }));
+    } catch (_) {
+      // Storage unavailable: the reload still happens, from the top.
+    }
+    window.location.assign(window.location.href);
+  };
+  try {
+    const saved = sessionStorage.getItem(scrollKey);
+    if (saved) {
+      sessionStorage.removeItem(scrollKey);
+      const offsets = JSON.parse(saved);
+      const main = root?.querySelector('[data-operator-scroll]');
+      if (main instanceof HTMLElement && typeof offsets.main === 'number') main.scrollTop = offsets.main;
+      if (typeof offsets.window === 'number') window.scrollTo(0, offsets.window);
+    }
+  } catch (_) {
+    // Nothing saved, or storage unavailable.
+  }
 
   const schedulePoll = (delay = 15000) => {
     if (streamOpen || pollTimer) return;
@@ -222,7 +276,7 @@ export const OPERATOR_SCRIPT = `
         signal: controller.signal,
       });
       if (response.status === 401 || response.status === 403) {
-        window.location.assign(window.location.href);
+        reloadInPlace();
         return;
       }
       if (response.ok) {
@@ -270,6 +324,37 @@ function documentHtml(node: ReactNode): string {
 function inlineJson(value: string): string {
   return JSON.stringify(value).replace(/</g, '\\u003c');
 }
+
+/**
+ * A content-free page whose only job is to keep the Clerk session cookie
+ * fresh. Operator pages never load Clerk's browser SDK (they hold fleet data,
+ * so they admit no third-party script); without it nothing renewed the
+ * short-lived cookie, the page's own live-update requests came back 401 once
+ * it lapsed, and the page had to reload from the top. Signed-in pages embed
+ * this hidden, same-origin, so the SDK runs next to no workstream content.
+ */
+export function renderOperatorClerkKeepAliveHtml(assets: ClerkBrowserAssets): string {
+  return documentHtml(
+    <html lang="en">
+      <head>
+        <meta charSet="utf-8" />
+        <title>Weaver session</title>
+        <script
+          defer
+          crossOrigin="anonymous"
+          data-clerk-js-script="true"
+          data-clerk-publishable-key={assets.publishableKey}
+          src={assets.scriptUrl}
+        />
+        <script dangerouslySetInnerHTML={{ __html: "window.addEventListener('load', () => { window.Clerk?.load().catch(() => {}); });" }} />
+      </head>
+      <body />
+    </html>,
+  );
+}
+
+/** The hidden frame a signed-in operator page carries; see above. */
+export const OPERATOR_KEEPALIVE_FRAME = '<iframe src="/session-keepalive" title="Session keep-alive" hidden="" tabindex="-1" aria-hidden="true"></iframe>';
 
 function clerkBootScript(kind: 'sign-in' | 'access-denied' | 'sign-out', returnTo: string): string {
   const destination = inlineJson(returnTo);

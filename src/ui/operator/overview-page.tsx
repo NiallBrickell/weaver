@@ -30,7 +30,7 @@ function workstreamHref(slug: string): string {
 
 function Section({ id, eyebrow, title, lede, children }: { id: string; eyebrow: string; title: string; lede?: ReactNode; children: ReactNode }) {
   return (
-    <section data-testid={`overview-${id}`} aria-labelledby={`overview-${id}-title`} className="space-y-4">
+    <section id={id} data-testid={`overview-${id}`} aria-labelledby={`overview-${id}-title`} className="space-y-4">
       <div className="max-w-3xl">
         <p className="text-xs font-medium uppercase tracking-[0.14em] text-violet-300">{eyebrow}</p>
         <h2 id={`overview-${id}-title`} className="mt-1 text-xl font-semibold tracking-tight text-white">{title}</h2>
@@ -305,6 +305,7 @@ function Now({ overview, selected, exampleTab }: { overview: OverviewPayload; se
                 <a
                   key={key}
                   href={overviewQuery({ now: key, ...(exampleTab ? { example: exampleTab } : {}) }, 'now')}
+                  data-inplace=""
                   data-testid={`overview-now-tab-${key}`}
                   aria-current={isCurrent ? 'page' : undefined}
                   className={`-mb-px flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-xs transition ${isCurrent ? 'border-violet-400 text-zinc-100' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}
@@ -558,6 +559,7 @@ function Examples({ overview, tabs }: { overview: OverviewPayload; tabs: { now?:
             <a
               key={example.kind}
               href={overviewQuery({ ...tabs, example: example.kind }, 'example')}
+              data-inplace=""
               data-testid={`overview-example-tab-${example.kind}`}
               aria-current={isCurrent ? 'page' : undefined}
               className={`-mb-px shrink-0 border-b-2 px-3 py-2 text-xs transition ${isCurrent ? 'border-violet-400 text-zinc-100' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}

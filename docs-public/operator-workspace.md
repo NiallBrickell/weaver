@@ -141,7 +141,17 @@ mutations must carry that same complete HTTPS origin; a plaintext same-host
 origin is not accepted. If any Clerk setting
 is present while another is missing, the UI refuses to start; it never falls
 back to a weaker mode. The secret key is server-only. The publishable key is
-the only key rendered into the sign-in page.
+the only key rendered into the sign-in page and the session keep-alive page.
+
+Clerk's session cookie is short-lived and is renewed by Clerk's browser SDK.
+Workspace pages hold fleet data, so they never load that third-party script.
+Instead, every signed-in page embeds a hidden, same-origin frame,
+`/session-keepalive`: a content-free page that loads only the Clerk SDK and
+keeps the cookie fresh. It is the one page that may be framed, and only by the
+workspace's own origin. Without it, the cookie lapsed after about a minute, the
+page's live updates came back unauthenticated, and the page reloaded from the
+top. If a reload is ever unavoidable (a session that has truly ended), the page
+comes back at the same scroll position.
 
 On Railway, `WEAVER_UI_PUBLIC_ORIGIN` may be omitted: Weaver derives the exact
 HTTPS origin from Railway's provider-owned `RAILWAY_PUBLIC_DOMAIN`. An explicit
