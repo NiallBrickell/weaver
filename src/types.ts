@@ -599,6 +599,36 @@ export interface AttentionItem {
 // ---------------------------------------------------------------------------
 // Provenance
 
+/**
+ * Where one coordinator pass's tokens went, as its executor's provider
+ * reported them. Provenance for cost measurement, never coordinator input or
+ * authority. Counts keep the provider's own semantics rather than being
+ * normalized, because the two providers disagree on what "input" means:
+ * Anthropic (`local-sdk`) reports `inputTokens` EXCLUDING cache reads and
+ * cache writes, while OpenAI (`codex-sdk`) reports it INCLUDING the cached
+ * tokens. Read `PassRecord.executor` before adding the fields together.
+ */
+export interface PassUsage {
+  inputTokens: number;
+  cacheReadInputTokens: number;
+  /** Tokens written to the prompt cache this pass. */
+  cacheCreationInputTokens: number;
+  /** Anthropic only: the cache writes split by TTL. A 1h write costs 2× base
+   * input and a 5m write 1.25×, so this split is what prices a pass. */
+  cacheCreation1hInputTokens?: number;
+  cacheCreation5mInputTokens?: number;
+  /** Anthropic counts thinking inside outputTokens; OpenAI reports reasoning
+   * separately in reasoningOutputTokens. */
+  outputTokens: number;
+  reasoningOutputTokens?: number;
+  /** Model requests in the pass, where the SDK reports them (Claude's
+   * `num_turns`). Codex reports one turn per pass whatever it sampled, so the
+   * field is left out rather than recorded as a misleading 1. */
+  modelTurns?: number;
+  /** Tool calls the model made against the Weaver tool surface. */
+  toolCalls: number;
+}
+
 export interface PassRecord {
   id: Id;
   startedAt: Iso;
@@ -613,6 +643,9 @@ export interface PassRecord {
   runnerId?: string;
   sessionId?: string;
   costUsd?: number;
+  /** Token anatomy of this pass. Absent on legacy records and when the
+   * executor ended before its provider reported usage. */
+  usage?: PassUsage;
   /** What the coordinator says it did — informational; typed state is truth. */
   summary?: string;
   changes: string[];

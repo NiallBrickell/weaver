@@ -85,6 +85,47 @@ describe('ClaudeCoordinatorExecutor', () => {
     });
   });
 
+  test('records the pass token anatomy from the SDK result, counting every tool call', async () => {
+    const assistant = (content: unknown[]) => ({ type: 'assistant', message: { content } });
+    const executor = new ClaudeCoordinatorExecutor({
+      loadExecutorSecrets: () => ({}),
+      runQuery: (() => (async function* () {
+        yield assistant([{ type: 'thinking', thinking: '' }, { type: 'tool_use', id: 't1', name: 'mcp__weaver__read_artifact', input: {} }]);
+        yield assistant([
+          { type: 'tool_use', id: 't2', name: 'mcp__weaver__adopt_submission', input: {} },
+          { type: 'tool_use', id: 't3', name: 'mcp__weaver__schedule_wake', input: {} },
+        ]);
+        yield assistant([{ type: 'text', text: 'done' }]);
+        yield {
+          type: 'result', subtype: 'success', is_error: false, num_turns: 3, session_id: 'sess-1',
+          total_cost_usd: 1.25,
+          usage: {
+            input_tokens: 12, output_tokens: 4_000,
+            cache_read_input_tokens: 90_000, cache_creation_input_tokens: 21_000,
+            cache_creation: { ephemeral_1h_input_tokens: 20_000, ephemeral_5m_input_tokens: 1_000 },
+          },
+        };
+      })()) as any,
+    });
+
+    const outcome = await executor.execute(request({ model: 'claude-opus-5', env: { PATH: '/usr/bin' } }));
+
+    assert.deepEqual(outcome, {
+      costUsd: 1.25,
+      sessionId: 'sess-1',
+      usage: {
+        inputTokens: 12,
+        cacheReadInputTokens: 90_000,
+        cacheCreationInputTokens: 21_000,
+        cacheCreation1hInputTokens: 20_000,
+        cacheCreation5mInputTokens: 1_000,
+        outputTokens: 4_000,
+        modelTurns: 3,
+        toolCalls: 3,
+      },
+    });
+  });
+
   test('uses a registered direct Anthropic API key in a fresh config boundary', async () => {
     let captured: any;
     let cleaned = 0;
@@ -242,7 +283,16 @@ describe('CodexCoordinatorExecutor', () => {
 
     const outcome = await executor.execute(req);
 
-    assert.deepEqual(outcome, { costUsd: 0, sessionId: 'fresh-coordinator-thread' });
+    assert.deepEqual(outcome, {
+      costUsd: 0,
+      sessionId: 'fresh-coordinator-thread',
+      // OpenAI's input count is recorded as reported (it includes cached
+      // tokens); reasoning is its own field; the one Weaver tool call counts.
+      usage: {
+        inputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 0,
+        outputTokens: 5, reasoningOutputTokens: 1, toolCalls: 1,
+      },
+    });
     assert.equal(prompt, 'Wake and typed projection only.');
     assert.equal(signal, req.abort.signal);
     assert.equal(bridgeClosed, 1);

@@ -515,3 +515,85 @@ test('a legacy oversize review boundary is excerpted in the projection and kept 
   assert.ok(shown.length <= 201, `review boundary rendered ${shown.length} chars`);
   assert.equal(course.reviewWhen, reviewWhen, 'the typed record is untouched');
 });
+
+/** Every event a fresh coordinator was shown before §8 was deduplicated:
+ * §7's arrivals plus §8's last-25 tail, as a set of rendered event facts. */
+function eventFactsBefore(doc: WorkstreamDoc): Set<string> {
+  const cutoff = [...doc.passes].reverse().find((p) => p.endedAt)?.endedAt;
+  const arrivals = cutoff ? doc.events.filter((e) => e.at > cutoff) : doc.events;
+  return new Set([...arrivals, ...doc.events.slice(-25)].map((e) => `[${e.atVirtual}] ${e.type}: ${e.summary}`));
+}
+
+/** The typed facts a fresh coordinator continues from: ids, every event line,
+ * and every other rendered line (criteria, constraints, open loops). */
+function renderedFacts(projection: string): { ids: Set<string>; events: string[]; lines: Set<string> } {
+  const eventLine = /^- \[\d{4}-/;
+  return {
+    ids: new Set(projection.match(/\b(?:dec|asg|del|att|wake|obs|pol|steer|pass|int|run)_[A-Za-z0-9_]+\b/g) ?? []),
+    events: projection.split('\n').filter((l) => eventLine.test(l)).map((l) => l.slice(2)),
+    lines: new Set(projection.split('\n').filter((l) => !eventLine.test(l))),
+  };
+}
+
+/** `events` history lines, the last `newSincePass` of which arrived after the
+ * previous pass ended (every one of them when no pass has run yet). */
+function withHistory(doc: WorkstreamDoc, events: number, newSincePass: number): WorkstreamDoc {
+  const at = (i: number) => new Date(Date.parse(NOW) + i * 60_000).toISOString();
+  for (let i = 0; i < events; i++) {
+    doc.events.push({ at: at(i), atVirtual: at(i), type: i % 2 ? 'submission.adopted' : 'wake.scheduled', summary: `event ${i} EVENT_FACT_${i}`, refs: [`asg_${i}`] });
+  }
+  if (newSincePass < events) {
+    const passEnd = new Date(Date.parse(at(events - newSincePass - 1)) + 1_000).toISOString();
+    doc.passes.push({ id: 'pass_prev', startedAt: NOW, endedAt: passEnd, baseRevision: 1, wakeReasons: [], changes: [], outcome: 'completed' });
+  }
+  return doc;
+}
+
+test('§8 no longer repeats §7 arrivals, and a fresh coordinator is shown exactly the same event facts', () => {
+  // Shapes: the common completion wake (a few arrivals inside the tail), a
+  // burst larger than the tail, a first pass (no prior pass: every event is
+  // an arrival), and a pass with nothing new.
+  for (const [events, fresh] of [[60, 4], [60, 40], [12, 12], [30, 0]] as const) {
+    const doc = withHistory(routineDoc(3), events, fresh);
+    const projection = buildProjection(doc, ['a worker completed']);
+    const facts = renderedFacts(projection);
+    // The same set of event facts as the pre-dedup rendering…
+    assert.deepEqual(new Set(facts.events), eventFactsBefore(doc), `${events}/${fresh}: event facts changed`);
+    // …each now rendered exactly once.
+    assert.equal(facts.events.length, new Set(facts.events).size, `${events}/${fresh}: an event is still rendered twice`);
+    const s8 = projection.slice(projection.indexOf('## 8.'), projection.indexOf('## 9.'));
+    const overlap = Math.min(fresh, 25);
+    if (overlap) {
+      assert.match(s8, new RegExp(`\\(\\+${overlap} newer events? — listed under §7 above, not repeated here\\)`));
+    } else {
+      assert.doesNotMatch(s8, /listed under §7/);
+    }
+    // What §8 still lists is the older, contiguous part of the tail.
+    const s8Events = s8.split('\n').filter((l) => /^- \[\d{4}-/.test(l));
+    assert.equal(s8Events.length, Math.min(events, 25) - overlap);
+  }
+  // A workstream with no history still says so.
+  assert.match(buildProjection(routineDoc(0), []), /## 8\. Recent history[^\n]*\n- \(no history\)/);
+});
+
+test('the lossless tightenings leave every typed fact of a representative projection in place', () => {
+  const doc = withHistory(routineDoc(30), 40, 5);
+  doc.workstream.successCriteria = ['CRITERION_ONE holds', 'CRITERION_TWO holds'];
+  doc.workstream.constraints = ['CONSTRAINT_ONE'];
+  doc.attention.push({ id: 'att_open', kind: 'blocker', summary: 'OPEN_LOOP needs the human', status: 'open', createdAt: NOW });
+  const projection = buildProjection(doc, ['a worker completed']);
+  const facts = renderedFacts(projection);
+  const expectedIds = [
+    ...doc.decisions.filter((d) => d.status === 'standing').map((d) => d.id),
+    ...doc.assignments.filter((a) => !['completed', 'cancelled'].includes(a.state)).map((a) => a.id),
+    ...doc.deliverables.filter((d) => d.adopted).slice(-25).map((d) => d.id),
+    'del_live', 'att_open',
+  ];
+  for (const id of expectedIds) assert.ok(facts.ids.has(id), `${id} missing from the projection`);
+  for (const line of ['- CRITERION_ONE holds', '- CRITERION_TWO holds', '- CONSTRAINT_ONE']) {
+    assert.ok(facts.lines.has(line), `${line} missing from the projection`);
+  }
+  for (const d of doc.decisions.filter((x) => x.status === 'standing')) assert.ok(projection.includes(`"${d.title}"`), d.title);
+  assert.match(projection, /att_open \[blocker\] OPEN_LOOP needs the human/);
+  assert.deepEqual(new Set(facts.events), eventFactsBefore(doc));
+});

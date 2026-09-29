@@ -711,14 +711,20 @@ test('the policy block keeps every shown doctrine statement verbatim while excer
   for (const tail of ['DOCTRINE_MECHANISM_TAIL', 'EFFECT_TAIL', 'LEARNED_MECHANISM_TAIL']) {
     assert.doesNotMatch(render, new RegExp(tail));
   }
-  assert.match(render, /mechanism \(revisable, not the rule\): gh pr merge <n> --merge --flag[^\n]*… \[excerpt — read_policy for the full text\]/);
+  assert.match(render, /mechanism \(revisable, not the rule\): gh pr merge <n> --merge --flag[^\n]*… \[excerpt\]\n/);
   const learnedLine = render.split('\n').find((line) => line.startsWith('- pol_learned'))!;
-  assert.match(learnedLine, /— verify the readback carefully[^\n]*… \[excerpt — read_policy for the full text\] \(learned from ws-src; unproven\)/);
+  assert.match(learnedLine, /— verify the readback carefully[^\n]*… \[excerpt\] \(learned from ws-src; unproven\)/);
+  // The pointer to the full record is stated once for the whole block, and it
+  // names the marker every excerpt carries.
+  assert.equal(render.match(/read_policy returns any policy's full record/g)?.length, 1);
+  assert.match(render, /ending "… \[excerpt\]" is cut short, and read_policy returns any policy's full record/);
   // Short prose renders exactly as written, with no excerpt marker.
   const short = renderPoliciesForProjection([record('pol_short', { mechanism: 'gh pr checks <n>' })]);
   assert.match(short, /— effect of pol_short \(learned from/);
   assert.match(short, /mechanism \(revisable, not the rule\): gh pr checks <n>\n/);
-  assert.doesNotMatch(short, /\[excerpt/);
+  // The only marker left is the closing line's own explanation of it.
+  assert.equal(short.match(/\[excerpt/g)?.length, 1);
+  assert.match(short, /ending "… \[excerpt\]" is cut short/);
 });
 
 test('active learned policies are capped by intervention-free evidence, then recency, with the omission counted', () => {
