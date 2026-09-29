@@ -86,6 +86,50 @@ The existing execution host uses the public URL when it cannot join Railway's
 private network. Treat that URL as a secret; `weaver link` redacts it when
 reporting configuration.
 
+### What is encrypted, and what is verified
+
+Traffic on the private network (`postgres.railway.internal`) never leaves
+Railway and carries no TLS. Every connection to the public TCP proxy
+(`*.proxy.rlwy.net`) is TLS-encrypted: Weaver requires TLS for any store host
+that is not private, whether or not the URL says so.
+
+Encrypted is not yet verified. Railway's Postgres image generates its own
+`root-ca` on the database volume and signs a server certificate that names only
+`localhost` and the private domain, never the proxy host. It chains to no public
+CA, so a default connection cannot verify it: Weaver connects encrypted without
+verifying the certificate and prints one line on every process start:
+
+```text
+[store] TLS to <host>.proxy.rlwy.net is encrypted but the server certificate is NOT verified …
+```
+
+That stops passive capture of the credential and documents on the path, but not
+an active attacker who can impersonate the proxy. To close that gap, pin the
+database's own CA. Read it from the database service (Railway shell on the
+Postgres service), not over the network you are trying to secure:
+
+```bash
+cat /var/lib/postgresql/data/certs/root.crt
+```
+
+Save it on each execution host (for example `~/.weaver/railway-root.crt`,
+`/etc/weaver/railway-root.crt` on the VM) and append to the public URL:
+
+```text
+?sslmode=verify-ca&sslrootcert=/etc/weaver/railway-root.crt&uselibpqcompat=true
+```
+
+`verify-ca` checks the chain against that CA and skips the hostname match the
+certificate cannot pass; `uselibpqcompat=true` gives `sslmode` libpq's meaning
+(node-postgres otherwise treats `verify-ca` as `verify-full`, which fails on the
+hostname). An explicit TLS parameter in the URL always overrides Weaver's
+default. The image regenerates the CA only when its certificate is within 30
+days of expiry (it is valid for 820 days), so a regeneration means re-reading
+and re-installing `root.crt` on every host.
+
+`WEAVER_STORE_TLS=off` forces plaintext for a local test database and is
+refused, before any connection, for any host that is not private.
+
 Weaver uses session-scoped Postgres advisory locks for cross-runner exclusion.
 Do not place it behind transaction-mode PgBouncer. A standard Railway Postgres
 public URL is direct; if Railway connection pooling is enabled later, give
