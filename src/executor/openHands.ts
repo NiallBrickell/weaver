@@ -17,12 +17,12 @@
 
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { isIPv4 } from 'node:net';
-import { hostname, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { hostname } from 'node:os';
+import { resolve } from 'node:path';
 import {
   assertGitIdentityInjectable,
+  GITHUB_APP_GIT_PLUMBING_ENV,
   resolveWorkerGitIdentity,
   type GitCommitIdentity,
 } from '../githubApp.js';
@@ -69,7 +69,10 @@ export interface CommandResult {
 export type CommandRunner = (
   command: string,
   args: string[],
-  options?: { signal?: AbortSignal },
+  /** `env` adds values to the docker CLI's own process environment: a
+   * name-only `--env NAME` argument then carries each into the container
+   * without its value ever reaching argv or a file. */
+  options?: { signal?: AbortSignal; env?: Record<string, string> },
 ) => Promise<CommandResult>;
 
 export interface OpenHandsExecutorOptions {
@@ -141,11 +144,6 @@ interface MetricsTotals {
 interface NamedMcpRelay {
   name: string;
   relay: McpRelay;
-}
-
-interface WorkerEnvFile {
-  directory: string;
-  path: string;
 }
 
 class UnsupportedOpenHandsRequest extends Error {}
@@ -244,7 +242,6 @@ export class OpenHandsExecutor implements WorkerExecutor {
     let memoryArgs: string[] = [];
     let agentServerUrl: string | null = null;
     let sessionApiKey: string | null = null;
-    let workerEnvFile: WorkerEnvFile | null = null;
     const cleanupFailures: string[] = [];
     const operatorRelays: NamedMcpRelay[] = [];
     const containerName = `weaver-openhands-${safeName(req.assignmentId)}-${randomBytes(6).toString('hex')}`;
@@ -253,7 +250,7 @@ export class OpenHandsExecutor implements WorkerExecutor {
     // redaction set before diagnostics or bridge replies become safe.
     const requestRedactionSecrets = {
       ...(req.redactionSecrets ?? {}),
-      ...(req.workerVisibleEnv ?? {}),
+      ...workerVisibleSecrets(req.workerVisibleEnv ?? {}),
     };
 
     try {
@@ -364,72 +361,66 @@ export class OpenHandsExecutor implements WorkerExecutor {
       sessionApiKey = randomBytes(32).toString('hex');
       const gitIdentityArgs = await this.resolveGitIdentityArgs();
       await this.reapOrphanedContainers(req.abort.signal);
-      workerEnvFile = await createWorkerEnvFile(
-        rewriteLoopbackHostsForContainer(req.workerVisibleEnv ?? {}),
-      );
+      // Worker-visible values reach the container through the docker CLI's
+      // own process environment and name-only `--env NAME` arguments — the
+      // same transport the Claude container uses — so no value is ever
+      // written to argv or to disk, not even a transient env file.
+      const workerEnv = rewriteLoopbackHostsForContainer(req.workerVisibleEnv ?? {});
+      const workerEnvArgs = Object.keys(workerEnv).sort().flatMap((name) => ['--env', name]);
       containerAttempted = true;
-      try {
-        await this.checkedCommand(
-          [
-            'run',
-            '--rm',
-            '--detach',
-            '--name',
-            containerName,
-            '--label',
-            CONTAINER_LABEL,
-            '--label',
-            `weaver.owner_pid=${process.pid}`,
-            '--label',
-            `weaver.owner_host=${CONTAINER_OWNER_HOST}`,
-            // The image runs as its own `openhands` user (uid 10001). Under
-            // rootless Docker a non-root container uid maps into the runner's
-            // subordinate range (weaver's subuid 165536 + 10001 - 1 = host
-            // uid 175536), so everything the worker wrote into the
-            // bind-mounted workspace — commits, .git objects, whole checkouts
-            // — came out owned by a uid the runner cannot modify; by 2026-09
-            // the fleet's checkout held 367 such .git entries and git refused
-            // the repo. Container root IS the runner's own host uid, exactly
-            // as the Claude container runs. Nothing in the 1.41.0 image needs
-            // the openhands user: its home holds only shell dotfiles, HOME
-            // falls back to /root from the image's passwd, and the server's
-            // own state (~/.openhands, the OH_* paths under /tmp) is written
-            // there as root.
-            '--user',
-            '0',
-            ...memoryArgs,
-            '--publish',
-            `127.0.0.1::${AGENT_SERVER_PORT.split('/')[0]}`,
-            '--add-host',
-            `host.docker.internal:${this.hostGatewayIp ?? 'host-gateway'}`,
-            ...(workerEnvFile ? ['--env-file', workerEnvFile.path] : []),
-            '--env',
-            `SESSION_API_KEY=${sessionApiKey}`,
-            '--env',
-            'OH_ENABLE_VNC=false',
-            '--env',
-            'OH_CONVERSATIONS_PATH=/tmp/weaver-conversations',
-            '--env',
-            'OH_BASH_EVENTS_DIR=/tmp/weaver-bash-events',
-            '--env',
-            'OH_WORKSPACE_PATH=/tmp/weaver-agent-server-workspace',
-            ...gitIdentityArgs,
-            ...workspacePlan.dockerArgs,
-            OPENHANDS_AGENT_SERVER_IMAGE,
-            '--host',
-            '0.0.0.0',
-          ],
-          req.abort.signal,
-        );
-      } finally {
-        // Docker has consumed --env-file when `docker run` returns, whether
-        // the daemon accepted or rejected the create. Remove durable values
-        // before polling or conversation work can begin.
-        if (workerEnvFile) {
-          await removeWorkerEnvFile(workerEnvFile);
-          workerEnvFile = null;
-        }
-      }
+      await this.checkedCommand(
+        [
+          'run',
+          '--rm',
+          '--detach',
+          '--name',
+          containerName,
+          '--label',
+          CONTAINER_LABEL,
+          '--label',
+          `weaver.owner_pid=${process.pid}`,
+          '--label',
+          `weaver.owner_host=${CONTAINER_OWNER_HOST}`,
+          // The image runs as its own `openhands` user (uid 10001). Under
+          // rootless Docker a non-root container uid maps into the runner's
+          // subordinate range (weaver's subuid 165536 + 10001 - 1 = host
+          // uid 175536), so everything the worker wrote into the
+          // bind-mounted workspace — commits, .git objects, whole checkouts
+          // — came out owned by a uid the runner cannot modify; by 2026-09
+          // the fleet's checkout held 367 such .git entries and git refused
+          // the repo. Container root IS the runner's own host uid, exactly
+          // as the Claude container runs. Nothing in the 1.41.0 image needs
+          // the openhands user: its home holds only shell dotfiles, HOME
+          // falls back to /root from the image's passwd, and the server's
+          // own state (~/.openhands, the OH_* paths under /tmp) is written
+          // there as root.
+          '--user',
+          '0',
+          ...memoryArgs,
+          '--publish',
+          `127.0.0.1::${AGENT_SERVER_PORT.split('/')[0]}`,
+          '--add-host',
+          `host.docker.internal:${this.hostGatewayIp ?? 'host-gateway'}`,
+          ...workerEnvArgs,
+          '--env',
+          `SESSION_API_KEY=${sessionApiKey}`,
+          '--env',
+          'OH_ENABLE_VNC=false',
+          '--env',
+          'OH_CONVERSATIONS_PATH=/tmp/weaver-conversations',
+          '--env',
+          'OH_BASH_EVENTS_DIR=/tmp/weaver-bash-events',
+          '--env',
+          'OH_WORKSPACE_PATH=/tmp/weaver-agent-server-workspace',
+          ...gitIdentityArgs,
+          ...workspacePlan.dockerArgs,
+          OPENHANDS_AGENT_SERVER_IMAGE,
+          '--host',
+          '0.0.0.0',
+        ],
+        req.abort.signal,
+        workerEnv,
+      );
       containerStarted = true;
 
       const portResult = await this.checkedCommand(
@@ -520,16 +511,6 @@ export class OpenHandsExecutor implements WorkerExecutor {
         terminalReason = 'error';
       }
     } finally {
-      // Covers aborts or filesystem/command failures before the inner cleanup
-      // completes. The path is a unique mkdtemp child, never a broad target.
-      if (workerEnvFile) {
-        try {
-          await removeWorkerEnvFile(workerEnvFile);
-          workerEnvFile = null;
-        } catch (caught) {
-          cleanupFailures.push(`worker env file: ${caught instanceof Error ? caught.message : String(caught)}`);
-        }
-      }
       if (
         containerStarted &&
         agentServerUrl !== null &&
@@ -788,8 +769,12 @@ export class OpenHandsExecutor implements WorkerExecutor {
     return redactProviderDiagnostics(redactSecrets(text, secrets));
   }
 
-  private async checkedCommand(args: string[], signal: AbortSignal): Promise<CommandResult> {
-    const result = await this.runCommand(this.dockerCommand, args, { signal });
+  private async checkedCommand(
+    args: string[],
+    signal: AbortSignal,
+    env?: Record<string, string>,
+  ): Promise<CommandResult> {
+    const result = await this.runCommand(this.dockerCommand, args, { signal, ...(env ? { env } : {}) });
     if (result.exitCode !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`;
       throw new Error(`${this.dockerCommand} ${args[0]} failed: ${detail}`);
@@ -901,11 +886,12 @@ export class OpenHandsExecutor implements WorkerExecutor {
 async function runCommand(
   command: string,
   args: string[],
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; env?: Record<string, string> } = {},
 ): Promise<CommandResult> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     });
     const stdout: Buffer[] = [];
@@ -930,11 +916,21 @@ function parseDockerPort(output: string): string {
   return `http://127.0.0.1:${match[1]}`;
 }
 
+// Worker-visible values ride the docker CLI's own environment, so a name the
+// CLI itself resolves would redirect or break the launch rather than reach the
+// container. The harness's own container variables are reserved too.
+const RESERVED_WORKER_ENV = /^(?:PATH|HOME|TMPDIR|DOCKER_.*|SESSION_API_KEY|OH_.*)$/;
+
 function validateWorkerVisibleEnv(env: Record<string, string>): void {
   for (const [name, value] of Object.entries(env)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
       throw new UnsupportedOpenHandsRequest(
         `OpenHands worker-visible environment contains invalid name ${JSON.stringify(name)}`,
+      );
+    }
+    if (RESERVED_WORKER_ENV.test(name)) {
+      throw new UnsupportedOpenHandsRequest(
+        `OpenHands worker-visible environment name ${name} is reserved for the container launch`,
       );
     }
     if (/[\r\n\0]/.test(value)) {
@@ -943,6 +939,14 @@ function validateWorkerVisibleEnv(env: Record<string, string>): void {
       );
     }
   }
+}
+
+// The worker-visible values that are secrets. The GitHub read environment's
+// Git plumbing (GIT_CONFIG_VALUE_3 is the literal `true`) is public
+// configuration and would rewrite ordinary output if it joined a redaction set.
+function workerVisibleSecrets(env: Record<string, string>): Record<string, string> {
+  const plumbing = new Set<string>(GITHUB_APP_GIT_PLUMBING_ENV);
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !plumbing.has(name)));
 }
 
 // A URL whose host is loopback, capturing the scheme + optional userinfo so the
@@ -971,30 +975,6 @@ export function rewriteLoopbackHostsForContainer(
     );
   }
   return rewritten;
-}
-
-async function createWorkerEnvFile(env: Record<string, string>): Promise<WorkerEnvFile | null> {
-  if (Object.keys(env).length === 0) return null;
-  const directory = await mkdtemp(join(tmpdir(), 'weaver-openhands-env-'));
-  const path = join(directory, 'worker.env');
-  try {
-    const content = Object.entries(env)
-      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-      .map(([name, value]) => `${name}=${value}\n`)
-      .join('');
-    await writeFile(path, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-    // Keep the contract exact even under an unusual process umask or a future
-    // replacement implementation that creates the file before writing it.
-    await chmod(path, 0o600);
-    return { directory, path };
-  } catch (caught) {
-    await rm(directory, { recursive: true, force: true });
-    throw caught;
-  }
-}
-
-async function removeWorkerEnvFile(file: WorkerEnvFile): Promise<void> {
-  await rm(file.directory, { recursive: true, force: true });
 }
 
 function safeName(value: string): string {

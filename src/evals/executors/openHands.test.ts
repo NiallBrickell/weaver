@@ -29,14 +29,12 @@ describe('OpenHands eval executor', () => {
     const seenFetch: SeenFetch[] = [];
     const selectedValue = 'selected-container-secret-4821';
     const unrelatedHostValue = 'ambient-host-secret-7392';
-    let workerEnvFilePath = '';
-    let workerEnvFileContent = '';
-    let workerEnvFileMode = 0;
+    let dockerRunEnv: Record<string, string> | undefined;
     let bridgeClosed = 0;
     let providerProxyClosed = 0;
     let operatorRelayClosed = 0;
     let statusReads = 0;
-    const runCommand: CommandRunner = async (command, args) => {
+    const runCommand: CommandRunner = async (command, args, options) => {
       commands.push({ command, args: [...args] });
       if (args[0] === 'ps') {
         return {
@@ -48,11 +46,7 @@ describe('OpenHands eval executor', () => {
       if (args[0] === 'port') {
         return { exitCode: 0, stdout: '127.0.0.1:49152\n', stderr: '' };
       }
-      if (args[0] === 'run') {
-        workerEnvFilePath = valueAfter(args, '--env-file');
-        workerEnvFileContent = fs.readFileSync(workerEnvFilePath, 'utf8');
-        workerEnvFileMode = fs.statSync(workerEnvFilePath).mode & 0o777;
-      }
+      if (args[0] === 'run') dockerRunEnv = options?.env;
       return { exitCode: 0, stdout: 'container-id\n', stderr: '' };
     };
     const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -192,15 +186,15 @@ describe('OpenHands eval executor', () => {
     assert.ok(valuesAfter(dockerRun.args, '--env').includes(`GIT_AUTHOR_EMAIL=${botEmail}`));
     assert.ok(valuesAfter(dockerRun.args, '--env').includes('GIT_COMMITTER_NAME=weaver-fleet-production-912c84[bot]'));
     assert.ok(valuesAfter(dockerRun.args, '--env').includes(`GIT_COMMITTER_EMAIL=${botEmail}`));
-    assert.equal(valueAfter(dockerRun.args, '--env-file'), workerEnvFilePath);
-    assert.equal(workerEnvFileMode, 0o600);
-    assert.equal(workerEnvFileContent, `READONLY_API_TOKEN=${selectedValue}\n`);
-    assert.equal(fs.existsSync(workerEnvFilePath), false);
-    assert.equal(fs.existsSync(path.dirname(workerEnvFilePath)), false);
+    // The selected value crosses by NAME: its value rides only the docker
+    // CLI's process environment — never argv, never a file on disk.
+    assert.equal(dockerRun.args.includes('--env-file'), false);
+    assert.ok(valuesAfter(dockerRun.args, '--env').includes('READONLY_API_TOKEN'));
+    assert.deepEqual(dockerRunEnv, { READONLY_API_TOKEN: selectedValue });
     assert.equal(dockerRun.args.filter((arg) => arg.includes('provider-secret')).length, 0);
     assert.ok(!JSON.stringify(commands).includes(selectedValue));
     assert.ok(!JSON.stringify(commands).includes(unrelatedHostValue));
-    assert.ok(!workerEnvFileContent.includes(unrelatedHostValue));
+    assert.ok(!JSON.stringify(dockerRunEnv).includes(unrelatedHostValue));
     assert.ok(!JSON.stringify({ outcome, telemetry: executor.lastTelemetry() }).includes(selectedValue));
 
     const dockerStop = commands.find(({ args }) => args[0] === 'stop');
@@ -923,19 +917,15 @@ describe('OpenHands eval executor', () => {
   it('best-effort stops the unique container name when docker run itself fails', async () => {
     const commands: string[][] = [];
     const selectedValue = 'selected-docker-failure-secret-9182';
-    let workerEnvFilePath = '';
-    let workerEnvFileMode = 0;
-    let workerEnvFileContent = '';
+    let dockerRunEnv: Record<string, string> | undefined;
     let bridgeClosed = 0;
     const executor = new OpenHandsEvalExecutor({
       apiKey: 'provider-secret',
       baseUrl: 'https://provider.example/v1',
-      runCommand: async (_command, args) => {
+      runCommand: async (_command, args, options) => {
         commands.push([...args]);
         if (args[0] === 'run') {
-          workerEnvFilePath = valueAfter(args, '--env-file');
-          workerEnvFileMode = fs.statSync(workerEnvFilePath).mode & 0o777;
-          workerEnvFileContent = fs.readFileSync(workerEnvFilePath, 'utf8');
+          dockerRunEnv = options?.env;
           return {
             exitCode: 125,
             stdout: '',
@@ -968,11 +958,9 @@ describe('OpenHands eval executor', () => {
     assert.ok(run);
     assert.ok(stop);
     assert.equal(stop.at(-1), valueAfter(run, '--name'));
-    assert.equal(workerEnvFileMode, 0o600);
-    assert.equal(workerEnvFileContent, `READONLY_API_TOKEN=${selectedValue}\n`);
+    assert.deepEqual(dockerRunEnv, { READONLY_API_TOKEN: selectedValue });
     assert.ok(!JSON.stringify(commands).includes(selectedValue));
-    assert.equal(fs.existsSync(workerEnvFilePath), false);
-    assert.equal(fs.existsSync(path.dirname(workerEnvFilePath)), false);
+    assert.equal(run.includes('--env-file'), false);
     assert.equal(bridgeClosed, 1);
   });
 
@@ -990,14 +978,14 @@ describe('OpenHands eval executor', () => {
       GIT_CONFIG_VALUE_3: 'true',
     };
     const selectedValue = 'selected-worker-secret-5531';
-    let workerEnvFileContent = '';
+    let dockerRunEnv: Record<string, string> = {};
     const seen: string[][] = [];
     const executor = new OpenHandsEvalExecutor({
       apiKey: 'provider-secret',
       baseUrl: 'https://provider.example/v1',
-      runCommand: async (_command, args) => {
+      runCommand: async (_command, args, options) => {
         seen.push([...args]);
-        if (args[0] === 'run') workerEnvFileContent = fs.readFileSync(valueAfter(args, '--env-file'), 'utf8');
+        if (args[0] === 'run') dockerRunEnv = options?.env ?? {};
         return args[0] === 'port'
           ? { exitCode: 0, stdout: '127.0.0.1:49163\n', stderr: '' }
           : { exitCode: 0, stdout: '', stderr: '' };
@@ -1027,15 +1015,64 @@ describe('OpenHands eval executor', () => {
 
     const outcome = await executor.execute(req);
     assert.equal(outcome.error, undefined);
-    assert.equal(workerEnvFileContent, `READONLY_API_TOKEN=${selectedValue}\n`);
+    assert.deepEqual(dockerRunEnv, { READONLY_API_TOKEN: selectedValue });
     const dockerRun = seen.find((args) => args[0] === 'run');
     assert.ok(dockerRun);
-    const crossing = `${JSON.stringify(dockerRun)}\n${workerEnvFileContent}`;
+    const crossing = `${JSON.stringify(dockerRun)}\n${Object.entries(dockerRunEnv).map(([n, v]) => `${n}=${v}`).join('\n')}`;
     for (const [name, value] of Object.entries(hostOnly)) {
       assert.ok(!crossing.includes(`${name}=`), `${name} must not be set in the container`);
       if (value.length > 8) assert.ok(!crossing.includes(value), `${name}'s value must not cross into the container`);
     }
     assert.ok(!valuesAfter(dockerRun, '--env').some((pair) => /^(GH_TOKEN|GITHUB_TOKEN|GIT_CONFIG_)/.test(pair)));
+  });
+
+  it('carries an opted-in GitHub read environment by name and redacts only its token', async () => {
+    const token = 'ghs_worker-read-token-6621';
+    const githubRead = {
+      GH_TOKEN: token,
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_CONFIG_COUNT: '4',
+      GIT_CONFIG_KEY_0: 'credential.helper',
+      GIT_CONFIG_VALUE_0: '',
+      GIT_CONFIG_KEY_3: 'credential.https://github.com.useHttpPath',
+      GIT_CONFIG_VALUE_3: 'true',
+    };
+    let dockerRunEnv: Record<string, string> = {};
+    const seen: string[][] = [];
+    const executor = new OpenHandsEvalExecutor({
+      apiKey: 'provider-secret',
+      baseUrl: 'https://provider.example/v1',
+      runCommand: async (_command, args, options) => {
+        seen.push([...args]);
+        if (args[0] === 'run') {
+          dockerRunEnv = options?.env ?? {};
+          return { exitCode: 125, stdout: '', stderr: `create failed: true ${token}` };
+        }
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+      startSubmitBridge: async () => ({
+        url: 'http://host.docker.internal:41884/mcp', token: 'bridge-secret', async close() {},
+      }),
+      startProviderProxy: async () => fakeProviderProxy(),
+      gitIdentity: async () => null,
+      now: () => 1_000,
+    });
+    const req = request();
+    req.workerVisibleEnv = { ...githubRead };
+
+    const outcome = await executor.execute(req);
+
+    assert.deepEqual(dockerRunEnv, githubRead);
+    const dockerRun = seen.find((args) => args[0] === 'run');
+    assert.ok(dockerRun);
+    assert.deepEqual(
+      valuesAfter(dockerRun, '--env').filter((pair) => /^(GH_TOKEN|GIT_)/.test(pair)).sort(),
+      Object.keys(githubRead).sort(),
+    );
+    assert.ok(!JSON.stringify(seen).includes(token), 'the token never reaches docker argv');
+    // The adapter's own redaction scrubs the token but leaves the public Git
+    // plumbing alone: a literal `true` is not a secret.
+    assert.match(outcome.error ?? '', /create failed: true «secret:GH_TOKEN»/);
   });
 
   it('mounts distinct additional directories and rewrites their prompt paths', async () => {

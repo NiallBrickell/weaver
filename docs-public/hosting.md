@@ -402,7 +402,8 @@ requires `WEAVER_GITHUB_APP_ID`, `WEAVER_GITHUB_APP_INSTALLATION_ID`, and
 `WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64` in executor-only scope and runs
 `/usr/local/bin/weaver github-auth-check` as the service user. The private key
 stays on the controller host; ordinary OpenHands containers receive no GitHub
-credential. Approved exact repo commands get one-hour installation tokens
+credential unless their assignment asks for `github_read`, which supplies a
+read-only token for one repository. Approved exact repo commands get one-hour installation tokens
 narrowed to their exact repository and explicit permission profile, while
 preflight and readback use independently minted read-only tokens. See [GitHub
 access on a hosted runner](./github-app.md).
