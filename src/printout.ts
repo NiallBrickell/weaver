@@ -236,7 +236,10 @@ function displayValue(value: unknown): string {
   return flat(JSON.stringify(value));
 }
 
-const SDK_COST_KEYS = new Set(['costUsd', 'totalCostUsd', 'maxCostUsd']);
+// SDK meter readings — reported cost and a pass's token usage — are
+// measurement provenance, not organizational change, so the operator's
+// printout never journals them.
+const SDK_COST_KEYS = new Set(['costUsd', 'totalCostUsd', 'maxCostUsd', 'usage']);
 
 function withoutSdkCost(value: JsonValue | undefined): JsonValue | undefined {
   if (value === undefined || value === null || typeof value !== 'object') return value;

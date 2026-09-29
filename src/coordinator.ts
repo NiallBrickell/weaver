@@ -1664,6 +1664,7 @@ export async function runCoordinatorPass(
 
   let costUsd = 0;
   let sessionId: string | undefined;
+  let usage: PassRecord['usage'];
   let hadError = false;
   let errorText = '';
   const sdkFailure = new SdkFailureTracker();
@@ -1689,6 +1690,7 @@ export async function runCoordinatorPass(
     });
     costUsd = execution.costUsd;
     sessionId = execution.sessionId;
+    usage = execution.usage;
     if (execution.error) {
       hadError = true;
       sdkFailure.capture(new Error(execution.error));
@@ -1744,6 +1746,7 @@ export async function runCoordinatorPass(
       rec.outcome = rec.outcome === 'completed' ? 'completed' : outcome;
       rec.endedAt = rec.endedAt ?? new Date().toISOString();
       rec.costUsd = costUsd;
+      if (usage) rec.usage = usage;
       if (sessionId) rec.sessionId = sessionId;
       if (infrastructure) rec.infrastructure = infrastructure;
       summary = rec.summary;

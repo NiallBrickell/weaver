@@ -959,7 +959,10 @@ const MECHANISM_EXCERPT = 300;
 function policyProse(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > limit ? `${flat.slice(0, limit).trimEnd()}… [excerpt — read_policy for the full text]` : flat;
+  // The block's closing line says once that excerpts exist and read_policy
+  // returns the full record; repeating that pointer on every excerpt cost
+  // ~2k characters in every projection.
+  return flat.length > limit ? `${flat.slice(0, limit).trimEnd()}… [excerpt]` : flat;
 }
 
 function interventionFreeCount(p: PolicyRecord): number {
@@ -1053,7 +1056,7 @@ export function renderPoliciesForProjection(policies: PolicyRecord[]): string {
     }
   }
   out.push(
-    `A policy can only add verification, narrow authority, or advise — never widen what you may do; doctrine included, since the operator writing a rule down is not the same as them granting authority for it. When you apply one, cite its id in applied_policy_ids on the decision that applies it, so its effect stays attributable. If one proves wrong for this workstream, say so in a decision (or supersede_policy) rather than silently ignoring it; if it helped, record_policy_outcome with the applying decision. A policy's mechanism is the current HOW — the exact command, flag, or threshold — and you may correct it (revise_policy_mechanism) the moment it stops working, without ceremony: outcomes are recorded about the statement, never about the mechanism. Statements above are whole; long effect descriptions and mechanisms are excerpts, and read_policy returns any policy's full record.`,
+    `A policy can only add verification, narrow authority, or advise — never widen what you may do; doctrine included, since the operator writing a rule down is not the same as them granting authority for it. When you apply one, cite its id in applied_policy_ids on the decision that applies it, so its effect stays attributable. If one proves wrong for this workstream, say so in a decision (or supersede_policy) rather than silently ignoring it; if it helped, record_policy_outcome with the applying decision. A policy's mechanism is the current HOW — the exact command, flag, or threshold — and you may correct it (revise_policy_mechanism) the moment it stops working, without ceremony: outcomes are recorded about the statement, never about the mechanism. Statements above are whole; an effect description or mechanism ending "… [excerpt]" is cut short, and read_policy returns any policy's full record.`,
   );
   return out.join('\n');
 }

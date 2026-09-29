@@ -2,6 +2,7 @@ import {
   createSdkMcpServer,
   query,
   type SDKMessage,
+  type SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import {
   Codex,
@@ -9,6 +10,7 @@ import {
   type RunStreamedResult,
   type ThreadEvent,
   type ThreadOptions,
+  type Usage as CodexUsage,
 } from '@openai/codex-sdk';
 import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -18,6 +20,7 @@ import {
   redactSecrets,
   stripClaudeCredentials,
 } from '../secrets.js';
+import type { PassUsage } from '../types.js';
 import { startToolBridge, type BridgeToolDefinition, type ToolBridge } from './toolBridge.js';
 
 const CODEX_COORDINATOR_TOKEN_ENV = 'WEAVER_CODEX_COORDINATOR_TOKEN';
@@ -36,6 +39,9 @@ export interface CoordinatorExecutionRequest {
 export interface CoordinatorExecutionOutcome {
   costUsd: number;
   sessionId?: string;
+  /** Provider-reported token anatomy; absent when the run ended before the
+   * provider reported any. Provenance only. */
+  usage?: PassUsage;
   error?: string;
 }
 
@@ -84,6 +90,8 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
     });
     let costUsd = 0;
     let sessionId: string | undefined;
+    let usage: PassUsage | undefined;
+    let toolCalls = 0;
     let error: string | undefined;
     let apiHome: PreparedClaudeApiHome | null = null;
     let model = req.model;
@@ -155,9 +163,13 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
         },
       })) {
         req.onClaudeMessage?.(message);
+        if (message.type === 'assistant') {
+          toolCalls += message.message.content.filter((block) => block.type === 'tool_use').length;
+        }
         if (message.type === 'result') {
           sessionId = message.session_id;
           costUsd = 'total_cost_usd' in message ? message.total_cost_usd : 0;
+          usage = claudePassUsage(message, toolCalls);
           if (message.is_error) error = 'Claude coordinator result reported an error';
         }
       }
@@ -175,9 +187,31 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
     return {
       costUsd,
       ...(sessionId ? { sessionId } : {}),
+      ...(usage ? { usage } : {}),
       ...(error ? { error } : {}),
     };
   }
+}
+
+/** The Claude result's usage is already summed across every model request in
+ * the pass (Claude Code accumulates it), so it maps one-to-one. */
+export function claudePassUsage(result: SDKResultMessage, toolCalls: number): PassUsage {
+  const u = result.usage;
+  const byTtl = u.cache_creation;
+  return {
+    inputTokens: u.input_tokens,
+    cacheReadInputTokens: u.cache_read_input_tokens,
+    cacheCreationInputTokens: u.cache_creation_input_tokens,
+    ...(byTtl
+      ? {
+          cacheCreation1hInputTokens: byTtl.ephemeral_1h_input_tokens,
+          cacheCreation5mInputTokens: byTtl.ephemeral_5m_input_tokens,
+        }
+      : {}),
+    outputTokens: u.output_tokens,
+    modelTurns: result.num_turns,
+    toolCalls,
+  };
 }
 
 interface CodexThreadLike {
@@ -255,6 +289,8 @@ export class CodexCoordinatorExecutor implements CoordinatorExecutor {
     let home: PreparedCodexHome | null = null;
     let sessionId: string | undefined;
     let completed = false;
+    let usage: PassUsage | undefined;
+    let toolCalls = 0;
     let error: string | undefined;
     try {
       home = this.prepareHome();
@@ -339,7 +375,11 @@ export class CodexCoordinatorExecutor implements CoordinatorExecutor {
       for await (const event of streamed.events) {
         req.onCodexEvent?.(event);
         if (event.type === 'thread.started') sessionId = event.thread_id;
-        if (event.type === 'turn.completed') completed = true;
+        if (event.type === 'turn.completed') {
+          completed = true;
+          usage = addCodexUsage(usage, event.usage);
+        }
+        if (event.type === 'item.completed' && event.item.type === 'mcp_tool_call') toolCalls++;
         if (event.type === 'turn.failed') error = event.error.message;
         if (event.type === 'error') error = event.message;
         if (event.type === 'item.started' || event.type === 'item.updated' || event.type === 'item.completed') {
@@ -382,9 +422,24 @@ export class CodexCoordinatorExecutor implements CoordinatorExecutor {
     return {
       costUsd: 0,
       ...(sessionId ? { sessionId } : {}),
+      ...(usage ? { usage: { ...usage, toolCalls } } : {}),
       ...(error ? { error } : {}),
     };
   }
+}
+
+/** Codex reports usage per turn; a coordinator pass is one turn today, but
+ * summing keeps the record honest if a pass ever spans more. OpenAI's
+ * input_tokens already INCLUDES cached_input_tokens — kept as reported. */
+function addCodexUsage(total: PassUsage | undefined, turn: CodexUsage): PassUsage {
+  return {
+    inputTokens: (total?.inputTokens ?? 0) + turn.input_tokens,
+    cacheReadInputTokens: (total?.cacheReadInputTokens ?? 0) + turn.cached_input_tokens,
+    cacheCreationInputTokens: (total?.cacheCreationInputTokens ?? 0) + (turn.cache_write_input_tokens ?? 0),
+    outputTokens: (total?.outputTokens ?? 0) + turn.output_tokens,
+    reasoningOutputTokens: (total?.reasoningOutputTokens ?? 0) + (turn.reasoning_output_tokens ?? 0),
+    toolCalls: 0,
+  };
 }
 
 export function selectCoordinatorExecutor(name: string): CoordinatorExecutor {

@@ -819,14 +819,21 @@ test('a pass pins executor, provider, and model while a fake Codex loop finishes
         acknowledged_steering: true,
       }, {});
       assert.equal(reply.isError, undefined);
-      return { costUsd: 0, sessionId: 'codex-thread-fixture' };
+      return { costUsd: 0, sessionId: 'codex-thread-fixture', usage: passUsage };
     },
+  };
+  const passUsage = {
+    inputTokens: 40_000, cacheReadInputTokens: 30_000, cacheCreationInputTokens: 0,
+    outputTokens: 900, reasoningOutputTokens: 300, toolCalls: 1,
   };
 
   const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
   assert.equal(outcome.outcome, 'completed');
   const doc = await load('coordinator-capacity');
   const pass = doc.passes.at(-1)!;
+  // The fleet measures itself: the executor's token anatomy lands on the
+  // pass's own provenance record, beside the target it describes.
+  assert.deepEqual(pass.usage, passUsage);
   assert.equal(pass.executor, 'codex-sdk');
   assert.equal(pass.provider, 'openai');
   assert.equal(pass.model, 'gpt-5.6-sol');
@@ -1863,7 +1870,8 @@ test('read_policy returns the full record of a matching policy and nothing outsi
       // The projection carries the statement whole and an excerpt of the prose.
       assert.match(req.prompt, /Confirm the rollout state by readback before adopting a rollout result/);
       assert.doesNotMatch(req.prompt, /MECHANISM_TAIL|EFFECT_TAIL/);
-      assert.match(req.prompt, /read_policy for the full text/);
+      assert.match(req.prompt, /… \[excerpt\]/);
+      assert.match(req.prompt, /read_policy returns any policy's full record/);
       const read = req.tools.find((definition) => definition.name === 'read_policy')!;
       const full = (await read.handler({ policy_id: matching.id }, {})) as ToolResult;
       assert.equal(full.isError, undefined, resultText(full));
