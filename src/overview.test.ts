@@ -257,32 +257,42 @@ test('usefulness signals reuse stats: adoption, first attempt, interventions per
   assert.equal(o.signals.interventions.perOutcome, 1.5);
 });
 
-test('worked example is the most recent conclusion with at least five assignments, in created order', () => {
-  const many = (prefix: string, n: number) => Array.from({ length: n }, (_, i) =>
-    assignment(`${prefix}${i}`, { createdAtVirtual: `2026-09-0${9 - i}T00:00:00Z`, kind: i === 0 ? 'action' : 'work' }));
+test('worked examples: one per way work ends, readable runs preferred, a workstream under one tab only', () => {
+  const many = (prefix: string, n: number, rejected = 0) => Array.from({ length: n }, (_, i) =>
+    assignment(`${prefix}${i}`, {
+      createdAtVirtual: `2026-09-0${9 - (i % 9)}T00:00:00Z`,
+      kind: i === 0 ? 'action' : 'work',
+      adoption: { state: i < rejected ? 'rejected' : 'accepted' },
+    }));
   const o = computeOverview([
     doc('older', { status: 'done', conclusion: { at: '2026-09-10T00:00:00Z' }, assignments: many('o', 5) }),
     doc('newest-small', { status: 'done', conclusion: { at: '2026-09-20T00:00:00Z' }, assignments: many('s', 4) }),
     doc('chosen', { status: 'done', parent: 'sweep', conclusion: { at: '2026-09-15T00:00:00Z', summary: 'Merged the fix', disposition: 'delivered' }, assignments: many('c', 6) }),
+    // Newer and delivered, but mostly rejected retries: a poor first example.
+    doc('messy', { status: 'done', conclusion: { at: '2026-09-18T00:00:00Z', disposition: 'delivered' }, assignments: many('m', 8, 5) }),
+    doc('stopped', { status: 'done', conclusion: { at: '2026-09-12T00:00:00Z', disposition: 'not_worth_doing' }, assignments: many('n', 5) }),
     doc('unconcluded', { assignments: many('u', 8) }),
   ], [], NOW);
-  const example = o.example!;
-  assert.equal(example.slug, 'chosen');
+  assert.deepEqual(o.examples.map((e) => [e.kind, e.slug]), [['delivered', 'chosen'], ['investigated', 'older'], ['stopped', 'stopped']]);
+  const example = o.examples[0]!;
   assert.equal(example.parent, 'sweep');
   assert.equal(example.outcome, 'delivered');
   assert.equal(example.summary, 'Merged the fix');
   assert.equal(example.assignments, 6);
   assert.equal(example.actions, 1);
-  // The example is the shared workstream timeline (src/timeline.ts): the
-  // assignments in created order, then the conclusion with its disposition.
+  // The example is the shared workstream timeline (src/timeline.ts), ending
+  // in the conclusion with its disposition.
   const rows = example.timeline.entries.filter((e) => e.type !== 'gap');
-  assert.deepEqual(rows.map((e) => e.type === 'assignment' ? e.assignment.id : e.type), ['c5', 'c4', 'c3', 'c2', 'c1', 'c0', 'conclusion']);
-  const last = rows.at(-2)!;
-  assert.equal(last.type === 'assignment' && last.assignment.kind, 'action');
   const conclusion = rows.at(-1)!;
   assert.equal(conclusion.type === 'conclusion' && conclusion.disposition, 'delivered');
 
-  assert.equal(computeOverview([doc('none')], [], NOW).example, undefined);
+  // With no readable delivered run, the newest delivered one still shows.
+  const onlyMessy = computeOverview([
+    doc('messy', { status: 'done', conclusion: { at: '2026-09-18T00:00:00Z', disposition: 'delivered' }, assignments: many('m', 8, 5) }),
+  ], [], NOW);
+  assert.deepEqual(onlyMessy.examples.map((e) => e.slug), ['messy']);
+
+  assert.deepEqual(computeOverview([doc('none')], [], NOW).examples, []);
 });
 
 test('revisionMemo computes once per revision and shares one in-flight compute', async () => {

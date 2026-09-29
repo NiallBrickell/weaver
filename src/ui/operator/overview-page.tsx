@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-import type { OriginRow, OverviewPayload } from '../../overview.js';
+import { EXAMPLE_KIND_LABELS, type OriginRow, type OverviewPayload } from '../../overview.js';
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '../components/index.js';
 import { formatTimestamp } from '../inspect/model.js';
 import { Timeline } from './timeline.js';
@@ -282,7 +282,7 @@ function nowKey(group: { parent: string | null }): string {
   return group.parent ?? 'top-level';
 }
 
-function Now({ overview, selected }: { overview: OverviewPayload; selected?: string }) {
+function Now({ overview, selected, exampleTab }: { overview: OverviewPayload; selected?: string; exampleTab?: string }) {
   const groups = [...overview.now.groups].sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label));
   // A plain link per group (?now=<parent>), so the choice survives the shell's
   // live refresh, which re-fetches the current URL. Unknown or absent keys
@@ -304,7 +304,7 @@ function Now({ overview, selected }: { overview: OverviewPayload; selected?: str
               return (
                 <a
                   key={key}
-                  href={`?now=${encodeURIComponent(key)}#now`}
+                  href={overviewQuery({ now: key, ...(exampleTab ? { example: exampleTab } : {}) }, 'now')}
                   data-testid={`overview-now-tab-${key}`}
                   aria-current={isCurrent ? 'page' : undefined}
                   className={`-mb-px flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-xs transition ${isCurrent ? 'border-violet-400 text-zinc-100' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}
@@ -525,39 +525,66 @@ function Cost({ overview }: { overview: OverviewPayload }) {
   );
 }
 
-function Example({ overview }: { overview: OverviewPayload }) {
-  const example = overview.example;
-  if (!example) {
+/** The overview's query string, keeping the other section's tab choice so
+ * picking one tab never resets the other. */
+function overviewQuery(params: { now?: string; example?: string }, anchor: string): string {
+  const search = new URLSearchParams();
+  if (params.now) search.set('now', params.now);
+  if (params.example) search.set('example', params.example);
+  return `?${search.toString()}#${anchor}`;
+}
+
+function Examples({ overview, tabs }: { overview: OverviewPayload; tabs: { now?: string; example?: string } }) {
+  const { examples } = overview;
+  const current = examples.find((example) => example.kind === tabs.example) ?? examples[0];
+  if (!current) {
     return (
-      <Section id="example" eyebrow="07 · One outcome, end to end" title="No worked example yet">
-        <p className="text-sm text-zinc-500">An example appears once a workstream with at least five assignments has concluded.</p>
+      <Section id="example" eyebrow="07 · Outcomes, end to end" title="No worked examples yet">
+        <p className="text-sm text-zinc-500">Examples appear once workstreams with at least five assignments have concluded.</p>
       </Section>
     );
   }
   return (
     <Section
       id="example"
-      eyebrow="07 · One outcome, end to end"
-      title={example.title}
-      lede={
-        <>
-          The most recently concluded workstream with at least five assignments, chosen automatically.{' '}
-          {example.parent ? <>Opened by <span className="font-mono text-zinc-300">{example.parent}</span>. </> : 'Opened at the top level. '}
-          {plural(example.passes, 'pass', 'passes')}, {plural(example.assignments, 'assignment')} ({example.actions} of them actions), {plural(example.steers, 'human steer')}, {money(example.costUsd)} recorded cost.{' '}
-          <a href={workstreamHref(example.slug)} className="text-violet-300 hover:text-violet-200">Open it</a>
-        </>
-      }
+      eyebrow="07 · Outcomes, end to end"
+      title="How work ends, step by step"
+      lede="One recent example per way work ends, chosen automatically from the record. Each prefers a readable run (at most 30 assignments and 60 coordinator passes, at most a quarter of results rejected) over simply the newest one."
     >
-      <p className="max-w-3xl text-sm leading-6 text-zinc-300">{example.objective}</p>
-      <Timeline
-        timeline={example.timeline}
-        earlierHref={`${workstreamHref(example.slug)}?tab=timeline&all=1`}
-      />
+      <nav aria-label="Worked examples" data-testid="overview-example-tabs" className="-mx-1 flex gap-1 overflow-x-auto border-b border-zinc-800 px-1">
+        {examples.map((example) => {
+          const isCurrent = example === current;
+          return (
+            <a
+              key={example.kind}
+              href={overviewQuery({ ...tabs, example: example.kind }, 'example')}
+              data-testid={`overview-example-tab-${example.kind}`}
+              aria-current={isCurrent ? 'page' : undefined}
+              className={`-mb-px shrink-0 border-b-2 px-3 py-2 text-xs transition ${isCurrent ? 'border-violet-400 text-zinc-100' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}
+            >
+              {EXAMPLE_KIND_LABELS[example.kind]}
+            </a>
+          );
+        })}
+      </nav>
+      <div data-testid="overview-example-current" className="space-y-3">
+        <h3 className="text-base font-semibold text-zinc-100">{current.title}</h3>
+        <p className="text-sm leading-6 text-zinc-400">
+          {current.parent ? <>Opened by <span className="font-mono text-zinc-300">{current.parent}</span>. </> : 'Opened at the top level. '}
+          {plural(current.passes, 'pass', 'passes')}, {plural(current.assignments, 'assignment')} ({current.actions} of them actions), {plural(current.steers, 'human steer')}, {money(current.costUsd)} recorded cost.{' '}
+          <a href={workstreamHref(current.slug)} className="text-violet-300 hover:text-violet-200">Open it</a>
+        </p>
+        <p className="max-w-3xl text-sm leading-6 text-zinc-300">{current.objective}</p>
+        <Timeline
+          timeline={current.timeline}
+          earlierHref={`${workstreamHref(current.slug)}?tab=timeline&all=1`}
+        />
+      </div>
     </Section>
   );
 }
 
-export function OverviewPage({ overview, scopeLabel, nowTab }: { overview: OverviewPayload; scopeLabel: string; nowTab?: string }) {
+export function OverviewPage({ overview, scopeLabel, nowTab, exampleTab }: { overview: OverviewPayload; scopeLabel: string; nowTab?: string; exampleTab?: string }) {
   return (
     <div data-testid="operator-overview-page">
       <header className="border-b border-zinc-900 px-5 py-6 sm:px-8">
@@ -572,11 +599,11 @@ export function OverviewPage({ overview, scopeLabel, nowTab }: { overview: Overv
       <div className="mx-auto max-w-6xl space-y-12 p-5 sm:p-8">
         <Explainer overview={overview} />
         <Origins overview={overview} />
-        <Now overview={overview} selected={nowTab} />
+        <Now overview={overview} selected={nowTab} {...(exampleTab ? { exampleTab } : {})} />
         <Outcomes overview={overview} />
         <Signals overview={overview} />
         <Cost overview={overview} />
-        <Example overview={overview} />
+        <Examples overview={overview} tabs={{ ...(nowTab ? { now: nowTab } : {}), ...(exampleTab ? { example: exampleTab } : {}) }} />
       </div>
     </div>
   );
