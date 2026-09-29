@@ -79,6 +79,7 @@ import {
   runShadowCoordinator,
   seatLabel,
   type ShadowReadPort,
+  type ToolSchema,
 } from './shadowCoordinator.js';
 import type { BridgeToolDefinition } from './executor/toolBridge.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -1884,7 +1885,8 @@ export async function runCoordinatorPass(
       config: shadowConfig,
       prompt,
       systemPrompt: systemPromptForWorkstream(shadowSnapshot),
-      tools: coordinatorTools,
+      // Schemas only: the real handlers never leave this module.
+      tools: coordinatorTools.map(({ handler: _handler, ...schema }) => schema),
       snapshot: shadowSnapshot,
       policies: matchedPolicies,
       realMoves,
@@ -1974,7 +1976,7 @@ function launchShadowIfSampled(args: {
   config: ShadowCoordinatorConfig;
   prompt: string;
   systemPrompt: string;
-  tools: readonly BridgeToolDefinition[];
+  tools: readonly ToolSchema[];
   snapshot: WorkstreamDoc;
   policies: readonly PolicyRecord[];
   realMoves: ShadowMove[];

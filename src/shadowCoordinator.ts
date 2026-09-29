@@ -329,6 +329,11 @@ class ShadowLedger {
   }
 }
 
+/** A tool's schema without its handler: the only shape of a real coordinator
+ * tool that ever crosses into this module, so no real handler is reachable
+ * from shadow code at all — not merely never called. */
+export type ToolSchema = Omit<BridgeToolDefinition, 'handler'>;
+
 export interface CaptureContext {
   snapshot: WorkstreamDoc;
   reads: ShadowReadPort;
@@ -342,7 +347,7 @@ export interface CaptureContext {
  * read-only port; writes are validated, recorded, and answered plausibly.
  */
 export function buildCaptureTools(
-  definitions: readonly BridgeToolDefinition[],
+  definitions: readonly ToolSchema[],
   context: CaptureContext,
 ): BridgeToolDefinition[] {
   const ledger = new ShadowLedger(context.snapshot);
@@ -394,8 +399,9 @@ export interface ShadowRunInput {
   executor: CoordinatorExecutor;
   prompt: string;
   systemPrompt: string;
-  /** Schema source only; their handlers are never called. */
-  tools: readonly BridgeToolDefinition[];
+  /** Schema source only: the caller strips every handler before handing
+   * these over. */
+  tools: readonly ToolSchema[];
   snapshot: WorkstreamDoc;
   reads: ShadowReadPort;
   env: Record<string, string | undefined>;
