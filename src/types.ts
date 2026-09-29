@@ -201,7 +201,22 @@ export interface Assignment {
     /** `actor` names WHO (WEAVER_ACTOR: the human's username, an agent
      * session steering on their behalf, …) — 'by' says which authority path.
      * Durable so per-actor intervention load survives the event tail. */
-    approval?: { by: 'human' | 'pilot'; at: Iso; note?: string; actor?: string };
+    approval?: {
+      by: 'human' | 'pilot';
+      at: Iso;
+      note?: string;
+      actor?: string;
+      /** The engine egress-gate fingerprint the person saw when approving a
+       * gate that needed them (src/egressGate.ts). Egress revalidates against
+       * it: a different fingerprint at execution means the act changed after
+       * approval, and the approval no longer covers it. */
+      egressFingerprint?: string;
+    };
+    /** The ENGINE's repo-egress gate verdict: why this act needs a person
+     * regardless of the coordinator's approvalMode. Computed from typed facts
+     * the model cannot author — the changed paths, the workstream's origin,
+     * whether the command shape is classifiable — never from prose. */
+    egressGate?: { reasons: EgressGateReason[]; fingerprint: string; at: Iso };
     /** Human rejection of a gated action — the mirror of approval, kept
      * durable (state 'cancelled' alone dates and attributes nothing). */
     rejection?: { actor: string; at: Iso; reason: string };
@@ -800,6 +815,20 @@ export interface ManagerNotice {
   receivedAtVirtual: Iso;
 }
 
+export type WorkstreamOrigin = 'operator' | 'untrusted';
+
+/** Why the engine's repo-egress gate routed an act to a person. */
+export type EgressGateReason =
+  | { kind: 'sensitive-path'; paths: string[] }
+  /** `setting` is the WEAVER_UNTRUSTED_MERGE value that made it a person's
+   * act; absent on reasons recorded before the setting existed. */
+  | { kind: 'untrusted-origin'; egress: 'merge' | 'deploy'; setting?: 'person' }
+  | { kind: 'unclassified-egress'; detail: string }
+  | { kind: 'diff-unavailable'; detail: string }
+  /** GitHub refused a push touching workflow files: the fleet's token has no
+   * `workflows` permission by design. A person pushes or merges it. */
+  | { kind: 'workflow-permission' };
+
 export interface WorkstreamCore {
   id: Id;
   slug: string;
@@ -865,6 +894,20 @@ export interface WorkstreamCore {
   priority?: 'high' | 'normal' | 'low';
   /** Set only by create_workstream; absent means unmanaged. */
   managedBy?: ManagedBy;
+  /** Where this workstream's direction came from, and therefore how far its
+   * repo egress may go without a person (src/egressGate.ts):
+   * - `operator`: a human wrote it (`weaver create`/`do`, browser intake).
+   * - `untrusted`: a coordinator or bot ingress authored it, possibly from
+   *   text the fleet read (tickets, error payloads, replies). It may push and
+   *   open PRs; a merge or deploy from it is always human-only.
+   * Taint is inherited by children. Absent on legacy documents: shown as
+   * `operator`, but a managed legacy document is `untrusted` for authority. */
+  origin?: WorkstreamOrigin;
+  /** Constraints a coordinator or bot proposed for this workstream. Stored and
+   * shown as advice from an untrusted author — never authority, never read by
+   * the engine for any permission. Authoritative `constraints` on such a child
+   * are inherited from its parent. */
+  suggestedConstraints?: string[];
   /** Durable outcome claim and its cited typed evidence. The referenced facts
    * remain the authority; this prose cannot make an unverified act real. */
   conclusion?: WorkstreamConclusion;

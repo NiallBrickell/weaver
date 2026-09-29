@@ -231,7 +231,7 @@ export async function createTeamWorkstream(req: TeamIntakeRequest): Promise<Team
     constraints: house.constraints,
     ...(under ? { under } : {}),
     ...(runnerId ? { runnerId } : {}),
-  });
+  }, 'human');
 
   // The Workstream owns the requested outcome. This separately preserves who
   // supplied the input as an Observation, not Steering, so it cannot silently

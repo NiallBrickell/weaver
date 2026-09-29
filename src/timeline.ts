@@ -17,6 +17,7 @@
  */
 
 import { dispositionLabel, dispositionOf, isSuccessfulConclusion } from './conclusion.js';
+import { describeEgressGate } from './egressGate.js';
 import type { Assignment, ConclusionDisposition, Decision, Wake, WorkstreamDoc } from './types.js';
 
 /** A quiet stretch at least this long between two rows gets its own row. */
@@ -45,6 +46,9 @@ export interface TimelineAssignment {
   attempts: number;
   /** The disposable target pinned on the most recent attempt. */
   lastTarget?: { executor?: string; provider?: string; model?: string };
+  /** Why the engine's repo-egress gate routed this act to a person — from
+   * the typed gate on the action, never from prose. */
+  needsPerson?: string;
 }
 
 export type TimelineEntry =
@@ -165,6 +169,7 @@ function timelineAssignment(a: Assignment): TimelineAssignment {
     adoption: a.adoption.state,
     attempts: a.attempts.length,
     ...(lastTarget ? { lastTarget } : {}),
+    ...(a.exec?.egressGate?.reasons.length ? { needsPerson: describeEgressGate(a.exec.egressGate.reasons) } : {}),
   };
 }
 

@@ -93,6 +93,17 @@ import {
   type RunnerClaimIdentity,
 } from './runnerIdentity.js';
 import { RUNNER_PRESENCE_TTL_MS, coordinatorRunnerEligibility } from './coordinatorRunner.js';
+import {
+  approvalCoversGate,
+  commandHasEgress,
+  describeEgressGate,
+  egressGateSeam,
+  evaluateEgressGate,
+  isWorkflowPermissionRefusal,
+  untrustedMergePolicy,
+  workstreamOriginForAuthority,
+  type EgressGateResult,
+} from './egressGate.js';
 
 /**
  * The shell a declared action's `run`/`verify` command is executed with.
@@ -241,6 +252,111 @@ export async function runActionCommand(
       });
     });
   });
+}
+
+/**
+ * The ENGINE's repo-egress gate for one action's exact command (egressGate.ts).
+ * Null when the command performs no repo egress or deploy — such an action
+ * keeps today's Pilot-or-human path. Only a deterministic `exec.run` is judged
+ * here; a model-driven action's commands are judged one by one, at the moment
+ * of each call, by the worker's egress-gated supervisor.
+ */
+async function actionEgressGate(doc: WorkstreamDoc, asg: Assignment): Promise<EgressGateResult | null> {
+  const run = asg.exec?.run;
+  if (asg.kind !== 'action' || !asg.exec || !run || !commandHasEgress(run)) return null;
+  // A merge's file list is read with the READ token; a mint that cannot
+  // happen leaves the read to fail, and the gate then fails closed.
+  let env: Record<string, string> = {};
+  try {
+    env = await actionGitHubAppEnvironment(asg.exec, 'read', { minRemainingMs: ACTION_GITHUB_TOKEN_MIN_REMAINING_MS });
+  } catch {
+    env = {};
+  }
+  return evaluateEgressGate({
+    origin: workstreamOriginForAuthority(doc.workstream),
+    command: run,
+    cwd: asg.exec.cwd,
+    env,
+    io: egressGateSeam.io,
+  });
+}
+
+/** Put the engine's reason on the action's needs-you card: a fresh card when
+ * none is open, or the reason replacing the summary of the card already open
+ * (the coordinator's own human-only card, or a Pilot escalation). */
+function recordEgressGateCard(d: WorkstreamDoc, a2: Assignment, why: string): void {
+  const summary = `Needs a person — ${why}. Decide whether to approve: "${a2.exec?.ask ?? a2.objective}"`;
+  const open = d.attention.find((att) => att.kind === 'approval' && att.refId === a2.id && att.status === 'open');
+  if (open) {
+    open.summary = summary;
+    return;
+  }
+  ensureActionApprovalAttention(d, a2, () => newId('att'), summary);
+}
+
+/**
+ * Record the engine gate on every gated repo-egress action BEFORE Pilot sees
+ * it. A gate that needs a person makes the action human-only regardless of
+ * the coordinator's approval_mode, and Pilot is never consulted; a clear gate
+ * is recorded so Pilot may judge the act as before. Actions placed on another
+ * runner are left for that runner, whose checkout the diff must come from.
+ */
+export async function gateRepoEgressActions(slug: string, runner: RunnerClaimIdentity = runnerClaimIdentity()): Promise<number> {
+  const doc = await load(slug);
+  if (doc.workstream.status !== 'active') return 0;
+  let routed = 0;
+  const candidates = doc.assignments.filter(
+    (a) => a.kind === 'action' && a.state === 'gated' && a.exec?.run && !a.exec.approval && !a.exec.egressGate
+      && assignmentMatchesRunner(a, runner),
+  );
+  for (const asg of candidates) {
+    const gate = await actionEgressGate(doc, asg);
+    if (!gate) continue;
+    await arrive(slug, (d, event) => {
+      const a2 = d.assignments.find((x) => x.id === asg.id);
+      if (!a2?.exec || a2.state !== 'gated' || a2.exec.approval || a2.exec.egressGate || a2.exec.run !== asg.exec!.run) return;
+      a2.exec.egressGate = { reasons: gate.reasons, fingerprint: gate.fingerprint, at: new Date().toISOString() };
+      if (!gate.humanOnly) return;
+      a2.exec.approvalMode = 'human-only';
+      const why = describeEgressGate(gate.reasons);
+      recordEgressGateCard(d, a2, why);
+      event('action.egress_gate_human', `${a2.id} needs a person, whatever approval_mode said — ${why}`, [a2.id]);
+      routed++;
+    });
+  }
+  return routed;
+}
+
+/**
+ * Revalidate the gate immediately before egress (kernel rule 7). The approval
+ * on record covers the act only if the act is still what was approved: a gate
+ * that needs no person is covered by any matching approval; one that does is
+ * covered only by a HUMAN approval that pinned this exact fingerprint. Anything
+ * else — a Pilot approval of an act that now touches a sensitive path, a branch
+ * that moved after the person looked — returns the action to the human gate
+ * with the reason on the card. Returns true when egress may proceed.
+ */
+async function revalidateEgressGate(slug: string, doc: WorkstreamDoc, asg: Assignment): Promise<boolean> {
+  const gate = await actionEgressGate(doc, asg);
+  if (!gate || approvalCoversGate(asg, gate)) return true;
+  await arrive(slug, (d, event) => {
+    const a2 = d.assignments.find((x) => x.id === asg.id);
+    if (!a2?.exec || a2.state !== 'queued' || a2.attempts.length > 0) return;
+    const prior = a2.exec.approval;
+    a2.state = 'gated';
+    a2.exec.approvalMode = 'human-only';
+    a2.exec.egressGate = { reasons: gate.reasons, fingerprint: gate.fingerprint, at: new Date().toISOString() };
+    delete a2.exec.approval;
+    delete a2.exec.pilotVerdict;
+    const why = describeEgressGate(gate.reasons);
+    recordEgressGateCard(d, a2, why);
+    event(
+      'action.egress_gate_revoked',
+      `${a2.id} returned to the human gate just before egress — ${prior ? `the ${prior.by} approval no longer covers the act` : 'no approval covers the act'}: ${why}`,
+      [a2.id],
+    );
+  });
+  return false;
 }
 
 function actionHasMatchingApproval(asg: Assignment): boolean {
@@ -658,7 +774,10 @@ async function pilotApproveGatedActions(slug: string): Promise<number> {
       && a.exec.approvalMode !== 'human-only'
       && !a.exec.approval
       && !a.exec.pilotVerdict
-      && (!a.exec.pilotRetryAt || a.exec.pilotRetryAt <= wallNowIso),
+      && (!a.exec.pilotRetryAt || a.exec.pilotRetryAt <= wallNowIso)
+      // The engine's gate precedes Pilot: a repo-egress command reaches Pilot
+      // only after gateRepoEgressActions recorded a gate that needs no person.
+      && (!a.exec.run || !commandHasEgress(a.exec.run) || (!!a.exec.egressGate && a.exec.egressGate.reasons.length === 0)),
   );
   for (const asg of gated) {
     let verdict: { decision: string; reason: string } | null = null;
@@ -899,6 +1018,13 @@ async function execActionVerifier(
   secrets: Record<string, string>,
   redactionSecrets: Record<string, string>,
 ): Promise<{ ok: boolean; output: string }> {
+  // A readback observes; it never writes. A verifier whose own text pushes,
+  // opens or merges a PR, or deploys is refused rather than run with the
+  // workstream's credentials — it could otherwise be the egress the gate
+  // exists to route to a person.
+  if (commandHasEgress(verify)) {
+    return { ok: false, output: 'readback refused: the verify command itself contains a repo egress or deploy, and a readback may only observe' };
+  }
   let ok = false;
   let output = '';
   for (let attempt = 1; attempt <= ACTION_VERIFY_ATTEMPTS; attempt += 1) {
@@ -1169,6 +1295,13 @@ async function executeHumanActions(
       if (await settleActionPreparationFailure(slug, asg.id, error)) executed++;
       continue;
     }
+    // Kernel rule 7: authority is revalidated immediately before egress. The
+    // engine recomputes what this command changes and where the workstream
+    // came from; an approval that no longer covers the act returns it to the
+    // human gate instead of running it.
+    const gateDoc = await load(slug);
+    const gateAssignment = gateDoc.assignments.find((candidate) => candidate.id === asg.id);
+    if (!gateAssignment || !(await revalidateEgressGate(slug, gateDoc, gateAssignment))) continue;
     // Mint before recording the one-shot attempt. Authentication is still
     // after approval and immediately before the CAS, but a failed mint cannot
     // manufacture a false may-have-egressed attempt that readback must hold.
@@ -1276,6 +1409,33 @@ async function executeHumanActions(
         createdAt: new Date().toISOString(),
       });
       event('action.engine_executed', `${asg.id} command exited ${ok ? '0' : 'non-zero'} → ${delId}`, [asg.id, delId]);
+      if (!ok && a2.exec && isWorkflowPermissionRefusal(output)) {
+        // A KNOWN refusal, not an unknown result: GitHub rejected the push
+        // outright because it changes workflow files and the fleet's token
+        // deliberately has no workflows permission. Nothing landed, and no
+        // retry by any fleet path can land it — a person must push or merge.
+        a2.exec.egressGate = {
+          reasons: [{ kind: 'workflow-permission' }],
+          fingerprint: a2.exec.egressGate?.fingerprint ?? '',
+          at: new Date().toISOString(),
+        };
+        d.attention.push({
+          id: newId('att'),
+          kind: 'blocker',
+          summary: `GitHub refused ${asg.id}: it changes workflow files, and the fleet's token has no workflows permission by design. A person must push or merge this change themselves; the fleet will not retry it.`,
+          refId: asg.id,
+          status: 'open',
+          createdAt: new Date().toISOString(),
+        });
+        d.wakes.push({
+          id: newId('wake'),
+          reason: `Action ${asg.id} was refused by GitHub because it changes workflow files and the fleet token has no workflows permission. This is a known refusal with no effect, not an unknown result: do not retry it or re-shape the push. A person must push or merge the workflow change; wait for them.`,
+          condition: { type: 'immediate' },
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        event('action.workflow_permission_refused', `${asg.id} refused by GitHub: workflow files need a person to push or merge`, [asg.id]);
+      }
     });
     executed++;
   }
@@ -1802,6 +1962,8 @@ export async function tick(
   } = {},
 ): Promise<TickReport> {
   assertRunnerEnabled();
+  // Refuse to execute anything under an unknown WEAVER_UNTRUSTED_MERGE.
+  untrustedMergePolicy();
   const runner = runnerClaimIdentity();
   const maxPasses = opts.maxPasses ?? 3;
   if (opts.engineOnly && !runner.placementOnly) {
@@ -1883,6 +2045,9 @@ async function tickLocked(
     // Compatibility repair happens before attention/manager delivery so an
     // old lifetime-dollar card cannot remain a false human blocker.
     if (await retireLegacyDollarBudgetCard(slug)) progressed = true;
+    // The engine's repo-egress gate runs before Pilot: routing an act to a
+    // person is recorded state, not progress — the human card is the output.
+    await gateRepoEgressActions(slug, runner);
     if ((await pilotApproveGatedActions(slug)) > 0) progressed = true;
     if ((await pilotApproveProbes(slug)) > 0) progressed = true;
     if ((await deliverManagerNotices(slug)) > 0) progressed = true;

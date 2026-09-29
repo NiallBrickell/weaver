@@ -67,6 +67,7 @@ import {
 import type { Assignment, InfrastructureWait, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 import { secureMcpHeaderCredentials, type SecuredMcpConfiguration } from './mcpConfig.js';
 import { pilotFetch, readPilotVerdict } from './pilot.js';
+import { describeEgressGate, egressGatedSupervisor, workstreamOriginForAuthority } from './egressGate.js';
 import {
   FLEET_EVIDENCE_FILE,
   fleetAttentionEvidence,
@@ -1014,7 +1015,25 @@ export async function runWorker(
       permissionMode: isAction ? 'default' : 'bypassPermissions',
       settingSources: isAction ? [] : ['user', 'project', 'local'],
       strictMcpConfig: isAction,
-      ...(isAction ? { supervise: pilotSupervisor(asg.exec!.cwd, slug) } : {}),
+      // The engine's repo-egress gate judges each call first (egressGate.ts):
+      // a push/PR/merge/deploy that needs a person is denied before Pilot is
+      // asked, so neither the model nor Pilot can clear it.
+      ...(isAction ? {
+        supervise: egressGatedSupervisor(
+          currentAssignment,
+          workstreamOriginForAuthority(current.workstream),
+          pilotSupervisor(asg.exec!.cwd, slug),
+          async (toolName, gate) => {
+            await arrive(slug, (d, event) => {
+              event(
+                'action.egress_gate_denied',
+                `${assignmentId} worker call ${toolName} denied by the engine egress gate — ${describeEgressGate(gate.reasons)}`,
+                [assignmentId],
+              );
+            });
+          },
+        ),
+      } : {}),
       submit,
       // 80 turns killed a routine clone-fix-test brief on a large repo before
       // it could submit (11 wasted minutes + a re-split). Repo-scale setup

@@ -36,7 +36,6 @@ event subscriptions and exactly these repository permissions:
 - Checks: read
 - Actions: read
 - Commit statuses: read
-- Workflows: write
 - Metadata: read (GitHub adds this permission)
 
 Existing and future repositories can then enter Workstreams without an App
@@ -46,8 +45,20 @@ still mints a token for the one exact owner/repository resolved from the
 assignment checkout, and Weaver rejects the token unless GitHub confirms that
 exact repository.
 
-Contents write is what permits a reviewed branch push; Workflows write is
-needed only because a legitimate code change may touch `.github/workflows`.
+Contents write is what permits a reviewed branch push. There is deliberately
+no Workflows permission, and no token Weaver mints ever asks for one. With it, a
+pushed branch that adds a file under `.github/workflows` would run `on: push`
+with the repository's Actions secrets before anyone reviewed or merged it.
+Without it, GitHub refuses any fleet push that touches a workflow file; Weaver
+records that as a known refusal with no effect and asks a person to push or
+merge the change, and never retries it. An App created before this change may
+still hold Workflows write on its installation; the tokens Weaver mints do not
+request it, so the installation grant is unused, and you can remove it in the
+App's settings.
+
+A write token also does not decide *whether* a push or merge may happen. The
+engine checks every repo egress against the paths it changes and the origin of
+the workstream first; see [which code changes always need a person](./actions.md#which-code-changes-always-need-a-person).
 
 The setup callback independently checks the returned organization,
 all-repositories selection, permission map, App JWT, installation token, and

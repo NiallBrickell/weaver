@@ -7,6 +7,15 @@
  * remain authoritative.
  */
 
+import { describeEgressGate, untrustedMergePolicy, workstreamOriginForDisplay } from './egressGate.js';
+
+function untrustedMergeSetting(): string {
+  try {
+    return `${untrustedMergePolicy() === 'person' ? 'a person' : 'Pilot on non-sensitive paths'} (WEAVER_UNTRUSTED_MERGE=${untrustedMergePolicy()})`;
+  } catch {
+    return 'invalid WEAVER_UNTRUSTED_MERGE; the runner refuses to start';
+  }
+}
 import { dispositionLabel } from './conclusion.js';
 import * as fs from 'node:fs';
 import type {
@@ -213,6 +222,10 @@ function currentBoundary(doc: WorkstreamDoc): string[] {
     `- Objective: ${flat(doc.workstream.objective)}`,
     `- Success criteria: ${doc.workstream.successCriteria.length ? doc.workstream.successCriteria.map(flat).join('; ') : 'none recorded'}`,
     `- Constraints: ${doc.workstream.constraints.length ? doc.workstream.constraints.map(flat).join('; ') : 'none recorded'}`,
+    ...(doc.workstream.suggestedConstraints?.length
+      ? [`- Suggested constraints (untrusted author, not authority): ${doc.workstream.suggestedConstraints.map(flat).join('; ')}`]
+      : []),
+    `- Origin: ${workstreamOriginForDisplay(doc.workstream)}${workstreamOriginForDisplay(doc.workstream) === 'untrusted' ? ` — may push and open PRs; merges and deploys: ${untrustedMergeSetting()}` : ''}`,
     `- Tags: ${doc.workstream.tags.length ? doc.workstream.tags.join(', ') : 'none'}`,
     `- Authority: outbound sends ${doc.workstream.autonomy.sendsRequireApproval ? 'require approval' : 'may proceed within assigned authority'}`,
     `- Execution safety: ${safety.count}/${safety.limit} model starts in rolling ${Math.round(safety.windowSeconds / 60)}m · automatic pause/resume`,
@@ -225,10 +238,19 @@ function currentBoundary(doc: WorkstreamDoc): string[] {
     `- Provider backoffs: ${doc.capacity ? Object.values(doc.capacity.byModel).map((entry) => `${entry.wait.provider ?? 'unknown provider'} via ${entry.wait.executor ?? 'legacy executor'} · ${entry.wait.model} ${entry.wait.kind}, retry ${entry.wait.retryAt}`).join('; ') : 'none recorded'}`,
     `- Standing course: ${standing.length ? standing.map((decision) => `${decision.id} “${flat(decision.title)}”`).join('; ') : 'none recorded'}`,
     `- Open needs-you items: ${open.length ? open.map((item) => `${item.id} ${flat(item.summary)}`).join('; ') : 'none'}`,
+    ...gatedByEngine(doc).map((line) => `- Needs a person (engine egress gate): ${line}`),
     `- Operational waits: ${pilotUnavailable.length ? `approval service unavailable for ${pilotUnavailable.length} safely gated action${pilotUnavailable.length === 1 ? '' : 's'}` : 'none'}`,
     `- Work still live: ${live.length ? live.map((assignment) => `${assignment.id} [${assignment.state}]`).join(', ') : 'none'}`,
     `- Pending wakes: ${wakes.length ? wakes.map((wake) => `${wake.id} ${flat(wake.reason)}`).join('; ') : 'none'}`,
   ];
+}
+
+/** Every gated action the engine's egress gate routed to a person, with the
+ * typed reasons — so the printout says why without anyone reading prose. */
+function gatedByEngine(doc: WorkstreamDoc): string[] {
+  return doc.assignments
+    .filter((assignment) => assignment.state === 'gated' && assignment.exec?.egressGate?.reasons.length)
+    .map((assignment) => `${assignment.id} ${describeEgressGate(assignment.exec!.egressGate!.reasons)}`);
 }
 
 function displayValue(value: unknown): string {

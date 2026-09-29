@@ -318,6 +318,8 @@ export async function onboard(
     tags: d.routine ? [...house.tags, 'routine'] : house.tags,
     successCriteria: d.successCriteria,
     constraints: house.constraints,
+    // `weaver do`: the operator's own words, typed at their terminal.
+    origin: 'operator',
     autonomy: { sendsRequireApproval: true },
     executionSafety: newExecutionSafety(),
     ...(runnerId ? {

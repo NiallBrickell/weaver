@@ -116,7 +116,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, token: string):
       executionWindowSeconds: positiveInt(body.execution_window_seconds),
       maxModelStarts: positiveInt(body.max_model_starts),
     };
-    const result = await createOrGetWorkstream(reqObj);
+    const result = await createOrGetWorkstream(reqObj, 'ingress');
     return send(res, result.created ? 201 : 200, result);
   }
 

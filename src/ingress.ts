@@ -82,9 +82,16 @@ export function assertPublicWorkstreamSourceKey(sourceKey: string): void {
  * one workstream; the loser resolves to a GET. A bot's "make sure my workstream
  * exists" is therefore a safe no-op on every retry.
  */
-export async function createOrGetWorkstream(req: CreateWorkstreamRequest): Promise<CreateOrGetResult> {
+export async function createOrGetWorkstream(
+  req: CreateWorkstreamRequest,
+  /** Whose words these are. `ingress` — a bot registering through `weaver
+   * serve` — makes the workstream untrusted-origin and its constraints
+   * advisory; `human` is operator-authenticated intake (the browser). No
+   * default: a new caller must say which it is. */
+  author: 'human' | 'ingress',
+): Promise<CreateOrGetResult> {
   assertPublicWorkstreamSourceKey(req.sourceKey);
-  return createOrGetWorkstreamInternal(req);
+  return createOrGetWorkstreamInternal(req, author);
 }
 
 /** Exact internal creation authority for the one built-in fleet steward. It
@@ -97,7 +104,7 @@ export async function createOrGetFleetAttentionStewardWorkstream(
     ...req,
     slug: FLEET_ATTENTION_STEWARD_SLUG,
     sourceKey: FLEET_ATTENTION_STEWARD_SOURCE_KEY,
-  });
+  }, 'human');
   if (result.slug !== FLEET_ATTENTION_STEWARD_SLUG) {
     throw new Error(
       `reserved fleet steward identity is held by unexpected Workstream '${result.slug}'; refusing to activate it`,
@@ -106,7 +113,10 @@ export async function createOrGetFleetAttentionStewardWorkstream(
   return result;
 }
 
-async function createOrGetWorkstreamInternal(req: CreateWorkstreamRequest): Promise<CreateOrGetResult> {
+async function createOrGetWorkstreamInternal(
+  req: CreateWorkstreamRequest,
+  author: 'human' | 'ingress',
+): Promise<CreateOrGetResult> {
   if (req.runnerId !== undefined) assertRunnerId(req.runnerId, 'runner id');
   const existingSlug = await findBySourceKey(req.sourceKey);
   if (existingSlug) {
@@ -132,7 +142,7 @@ async function createOrGetWorkstreamInternal(req: CreateWorkstreamRequest): Prom
         ...(req.executionWindowSeconds !== undefined ? { executionWindowSeconds: req.executionWindowSeconds } : {}),
         ...(req.maxModelStarts !== undefined ? { maxModelStarts: req.maxModelStarts } : {}),
         ...(req.runnerId ? { runnerId: req.runnerId } : {}),
-      })
+      }, author)
       : await createWorkstream({
       slug,
       title: req.title,
@@ -140,7 +150,11 @@ async function createOrGetWorkstreamInternal(req: CreateWorkstreamRequest): Prom
       sourceKey: req.sourceKey,
       tags: req.tags ?? [],
       successCriteria: req.successCriteria ?? [],
-      constraints: req.constraints ?? [],
+      // A bot's constraints are its own words about the work, not the
+      // operator's rules: kept as advice, never authority.
+      constraints: author === 'human' ? req.constraints ?? [] : [],
+      ...(author === 'ingress' && req.constraints?.length ? { suggestedConstraints: req.constraints } : {}),
+      origin: author === 'human' ? 'operator' : 'untrusted',
       autonomy: { sendsRequireApproval: true },
       executionSafety: newExecutionSafety({
         ...(req.executionWindowSeconds !== undefined ? { windowSeconds: req.executionWindowSeconds } : {}),

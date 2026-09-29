@@ -76,6 +76,25 @@ Actions are one-shot under their assignment and approval: persisted queued state
 
 Deterministic engine commands and their readbacks are bounded as complete process trees. If a timeout expires, Weaver terminates the shell and its descendants before recording the attempt result; a background subprocess cannot continue after the action has moved to readback and reconciliation.
 
+## Which code changes always need a person
+
+The fleet reads text it did not write — support threads, error payloads, issues — and some of that text will try to steer it. So the decision about which pushes, pull requests, merges, and deploys need a person is not left to the coordinator or to Pilot. Weaver's engine makes it from facts neither of them can write, and it only ever makes an act *more* gated, never less.
+
+Before any push, `gh pr create`, `gh pr merge`, or deploy, the engine works out what the act changes itself: the commits a push sends, the branch a PR opens, or the merged PR's own file list read through a read-only token. The act needs a person, whatever approval mode the coordinator chose, when:
+
+- **It touches a sensitive path.** By default: `.github/**`, `**/auth/**`, `**/*auth*.{ts,go,py}`, `**/billing/**`, `**/payments/**`, `**/migrations/**`, `infra/**`, `deploy/**`, `**/Dockerfile*`, `**/*.tf`, and the files that brief every later agent run — `.claude/**`, `**/CLAUDE.md`, `**/AGENTS.md`, `**/.mcp.json`. Set `WEAVER_HUMAN_REVIEW_PATHS` to a comma-separated list of globs to replace the set. The card says exactly why: *touches .github/workflows/deploy.yml, a sensitive path: needs a person*.
+- **The engine cannot tell what it changes.** A missing checkout, a branch with no base, or a PR too large for GitHub's file list fails closed to a person.
+- **The engine cannot classify the command.** A raw `gh api` write it does not recognise, `curl` or a script calling the GitHub API, `hub`, an aliased or `--mirror` push, or a push that also runs `eval`, a nested shell, or a network client alongside it.
+- **It merges or deploys from an untrusted workstream.** A workstream that a coordinator created, or that a bot registered through `weaver serve`, is *untrusted*, and so is everything created under it. It can still push branches and open pull requests, so the fleet does the work; merging and deploying are yours. A push straight onto `main` counts as a merge, and a tag push or a package publish counts as a deploy. Workstreams you create yourself — `weaver create`, `weaver do`, the browser — are *operator* workstreams and keep the normal path on non-sensitive changes. `weaver status` and the printout show a workstream's origin.
+
+The untrusted-workstream rule is the one part of this you can relax without a code change, because most fleet jobs start from a ticket, an error or a customer thread, and it takes self-merge away from all of them. Set `WEAVER_UNTRUSTED_MERGE=pilot` on the runner and merges and deploys from untrusted workstreams go through Pilot again — but only when nothing else needs you. A sensitive path, a change the engine cannot compute, or a command it cannot classify still comes to you, and the fleet still cannot touch workflow files. The default, `person`, is what the card says: *merges from customer-derived jobs need a person (WEAVER_UNTRUSTED_MERGE=person)*. `weaver status` shows which is active, and any other value stops the runner from starting rather than guessing. Relaxing it does not release actions already waiting for you, which you still approve as usual; tightening it back to `person` catches even a Pilot-approved merge, because the engine checks again immediately before it runs.
+
+When the engine routes an act to you, Pilot is never asked. Your approval records exactly what you were shown, and the engine checks again immediately before the act runs: if the branch or PR has moved since you approved, the action comes back to you with the new reason instead of running. Model-driven actions get the same judgment one command at a time, so a worker cannot reach a merge through a different command shape or a connector.
+
+Constraints a coordinator writes for a workstream it creates are shown to that workstream as suggestions from an untrusted author, never as rules. The new workstream inherits its parent's real constraints, and can never be looser than its parent about sending.
+
+The fleet's GitHub token has no permission to change workflow files. A push that touches `.github/workflows` is refused by GitHub, and Weaver tells you so plainly: a person pushes or merges workflow changes, and the fleet never retries them.
+
 ## Repo deconfliction
 
 Weaver conflict-checks its own state on every write; the same discipline extends across the git-repo seam. Before an action does an irreversible repo egress (`gh pr create`, `gh pr merge`, `git push`), Weaver looks at the shared state the egress is about to write into, and it draws a line between two very different findings.
