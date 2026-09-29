@@ -73,10 +73,19 @@ Selecting a Workstream opens a two-level workspace with one visual centre:
 
 - **Left — Jobs.** The grouped fleet list, an explicit shared/local scope
   label, overview, and “New job”.
-- **Main — One job.** A URL-addressable Overview / Work & results / Activity /
+- **Main — One job.** A URL-addressable Timeline (default) / Overview / Work & results / Activity /
   Details navigation renders one bounded job mode at a time. Scrolling is for
   reading the selected mode, never for finding another unrelated part of the
   workspace.
+
+The Timeline tab is the default because the overview's worked example, one row
+per step with its adoption, proved far easier to read than the Activity
+catch-up. Both render one model (`src/timeline.ts`, `workstreamTimeline`) and
+one component (`src/ui/operator/timeline.tsx`). Retry folding uses typed
+adoption/state only, because Assignments carry no retry or supersedes link;
+closure of a Decision has no timestamp in the schema, so it shows on the
+decision's own row rather than as a dated row. When needs exist the Timeline
+repeats the Overview decision card, so the default view never hides an ask.
 
 The former persistent right inspector was removed after live use showed that
 standing course, Assignments, and Deliverables formed a competing second

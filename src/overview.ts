@@ -17,6 +17,7 @@
 
 import type { PolicyRecord } from './policies.js';
 import { computeStats } from './stats.js';
+import { workstreamTimeline, type WorkstreamTimeline } from './timeline.js';
 import type { Assignment, Attempt, PassRecord, WorkstreamDoc } from './types.js';
 
 /** How a concluded workstream ended. Added to `conclusion` by a parallel
@@ -147,16 +148,6 @@ export interface FamilyCost {
   totalUsd: number;
 }
 
-export interface ExampleStep {
-  id: string;
-  kind: 'work' | 'action';
-  at: string;
-  objective: string;
-  state: Assignment['state'];
-  adoption: Assignment['adoption']['state'];
-  attempts: number;
-}
-
 export interface WorkedExample {
   slug: string;
   title: string;
@@ -170,8 +161,8 @@ export interface WorkedExample {
   passes: number;
   steers: number;
   costUsd: number;
-  steps: ExampleStep[];
-  omittedSteps: number;
+  /** The same timeline model and component the workstream page uses. */
+  timeline: WorkstreamTimeline;
 }
 
 export interface OverviewPayload {
@@ -238,7 +229,7 @@ export const OUTCOME_LABELS: Record<OutcomeClass, string> = {
 };
 
 const EXAMPLE_MIN_ASSIGNMENTS = 5;
-const EXAMPLE_MAX_STEPS = 40;
+const EXAMPLE_MAX_ROWS = 40;
 const OBJECTIVE_CHARS = 160;
 
 function oneLine(text: string, max = OBJECTIVE_CHARS): string {
@@ -413,7 +404,7 @@ export function computeOverview(docs: WorkstreamDoc[], policies: PolicyRecord[],
     families.set(family, row);
   }
   const totalUsd = coordinatorUsd + workerUsd;
-  const example = workedExample(docs);
+  const example = workedExample(docs, now);
   const byProvider = [...providers.values()].sort((a, b) => b.totalUsd - a.totalUsd || a.key.localeCompare(b.key));
   const byBasis: Record<BillingBasis, number> = { 'subscription-notional': 0, cash: 0, unknown: 0 };
   for (const row of byProvider) byBasis[row.basis] += row.totalUsd;
@@ -494,7 +485,7 @@ export function computeOverview(docs: WorkstreamDoc[], policies: PolicyRecord[],
 
 /** The most recently concluded workstream with enough assignments to show the
  * loop at work. Chosen by typed conclusion time, never by hand. */
-export function workedExample(docs: WorkstreamDoc[]): WorkedExample | undefined {
+export function workedExample(docs: WorkstreamDoc[], now: Date): WorkedExample | undefined {
   let chosen: WorkstreamDoc | undefined;
   for (const doc of docs) {
     const conclusion = doc.workstream.conclusion;
@@ -503,7 +494,6 @@ export function workedExample(docs: WorkstreamDoc[]): WorkedExample | undefined 
   }
   if (!chosen) return undefined;
   const conclusion = chosen.workstream.conclusion!;
-  const ordered = [...chosen.assignments].sort((a, b) => a.createdAtVirtual.localeCompare(b.createdAtVirtual));
   return {
     slug: chosen.workstream.slug,
     title: chosen.workstream.title,
@@ -517,17 +507,7 @@ export function workedExample(docs: WorkstreamDoc[]): WorkedExample | undefined 
     passes: chosen.passes.length,
     steers: chosen.steering.length,
     costUsd: docCost(chosen).totalUsd,
-    steps: ordered.slice(0, EXAMPLE_MAX_STEPS).map((a) => ({
-      id: a.id,
-      // Legacy kinds (research, work_product, …) are all reversible work.
-      kind: a.kind === 'action' ? 'action' : 'work',
-      at: a.createdAtVirtual,
-      objective: oneLine(a.objective),
-      state: a.state,
-      adoption: a.adoption.state,
-      attempts: a.attempts.length,
-    })),
-    omittedSteps: Math.max(0, ordered.length - EXAMPLE_MAX_STEPS),
+    timeline: workstreamTimeline(chosen, { now, limit: EXAMPLE_MAX_ROWS }),
   };
 }
 

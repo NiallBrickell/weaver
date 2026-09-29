@@ -38,6 +38,7 @@ import { ManagedWorkstreamError } from './managedWorkstreams.js';
 import { deriveFallback, loadHouse } from './onboard.js';
 import { computeOverview, revisionMemo, type OverviewPayload } from './overview.js';
 import { loadPolicies, type PolicyRecord } from './policies.js';
+import { DEFAULT_TIMELINE_LIMIT, workstreamTimeline } from './timeline.js';
 import { liveRunnerPid, runnerLoopHealthy, runnerSourceStale } from './runner.js';
 import { loadAllSecrets, redactSecrets } from './secrets.js';
 import {
@@ -74,6 +75,7 @@ import {
   renderOperatorNewHtml,
   renderOperatorWorkspaceHtml,
   type OperatorFleetView,
+  DEFAULT_WORKSPACE_TAB,
   type WorkspaceTab,
 } from './ui/operator/render.js';
 
@@ -168,7 +170,7 @@ function safeActor(value: string): string {
 }
 
 function workspaceTab(value: string | null): WorkspaceTab {
-  return value === 'work' || value === 'activity' || value === 'details' ? value : 'overview';
+  return value === 'overview' || value === 'work' || value === 'activity' || value === 'details' ? value : DEFAULT_WORKSPACE_TAB;
 }
 
 function needVersion(need: FleetNeed): string {
@@ -1290,12 +1292,16 @@ async function handle(
     const policies = (await loadPolicies()).policies;
     const view = workstreamPage(doc, policies, fleet.managed.get(slug) ?? [], fleet.presences);
     const primaryNeed = view.needs[0];
+    const tab = workspaceTab(url.searchParams.get('tab'));
     return sendHtml(res, 200, renderOperatorWorkspaceHtml({
       fleet: fleet.view,
       actor,
       notice: noticeFrom(url),
       view,
-      tab: workspaceTab(url.searchParams.get('tab')),
+      tab,
+      ...(tab === 'timeline' ? {
+        timeline: workstreamTimeline(doc, { now: virtualNow(), limit: url.searchParams.get('all') === '1' ? 'all' : DEFAULT_TIMELINE_LIMIT }),
+      } : {}),
       responseId: randomUUID(),
       ...(clerk ? { signOutAction: '/sign-out' } : {}),
       ...(primaryNeed ? { needVersion: needVersion(primaryNeed) } : {}),
