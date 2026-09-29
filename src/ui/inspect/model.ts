@@ -1,4 +1,5 @@
 import { compactAge } from '../../activity.js';
+import { dispositionLabel } from '../../conclusion.js';
 import { operatorCapacityPresentation } from '../../coordinatorRunner.js';
 import type { RunnerPresence } from '../../store/types.js';
 import { assignmentBoard, type AssignmentBoardView } from '../../assignmentBoard.js';
@@ -90,6 +91,9 @@ export interface DoneWorkstreamView {
   slug: string;
   title: string;
   outcome: string;
+  /** How it ended (conclusion disposition), human-readable; null when the
+   * stream is done with no recorded conclusion. */
+  disposition: string | null;
   concludedAt: string;
   adoptedDeliverableCount: number;
 }
@@ -402,7 +406,7 @@ function latestFact(doc: WorkstreamDoc, organizationalNow: Date): LatestFact | u
   }
   if (doc.workstream.conclusion) {
     facts.push({
-      label: 'Outcome concluded',
+      label: `Outcome concluded — ${dispositionLabel(doc.workstream.conclusion)}`,
       summary: doc.workstream.conclusion.summary,
       atVirtual: doc.workstream.conclusion.atVirtual,
     });
@@ -621,6 +625,7 @@ export function fleetBoard(
       slug: doc.workstream.slug,
       title: doc.workstream.title,
       outcome: doc.workstream.conclusion?.summary ?? doc.workstream.objective,
+      disposition: doc.workstream.conclusion ? dispositionLabel(doc.workstream.conclusion) : null,
       concludedAt: concludedAt(doc),
       adoptedDeliverableCount: doc.deliverables.filter((deliverable) => deliverable.adopted).length,
     }));

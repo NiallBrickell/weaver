@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { dispositionLabel, isSuccessfulConclusion } from '../../conclusion.js';
 
 import type { ClerkBrowserAssets } from '../../clerkOperatorAuth.js';
 import type { AssignmentBoardCard, AssignmentBoardLane } from '../../assignmentBoard.js';
@@ -1104,7 +1105,7 @@ function typedFacts(view: WorkstreamPageView): TypedFact[] {
     facts.push({
       key: `${doc.workstream.conclusion.passId}-conclusion`,
       at: doc.workstream.conclusion.atVirtual,
-      label: 'Outcome concluded',
+      label: `Outcome concluded — ${dispositionLabel(doc.workstream.conclusion)}`,
       summary: doc.workstream.conclusion.summary,
       detail: `${doc.workstream.conclusion.evidenceIds.length} cited typed evidence record${doc.workstream.conclusion.evidenceIds.length === 1 ? '' : 's'}`,
       tone: 'success',
@@ -1387,11 +1388,13 @@ function Results({ view }: { view: WorkstreamPageView }) {
       <Card className="border-emerald-500/20 bg-emerald-500/5">
         <CardContent className="space-y-5 p-4">
           {view.doc.workstream.conclusion ? (() => {
-            const full = view.doc.workstream.conclusion.summary;
+            const conclusion = view.doc.workstream.conclusion;
+            const full = conclusion.summary;
             const human = firstSentence(full, 220);
+            const delivered = isSuccessfulConclusion(conclusion);
             return (
               <div data-testid="job-conclusion">
-                <Badge variant="success">Outcome confirmed</Badge>
+                <Badge variant={delivered ? 'success' : 'neutral'}>{delivered ? 'Outcome confirmed' : 'Closed without delivery'} · {dispositionLabel(conclusion)}</Badge>
                 <p className="mt-3 text-sm leading-6 text-zinc-200">{human}</p>
                 {human !== full ? (
                   <details className="mt-2">
@@ -1590,7 +1593,7 @@ function WorkspacePage({
                   : (
                     <Card className="border-emerald-500/20 bg-emerald-500/5">
                       <CardContent className="p-4">
-                        <Badge variant="success">Done</Badge>
+                        <Badge variant={isSuccessfulConclusion(ws.conclusion) ? 'success' : 'neutral'}>Done · {dispositionLabel(ws.conclusion)}</Badge>
                         <p className="mt-3 text-sm leading-6 text-zinc-200">{firstSentence(ws.conclusion.summary, 240)}</p>
                       </CardContent>
                     </Card>

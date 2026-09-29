@@ -8,6 +8,7 @@
  * or claim an external effect that typed state does not record.
  */
 
+import { dispositionLabel } from './conclusion.js';
 import type { WorkstreamDoc, Decision, Deliverable } from './types.js';
 import type { PolicyRecord } from './policies.js';
 import { renderPoliciesForProjection } from './policies.js';
@@ -142,7 +143,7 @@ export function buildProjection(
     ...(ws.conclusion
       ? [
           ``,
-          `Prior recorded conclusion (${ws.conclusion.atVirtual}, pass ${ws.conclusion.passId}): ${ws.conclusion.summary}`,
+          `Prior recorded conclusion (${ws.conclusion.atVirtual}, pass ${ws.conclusion.passId}) — disposition: ${dispositionLabel(ws.conclusion)}: ${ws.conclusion.summary}`,
           `Validated evidence ids: ${ws.conclusion.evidenceIds.join(', ')}`,
           `This prose is context; the typed decisions, adoption pins, and action readbacks below remain the authority.`,
         ]

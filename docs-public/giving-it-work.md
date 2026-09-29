@@ -93,6 +93,18 @@ Whatever the shape, Weaver keeps responsibility while the outcome moves through 
 5. **Wait and resume** (`WAITING`). The workstream records what it is waiting for — a reply, a scheduled wake, your verdict — and everything exits. A fresh coordinator resumes from that position when the wake condition arrives.
 6. **Finish only at the done-bar.** Weaver closes the workstream when the whole outcome is evidenced, not when an agent produced the first plausible work product.
 
+Every conclusion also records **how** the workstream ended, because finishing is not always shipping:
+
+| Disposition | Meaning | What it must rest on |
+| --- | --- | --- |
+| delivered | Produced work met the objective. | Adopted deliverables or readback-confirmed actions. |
+| no change needed | Investigation found nothing to change. | The adopted investigation. |
+| not worth doing | The measured value does not justify the work. | An adopted result that shows it (an impact measurement, a research report), a verified fact, or your steering. |
+| duplicate | Another existing workstream already owns this objective. | The other workstream's slug, checked to exist. |
+| closed by human direction | You told it to stop. | Your steering record in that workstream. |
+
+The coordinator cannot self-certify any of these: its own decision is not evidence that work is done, and it is not evidence that work was pointless either. A stream that finds, on evidence, that the change isn't worth making is expected to stop and say so rather than ship code nobody needs. The disposition appears on `weaver status`, the printout, the dashboard, the daily digest, and the [stats page](./stats.md), where only *delivered* and *no change needed* count as successful outcomes.
+
 The done-bar also makes improvement measurable: across comparable workstreams, Weaver should reach the evidenced outcome with fewer avoidable human interventions — not by stopping earlier, weakening verification, or taking more authority.
 
 ## What a good objective looks like

@@ -698,7 +698,7 @@ describe('child conclusion inside a real tick (no manual delivery call)', () => 
           return found;
         };
         await tool('conclude_workstream').handler(
-          { summary: 'objective met; human directed close', evidence_ids: [steeringId] },
+          { summary: 'objective met; human directed close', disposition: 'directed_closed', directed_by: steeringId },
           {},
         );
         await tool('finish_pass').handler({ summary: 'concluded on human direction' }, {});

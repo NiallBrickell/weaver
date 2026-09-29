@@ -186,6 +186,10 @@ export interface StateStore {
    * (an unreadable document is skipped); create() is what enforces uniqueness
    * atomically at the write. */
   findBySourceKey(sourceKey: string): Promise<string | null>;
+  /** Whether a workstream with this slug is stored. One key probe — no
+   * document body crosses this seam (a conclusion naming its duplicate must
+   * not load the fleet to check one name). */
+  workstreamExists(slug: string): Promise<boolean>;
   load(slug: string): Promise<WorkstreamDoc>;
   create(core: Omit<WorkstreamCore, 'id' | 'createdAt' | 'status'>): Promise<WorkstreamDoc>;
   /** undefined expectedRevision = serialized arrival (see contract above). */

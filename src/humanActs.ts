@@ -5,6 +5,7 @@
  * optimizes — and wakes the workstream where the coordinator must react.
  */
 
+import { dispositionLabel } from './conclusion.js';
 import { userInfo } from 'node:os';
 import { virtualNow } from './clock.js';
 import { loadPolicies, type PolicyRecord } from './policies.js';
@@ -477,7 +478,7 @@ export async function setPaused(slug: string, paused: boolean): Promise<SetPause
           wake(d, `human reopened the concluded workstream`);
           event(
             'workstream.reopened',
-            `${actor()} reopened the concluded workstream${prior ? ` (prior conclusion from ${prior.passId}: ${prior.summary.slice(0, 120)})` : ''}`,
+            `${actor()} reopened the concluded workstream${prior ? ` (prior conclusion from ${prior.passId}, ${dispositionLabel(prior)}: ${prior.summary.slice(0, 120)})` : ''}`,
             prior?.evidenceIds,
           );
           return;

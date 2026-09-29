@@ -244,6 +244,10 @@ export class SqliteStore implements StateStore {
     return row?.slug ?? null;
   }
 
+  async workstreamExists(slug: string): Promise<boolean> {
+    return this.db.prepare('SELECT 1 FROM workstreams WHERE slug = ? LIMIT 1').get(slug) !== undefined;
+  }
+
   async load(slug: string): Promise<WorkstreamDoc> {
     const row = this.db.prepare('SELECT doc FROM workstreams WHERE slug = ?').get(slug) as
       | { doc: string }

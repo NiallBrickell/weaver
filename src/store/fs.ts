@@ -180,6 +180,10 @@ export class FsStore implements StateStore {
     return null;
   }
 
+  async workstreamExists(slug: string): Promise<boolean> {
+    return fs.existsSync(docPath(slug));
+  }
+
   /** Synchronous read shared by load() and mutate() — mutate must not yield
    * between its revision check and its write (see mutate). */
   private loadSync(slug: string): WorkstreamDoc {

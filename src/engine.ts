@@ -10,6 +10,7 @@
  *   3. If wakes are due, fire them (coalesced) into one coordinator pass.
  */
 
+import { dispositionLabel } from './conclusion.js';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import {
@@ -522,7 +523,7 @@ export async function deliverManagerNotices(slug: string): Promise<number> {
       candidates.push({
         dedupKey,
         kind: 'finished',
-        summary: `${slug} concluded: ${doc.workstream.conclusion.summary.slice(0, 200)}`,
+        summary: `${slug} concluded (${dispositionLabel(doc.workstream.conclusion)}): ${doc.workstream.conclusion.summary.slice(0, 200)}`,
         refId: doc.workstream.conclusion.passId,
       });
     }

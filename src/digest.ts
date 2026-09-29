@@ -20,6 +20,7 @@
  * is read back — never sent a second time.
  */
 
+import { dispositionLabel, dispositionOf } from './conclusion.js';
 import { compactAge } from './activity.js';
 import { operatorPublicOrigin } from './clerkOperatorAuth.js';
 import { virtualNow } from './clock.js';
@@ -189,7 +190,7 @@ function closedItems(input: DigestInput, clean: (value: string) => string, link:
     if (doc.workstream.status === 'done' && conclusion && within(conclusion.atVirtual, input.organizationalNow, WINDOW_MS)) {
       conclusions.push({
         at: conclusion.atVirtual,
-        line: `• :checkered_flag: concluded ${link(slug)} — ${clean(firstLine(conclusion.summary, 160))}`,
+        line: `• :checkered_flag: concluded ${link(slug)}${dispositionOf(conclusion) === 'unclassified' ? '' : ` (${clean(dispositionLabel(conclusion))})`} — ${clean(firstLine(conclusion.summary, 160))}`,
       });
     }
     for (const assignment of doc.assignments) {

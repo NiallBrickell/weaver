@@ -7,6 +7,7 @@
  * remain authoritative.
  */
 
+import { dispositionLabel } from './conclusion.js';
 import * as fs from 'node:fs';
 import type {
   Assignment,
@@ -216,6 +217,7 @@ function currentBoundary(doc: WorkstreamDoc): string[] {
     `- Authority: outbound sends ${doc.workstream.autonomy.sendsRequireApproval ? 'require approval' : 'may proceed within assigned authority'}`,
     `- Execution safety: ${safety.count}/${safety.limit} model starts in rolling ${Math.round(safety.windowSeconds / 60)}m · automatic pause/resume`,
     ...(doc.workstream.status === 'done' && doc.workstream.conclusion ? [
+      `- Disposition (validated at conclusion): ${dispositionLabel(doc.workstream.conclusion)}`,
       `- Coordinator conclusion account (informational): ${flat(doc.workstream.conclusion.summary)}`,
       `- Typed completion evidence IDs (validated at conclusion): ${doc.workstream.conclusion.evidenceIds.join(', ')}`,
     ] : []),

@@ -591,6 +591,12 @@ export class PgStore implements StateStore {
     return r.rowCount ? (r.rows[0].slug as string) : null;
   }
 
+  async workstreamExists(slug: string): Promise<boolean> {
+    await this.ensureReady();
+    const r = await this.pool.query('SELECT 1 FROM workstreams WHERE slug = $1 LIMIT 1', [slug]);
+    return (r.rowCount ?? 0) > 0;
+  }
+
   async load(slug: string): Promise<WorkstreamDoc> {
     await this.ensureReady();
     const cached = this.bodies.get(slug);

@@ -777,7 +777,7 @@ test('cancel_wake retires a probe on typed basis, a failing probe on its own id,
     });
   });
   await runCoordinatorPass(SLUG, ['manual'], executorFor(async (tools) => {
-    const concluded = await tools.get('conclude_workstream')!({ summary: 'watch retired', evidence_ids: ['del_done'] });
+    const concluded = await tools.get('conclude_workstream')!({ summary: 'watch retired', disposition: 'delivered', evidence_ids: ['del_done'] });
     assert.equal(concluded.isError, undefined, text(concluded));
   }));
   doc = await load(SLUG);

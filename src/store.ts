@@ -179,6 +179,15 @@ export async function findBySourceKey(sourceKey: string): Promise<string | null>
   return getStore().findBySourceKey(sourceKey);
 }
 
+/** Whether a workstream with this slug exists — a single key probe at the
+ * StateStore seam, never a load of the fleet. */
+export async function workstreamExists(slug: string): Promise<boolean> {
+  // A name that is not a single path segment names nothing (and must never
+  // reach the fs backend as a path).
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(slug) || slug.includes('..')) return false;
+  return getStore().workstreamExists(slug);
+}
+
 /**
  * Apply a revision-checked mutation. `expectedRevision` must equal the stored
  * revision or the write fails with RevisionConflictError. Returns the new doc.
