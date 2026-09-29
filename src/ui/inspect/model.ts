@@ -1,6 +1,6 @@
 import { compactAge } from '../../activity.js';
 import { dispositionLabel } from '../../conclusion.js';
-import { operatorCapacityPresentation } from '../../coordinatorRunner.js';
+import { operatorCapacityPresentation, RUNNER_PRESENCE_TTL_MS } from '../../coordinatorRunner.js';
 import type { RunnerPresence } from '../../store/types.js';
 import { assignmentBoard, type AssignmentBoardView } from '../../assignmentBoard.js';
 import { virtualNow } from '../../clock.js';
@@ -40,6 +40,34 @@ export interface NeedPresentation {
 
 export type WorkstreamLane = 'needs-you' | 'moving' | 'waiting' | 'ready';
 
+/**
+ * The fleet-status bucket of one job — exactly one per job, decided in
+ * `cardFor` from the same facts that set the card's lane and state label, so
+ * the at-a-glance counts can never disagree with the job cards.
+ *
+ * Precedence for an active job (first match wins):
+ *   needs-you > paused > blocked > degraded > working > waiting
+ * A paused job surfaces no asks (pausing defers them), so the first two never
+ * compete. A job that is running while its next transition is blocked or on a
+ * fallback seat counts as blocked/degraded: the running attempt will finish,
+ * but the fleet cannot continue it on its primary course. `done` holds only
+ * concluded jobs with no open ask.
+ */
+export type FleetBucket = 'needs-you' | 'blocked' | 'degraded' | 'working' | 'waiting' | 'paused' | 'done';
+export type ActiveFleetBucket = Exclude<FleetBucket, 'done'>;
+
+/** Display order of the buckets; also the precedence order for active jobs
+ * except `paused`, which is listed after `waiting` because it is a human
+ * choice rather than a condition to act on. */
+export const FLEET_BUCKETS: readonly FleetBucket[] = ['needs-you', 'blocked', 'degraded', 'working', 'waiting', 'paused', 'done'];
+
+/** How far back a concluded job still counts in the Done bucket. */
+export const FLEET_DONE_WINDOW_MS = 7 * 24 * 60 * 60_000;
+
+export function isFleetBucket(value: string | null | undefined): value is FleetBucket {
+  return !!value && (FLEET_BUCKETS as readonly string[]).includes(value);
+}
+
 export interface LatestFact {
   label: string;
   summary: string;
@@ -74,6 +102,8 @@ export interface WorkstreamCardView {
   managedBy?: string;
   manages: ManagedWorkstreamLink[];
   lane: WorkstreamLane;
+  /** Exactly one fleet-status bucket; see FleetBucket for the precedence. */
+  bucket: ActiveFleetBucket;
   state: string;
   next: string;
   nowAge?: string;
@@ -523,7 +553,7 @@ function cardFor(
       : doc.workstream.status === 'paused'
       ? 'Paused'
       : capacity.unknown && !capacity.blocking && !capacity.executorUnavailable
-        ? 'Capacity unknown'
+        ? 'Runner status unknown'
       : capacity.blocking || capacity.executorUnavailable || wake?.blocking
         ? 'Temporarily blocked'
         : 'Next check scheduled';
@@ -532,7 +562,7 @@ function cardFor(
       : doc.workstream.status === 'paused'
       ? 'Paused by the human'
       : capacity.blocking
-        ? `${capacity.blocking.summary}. ${capacity.blocking.recovery}`
+        ? capacity.blocking.plain
         : capacity.executorUnavailable
           ? capacity.executorUnavailable.summary
           : capacity.unknown
@@ -541,14 +571,35 @@ function cardFor(
     nowAge = doc.workstream.status === 'paused' || !wake ? undefined : compactAge(wake.createdAt, wallNow);
   } else {
     lane = 'ready';
-    state = capacity.degraded ? 'Degraded' : queued ? 'Ready to start' : wake ? wake.remaining > 0 ? 'Retry scheduled' : 'Ready to reconcile' : 'No next step';
-    next = capacity.degraded?.summary ?? queued?.objective ?? (wake ? `${wake.reason}${wake.remaining > 0 ? ` · ${dueLabel(wake.remaining)}` : ''}` : undefined) ?? standing?.title ?? 'No next move scheduled';
+    state = capacity.degraded ? 'On backup model' : queued ? 'Ready to start' : wake ? wake.remaining > 0 ? 'Retry scheduled' : 'Due now' : 'No next step';
+    next = capacity.degraded?.plain ?? queued?.objective ?? (wake ? `${wake.reason}${wake.remaining > 0 ? ` · ${dueLabel(wake.remaining)}` : ''}` : undefined) ?? standing?.title ?? 'No next move scheduled';
     nowAge = queued
       ? compactAge(queued.createdAtVirtual, organizationalNow)
       : wake
         ? compactAge(wake.createdAt, wallNow)
         : undefined;
   }
+
+  // One bucket per job, from the facts above (see FleetBucket). The lane keeps
+  // its own long-standing order; where the bucket outranks a moving lane the
+  // label says so, so a filtered board never shows a card whose state reads
+  // differently from the bucket it was counted in.
+  const blocked = !!pilotUnavailable || !!capacity.blocking || !!capacity.executorUnavailable || !!capacity.unknown ||
+    !!(wake && wake.remaining > 0 && wake.blocking);
+  const bucket: ActiveFleetBucket = lane === 'needs-you'
+    ? 'needs-you'
+    : doc.workstream.status === 'paused'
+      ? 'paused'
+      : blocked
+        ? 'blocked'
+        : capacity.degraded
+          ? 'degraded'
+          : lane === 'moving'
+            ? 'working'
+            : 'waiting';
+  if (lane === 'moving' && bucket === 'blocked') state = `${state} · next step blocked`;
+  if (lane === 'moving' && bucket === 'degraded') state = `${state} · on backup model`;
+  if (lane === 'moving' && bucket === 'paused') state = `${state} · paused`;
 
   return {
     slug: doc.workstream.slug,
@@ -560,6 +611,7 @@ function cardFor(
     ...(doc.workstream.managedBy ? { managedBy: doc.workstream.managedBy.slug } : {}),
     manages: managed,
     lane,
+    bucket,
     state,
     next: firstLine(next),
     ...(nowAge ? { nowAge } : {}),
@@ -630,6 +682,150 @@ export function fleetBoard(
       adoptedDeliverableCount: doc.deliverables.filter((deliverable) => deliverable.adopted).length,
     }));
   return { lanes, needs, done, unreadable, policyCount: policies.length };
+}
+
+export interface FleetBucketView {
+  key: FleetBucket;
+  label: string;
+  /** Plain-words meaning, shown as the tile/dot tooltip and in the docs. */
+  description: string;
+  count: number;
+  slugs: string[];
+}
+
+export interface FleetRunnerLineView {
+  tone: 'healthy' | 'warning' | 'critical';
+  summary: string;
+  /** Fresh heartbeat and able to commit. */
+  healthy: string[];
+  /** Fresh heartbeat but cannot commit (RunnerPresence.degraded): it
+   * dispatches nothing, so the fleet does not advance on it. */
+  degraded: Array<{ id: string; reason: string }>;
+  /** Heartbeat older than the presence TTL but within the last day. Runners
+   * silent for longer count as retired and are only counted. */
+  stale: Array<{ id: string; age: string; reason?: string }>;
+  retired: number;
+}
+
+export interface FleetGlanceView {
+  tone: 'healthy' | 'warning' | 'critical';
+  /** "All clear", or e.g. "3 need you · 2 degraded · 1 blocked". */
+  headline: string;
+  buckets: FleetBucketView[];
+  runners: FleetRunnerLineView;
+}
+
+const BUCKET_COPY: Record<FleetBucket, { label: string; description: string }> = {
+  'needs-you': { label: 'Needs you', description: 'Waiting for your answer, approval, or review.' },
+  blocked: { label: 'Blocked', description: 'Stuck for now: no model or runner can take it, or the approval service is down.' },
+  degraded: { label: 'Degraded', description: 'Running on a backup model because the main model is limited.' },
+  working: { label: 'Working', description: 'An agent is working on it right now.' },
+  waiting: { label: 'Waiting', description: 'Nothing wrong. The next step is scheduled.' },
+  paused: { label: 'Paused', description: 'Paused by someone. Nothing runs until it is resumed.' },
+  done: { label: 'Done', description: 'Finished in the last 7 days.' },
+};
+
+export function fleetBucketLabel(bucket: FleetBucket): string {
+  return BUCKET_COPY[bucket].label;
+}
+
+/** Runner facts the web host can measure itself (filesystem store only). */
+export interface LocalRunnerObservation {
+  state: 'running' | 'stalled' | 'offline';
+}
+
+const RUNNER_RETIRED_MS = 24 * 60 * 60_000;
+
+/**
+ * Reduce runner presence to the runner line: healthy, degraded (cannot
+ * commit, so it dispatches nothing — a fresh heartbeat is not health), and
+ * stale. With no published presence at all, a local runner the web host
+ * measured itself stands in, so a laptop fleet reads the same way.
+ */
+export function fleetRunnerLine(
+  presences: readonly RunnerPresence[],
+  local?: LocalRunnerObservation,
+  wallNow = new Date(),
+): FleetRunnerLineView {
+  const latest = new Map<string, RunnerPresence>();
+  for (const presence of presences) {
+    const at = Date.parse(presence.heartbeatAt);
+    const known = latest.get(presence.runnerId);
+    if (Number.isFinite(at) && (!known || at > Date.parse(known.heartbeatAt))) latest.set(presence.runnerId, presence);
+  }
+  const healthy: string[] = [];
+  const degraded: FleetRunnerLineView['degraded'] = [];
+  const stale: FleetRunnerLineView['stale'] = [];
+  let retired = 0;
+  for (const presence of [...latest.values()].sort((a, b) => a.runnerId.localeCompare(b.runnerId))) {
+    const ageMs = wallNow.getTime() - Date.parse(presence.heartbeatAt);
+    if (ageMs <= RUNNER_PRESENCE_TTL_MS) {
+      if (presence.degraded) degraded.push({ id: presence.runnerId, reason: presence.degraded });
+      else healthy.push(presence.runnerId);
+    } else if (ageMs <= RUNNER_RETIRED_MS) {
+      stale.push({
+        id: presence.runnerId,
+        age: compactAge(presence.heartbeatAt, wallNow),
+        ...(presence.degraded ? { reason: presence.degraded } : {}),
+      });
+    } else {
+      retired += 1;
+    }
+  }
+  if (!healthy.length && !degraded.length && local?.state === 'running') healthy.push('local runner');
+  if (!healthy.length && !degraded.length && local?.state === 'stalled') {
+    degraded.push({ id: 'local runner', reason: 'its process is there but it has stopped checking in' });
+  }
+
+  const parts: string[] = [];
+  for (const runner of degraded) parts.push(`Runner ${runner.id} has stopped taking jobs: ${runner.reason}`);
+  if (healthy.length) parts.push(`${healthy.length} runner${healthy.length === 1 ? '' : 's'} online: ${healthy.join(', ')}`);
+  else if (!degraded.length) parts.push('No runner is online. Nothing is lost; jobs resume when one starts');
+  for (const runner of stale) parts.push(`${runner.id} hasn't checked in for ${runner.age}`);
+  return {
+    tone: degraded.length ? 'critical' : !healthy.length || stale.length ? 'warning' : 'healthy',
+    summary: parts.join(' · '),
+    healthy,
+    degraded,
+    stale,
+    retired,
+  };
+}
+
+/**
+ * The one fleet-status model behind the sidebar block, the board strip, and
+ * the fleet notice's job counts. It only groups the cards `fleetBoard`
+ * already classified (each card carries its bucket) — never a second
+ * classifier that could disagree with the job cards.
+ */
+export function fleetGlance(
+  board: FleetBoardView,
+  runners: FleetRunnerLineView,
+  organizationalNow = virtualNow(),
+): FleetGlanceView {
+  const slugs = Object.fromEntries(FLEET_BUCKETS.map((bucket) => [bucket, [] as string[]])) as Record<FleetBucket, string[]>;
+  for (const card of Object.values(board.lanes).flat()) slugs[card.bucket].push(card.slug);
+  const cutoff = organizationalNow.getTime() - FLEET_DONE_WINDOW_MS;
+  for (const item of board.done) {
+    const at = Date.parse(item.concludedAt);
+    if (Number.isFinite(at) && at >= cutoff) slugs.done.push(item.slug);
+  }
+  const buckets = FLEET_BUCKETS.map((key) => ({ key, ...BUCKET_COPY[key], count: slugs[key].length, slugs: slugs[key] }));
+  const count = (key: FleetBucket) => slugs[key].length;
+  const flags = [
+    runners.degraded.length ? `${runners.degraded.length} runner${runners.degraded.length === 1 ? '' : 's'} down` : '',
+    !runners.healthy.length && !runners.degraded.length ? 'No runner online' : '',
+    count('needs-you') ? `${count('needs-you')} need${count('needs-you') === 1 ? 's' : ''} you` : '',
+    count('blocked') ? `${count('blocked')} blocked` : '',
+    count('degraded') ? `${count('degraded')} on a backup model` : '',
+    runners.stale.length ? `${runners.stale.length} runner${runners.stale.length === 1 ? '' : 's'} not checking in` : '',
+  ].filter(Boolean);
+  return {
+    tone: runners.tone === 'critical' ? 'critical' : flags.length ? 'warning' : 'healthy',
+    headline: flags.length ? flags.join(' · ') : 'All clear',
+    buckets,
+    runners,
+  };
 }
 
 export function workstreamPage(

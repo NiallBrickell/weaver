@@ -439,12 +439,15 @@ export function providerCapacityHeadline(
 }
 
 export interface CapacityPresentation {
-  /** Present only when capacity prevents the next configured model transition. */
-  blocking?: { summary: string; retryAt: string; recovery: string; needsHuman: boolean };
+  /** Present only when capacity prevents the next configured model transition.
+   * `plain` is the same fact in words for a teammate (the operator
+   * workspace); `summary` keeps the exact role/provider/model line that the
+   * terminal status and watch views print. */
+  blocking?: { summary: string; plain: string; retryAt: string; recovery: string; needsHuman: boolean };
   /** Present when a preferred seat is parked but a later configured seat can
    * still make the transition. Typed so consumers never infer state by
    * parsing the human-readable details list. */
-  degraded?: { summary: string };
+  degraded?: { summary: string; plain: string };
   details: string[];
   /** Latest stored waits that belong to a configured role with intended work. */
   relevantSourceIds: string[];
@@ -519,13 +522,27 @@ function waitNeedsHuman(wait: InfrastructureWait): boolean {
   return wait.recovery !== 'automatic_retry';
 }
 
-function waitPosition(wait: InfrastructureWait, role: string, now: Date): string {
-  const category = wait.kind === 'usage_limit' || wait.kind === 'sdk_credit_exhausted'
+function waitCategory(wait: InfrastructureWait): string {
+  return wait.kind === 'usage_limit' || wait.kind === 'sdk_credit_exhausted'
     ? 'usage limited'
     : wait.kind === 'session_limit' ? 'session limited'
       : wait.kind === 'auth' ? 'login required'
         : wait.kind === 'rate_limit' ? 'rate limited'
           : 'temporarily unavailable';
+}
+
+/** Why a model cannot be used right now, in words a teammate reads. */
+function plainWait(wait: InfrastructureWait): string {
+  const why = wait.kind === 'usage_limit' || wait.kind === 'sdk_credit_exhausted' || wait.kind === 'session_limit'
+    ? 'has hit its usage limit'
+    : wait.kind === 'auth' ? 'needs someone to log in again'
+      : wait.kind === 'rate_limit' ? 'is rate limited'
+        : 'is unavailable';
+  return `${waitProviderName(wait)} ${wait.model} ${why}`;
+}
+
+function waitPosition(wait: InfrastructureWait, role: string, now: Date): string {
+  const category = waitCategory(wait);
   const observed = wait.observedIn ? ` · observed in ${wait.observedIn}` : '';
   return `${role} ${waitProviderName(wait)} ${wait.model} ${category} · retry in ${relativeUntil(wait.retryAt, now)}${observed}`;
 }
@@ -577,7 +594,10 @@ export function capacityPresentation(
     });
 
   const degraded = coordinatorIntent && primary && firstAvailableTarget
-    ? { summary: `${waitPosition(primary, 'coordinator primary', now)} · fallback ${firstAvailableTarget.model} available` }
+    ? {
+        summary: `${waitPosition(primary, 'coordinator primary', now)} · fallback ${firstAvailableTarget.model} available`,
+        plain: `Using backup model ${firstAvailableTarget.model} because ${plainWait(primary)}; trying it again in ${relativeUntil(primary.retryAt, now)}.`,
+      }
     : undefined;
   if (degraded) details.push(degraded.summary);
   // Blocked only when every seat in the chain has an active wait; the earliest
@@ -691,6 +711,9 @@ export function capacityPresentation(
     ...(blockingWait ? {
       blocking: {
         summary: waitPosition(blockingWait, blockingRole, now),
+        plain: waitNeedsHuman(blockingWait)
+          ? `No model can take this job: ${plainWait(blockingWait)}. ${infrastructureWaitSummary(blockingWait, doc.workstream.slug)}`
+          : `No model can take this job right now: ${plainWait(blockingWait)}. Trying again in ${relativeUntil(blockingWait.retryAt, now)}.`,
         retryAt: blockingWait.retryAt,
         recovery: infrastructureWaitSummary(blockingWait, doc.workstream.slug),
         needsHuman: waitNeedsHuman(blockingWait),

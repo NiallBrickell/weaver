@@ -704,7 +704,7 @@ test('fleet page groups one unavailable approval service and can start a constra
   const html = await response.text();
   assert.match(html, /data-testid="operator-fleet-page"/);
   assert.match(html, /data-testid="fleet-status-claims"/);
-  assert.match(html, /2 gated actions across 2 jobs remain safe and waiting/);
+  assert.match(html, /2 actions in 2 jobs are waiting for the approval service, which isn(&#x27;|')t responding/);
   assert.equal((html.match(/data-testid="fleet-incident-approval-service-unavailable"/g) ?? []).length, 1);
   assert.match(html, /Agent execution.*Offline/s);
   assert.match(html, /href="\/fleet" aria-current="page"/);
@@ -761,8 +761,10 @@ test('fleet health reports dormant routines without waiting for a model-generate
   });
 
   const html = await (await fetch(`${base}/board`)).text();
-  assert.match(html, /Fleet has stalled routines/);
-  assert.match(html, /routine health gaps affect 1 outcome/);
+  const strip = html.match(/data-testid="fleet-status-strip"[\s\S]*?<\/section>/)?.[0] ?? '';
+  assert.match(strip, /1 routine is behind schedule\./);
+  // The status strip speaks in jobs and plain words, never harness vocabulary.
+  assert.doesNotMatch(strip, /routine health gap|outcome|durable|gated external effect|execution capacity/i);
 });
 
 test('fleet polling revision changes when observable runner state changes without a Workstream write', async () => {
@@ -1372,13 +1374,13 @@ test('a shared-Postgres UI reports execution only from fresh shared runner prese
     assert.equal(response.status, 200);
     const html = await response.text();
     assert.match(html, /Shared fleet/);
-    assert.match(html, /Weaver is running/);
-    assert.match(html, /Fresh shared runner heartbeat: gcp-standby/);
+    assert.match(html, /data-testid="fleet-status-headline"[^>]*>All clear</);
+    assert.match(html, /1 runner online: gcp-standby/);
     const fleet = await (await fetch(`${base}/fleet`)).text();
     assert.match(fleet, /Shared team database · Connected/);
     assert.match(fleet, /Running · gcp-standby/);
-    assert.match(fleet, /Shared TTL heartbeats prove/);
-    assert.doesNotMatch(html, /Runner is offline/);
+    assert.match(fleet, /Runners check in every few seconds/);
+    assert.doesNotMatch(html, /No runner is running|No runner online/);
     const intake = await (await fetch(`${base}/new`)).text();
     assert.match(intake, /<option value="gcp-standby">gcp-standby<\/option>/);
   } finally {

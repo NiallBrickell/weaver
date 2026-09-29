@@ -334,8 +334,8 @@ test('fleet capacity renders a limited primary with an available fallback as deg
 
     const view = fleetBoard([await load('degraded-capacity')], [], new Map(), [], now, now);
     assert.equal(view.lanes.waiting.length, 0);
-    assert.equal(view.lanes.ready[0]!.state, 'Degraded');
-    assert.match(view.lanes.ready[0]!.next, /fallback gpt-fallback available/);
+    assert.equal(view.lanes.ready[0]!.state, 'On backup model');
+    assert.match(view.lanes.ready[0]!.next, /^Using backup model gpt-fallback because Claude claude-primary is rate limited; trying it again in 1h\.$/);
   });
 });
 
@@ -399,7 +399,7 @@ test('fleet capacity does not let overdue or unconfigured raw provider wakes par
     const docs = await Promise.all(['overdue-capacity', 'unconfigured-capacity'].map(load));
     const view = fleetBoard(docs, [], new Map(), [], now, now);
     assert.equal(view.lanes.waiting.length, 0);
-    assert.equal(view.lanes.ready.find((card) => card.slug === 'overdue-capacity')!.state, 'Ready to reconcile');
+    assert.equal(view.lanes.ready.find((card) => card.slug === 'overdue-capacity')!.state, 'Due now');
     assert.equal(view.lanes.ready.find((card) => card.slug === 'unconfigured-capacity')!.state, 'Retry scheduled');
     assert.match(view.lanes.ready.find((card) => card.slug === 'unconfigured-capacity')!.next, /Scheduled provider retry reconciliation/);
   });
@@ -447,7 +447,7 @@ test('fleet capacity waits only when the shared projection reports a block', asy
 
     const view = fleetBoard([await load('capacity-blocked')], [], new Map(), [], now, now);
     assert.equal(view.lanes.waiting[0]!.state, 'Temporarily blocked');
-    assert.match(view.lanes.waiting[0]!.next, /^coordinator OpenAI gpt-fallback rate limited/);
+    assert.match(view.lanes.waiting[0]!.next, /^No model can take this job right now: OpenAI gpt-fallback is rate limited\. Trying again in 30m\.$/);
   });
 });
 
