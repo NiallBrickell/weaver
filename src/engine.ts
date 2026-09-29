@@ -28,6 +28,15 @@ import {
   retireLegacyDollarBudgetCard,
 } from './executionSafety.js';
 import { engineCommandEnv, loadRedactionSecrets, loadSecrets, redactSecrets } from './secrets.js';
+import {
+  actionGitHardenedEnv,
+  CHECKOUT_REFUSED_EVENT,
+  checkoutRefusal,
+  checkoutRefusalToken,
+  describeCheckoutRefusal,
+  recordCheckoutRefusal,
+  type CheckoutRefusal,
+} from './safeGit.js';
 import { runWorker } from './worker.js';
 import { providerLookup, providerSend, SendCrashedAfterEgress } from './world.js';
 import { arrive, listRunnerPresence, load, mutate, newId, readArtifact, RevisionConflictError, tryTickLock, verifyArtifact, writeArtifact } from './store.js';
@@ -143,6 +152,15 @@ export async function runActionCommand(
   timeoutMs: number,
 ): Promise<{ ok: boolean; output: string }> {
   assertRunnerEnabled();
+  // Every approved command (exec.run, its verifier, a probe) meets the same
+  // git boundary as the harness's own git: nothing runs in a checkout whose
+  // control plane can execute programs, and any git the command starts —
+  // directly, via gh, via a build tool — carries the neutralising overrides
+  // at command scope. The caller's GIT_CONFIG entries (the GitHub App's
+  // process-local credential helper) keep their place ahead of them.
+  const refusal = checkoutRefusal(cwd);
+  if (refusal) return { ok: false, output: describeCheckoutRefusal(refusal) };
+  const hardenedEnv = actionGitHardenedEnv(env);
   return new Promise((resolve) => {
     const shell = actionShell() ?? (process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : '/bin/sh');
     const args = process.platform === 'win32'
@@ -152,7 +170,7 @@ export async function runActionCommand(
     try {
       child = spawn(shell, args, {
         cwd,
-        env,
+        env: hardenedEnv,
         detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -266,6 +284,16 @@ async function actionExecutionSecrets(
   };
 }
 
+/** The action's cwd is a checkout the harness refuses to run git in
+ * (safeGit.ts). Durable, operator-repairable configuration: it settles like
+ * any other pre-claim preparation failure and also leaves the typed refusal. */
+export class ActionCheckoutRefusedError extends GitHubAppPreparationError {
+  override name = 'ActionCheckoutRefusedError';
+  constructor(readonly refusal: CheckoutRefusal) {
+    super(describeCheckoutRefusal(refusal));
+  }
+}
+
 /** A known credential/configuration failure before the one-shot claim cannot
  * have changed the world. Settle it as failed with zero attempts, wake the
  * coordinator once to repair the assignment, and keep it out of Needs You. */
@@ -292,6 +320,12 @@ async function settleActionPreparationFailure(
       `${assignmentId} failed before its one-shot claim with zero attempts and no external effect: ${detail}`,
       [assignmentId],
     );
+    if (error instanceof ActionCheckoutRefusedError) {
+      const token = checkoutRefusalToken(error.refusal);
+      if (!d.events.some((e) => e.type === CHECKOUT_REFUSED_EVENT && e.summary.includes(token))) {
+        event(CHECKOUT_REFUSED_EVENT, `${describeCheckoutRefusal(error.refusal)} ${token}`, [assignmentId]);
+      }
+    }
     settled = true;
   });
   return settled;
@@ -899,6 +933,13 @@ export async function preflightApprovedAction(slug: string, assignmentId: string
   const asg = doc.assignments.find((a) => a.id === assignmentId);
   if (!asg?.exec || asg.kind !== 'action') return false;
   if (asg.state !== 'queued' || asg.attempts.length > 0 || !actionHasMatchingApproval(asg)) return false;
+  // A checkout whose git control plane can execute programs gets no host
+  // command at all — not this verifier, not the approved command, not a
+  // worker's readback. It is known configuration before the one-shot claim,
+  // so it settles exactly like a credential preparation failure: zero
+  // attempts, no external effect, the refusal named on the stream.
+  const refusal = checkoutRefusal(asg.exec.cwd);
+  if (refusal) throw new ActionCheckoutRefusedError(refusal);
   // Observation-shaped deterministic commands need to run to produce their
   // current result. Their verifier still judges the result AFTER the one-shot
   // execution; it is simply not meaningful as an already-done check. Return
@@ -1002,6 +1043,15 @@ export async function guardRepoEgress(
   strandedIO: StrandedPushIO = liveStrandedPushIO,
 ): Promise<boolean> {
   if (!isRepoEgressAction(asg) || !asg.exec) return true;
+
+  // A checkout the harness refuses to run git in gives this gate nothing to
+  // read. Abstain, as on any tooling failure, but on the record: the action's
+  // own preflight then settles it before any attempt (ActionCheckoutRefusedError).
+  const refusal = checkoutRefusal(asg.exec.cwd);
+  if (refusal) {
+    await recordCheckoutRefusal(slug, refusal, [asg.id]);
+    return true;
+  }
 
   // A settled PR on the push target is the one repo-egress fact that loses
   // work outright, so it is judged first and it blocks.

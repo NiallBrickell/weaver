@@ -43,9 +43,7 @@
  * merged PR are both wrong.
  */
 
-import { execFileSync } from 'node:child_process';
-
-import { engineCommandEnv } from './secrets.js';
+import { runHarnessCommand } from './safeGit.js';
 import type { Assignment } from './types.js';
 
 /** One open PR as reported by `gh pr list`, reduced to what deconfliction
@@ -98,23 +96,25 @@ export function detectRepoCollisions(
 }
 
 /** Run a git/gh command in `cwd`, returning trimmed stdout, or `null` on ANY
- * failure (tool missing, not a repo, network down, non-zero exit). The gate
+ * failure (tool missing, not a repo, network down, non-zero exit, or a
+ * checkout whose git control plane the harness refuses to run). The gate
  * fails OPEN on tooling failure (see repoEgressCollisions), so callers treat a
- * null the same as "no data". */
+ * null the same as "no data"; a refused checkout is recorded by the engine,
+ * which never executes an approved command there either. */
 function tryRun(
-  bin: string,
+  bin: 'git' | 'gh',
   args: string[],
   cwd: string,
   environment: Record<string, string> = {},
 ): string | null {
   try {
-    return execFileSync(bin, args, {
+    // Harness-authored, but it runs in a model-influenced checkout whose Git
+    // configuration can execute commands (gh runs git internally too): the
+    // hardened runner refuses a poisoned checkout and never hands git the
+    // runner's secrets or the checkout's exec paths.
+    return runHarnessCommand(bin, args, {
       cwd,
-      // Harness-authored, but it runs in a model-influenced checkout whose
-      // Git configuration can execute commands: never the runner's secrets.
-      env: engineCommandEnv(environment),
-      encoding: 'utf8',
-      timeout: 30_000,
+      environment,
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
   } catch {

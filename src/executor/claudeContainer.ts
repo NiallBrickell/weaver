@@ -47,7 +47,7 @@ import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import type { SpawnOptions, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 import { WORKER_MEMORY_LIMIT_ENV, workerMemoryLimitArgs } from './containerLimits.js';
 import { OPENHANDS_AGENT_SERVER_IMAGE, rewriteLoopbackHostsForContainer } from './openHands.js';
-import { assertWorkerDirectoriesAllowed } from './workspaceMounts.js';
+import { assertWorkerDirectoriesAllowed, gitControlPlaneOverlayArgs } from './workspaceMounts.js';
 
 export interface ClaudeContainerConfig {
   /** Image the worker runs in. Defaults to the pinned OpenHands worker image,
@@ -216,6 +216,10 @@ export function planContainerRun(
     mounted.add(canonical);
     args.push('--volume', `${canonical}:${canonical}:ro`);
   }
+  // The workspace is read-write so the worker can commit, but the git control
+  // plane inside it (config, hooks, worktree pointers) is pinned read-only:
+  // host-side git later runs in this checkout as the runner (safeGit.ts).
+  args.push(...gitControlPlaneOverlayArgs([{ hostPath: run.cwd, containerPath: run.cwd, readOnly: false }]));
   args.push('--env', `HOME=${CONTAINER_HOME}`, '--env', 'IS_SANDBOX=1');
   for (const name of forwardedNames) args.push('--env', name);
   // The worker image has an entrypoint of its own (the OpenHands agent server,

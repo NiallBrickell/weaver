@@ -13,6 +13,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+import { actionGitHardenedEnv, checkoutRefusal, describeCheckoutRefusal, harnessGitEnv } from './safeGit.js';
 import { engineCommandEnv, loadExecutorSecrets } from './secrets.js';
 import type { Assignment } from './types.js';
 
@@ -450,13 +451,18 @@ export function githubRepositoryFromCwd(cwd: string): string {
       'GitHub App authentication could not resolve cwd origin (path is not visible on this runner)',
     );
   }
+  // The checkout is model-influenced: a git control plane that can execute
+  // programs is refused before git runs there, and that refusal is durable,
+  // operator-repairable configuration exactly like an unusable origin.
+  const refusal = checkoutRefusal(cwd);
+  if (refusal) throw new GitHubAppScopeUnresolvedError(describeCheckoutRefusal(refusal));
   let remote: string;
   try {
     remote = execFileSyncImpl('git', ['remote', 'get-url', 'origin'], {
       cwd,
-      // The checkout is model-influenced; its Git configuration must not see
-      // the runner's store URL or credentials.
-      env: engineCommandEnv(),
+      // Never the runner's store URL or credentials, never the checkout's
+      // exec paths (safeGit.ts).
+      env: harnessGitEnv(),
       encoding: 'utf8',
       timeout: 10_000,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -504,8 +510,13 @@ esac
       '-c', `core.askPass=${askpassPath}`,
       'clone', `https://github.com/${repository}.git`, destination,
     ], {
+      // The scrubbed engine environment, never the runner's whole one
+      // (WEAVER_STORE rode into every clone until 2026-09-29), plus the
+      // neutralising overrides. The operator's system/global configuration
+      // is kept (LFS, URL rewrites): there is no checkout yet for a worker to
+      // have poisoned, and those files sit outside every worker mount.
       env: {
-        ...process.env,
+        ...actionGitHardenedEnv(engineCommandEnv()),
         GIT_ASKPASS: askpassPath,
         GIT_TERMINAL_PROMPT: '0',
         WEAVER_GITHUB_GIT_TOKEN: token,

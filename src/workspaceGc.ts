@@ -35,11 +35,11 @@
  * naming a workspace.
  */
 
-import { execFileSync } from 'node:child_process';
 import { readdirSync, rmSync, statSync, statfsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { workerWorkspaceRoot } from './executor/workspaceMounts.js';
+import { PoisonedCheckoutError, runHarnessGit } from './safeGit.js';
 import { closeStore, listWorkstreams, load } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 
@@ -155,24 +155,35 @@ export function gitRepositoriesUnder(dir: string, depth = GIT_SEARCH_DEPTH): str
 }
 
 function git(repo: string, args: string[]): string {
-  return execFileSync('git', ['-c', 'safe.directory=*', ...args], {
+  // The hardened runner (safeGit.ts): it refuses a checkout whose git control
+  // plane can execute programs and runs with the scrubbed engine environment.
+  // This nightly job used to hand every model-writable checkout the runner's
+  // whole environment — WEAVER_STORE included — and obey its repository
+  // configuration. safe.directory=* because a container worker may own the
+  // files it wrote.
+  return runHarnessGit(args, {
     cwd: repo,
-    encoding: 'utf8',
-    timeout: GIT_TIMEOUT_MS,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    environment: { GIT_OPTIONAL_LOCKS: '0' },
+    extraConfig: [['safe.directory', '*']],
+    timeoutMs: GIT_TIMEOUT_MS,
   });
 }
 
 /** Why a repository still holds work the fleet has not shipped, or null when
  * everything in it is committed and on a remote. Errors count as unshipped:
- * a repository git cannot read is not one to delete. */
+ * a repository git cannot read is not one to delete, and neither is one whose
+ * git configuration the harness refuses to run — it is kept, with the refusal
+ * named, for the operator to inspect. */
 export function unshippedWork(repo: string): string | null {
   try {
     if (git(repo, ['status', '--porcelain', '--untracked-files=normal']).trim() !== '') return 'uncommitted changes';
     if (git(repo, ['log', '--branches', '--not', '--remotes', '--oneline', '-1']).trim() !== '') return 'commits on no remote';
     return null;
   } catch (error) {
+    if (error instanceof PoisonedCheckoutError) {
+      const { findings } = error.refusal;
+      return `git refused, its control plane can execute programs (${findings.slice(0, 3).join('; ')}${findings.length > 3 ? '; …' : ''})`;
+    }
     const detail = error instanceof Error ? error.message.split('\n')[0] : String(error);
     return `git could not read it (${detail})`;
   }

@@ -1,7 +1,8 @@
-import { lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { repositoryLayout } from '../safeGit.js';
 import { executorSecretsPath } from '../secrets.js';
 import { weaverHome } from '../store.js';
 
@@ -177,6 +178,122 @@ export function assertWorkerDirectoriesAllowed(directories: readonly string[]): 
   }
 }
 
+export interface ContainerMount {
+  /** The host path handed to Docker (the container path is derived from it). */
+  hostPath: string;
+  containerPath: string;
+  readOnly: boolean;
+}
+
+/** How deep under a mounted source existing repositories are looked for. */
+const CONTROL_PLANE_SEARCH_DEPTH = 3;
+
+function repositoriesUnder(root: string, depth: number): string[] {
+  const found: string[] = [];
+  const visit = (dir: string, remaining: number) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (entries.some((entry) => entry.name === '.git')) found.push(dir);
+    if (remaining === 0) return;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (entry.name === '.git' || entry.name === 'node_modules') continue;
+      visit(join(dir, entry.name), remaining - 1);
+    }
+  };
+  visit(root, depth);
+  return found;
+}
+
+/**
+ * Read-only bind mounts that pin the git control plane of every repository a
+ * read-write mount already exposes: the common `config`, the `hooks`
+ * directory (created first when missing, so the worker cannot create it),
+ * any `config.worktree`, a linked worktree's `.git` gitfile and its
+ * `commondir` pointer. The worker keeps committing — objects, refs, index
+ * and logs stay writable — but cannot turn the checkout into code the
+ * runner's host git would execute (safeGit.ts).
+ *
+ * This raises the bar; it is not the boundary. A file that does not exist
+ * cannot be bind-mounted (a regular repository's absent `commondir`), a
+ * worker may rename `.git` away and write a fresh one, and a repository the
+ * worker clones itself is its own from birth. The boundary is the host-side
+ * refusal in safeGit.ts, which inspects the checkout before every host git.
+ */
+export function gitControlPlaneOverlays(mounts: readonly ContainerMount[]): WorkspacePathMapping[] {
+  const writable = mounts
+    .filter((mount) => !mount.readOnly)
+    .map((mount) => {
+      let canonical: string;
+      try {
+        canonical = realpathSync(mount.hostPath);
+      } catch {
+        canonical = resolve(mount.hostPath);
+      }
+      return { ...mount, canonical };
+    });
+  const containerPathFor = (hostPath: string): { hostPath: string; containerPath: string } | null => {
+    let canonical: string;
+    try {
+      canonical = realpathSync(hostPath);
+    } catch {
+      return null;
+    }
+    // The deepest writable mount that exposes the path decides where the
+    // worker sees it.
+    const owner = writable
+      .filter((mount) => within(canonical, mount.canonical))
+      .sort((a, b) => b.canonical.length - a.canonical.length)[0];
+    if (!owner) return null;
+    const nested = relative(owner.canonical, canonical);
+    return {
+      hostPath: canonical,
+      containerPath: nested === '' ? owner.containerPath : posix.join(owner.containerPath, toPosixPath(nested)),
+    };
+  };
+  const overlays = new Map<string, WorkspacePathMapping>();
+  for (const mount of writable) {
+    for (const repository of repositoriesUnder(mount.canonical, CONTROL_PLANE_SEARCH_DEPTH)) {
+      const layout = repositoryLayout(repository);
+      if (!layout) continue;
+      const hooks = join(layout.commonDir, 'hooks');
+      if (containerPathFor(layout.commonDir) && !existsSync(hooks)) {
+        try {
+          mkdirSync(hooks);
+        } catch {
+          // Unwritable here means unwritable for the worker too.
+        }
+      }
+      const controlPaths = [
+        join(layout.commonDir, 'config'),
+        hooks,
+        join(layout.commonDir, 'config.worktree'),
+        join(layout.gitDir, 'config.worktree'),
+        join(layout.gitDir, 'commondir'),
+        ...(layout.dotGitIsFile ? [layout.dotGit] : []),
+      ];
+      for (const path of controlPaths) {
+        if (!existsSync(path)) continue;
+        const mapped = containerPathFor(path);
+        if (mapped) overlays.set(mapped.containerPath, mapped);
+      }
+    }
+  }
+  return [...overlays.values()].sort((a, b) => a.containerPath.localeCompare(b.containerPath));
+}
+
+/** Docker arguments for gitControlPlaneOverlays. */
+export function gitControlPlaneOverlayArgs(mounts: readonly ContainerMount[]): string[] {
+  return gitControlPlaneOverlays(mounts).flatMap(({ hostPath, containerPath }) => [
+    '--volume',
+    `${hostPath}:${containerPath}:ro`,
+  ]);
+}
+
 export interface WorkspacePathMapping {
   hostPath: string;
   containerPath: string;
@@ -262,10 +379,15 @@ export function planWorkspaceMounts(request: WorkspaceMountRequest): WorkspaceMo
   const rewrittenPrompt = rewritePathReferences(request.prompt, pathMappings);
 
   return {
-    dockerArgs: mounts.flatMap(({ hostPath, containerPath }) => [
-      '--volume',
-      `${hostPath}:${containerPath}:rw`,
-    ]),
+    dockerArgs: [
+      ...mounts.flatMap(({ hostPath, containerPath }) => [
+        '--volume',
+        `${hostPath}:${containerPath}:rw`,
+      ]),
+      // After the read-write sources they sit inside: the worker commits, but
+      // cannot rewrite the git configuration or hooks host git would obey.
+      ...gitControlPlaneOverlayArgs(mounts.map((mount) => ({ ...mount, readOnly: false }))),
+    ],
     mounts,
     pathMappings,
     prompt: appendMappingSuffix(rewrittenPrompt, pathMappings),
