@@ -48,6 +48,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { virtualNow } from './clock.js';
+import { commandHasEgress } from './egressGate.js';
 import {
   GitHubAppHostVisibilityError,
   GitHubAppPreparationError,
@@ -219,6 +220,11 @@ export function validateProbeRequest(
 ): { spec: ProbeSpec; specHash: string; firstCheckAt: string } {
   const command = request.command;
   if (!command.trim()) throw new Error('probe command must not be empty');
+  // A probe observes. One whose own text pushes, opens or merges a PR, or
+  // deploys would be a repeatedly-run egress around the engine's egress gate.
+  if (commandHasEgress(command)) {
+    throw new Error('a probe may only observe: this command contains a repo egress or deploy (push, PR create/merge, a GitHub API write, a publish) — dispatch that as an action instead');
+  }
   const bytes = Buffer.byteLength(command, 'utf8');
   if (bytes > PROBE_COMMAND_MAX_BYTES) {
     throw new Error(`probe command is ${bytes} bytes; the limit is ${PROBE_COMMAND_MAX_BYTES} — a probe is one bounded check, not a script`);
@@ -576,6 +582,9 @@ async function checkProbe(
     }
     assertRunnerEnabled();
     report.ran.push(wake.id);
+    // Re-checked at run time for probes approved before the classifier
+    // existed: an observation is never allowed to become the egress.
+    if (commandHasEgress(spec.command)) throw new ProbeConfigError('probe command contains a repo egress or deploy; a probe may only observe');
     const result = await opts.run(spec.command, spec.cwd, prepared.env, PROBE_TIMEOUT_MS);
     if (!result.ok) failure = result.output || 'probe command failed with no output';
     else if (Buffer.byteLength(result.output, 'utf8') > PROBE_STDOUT_MAX_BYTES) {

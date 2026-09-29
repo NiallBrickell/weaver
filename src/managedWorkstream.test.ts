@@ -66,7 +66,7 @@ function makeManaged(managerSlug: string, slug: string) {
     successCriteria: [],
     constraints: [],
     tags: [],
-  });
+  }, 'coordinator');
 }
 
 beforeEach(() => {
@@ -100,14 +100,18 @@ test('create_workstream builds the new doc only from explicit tool args', async 
     constraints: ['never touch Y'],
     tags: ['child-tag'],
   };
-  const managed = await createManagedWorkstream('mgr-a', args);
+  const managed = await createManagedWorkstream('mgr-a', args, 'coordinator');
 
   // Fields equal exactly what was passed — nothing more, nothing less.
   assert.equal(managed.workstream.slug, args.slug);
   assert.equal(managed.workstream.title, args.title);
   assert.equal(managed.workstream.objective, args.objective);
   assert.deepEqual(managed.workstream.successCriteria, args.successCriteria);
-  assert.deepEqual(managed.workstream.constraints, args.constraints);
+  // H1: the coordinator's constraints are advice from an untrusted author,
+  // never authority; the authoritative constraints are the manager's own.
+  assert.deepEqual(managed.workstream.constraints, (await load('mgr-a')).workstream.constraints);
+  assert.deepEqual(managed.workstream.suggestedConstraints, args.constraints);
+  assert.equal(managed.workstream.origin, 'untrusted');
   assert.deepEqual(managed.workstream.tags, args.tags);
   assert.equal(managed.workstream.managedBy?.slug, 'mgr-a');
 
@@ -486,7 +490,7 @@ test("revision conflict on the manager's audit write does not lose an already-cr
     successCriteria: [],
     constraints: [],
     tags: [],
-  });
+  }, 'coordinator');
 
   // An external arrival on the manager's doc between read and the caller-side
   // audit write — the exact race coordinator.ts's revision-checked `change`

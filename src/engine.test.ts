@@ -35,11 +35,23 @@ import type { CoordinatorExecutor } from './executor/coordinator.js';
 import { adoptFleetSeatWait, capacityBackoffFor, capacityTargetKey, retryCapacityNow, selectWorkerCapacityTarget } from './capacity.js';
 import { coordinatorCapacityTarget, targetOfWait, type CapacityTarget } from './modelConfig.js';
 import { workerTargetsForAssignment } from './modelRouting.js';
+import { egressGateSeam, type EgressDiffIO } from './egressGate.js';
 import {
   __resetGitHubAppForTests,
   __setGitHubAppTestDependencies,
   mintGitHubAppToken,
 } from './githubApp.js';
+
+/** The engine's egress gate reads the checkout and the GitHub API. Tests that
+ * are not about the gate see a clean change set, so their pre-approved repo
+ * commands keep today's path; the gate's own tests install their own IO. */
+const cleanEgressIO: EgressDiffIO = {
+  pushedPaths: () => ({ ok: true, paths: ['src/app.ts'], identity: 'push:clean' }),
+  prCreatePaths: () => ({ ok: true, paths: ['src/app.ts'], identity: 'pr-create:clean' }),
+  mergePaths: () => ({ ok: true, paths: ['src/app.ts'], identity: 'merge:clean' }),
+  defaultBranch: () => 'main',
+  upstreamBranch: () => 'feature',
+};
 
 const githubTestPrivateKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
   .export({ type: 'pkcs8', format: 'pem' }).toString();
@@ -106,6 +118,7 @@ beforeEach(() => {
   delete process.env.WEAVER_RUNNER_ID;
   delete process.env.WEAVER_RUNNER_PLACEMENT_ONLY;
   __resetGitHubAppForTests();
+  egressGateSeam.io = cleanEgressIO;
 });
 
 afterEach(() => {

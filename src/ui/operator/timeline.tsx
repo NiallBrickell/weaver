@@ -83,6 +83,7 @@ function AssignmentMeta({ a }: { a: TimelineAssignment }) {
       {a.adoption !== 'none' ? <> · <span className={outcomeClass(a)}>{a.adoption}</span></> : null}
       {a.attempts > 1 ? ` · ${a.attempts} runs` : ''}
       {target ? <> · <span className="font-mono">{target}</span></> : null}
+      {a.needsPerson ? <span data-testid="timeline-needs-person" className="block text-amber-300">Needs a person: {a.needsPerson}</span> : null}
     </span>
   );
 }

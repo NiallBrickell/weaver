@@ -33,7 +33,8 @@ const EXPECTED_PERMISSIONS: Record<string, string> = {
   metadata: 'read',
   pull_requests: 'write',
   statuses: 'read',
-  workflows: 'write',
+  // No `workflows`: workflow files are changed by a person, never by a
+  // fleet token (see githubApp.ts requestBody).
 };
 
 const READ_PERMISSIONS: Record<string, string> = {

@@ -139,6 +139,26 @@ test('partial credentials, non-numeric IDs, and invalid base64 PEM fail closed',
   assert.doesNotMatch(error.message, new RegExp(privateValue));
 });
 
+test('no fleet token ever requests workflows permission, so a pushed workflow file cannot run with Actions secrets', async () => {
+  configure();
+  const bodies: Array<{ permissions: Record<string, string> }> = [];
+  __setGitHubAppTestDependencies({
+    fetch: (async (_input, init = {}) => {
+      bodies.push(JSON.parse(String(init.body)) as { permissions: Record<string, string> });
+      return tokenResponse(`installation-token-${bodies.length}`, fixedNow, 'octo/widget');
+    }) as typeof globalThis.fetch,
+  });
+  await mintGitHubAppToken('octo/widget', 'write');
+  await mintGitHubAppToken('octo/widget', 'read');
+  assert.equal(bodies.length, 2);
+  for (const body of bodies) {
+    assert.equal('workflows' in body.permissions, false, 'workflows must never be requested');
+  }
+  // The write map still pushes and opens PRs.
+  assert.equal(bodies[0]!.permissions.contents, 'write');
+  assert.equal(bodies[0]!.permissions.pull_requests, 'write');
+});
+
 test('read and write mints send exact scopes and an RS256 App JWT without private data', async () => {
   configure();
   const requests: { url: string; init: RequestInit }[] = [];
@@ -185,7 +205,6 @@ test('read and write mints send exact scopes and an RS256 App JWT without privat
       metadata: 'read',
       pull_requests: 'write',
       statuses: 'read',
-      workflows: 'write',
     },
     repositories: ['widget'],
   });

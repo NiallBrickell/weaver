@@ -3,6 +3,7 @@
  * Now · Since you left · Needs you · Next · Why.
  */
 
+import { describeEgressGate, workstreamOriginForDisplay } from './egressGate.js';
 import { dispositionLabel } from './conclusion.js';
 import type { WorkstreamDoc } from './types.js';
 import { virtualNow } from './clock.js';
@@ -112,6 +113,9 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
       : `recovering: ${coordinatorPass.id} lease expired — recovery pending`
     : undefined;
   const nowLines = [
+    ...(workstreamOriginForDisplay(doc.workstream) === 'untrusted'
+      ? ['origin: untrusted — this workstream may push and open PRs; every merge or deploy needs a person']
+      : []),
     ...(pilotUnavailable.length
       ? [`WAITING — approval service unavailable; ${pilotUnavailable.length} gated action${pilotUnavailable.length === 1 ? ' remains' : 's remain'} safe`]
       : []),
@@ -156,7 +160,15 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   out.push(
     section(
       '## Needs you',
-      needs.map((a) => `${a.id} [${a.kind}] ${a.summary}`),
+      needs.flatMap((a) => {
+        // Why the ENGINE routed an act here, from the typed gate — never
+        // inferred from the card's prose (which may predate the gate).
+        const gate = a.refId ? doc.assignments.find((asg) => asg.id === a.refId)?.exec?.egressGate : undefined;
+        return [
+          `${a.id} [${a.kind}] ${a.summary}`,
+          ...(gate?.reasons.length && !a.summary.startsWith('Needs a person') ? [`  why a person: ${describeEgressGate(gate.reasons)}`] : []),
+        ];
+      }),
       'nothing — the workstream can proceed without you',
     ),
   );

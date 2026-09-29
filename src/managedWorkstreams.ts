@@ -23,6 +23,7 @@ import {
 } from './executionSafety.js';
 import { actionHasLivePilotOutage, humanAttention } from './actionApproval.js';
 import { assertRunnerId } from './runnerIdentity.js';
+import { childOrigin, workstreamOriginForDisplay } from './egressGate.js';
 
 export class ManagedWorkstreamError extends Error {}
 
@@ -51,10 +52,33 @@ export interface CreateManagedWorkstreamArgs {
  * structurally impossible, not just a convention. Seeds the first wake
  * exactly like the `weaver create` CLI path (cli.ts, `case 'create'`).
  */
-export async function createManagedWorkstream(callingSlug: string, args: CreateManagedWorkstreamArgs): Promise<WorkstreamDoc> {
+export async function createManagedWorkstream(
+  callingSlug: string,
+  args: CreateManagedWorkstreamArgs,
+  /** WHO authored these fields — it decides the child's origin and whether
+   * its constraints are authority (src/egressGate.ts childOrigin). There is no
+   * default: a new creation path must say whose words these are. */
+  creator: 'coordinator' | 'human' | 'ingress',
+): Promise<WorkstreamDoc> {
   if (args.slug === callingSlug) {
     throw new ManagedWorkstreamError('a workstream cannot manage itself');
   }
+  let parent: WorkstreamDoc;
+  try {
+    parent = await load(callingSlug);
+  } catch {
+    throw new ManagedWorkstreamError(`no workstream '${callingSlug}' to create under — check the slug`);
+  }
+  const origin = childOrigin(creator, parent.workstream);
+  // H1: a model- or bot-authored constraint is advice, not authority. A child
+  // a coordinator creates inherits its parent's AUTHORITATIVE constraints and
+  // keeps whatever the parent's pass proposed as suggestions, rendered to the
+  // child's coordinator as "suggested by the parent (untrusted origin)". So
+  // text the parent read cannot relax the child's rules by writing a looser
+  // constraint; constraints can only arrive as a narrowing a person wrote.
+  const authored = creator === 'human';
+  const constraints = authored ? args.constraints : [...parent.workstream.constraints];
+  const suggestedConstraints = authored ? [] : args.constraints.filter((c) => c.trim());
   if (args.runnerId !== undefined) assertRunnerId(args.runnerId, 'runner id');
   // Structural backstop for at-least-once intake: a coordinator that looks at
   // the same tracker on every pass must not be able to open the same work
@@ -69,9 +93,17 @@ export async function createManagedWorkstream(callingSlug: string, args: CreateM
     objective: args.objective,
     tags: args.tags,
     successCriteria: args.successCriteria,
-    constraints: args.constraints,
+    constraints,
+    ...(suggestedConstraints.length ? { suggestedConstraints } : {}),
+    origin,
     ...(args.sourceKey ? { sourceKey: args.sourceKey } : {}),
-    autonomy: { sendsRequireApproval: args.sendsRequireApproval ?? true },
+    // A child an untrusted author created can only be as loose as its parent:
+    // a coordinator cannot mint a stream that sends without approval when it
+    // itself may not.
+    autonomy: {
+      sendsRequireApproval: (args.sendsRequireApproval ?? true)
+        || (!authored && parent.workstream.autonomy.sendsRequireApproval),
+    },
     executionSafety: newExecutionSafety({
       ...(args.executionWindowSeconds !== undefined ? { windowSeconds: args.executionWindowSeconds } : {}),
       ...(args.maxModelStarts !== undefined ? { maxModelStarts: args.maxModelStarts } : {}),
@@ -116,6 +148,9 @@ export async function createManagedWorkstream(callingSlug: string, args: CreateM
 export async function createWorkstreamUnderParent(
   parentSlug: string,
   args: CreateManagedWorkstreamArgs,
+  /** `human` for the CLI and operator-authenticated browser intake; `ingress`
+   * for bot registration through `weaver serve`, whose words are untrusted. */
+  creator: 'human' | 'ingress' = 'human',
 ): Promise<WorkstreamDoc> {
   let parent: WorkstreamDoc;
   try {
@@ -128,7 +163,7 @@ export async function createWorkstreamUnderParent(
       `cannot create under '${parentSlug}': it is ${parent.workstream.status}, not active — a non-active parent runs no passes to manage the new work`,
     );
   }
-  return createManagedWorkstream(parentSlug, args);
+  return createManagedWorkstream(parentSlug, args, creator);
 }
 
 export interface ManagedWorkstreamSummary {
@@ -138,6 +173,9 @@ export interface ManagedWorkstreamSummary {
   status: WorkstreamCore['status'];
   successCriteria: string[];
   constraints: string[];
+  /** Advisory constraints an untrusted author proposed — never authority. */
+  suggestedConstraints?: string[];
+  origin: 'operator' | 'untrusted';
   tags: string[];
   executionSafety: ExecutionSafetyConfig;
   activity: { coordinatorPasses: number };
@@ -180,6 +218,8 @@ export async function inspectManagedWorkstream(callingSlug: string, targetSlug: 
     status: ws.status,
     successCriteria: ws.successCriteria,
     constraints: ws.constraints,
+    ...(ws.suggestedConstraints?.length ? { suggestedConstraints: ws.suggestedConstraints } : {}),
+    origin: workstreamOriginForDisplay(ws),
     tags: ws.tags,
     executionSafety: executionSafetyConfig(ws),
     activity: { coordinatorPasses: doc.spend.coordinatorPasses },

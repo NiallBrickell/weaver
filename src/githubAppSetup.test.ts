@@ -18,7 +18,6 @@ const permissions = {
   metadata: 'read',
   pull_requests: 'write',
   statuses: 'read',
-  workflows: 'write',
 };
 
 function freshHome(): void {

@@ -352,6 +352,7 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
         tags: optAll(rest, 'tag'),
         successCriteria: optAll(rest, 'success'),
         constraints: optAll(rest, 'constraint'),
+        origin: 'operator',
         autonomy: { sendsRequireApproval: true },
         executionSafety: newExecutionSafety({
           windowSeconds: executionWindow

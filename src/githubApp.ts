@@ -290,7 +290,12 @@ function requestBody(repository: string | undefined, access: GitHubAppAccess): R
       metadata: 'read',
       pull_requests: 'write',
       statuses: 'read',
-      workflows: 'write',
+      // Deliberately no `workflows`. With it, a pushed branch that adds
+      // `.github/workflows/*.yml` runs `on: push` with the repository's
+      // Actions secrets — no merge, no review, and the fleet reads untrusted
+      // text. Without it GitHub refuses any push touching a workflow file, and
+      // the engine turns that refusal into a typed "a person must push or
+      // merge this" (egressGate.ts isWorkflowPermissionRefusal), never a retry.
     },
   };
   if (repository !== undefined) body.repositories = [repositoryName(repository)];

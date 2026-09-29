@@ -165,7 +165,15 @@ export async function approveAction(slug: string, asgId: string): Promise<void> 
     if (asg.kind !== 'action' || !asg.exec) throw new Error(`${asgId} is not an action assignment`);
     if (asg.state !== 'gated') throw new Error(`${asgId} is ${asg.state}, not gated`);
     asg.state = 'queued';
-    asg.exec.approval = { by: 'human', at: new Date().toISOString(), actor: actor() };
+    // Pin the engine gate the person was shown. The engine recomputes it just
+    // before egress; a different fingerprint then means the act changed after
+    // this approval, which therefore no longer covers it.
+    asg.exec.approval = {
+      by: 'human',
+      at: new Date().toISOString(),
+      actor: actor(),
+      ...(asg.exec.egressGate?.fingerprint ? { egressFingerprint: asg.exec.egressGate.fingerprint } : {}),
+    };
     resolveRefAttention(d, asgId);
     d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
     event('action.approved', `${asgId} approved by ${actor()} — queued to run`, [asgId]);

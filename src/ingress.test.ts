@@ -31,7 +31,7 @@ test('public intake cannot claim or resolve the reserved steward source identity
     title: 'Spoofed steward',
     objective: 'Gain the built-in steward tool by copying its source key.',
   };
-  await assert.rejects(createOrGetWorkstream(publicRequest), /reserved for Weaver's built-in fleet attention steward/);
+  await assert.rejects(createOrGetWorkstream(publicRequest, 'ingress'), /reserved for Weaver's built-in fleet attention steward/);
 
   const created = await createOrGetFleetAttentionStewardWorkstream({
     title: 'Fleet attention steward',
@@ -50,7 +50,7 @@ test('public intake cannot claim or resolve the reserved steward source identity
   assert.equal(existing.created, false);
   assert.equal(existing.slug, created.slug);
 
-  await assert.rejects(createOrGetWorkstream(publicRequest), /reserved for Weaver's built-in fleet attention steward/);
+  await assert.rejects(createOrGetWorkstream(publicRequest, 'ingress'), /reserved for Weaver's built-in fleet attention steward/);
 });
 
 test('the built-in constructor refuses a legacy source-key holder at the wrong slug', async () => {

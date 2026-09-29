@@ -97,7 +97,7 @@ test('creating a managed workstream twice for one external thing is refused at t
     constraints: [],
     tags: ['linear'],
     sourceKey: 'linear:ACME-425',
-  });
+  }, 'coordinator');
 
   await assert.rejects(
     () =>
@@ -109,7 +109,7 @@ test('creating a managed workstream twice for one external thing is refused at t
         constraints: [],
         tags: ['linear'],
         sourceKey: 'linear:ACME-425',
-      }),
+      }, 'coordinator'),
     /already stands for linear:ACME-425/,
   );
   assert.deepEqual((await listWorkstreams()).sort(), ['acme-425-connectivity', 'linear-intake']);
@@ -137,10 +137,10 @@ test('a manager reads its live child count from the projection, not from notices
 
 test('listManagedBy gives the projection exactly the children it manages, one level deep', async () => {
   await make('intake');
-  await createManagedWorkstream('intake', { slug: 'child-a', title: 'a', objective: 'o', successCriteria: [], constraints: [], tags: [] });
-  await createManagedWorkstream('intake', { slug: 'child-b', title: 'b', objective: 'o', successCriteria: [], constraints: [], tags: [] });
+  await createManagedWorkstream('intake', { slug: 'child-a', title: 'a', objective: 'o', successCriteria: [], constraints: [], tags: [] }, 'coordinator');
+  await createManagedWorkstream('intake', { slug: 'child-b', title: 'b', objective: 'o', successCriteria: [], constraints: [], tags: [] }, 'coordinator');
   // A grandchild must never reach the manager's own count.
-  await createManagedWorkstream('child-a', { slug: 'grandchild', title: 'g', objective: 'o', successCriteria: [], constraints: [], tags: [] });
+  await createManagedWorkstream('child-a', { slug: 'grandchild', title: 'g', objective: 'o', successCriteria: [], constraints: [], tags: [] }, 'coordinator');
 
   const managed = await listManagedBy('intake');
   assert.deepEqual(managed.map((m) => m.slug).sort(), ['child-a', 'child-b']);
