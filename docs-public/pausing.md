@@ -62,3 +62,44 @@ The fleet command applies that same revision-checked transition to each workstre
 ## The in-flight boundary
 
 Pause prevents subsequent runner polls and manual ticks from advancing the workstream. The engine re-reads lifecycle state at worker, coordinator, and egress boundaries, so once pause is recorded an in-flight tick starts no next worker, pass, send, or action. A disposable step that was already running may finish and record its result; pausing does not abruptly kill a model call or leave a half-recorded transition. `weaver resume <slug>` makes the stream active again.
+
+## Closing work that should not continue
+
+Pausing keeps a workstream's outcome open for later. When the outcome itself
+should not be pursued, close it instead — anyone on the team can, at any point,
+without waiting for a coordinator pass:
+
+```bash
+weaver close cache-rewrite not_worth_doing "the measured p95 gain was 3ms; not worth the migration"
+weaver close onboarding-copy duplicate --duplicate-of onboarding-fix "same objective as the fix stream"
+weaver close legal-review directed_closed "handled outside Weaver"
+```
+
+The disposition says how the workstream ended:
+
+- `not_worth_doing` — the work is not worth its cost.
+- `duplicate` — another existing workstream already owns this objective. `--duplicate-of` must name it; a workstream cannot be a duplicate of itself, and a name that matches no stored workstream is refused.
+- `directed_closed` — you are closing it, with no further classification.
+
+`delivered` and `no_change_needed` cannot be used here. They claim that work
+was produced or investigated, and only the coordinator concludes that, on
+adopted evidence — a person asserting delivery without it is exactly the
+self-certification Weaver refuses a model.
+
+Closing is one revision-checked write. Your reason is recorded as steering
+attributed to you (`WEAVER_ACTOR` when an agent session acts on your behalf),
+and the workstream is concluded through the same validated path a coordinator
+conclusion takes, citing that steering as the direction that closed it. Every
+pending wake and probe is retired, the stream's open needs-you items are
+resolved by the same act, and it counts as one intervention. A workstream that
+is already concluded is refused — resume it first if it should end differently.
+
+Nothing in flight is thrown away: assignments, submissions, and approved but
+unsent messages stay recorded exactly as they were, frozen the way a pause
+freezes them. `weaver resume <slug>` reopens the stream with its history and
+the former conclusion kept in lineage.
+
+The [stats page](./stats.md) counts a closed workstream as **closed without
+delivery**, never as a successful outcome. The hosted
+[operator workspace](./operator-workspace.md) offers the same stop as
+**Close as not worth doing** on each job's Activity tab.

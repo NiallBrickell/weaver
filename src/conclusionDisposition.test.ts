@@ -19,7 +19,8 @@ import { computeStats, renderStatsHtml } from './stats.js';
 import { renderStatus } from './status.js';
 import { renderWorkstreamPrintout } from './printout.js';
 import { buildProjection } from './projection.js';
-import { arrive, closeStore, createWorkstream, load, workstreamExists } from './store.js';
+import { arrive, closeStore, createWorkstream, load, RevisionConflictError, workstreamExists } from './store.js';
+import { AlreadyConcludedError, closeWorkstream, revokeSteering } from './humanActs.js';
 import { virtualNow } from './clock.js';
 import type { CoordinatorExecutor } from './executor/coordinator.js';
 import type { ConclusionDisposition, WorkstreamDoc } from './types.js';
@@ -213,7 +214,20 @@ test('directed_closed on a coordinator decision id is refused', async () => {
 
 test('fields belonging to another disposition are refused, not silently dropped', async () => {
   await assertRefused({ summary: 's', disposition: 'delivered', evidence_ids: ['del_report'], duplicate_of: OTHER }, /duplicate_of applies only/);
-  await assertRefused({ summary: 's', disposition: 'duplicate', duplicate_of: OTHER, directed_by: 'str_close' }, /directed_by applies only/);
+  await assertRefused({ summary: 's', disposition: 'delivered', evidence_ids: ['del_report'], directed_by: 'str_close' }, /directed_by applies only/);
+  await assertRefused({ summary: 's', disposition: 'no_change_needed', evidence_ids: ['del_report'], directed_by: 'str_close' }, /a human direction is not delivered work/);
+});
+
+test('a human direction may accompany not_worth_doing and is itself sufficient footing', async () => {
+  const result = await conclude({ summary: 's', disposition: 'not_worth_doing', directed_by: 'str_close' });
+  assert.equal(result.isError, undefined, text(result));
+  const c = (await load(SLUG)).workstream.conclusion!;
+  assert.equal(c.directedBy, 'str_close');
+  assert.deepEqual(c.evidenceIds, ['str_close']);
+});
+
+test('not_worth_doing directed by a withdrawn steer is refused', async () => {
+  await assertRefused({ summary: 's', disposition: 'not_worth_doing', directed_by: 'str_withdrawn' }, /not a \(non-withdrawn\) steering record/);
 });
 
 test('a withdrawn steer is no longer conclusion evidence for any disposition', async () => {
@@ -305,4 +319,101 @@ test('the gate itself is pure over the doc: duplicate existence is supplied by t
   assert.throws(() => conclusionDispositionLabels(doc, { disposition: 'duplicate', evidenceIds: [], duplicateOf: OTHER }, false), /names no existing workstream/);
   assert.equal(conclusionDispositionLabels(doc, { disposition: 'duplicate', evidenceIds: [], duplicateOf: OTHER }, true).length, 1);
   assert.equal(dispositionLabel({ disposition: 'duplicate', duplicateOf: OTHER }), `duplicate of ${OTHER}`);
+});
+
+// --- the human kill switch ----------------------------------------------------
+
+async function seedLiveState(): Promise<void> {
+  await arrive(SLUG, (doc) => {
+    const at = new Date(Date.now() - 60_000).toISOString();
+    doc.wakes.push({
+      id: 'wake_future', reason: 'weekly check', status: 'pending', createdAt: at,
+      condition: { type: 'time', dueAtVirtual: new Date(virtualNow().getTime() + 86_400_000).toISOString() },
+    });
+    doc.attention.push({ id: 'att_q', kind: 'blocker', summary: 'Which cache?', status: 'open', createdAt: at });
+  });
+}
+
+test('weaver close concludes not_worth_doing in one revision-checked write, citing the human steer', async () => {
+  await seedLiveState();
+  const before = await load(SLUG);
+  process.env.WEAVER_ACTOR = 'niall';
+  try {
+    const c = await closeWorkstream(SLUG, 'not_worth_doing', 'measured gain is 3ms');
+    const doc = await load(SLUG);
+    assert.equal(doc.revision, before.revision + 1, 'exactly one write');
+    assert.equal(doc.workstream.status, 'done');
+    assert.equal(c.disposition, 'not_worth_doing');
+    const steer = doc.steering.find((s) => s.id === c.directedBy)!;
+    assert.ok(steer, 'the reason is recorded as a steering record');
+    assert.equal(steer.by, 'niall');
+    assert.match(steer.body, /not worth doing: measured gain is 3ms/);
+    assert.equal(steer.consumedByPass, c.passId, 'consumed by the close act, never left waiting for a pass');
+    assert.deepEqual(doc.workstream.conclusion!.evidenceIds, [steer.id]);
+    assert.equal(doc.workstream.conclusion!.summary, 'measured gain is 3ms');
+    // Waits retired exactly as a coordinator conclusion retires them.
+    const wake = doc.wakes.find((w) => w.id === 'wake_future')!;
+    assert.equal(wake.status, 'cancelled');
+    assert.deepEqual(wake.coordinatorCancellation, { kind: 'workstream-concluded', passId: c.passId });
+    assert.equal(doc.wakes.filter((w) => w.status === 'pending').length, 0, 'nothing left to wake a closed stream');
+    const att = doc.attention.find((a) => a.id === 'att_q')!;
+    assert.equal(att.status, 'resolved');
+    assert.equal(att.resolvedBy, 'niall');
+    assert.equal(doc.spend.humanInterventions, (before.spend.humanInterventions ?? 0) + 1);
+    // The consumed steer cannot be withdrawn out from under the conclusion.
+    await assert.rejects(() => revokeSteering(SLUG, steer.id), /already read/);
+    // Stats: closed without delivery, never success; the resolution and the
+    // steer are one dated act.
+    const stats = computeStats([doc], [], new Date());
+    assert.equal(stats.totals.successfulOutcomes, 0);
+    assert.equal(stats.totals.closedWithoutDelivery, 1);
+    assert.equal(stats.totals.dispositions.not_worth_doing, 1);
+    assert.equal(stats.rows[0]!.concluded, false);
+    assert.equal(stats.totals.undated, 0);
+  } finally {
+    delete process.env.WEAVER_ACTOR;
+  }
+});
+
+test('weaver close refuses a stale revision and records nothing', async () => {
+  const before = await load(SLUG);
+  // Any arrival after the human looked moves the revision on.
+  await arrive(SLUG, (doc) => { doc.workstream.tags.push('arrived-later'); });
+  await assert.rejects(
+    () => closeWorkstream(SLUG, 'not_worth_doing', 'stale view', { expectedRevision: before.revision }),
+    RevisionConflictError,
+  );
+  const doc = await load(SLUG);
+  assert.equal(doc.workstream.status, 'active');
+  assert.equal(doc.workstream.conclusion, undefined);
+  assert.equal(doc.steering.length, before.steering.length);
+});
+
+test('weaver close refuses an already-concluded workstream', async () => {
+  await closeWorkstream(SLUG, 'directed_closed', 'first');
+  const once = await load(SLUG);
+  await assert.rejects(() => closeWorkstream(SLUG, 'not_worth_doing', 'second'), AlreadyConcludedError);
+  const doc = await load(SLUG);
+  assert.equal(doc.revision, once.revision);
+  assert.equal(doc.workstream.conclusion!.disposition, 'directed_closed');
+});
+
+test('weaver close duplicate validates the target: required, not itself, and existing', async () => {
+  await assert.rejects(() => closeWorkstream(SLUG, 'duplicate', 'dup'), /requires duplicate_of/);
+  await assert.rejects(() => closeWorkstream(SLUG, 'duplicate', 'dup', { duplicateOf: SLUG }), /duplicate of itself/);
+  await assert.rejects(() => closeWorkstream(SLUG, 'duplicate', 'dup', { duplicateOf: 'no-such-ws' }), /names no existing workstream/);
+  await assert.rejects(() => closeWorkstream(SLUG, 'not_worth_doing', 'x', { duplicateOf: OTHER }), /applies only to 'duplicate'/);
+  assert.equal((await load(SLUG)).workstream.status, 'active', 'every refusal left the stream untouched');
+  const c = await closeWorkstream(SLUG, 'duplicate', 'same objective', { duplicateOf: OTHER });
+  assert.equal(c.disposition, 'duplicate');
+  assert.equal(c.duplicateOf, OTHER);
+  assert.ok(c.directedBy);
+});
+
+test('weaver close never asserts delivery, and requires a reason', async () => {
+  for (const disposition of ['delivered', 'no_change_needed']) {
+    await assert.rejects(() => closeWorkstream(SLUG, disposition as never, 'done'), /never asserted/);
+  }
+  await assert.rejects(() => closeWorkstream(SLUG, 'not_worth_doing', '   '), /reason is required/);
+  assert.equal((await load(SLUG)).workstream.status, 'active');
 });

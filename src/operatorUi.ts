@@ -33,6 +33,7 @@ import {
   createOrGetWorkstream,
   recordObservation,
 } from './ingress.js';
+import { AlreadyConcludedError, closeWorkstream } from './humanActs.js';
 import { ManagedWorkstreamError } from './managedWorkstreams.js';
 import { deriveFallback, loadHouse } from './onboard.js';
 import { computeOverview, revisionMemo, type OverviewPayload } from './overview.js';
@@ -46,6 +47,7 @@ import {
   listRunnerPresence,
   load,
   readArtifact,
+  RevisionConflictError,
   sha256,
   verifyArtifact,
   type RunnerPresence,
@@ -1008,6 +1010,7 @@ function noticeFrom(url: URL): string | undefined {
   if (url.searchParams.get('existing') === '1') return 'This source already has a Workstream. Your request was added there.';
   if (url.searchParams.get('added') === '1') return 'Information added. Weaver will reconcile it on the next pass.';
   if (url.searchParams.get('responded') === '1') return 'Response added. Weaver has been woken.';
+  if (url.searchParams.get('closed') === '1') return 'Job closed as not worth doing. Resume it from the CLI if that was wrong.';
   return undefined;
 }
 
@@ -1179,6 +1182,29 @@ async function handle(
     if (message.length > MAX_MESSAGE_LENGTH) throw new Error(`Information must be at most ${MAX_MESSAGE_LENGTH} characters`);
     await recordObservation(slug, { source: `operator-ui:${actor}`, summary: message });
     return redirect(res, `/workstreams/${encodeURIComponent(slug)}?tab=activity&added=1`);
+  }
+
+  if (method === 'POST' && parts.length === 3 && parts[0] === 'workstreams' && parts[2] === 'close') {
+    // The human kill switch: the signed-in operator closes the job as not
+    // worth doing, against the revision the page showed them. Delivery is
+    // never asserted from here — only the coordinator concludes that, on
+    // adopted evidence.
+    const slug = parts[1]!;
+    await load(slug);
+    const form = await readForm(req);
+    const reason = (form.get('reason') ?? '').trim();
+    if (!reason) throw new OperatorUiHttpError(400, 'A reason is required to close a job');
+    if (reason.length > MAX_MESSAGE_LENGTH) throw new OperatorUiHttpError(400, `A reason must be at most ${MAX_MESSAGE_LENGTH} characters`);
+    const revision = Number(form.get('revision') ?? '');
+    if (!Number.isInteger(revision) || revision < 1) throw new OperatorUiHttpError(400, 'The close request is malformed');
+    try {
+      await closeWorkstream(slug, 'not_worth_doing', reason, { expectedRevision: revision, actor });
+    } catch (error) {
+      if (error instanceof RevisionConflictError) throw new OperatorUiHttpError(409, 'This job changed since you loaded it. Reload it before closing.');
+      if (error instanceof AlreadyConcludedError) throw new OperatorUiHttpError(409, 'This job is already concluded.');
+      throw error;
+    }
+    return redirect(res, `/workstreams/${encodeURIComponent(slug)}?tab=overview&closed=1`);
   }
 
   if (method === 'POST' && parts.length === 3 && parts[0] === 'workstreams' && parts[2] === 'responses') {

@@ -25,7 +25,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [The daily digest](./digest.md) — what needs you, pushed to your Slack at 07:30 with the exact command that answers each item
 - [Does each outcome need you less often?](./stats.md) — recorded human interventions beside quality and authority signals
 - [Routines](./routines.md) — standing loops that wake with their decision log, constraints, and learned policies intact
-- [Pausing work](./pausing.md) — stop one workstream or the active fleet without losing its durable position
+- [Pausing work](./pausing.md) — stop one workstream or the active fleet without losing its durable position, or close a workstream that should not continue
 - [Secrets & access](./secrets-and-access.md) — models see names, ordinary work receives only its declared credentials, and values never persist
 - [GitHub access on a hosted runner](./github-app.md) — a dedicated App mints short-lived, repo-scoped credentials without putting a person's login on the VM
 - [Configuration](./configuration.md) — machine-local settings (models, store, actions) in a `.env` file that only ever fills gaps

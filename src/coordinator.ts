@@ -24,7 +24,7 @@ import {
   virtualNow,
   wakeCancellationBasisLabels,
 } from './clock.js';
-import { CONCLUSION_DISPOSITIONS, conclusionDispositionLabels, progressBasisLabels } from './conclusion.js';
+import { CONCLUSION_DISPOSITIONS, conclusionDispositionLabels, progressBasisLabels, recordConclusion } from './conclusion.js';
 import { buildProjection } from './projection.js';
 import { isDoctrine, loadPolicies, matchPolicies, proposePolicy, recordPolicyOutcome, revisePolicyMechanism, supersedePolicy, validatePolicyCitations } from './policies.js';
 import {
@@ -1030,7 +1030,7 @@ export async function runCoordinatorPass(
           disposition: z.enum(CONCLUSION_DISPOSITIONS).describe('how the workstream ended: delivered | no_change_needed | not_worth_doing | duplicate | directed_closed'),
           evidence_ids: z.array(z.string()).optional().describe('adopted deliverable ids, readback-confirmed action ids, or human steering ids; every id is resolved before conclusion. REQUIRED (at least one) for delivered, no_change_needed and not_worth_doing; optional supporting evidence for duplicate and directed_closed. A coordinator-authored decision is not accepted here.'),
           duplicate_of: z.string().optional().describe('disposition duplicate ONLY: the slug of the existing workstream (not this one) that already owns this objective'),
-          directed_by: z.string().optional().describe('disposition directed_closed ONLY: the id of the human steering record in this workstream that directed the closure'),
+          directed_by: z.string().optional().describe('the id of the human steering record in this workstream that directed the closure: REQUIRED for directed_closed, allowed for not_worth_doing or duplicate when the human said so, never for delivered/no_change_needed'),
         },
         async (a) => {
           // Existence of the named duplicate is a store fact, read at the
@@ -1047,36 +1047,19 @@ export async function runCoordinatorPass(
             if (openAtt.length) throw new Error(`cannot conclude: open attention ${openAtt.map((x) => x.id).join(', ')} — the human's queue is never silently emptied by conclusion`);
             const pendingSends = d.interactions.filter((x) => x.status === 'awaiting_approval' || x.status === 'approved');
             if (pendingSends.length) throw new Error(`cannot conclude: interactions ${pendingSends.map((x) => x.id).join(', ')} not yet sent/resolved`);
-            const evidence = conclusionDispositionLabels(d, {
+            const claim = {
               disposition: a.disposition,
               evidenceIds,
               duplicateOf: a.duplicate_of,
               directedBy: a.directed_by,
-            }, duplicateExists);
-            // The directing steer IS the evidence for a directed closure, so it
-            // rides in evidenceIds with everything else a reader resolves.
-            const storedEvidence = a.disposition === 'directed_closed' && a.directed_by && !evidenceIds.includes(a.directed_by)
-              ? [a.directed_by, ...evidenceIds]
-              : evidenceIds;
-            d.workstream.status = 'done';
-            d.workstream.conclusion = {
+            };
+            const evidence = conclusionDispositionLabels(d, claim, duplicateExists);
+            const concluded = recordConclusion(d, claim, {
               passId,
               atVirtual: virtualNow().toISOString(),
               summary: a.summary,
-              evidenceIds: storedEvidence,
-              disposition: a.disposition,
-              ...(a.disposition === 'duplicate' ? { duplicateOf: a.duplicate_of!.trim() } : {}),
-              ...(a.disposition === 'directed_closed' ? { directedBy: a.directed_by! } : {}),
-            };
-            for (const w of d.wakes) {
-              if (w.status !== 'pending') continue;
-              w.status = 'cancelled';
-              w.coordinatorCancellation = {
-                kind: 'workstream-concluded',
-                passId,
-              };
-            }
-            event('workstream.concluded', `coordinator concluded the workstream (${a.disposition}${a.disposition === 'duplicate' ? ` of ${a.duplicate_of!.trim()}` : ''}): ${a.summary.slice(0, 150)} (validated evidence: ${evidence.join('; ').slice(0, 200)})`, storedEvidence);
+            });
+            event('workstream.concluded', `coordinator concluded the workstream (${a.disposition}${concluded.duplicateOf ? ` of ${concluded.duplicateOf}` : ''}): ${a.summary.slice(0, 150)} (validated evidence: ${evidence.join('; ').slice(0, 200)})`, concluded.evidenceIds);
             return `workstream concluded (${a.disposition})`;
           });
         },

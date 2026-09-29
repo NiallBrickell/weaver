@@ -5,12 +5,12 @@
  * optimizes — and wakes the workstream where the coordinator must react.
  */
 
-import { dispositionLabel } from './conclusion.js';
+import { conclusionDispositionLabels, dispositionLabel, recordConclusion } from './conclusion.js';
 import { userInfo } from 'node:os';
 import { virtualNow } from './clock.js';
 import { loadPolicies, type PolicyRecord } from './policies.js';
-import { arrive, listWorkstreams, load, mutate, mutatePolicies, newId, rename, RevisionConflictError } from './store.js';
-import type { WorkstreamCore } from './types.js';
+import { arrive, listWorkstreams, load, mutate, mutatePolicies, newId, rename, RevisionConflictError, workstreamExists } from './store.js';
+import type { ConclusionDisposition, WorkstreamConclusion, WorkstreamCore } from './types.js';
 import { isWatchingProbe, probeApproved, probeSpecHash } from './probe.js';
 import { assertRunnerId } from './runnerIdentity.js';
 import { validateCoordinatorRunnerOrder } from './coordinatorRunner.js';
@@ -499,6 +499,106 @@ export async function setPaused(slug: string, paused: boolean): Promise<SetPause
     }
   }
   throw new Error(`failed to ${paused ? 'pause' : 'resume'} '${slug}' after ${attempts} revision conflicts`);
+}
+
+/** The dispositions a human may close a workstream with. `delivered` and
+ * `no_change_needed` are deliberately absent: they claim produced or
+ * investigated work, and a human asserting delivery without adopted evidence
+ * is exactly the self-certification the kernel forbids a coordinator. */
+export const HUMAN_CLOSE_DISPOSITIONS = ['not_worth_doing', 'duplicate', 'directed_closed'] as const satisfies readonly ConclusionDisposition[];
+export type HumanCloseDisposition = (typeof HUMAN_CLOSE_DISPOSITIONS)[number];
+
+export class AlreadyConcludedError extends Error {
+  constructor(slug: string) {
+    super(`'${slug}' is already concluded — reopen it with \`weaver resume ${slug}\` first if it should end differently`);
+    this.name = 'AlreadyConcludedError';
+  }
+}
+
+/**
+ * The human kill switch: close a workstream now, without waiting for a
+ * coordinator pass, recording why and how it ended.
+ *
+ * One revision-checked write records the reason as a steering record (the
+ * human's own direction, attributed like every human act), then concludes the
+ * workstream through the same validated path a coordinator conclusion takes
+ * (`conclusionDispositionLabels` + `recordConclusion`), citing that steer as
+ * `directedBy`. Pending wakes and probes are retired exactly as they are for a
+ * coordinator conclusion. The human's open cards on this stream are resolved
+ * by the same act — closing the stream answers every question it was asking —
+ * and count as one intervention with it.
+ *
+ * `expectedRevision` is the revision the human decided against (the page they
+ * were looking at); when it is stale the write fails with
+ * RevisionConflictError and nothing is recorded, so a close never lands on a
+ * state its author did not see. Without one, the current revision is read and
+ * checked the same way.
+ *
+ * Nothing live is destroyed: in-flight assignments and approved-but-unsent
+ * messages stay recorded exactly as they are, frozen the way a pause freezes
+ * them (the engine does no work for a stream that is not active), and
+ * `weaver resume` reopens the stream with its history intact.
+ */
+export async function closeWorkstream(
+  slug: string,
+  disposition: HumanCloseDisposition,
+  reason: string,
+  opts: { duplicateOf?: string; expectedRevision?: number; actor?: string } = {},
+): Promise<WorkstreamConclusion> {
+  if (!(HUMAN_CLOSE_DISPOSITIONS as readonly string[]).includes(disposition)) {
+    throw new Error(`a human close takes ${HUMAN_CLOSE_DISPOSITIONS.join(', ')} — not '${disposition}': delivery is concluded by the coordinator on adopted evidence, never asserted`);
+  }
+  const why = reason.trim();
+  if (!why) throw new Error('a reason is required to close a workstream');
+  const who = opts.actor ?? actor();
+  const duplicateOf = opts.duplicateOf?.trim();
+  if (duplicateOf !== undefined && disposition !== 'duplicate') {
+    throw new Error(`--duplicate-of applies only to 'duplicate', not '${disposition}'`);
+  }
+  // Existence is a store fact read at the StateStore seam (one key probe)
+  // before the synchronous mutator, as for a coordinator conclusion.
+  const duplicateExists = disposition === 'duplicate' && duplicateOf ? await workstreamExists(duplicateOf) : false;
+  const expected = opts.expectedRevision ?? (await load(slug)).revision;
+  let concluded: WorkstreamConclusion | undefined;
+  await mutate(slug, expected, (d, event) => {
+    if (d.workstream.status === 'done') throw new AlreadyConcludedError(slug);
+    const now = new Date().toISOString();
+    const closeId = newId('close');
+    const steerId = newId('steer');
+    d.steering.push({
+      id: steerId,
+      body: `Close this workstream — ${dispositionLabel({ disposition, ...(duplicateOf ? { duplicateOf } : {}) })}: ${why}`,
+      by: who,
+      at: now,
+    });
+    const claim = {
+      disposition,
+      evidenceIds: [] as string[],
+      directedBy: steerId,
+      ...(duplicateOf !== undefined ? { duplicateOf } : {}),
+    };
+    const evidence = conclusionDispositionLabels(d, claim, duplicateExists);
+    // The close IS this steer's reading: it never waits for a pass, so the
+    // close act consumes it — and a consumed steer cannot be withdrawn out
+    // from under the conclusion that cites it.
+    d.steering.at(-1)!.consumedByPass = closeId;
+    const answered: string[] = [];
+    for (const att of d.attention) {
+      if (att.status !== 'open') continue;
+      att.status = 'resolved';
+      att.resolvedAt = now;
+      att.resolvedBy = who;
+      answered.push(att.id);
+    }
+    concluded = recordConclusion(d, claim, { passId: closeId, atVirtual: virtualNow().toISOString(), summary: why });
+    d.spend.humanInterventions = (d.spend.humanInterventions ?? 0) + 1;
+    event(
+      'workstream.concluded',
+      `${who} closed the workstream (${dispositionLabel(concluded)}): ${why.slice(0, 150)} (validated evidence: ${evidence.join('; ').slice(0, 200)})${answered.length ? ` — resolved ${answered.join(', ')}` : ''}`,
+      [...concluded.evidenceIds, ...answered],
+    );
+  });
+  return concluded!;
 }
 
 /** Pause every readable active workstream while reporting every other slug. */

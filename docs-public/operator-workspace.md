@@ -76,6 +76,19 @@ not turn their input into authority.
 
 Use the existing CLI for explicit human acts such as steering, adoption, attention resolution, or action approval. Keeping those acts separate prevents a convenient browser input from becoming an accidental authority channel.
 
+## Close a job
+
+The one explicit human act the workspace carries is a stop, never a go. Under
+the job's **Activity** tab, **Close as not worth doing** takes a required
+reason and closes the job at once, attributed to the signed-in teammate: the
+reason is recorded as their steering, the job concludes as *not worth doing*
+through the same validated path as `weaver close` (see
+[Pausing work](./pausing.md#closing-work-that-should-not-continue)), and its
+pending wakes are retired. The form carries the revision the page showed; if
+the job changed since, the close is refused and you reload. Closing can only
+narrow what happens — it cannot claim delivery, approve, send, or spend — and
+`weaver resume <slug>` reopens the job with its history intact.
+
 ## Access and identity
 
 The default loopback listener is available only on the local machine. A shared
@@ -246,4 +259,4 @@ interactive dashboard with its embedded local runner.
 
 ## Authority limits
 
-The operator workspace deliberately exposes intake, inspection, and untrusted follow-up. It does not turn browser access into permission to send messages, spend money, merge or deploy code, approve actions, or claim an external effect occurred. Those consequences remain behind Weaver's existing typed authority, approval, and deterministic readback boundaries.
+The operator workspace deliberately exposes intake, inspection, untrusted follow-up, and one stop: closing a job as not worth doing. It does not turn browser access into permission to send messages, spend money, merge or deploy code, approve actions, or claim an external effect occurred. Those consequences remain behind Weaver's existing typed authority, approval, and deterministic readback boundaries.

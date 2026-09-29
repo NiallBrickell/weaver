@@ -160,6 +160,8 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver serve [--host H] [--port N]         HTTP ingress for external bots (needs WEAVER_SERVE_TOKEN); create-or-get workstreams, post observations, read status
   weaver pause [slug]                        pause every active workstream, or one named workstream (state is kept)
   weaver resume <slug>                       restart one paused or concluded workstream (state and conclusion lineage are kept)
+  weaver close <slug> <not_worth_doing|duplicate|directed_closed> [--duplicate-of <slug>] "<reason>"
+                                             stop a workstream now, recording how it ended (human act; no model pass)
   weaver execution-safety <slug> [--window <duration>] [--max-starts N]   configure the rolling model-start guard; pauses and resumes automatically
   weaver resolve <slug> <attentionId> [note] mark an attention item handled (human act)
 `;
@@ -1224,6 +1226,24 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       else if (result.outcome === 'reopened') process.stdout.write(`${slug} is reopened and active\n`);
       else if (result.outcome === 'already-active') process.stdout.write(`${slug} is already active; status unchanged\n`);
       else process.stdout.write(`${slug} is now active\n`);
+      break;
+    }
+
+    case 'close': {
+      const slug = rest[0] ?? fail('slug required');
+      const disposition = rest[1] ?? fail('disposition required: not_worth_doing | duplicate | directed_closed');
+      const { closeWorkstream, HUMAN_CLOSE_DISPOSITIONS } = await import('./humanActs.js');
+      if (!(HUMAN_CLOSE_DISPOSITIONS as readonly string[]).includes(disposition)) {
+        fail(`close takes ${HUMAN_CLOSE_DISPOSITIONS.join(' | ')} — delivered and no_change_needed are concluded by the coordinator on adopted evidence, never asserted`);
+      }
+      const args = rest.slice(2);
+      const duplicateOf = opt(args, 'duplicate-of');
+      const at = args.indexOf('--duplicate-of');
+      if (at >= 0 && duplicateOf === undefined) fail('--duplicate-of needs a workstream slug');
+      const reason = args.filter((_, i) => at < 0 || (i !== at && i !== at + 1)).join(' ');
+      if (!reason.trim()) fail('a reason is required: weaver close <slug> <disposition> "<why>"');
+      const conclusion = await closeWorkstream(slug, disposition as (typeof HUMAN_CLOSE_DISPOSITIONS)[number], reason, duplicateOf !== undefined ? { duplicateOf } : {});
+      process.stdout.write(`${slug} is closed (${conclusion.disposition}${conclusion.duplicateOf ? ` of ${conclusion.duplicateOf}` : ''}); reopen with \`weaver resume ${slug}\`\n`);
       break;
     }
 

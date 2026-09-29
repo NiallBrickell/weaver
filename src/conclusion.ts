@@ -74,7 +74,10 @@ export interface ConclusionClaim {
  *     fleet-wide load) and passed in, because this mutator must stay
  *     synchronous.
  *   - directed_closed: `directedBy` is a live steering record in THIS
- *     workstream — the human's own direction.
+ *     workstream — the human's own direction. `directedBy` may also accompany
+ *     not_worth_doing or duplicate (a human closing the stream and saying
+ *     why), where it is itself sufficient footing; never delivered or
+ *     no_change_needed, because a human direction is not delivered work.
  * Fields that belong to another disposition are refused, not silently dropped,
  * so a stored conclusion never carries a claim nothing validated.
  */
@@ -90,30 +93,75 @@ export function conclusionDispositionLabels(
   if (claim.duplicateOf !== undefined && disposition !== 'duplicate') {
     throw new Error(`duplicate_of applies only to disposition 'duplicate', not '${disposition}'`);
   }
-  if (claim.directedBy !== undefined && disposition !== 'directed_closed') {
-    throw new Error(`directed_by applies only to disposition 'directed_closed', not '${disposition}'`);
+  // A human direction can close a stream as not worth doing, a duplicate, or
+  // simply closed — it cannot deliver anything, so it never rides a success.
+  if (claim.directedBy !== undefined && SUCCESS_DISPOSITIONS.has(disposition)) {
+    throw new Error(`directed_by applies only to a closure without delivery (not_worth_doing, duplicate, directed_closed), not '${disposition}' — a human direction is not delivered work`);
   }
+  const directed: string[] = [];
+  if (claim.directedBy !== undefined) {
+    if (!liveSteering(doc, claim.directedBy)) {
+      throw new Error(`directed_by ${claim.directedBy} is not a (non-withdrawn) steering record in this workstream — only the human's own direction closes a workstream this way`);
+    }
+    directed.push(`${claim.directedBy}: human steering directive (authority: the human)`);
+  }
+  const rest = claim.evidenceIds.filter((e) => e !== claim.directedBy);
+  const cited = () => (rest.length ? conclusionEvidenceLabels(doc, rest) : []);
   switch (disposition) {
     case 'delivered':
     case 'no_change_needed':
-    case 'not_worth_doing':
       return conclusionEvidenceLabels(doc, claim.evidenceIds);
+    case 'not_worth_doing':
+      // The human's direction is itself sufficient footing; without it the
+      // closed evidence vocabulary applies in full (at least one fact).
+      return directed.length ? [...directed, ...cited()] : conclusionEvidenceLabels(doc, claim.evidenceIds);
     case 'duplicate': {
       const target = claim.duplicateOf?.trim();
       if (!target) throw new Error(`disposition 'duplicate' requires duplicate_of: the slug of the workstream this one repeats`);
       if (target === doc.workstream.slug) throw new Error(`a workstream cannot be a duplicate of itself (${target})`);
       if (!duplicateExists) throw new Error(`duplicate_of '${target}' names no existing workstream`);
-      const cited = claim.evidenceIds.length ? conclusionEvidenceLabels(doc, claim.evidenceIds) : [];
-      return [`duplicate of workstream '${target}' (exists in the store)`, ...cited];
+      return [`duplicate of workstream '${target}' (exists in the store)`, ...directed, ...cited()];
     }
-    case 'directed_closed': {
-      const id = claim.directedBy;
-      if (!id) throw new Error(`disposition 'directed_closed' requires directed_by: the id of the human steering that closed it`);
-      if (!liveSteering(doc, id)) throw new Error(`directed_by ${id} is not a (non-withdrawn) steering record in this workstream — only the human's own direction closes a workstream this way`);
-      const rest = claim.evidenceIds.filter((e) => e !== id);
-      return [`${id}: human steering directive (authority: the human)`, ...(rest.length ? conclusionEvidenceLabels(doc, rest) : [])];
-    }
+    case 'directed_closed':
+      if (!directed.length) throw new Error(`disposition 'directed_closed' requires directed_by: the id of the human steering that closed it`);
+      return [...directed, ...cited()];
   }
+}
+
+/**
+ * Record a validated conclusion: the one path by which a workstream becomes
+ * done, shared by the coordinator's conclude_workstream and the human close.
+ * The directing steer, when there is one, is stored among the evidence ids so
+ * every reader resolves it like any other cited fact. Pending wakes — probes
+ * included — are retired with typed proof naming the act that concluded it
+ * (a pass id, or a human close's act id), so a finished stream never wakes
+ * again until a human reopens it.
+ */
+export function recordConclusion(
+  doc: WorkstreamDoc,
+  claim: ConclusionClaim,
+  record: { passId: string; atVirtual: string; summary: string },
+): WorkstreamConclusion {
+  const evidenceIds = claim.directedBy && !claim.evidenceIds.includes(claim.directedBy)
+    ? [claim.directedBy, ...claim.evidenceIds]
+    : [...claim.evidenceIds];
+  const conclusion: WorkstreamConclusion = {
+    passId: record.passId,
+    atVirtual: record.atVirtual,
+    summary: record.summary,
+    evidenceIds,
+    disposition: claim.disposition,
+    ...(claim.disposition === 'duplicate' && claim.duplicateOf ? { duplicateOf: claim.duplicateOf.trim() } : {}),
+    ...(claim.directedBy ? { directedBy: claim.directedBy } : {}),
+  };
+  doc.workstream.status = 'done';
+  doc.workstream.conclusion = conclusion;
+  for (const w of doc.wakes) {
+    if (w.status !== 'pending') continue;
+    w.status = 'cancelled';
+    w.coordinatorCancellation = { kind: 'workstream-concluded', passId: record.passId };
+  }
+  return conclusion;
 }
 
 /** The disposition a stored conclusion carries; a conclusion recorded before
