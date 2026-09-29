@@ -120,15 +120,26 @@ is written into its URL, Git configuration, credential store, or command line.
   checkout read-write, so every Git (or `gh`) process Weaver starts in a
   checkout goes through one hardened runner (`src/safeGit.ts`). Before
   anything runs, it reads the checkout's Git configuration without executing
-  it and lists its hooks; an exec-capable key or an executable hook refuses
-  the checkout. Weaver runs nothing there — not a deconfliction probe, not the
+  it; an exec-capable key that the overrides below cannot switch off refuses
+  the checkout (filter, diff and merge drivers, `include`/`includeIf`,
+  credential helpers, aliases, a program-valued `core.fsmonitor`,
+  `core.sshCommand`, pager and editor, `gpg.program`,
+  `uploadpack`/`receivepack`, `ext::` URLs and `url.*.insteadOf`, among
+  others). Weaver runs nothing there — not a deconfliction probe, not the
   nightly workspace collector (which keeps the directory and names the key),
   not an approved command, its preflight or its readback — and records a
   `checkout.git_refused` event naming the checkout and each key. An approved
   action in a refused checkout settles before its one-shot claim with zero
-  attempts. The operator clears the finding by removing the key or hook
-  (`git config --unset …`, `rm .git/hooks/<name>`); nothing in the fleet can
-  waive it.
+  attempts. The operator clears the finding by removing the key
+  (`git config --unset …`); nothing in the fleet can waive it.
+- Hooks are not a refusal. A repository's hooks — in `.git/hooks` or wherever
+  its `core.hooksPath` points, as husky sets on every `yarn install` — never
+  run on the host, because every Git process below carries
+  `core.hooksPath=/dev/null`. A checkout that installs them keeps working.
+- A repository-local Git LFS filter (`filter.lfs.*` in `.git/config`, which
+  `git lfs install --local` writes) is refused like any other filter driver.
+  The usual `git lfs install` writes the global configuration instead, which
+  Weaver does not inspect.
 - Every such Git process also runs with command-scope overrides
   (`GIT_CONFIG_COUNT`, Git's highest precedence) that turn off what one value
   can turn off: `core.fsmonitor=false`, `core.hooksPath=/dev/null`,

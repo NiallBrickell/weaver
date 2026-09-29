@@ -21,16 +21,19 @@
  *    discovered the way git discovers it (the `.git` directory or gitfile,
  *    `commondir`, an implicit bare directory), every config file git would
  *    read is listed with `git config --file … --list` (which never follows
- *    includes and never runs a program), and the hooks directory is listed.
- *    Any exec-capable key or executable hook refuses the checkout; nothing is
- *    run there, and the caller records the refusal. `.gitattributes` filters
- *    need a matching `filter.*` driver in config, which is itself refused, so
- *    the attributes files need no inspection.
+ *    includes and never runs a program). Any exec-capable key the overrides
+ *    below cannot neutralise refuses the checkout; nothing is run there, and
+ *    the caller records the refusal. `.gitattributes` filters need a matching
+ *    `filter.*` driver in config, which is itself refused, so the attributes
+ *    files need no inspection.
  * 2. Neutralising overrides. Every harness git call also runs with
  *    command-scope configuration (GIT_CONFIG_COUNT, the highest precedence)
  *    that turns off the exec paths a single value can turn off, so a key the
  *    refusal list does not know about, or a checkout poisoned between the
- *    inspection and the call, still meets a git that will not run it.
+ *    inspection and the call, still meets a git that will not run it. Hooks
+ *    are handled here alone: `core.hooksPath=/dev/null` silences
+ *    `.git/hooks` and any repository `core.hooksPath` (husky's included), so
+ *    a checkout with hooks is not refused.
  *
  * Harness probes also ignore the system and global configuration: they need
  * nothing from it. An approved engine command keeps the operator's system
@@ -44,7 +47,7 @@
  */
 
 import { execFileSync, type StdioOptions } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { engineCommandEnv } from './secrets.js';
@@ -160,7 +163,7 @@ export function harnessGitEnv(
 // Refusal: read the git control plane without executing it.
 
 /** Why a checkout's git control plane is refused: the checkout and every
- * exec-capable finding, each naming the key (or hook) and the file it is in. */
+ * exec-capable finding, each naming the key and the file it is in. */
 export interface CheckoutRefusal {
   checkout: string;
   findings: string[];
@@ -218,7 +221,6 @@ export function execCapableGitConfig(key: string, value: string | null): boolean
   switch (k) {
     case 'core.fsmonitor':
       return !BOOLEAN_VALUE.test(v);
-    case 'core.hookspath':
     case 'core.pager':
     case 'core.editor':
     case 'sequence.editor':
@@ -393,22 +395,12 @@ function judge(worktree: string, gitDir: string): CheckoutInspection {
       if (execCapableGitConfig(key, value)) findings.push(`${key} in ${file}`);
     }
   }
-  const hooksDir = join(commonDir, 'hooks');
-  let hooks: string[] = [];
-  try {
-    hooks = readdirSync(hooksDir);
-  } catch {
-    hooks = [];
-  }
-  for (const name of hooks) {
-    if (name.endsWith('.sample')) continue;
-    try {
-      const stat = statSync(join(hooksDir, name));
-      if (stat.isFile() && (stat.mode & 0o111) !== 0) findings.push(`executable hook ${join(hooksDir, name)}`);
-    } catch {
-      // A dangling link is no hook git can run.
-    }
-  }
+  // Hooks — in .git/hooks or wherever core.hooksPath points — are deliberately
+  // NOT refused: the command-scope core.hooksPath=/dev/null override makes
+  // every one of them inert for harness git and approved commands alike
+  // (tested), while ordinary repository setup installs them all the time
+  // (husky's `prepare` sets core.hooksPath on every `yarn install`). Refusing
+  // them bought no safety and would have refused every such checkout.
   if (findings.length) return { verdict: 'refused', refusal: { checkout: worktree, findings } };
   return { verdict: 'clean', worktree, gitDir, commonDir };
 }

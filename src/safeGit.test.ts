@@ -105,19 +105,47 @@ test('core.fsmonitor in the checkout: host git never runs it and the checkout is
   assert.ok(checkoutRefusal(path.join(repo, 'src')));
 });
 
-test('an executable hook is refused; a sample hook and a non-executable file are not', () => {
-  const root = tmp('weaver-safegit-hooks-');
-  const { repo } = checkout(root);
-  const hooks = path.join(repo, '.git', 'hooks');
-  fs.mkdirSync(hooks, { recursive: true });
-  fs.writeFileSync(path.join(hooks, 'pre-push.sample'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(hooks, 'README'), 'not a hook\n', { mode: 0o644 });
-  assert.equal(inspectCheckout(repo).verdict, 'clean');
+test('a husky-style checkout is not refused, and host git and an engine push never run its hooks', async () => {
+  const root = tmp('weaver-safegit-husky-');
+  const { repo, remote } = checkout(root);
+  // What `yarn install` leaves behind in a husky repository: core.hooksPath in
+  // repository config and executable hooks under it — plus one in .git/hooks
+  // for the pre-husky layout.
   const marker = path.join(root, 'hook-ran');
-  fs.writeFileSync(path.join(hooks, 'pre-push'), `#!/bin/sh\n${markerCommand(marker)}\n`, { mode: 0o755 });
-  const refusal = checkoutRefusal(repo);
-  assert.ok(refusal);
-  assert.deepEqual(refusal.findings, [`executable hook ${path.join(hooks, 'pre-push')}`]);
+  fs.mkdirSync(path.join(repo, '.husky'));
+  for (const hook of [path.join(repo, '.husky', 'pre-push'), path.join(repo, '.husky', 'post-commit'), path.join(repo, '.git', 'hooks', 'pre-push')]) {
+    fs.writeFileSync(hook, `#!/bin/sh\n${markerCommand(marker)}\n`, { mode: 0o755 });
+  }
+  git(repo, 'add', '.husky');
+  git(repo, 'commit', '-q', '-m', 'husky');
+  git(repo, 'push', '-q', 'origin', 'main');
+  git(repo, 'config', 'core.hooksPath', '.husky');
+  fs.rmSync(marker, { force: true });
+  // Control: plain git obeys the husky hooks — they are real.
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'control');
+  assert.equal(fs.existsSync(marker), true, 'control: plain git runs the husky post-commit hook');
+  fs.rmSync(marker);
+  git(repo, 'reset', '-q', '--hard', 'HEAD~1');
+
+  assert.equal(inspectCheckout(repo).verdict, 'clean', 'hooks are not a refusal: the override neutralises them');
+  assert.equal(runHarnessGit(['status', '--porcelain'], { cwd: repo }).trim(), '');
+  fs.writeFileSync(path.join(repo, 'README.md'), 'pushed\n');
+  const env = engineCommandEnv({
+    GIT_AUTHOR_NAME: 't',
+    GIT_AUTHOR_EMAIL: 't@example.invalid',
+    GIT_COMMITTER_NAME: 't',
+    GIT_COMMITTER_EMAIL: 't@example.invalid',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+  });
+  const pushed = await runActionCommand(
+    'git commit -q -am pushed && git push -q origin HEAD:main && git rev-parse HEAD',
+    repo,
+    env,
+    30_000,
+  );
+  assert.equal(pushed.ok, true, pushed.output);
+  assert.equal(git(remote, 'rev-parse', 'main'), pushed.output.trim());
+  assert.equal(fs.existsSync(marker), false, 'neither pre-push nor post-commit ran on the host');
 });
 
 test('a filter driver plus .gitattributes is refused and never executes', () => {
@@ -142,7 +170,6 @@ test('the refusal list covers the exec-capable keys and leaves ordinary configur
     ['diff.x.textconv', 'evil'],
     ['diff.external', 'evil'],
     ['merge.x.driver', 'evil'],
-    ['core.hooksPath', '.husky'],
     ['core.sshCommand', 'evil'],
     ['core.pager', 'evil'],
     ['core.fsmonitor', 'evil'],
@@ -158,6 +185,8 @@ test('the refusal list covers the exec-capable keys and leaves ordinary configur
   }
   for (const [key, value] of [
     ['core.fsmonitor', 'false'],
+    // Neutralised by the core.hooksPath=/dev/null override instead.
+    ['core.hooksPath', '.husky/_'],
     ['core.bare', 'false'],
     ['credential.helper', ''],
     ['remote.origin.url', 'https://github.com/octo/repo.git'],
@@ -304,13 +333,14 @@ test('an engine command in a poisoned checkout is refused before it spawns', asy
   const root = tmp('weaver-safegit-action-');
   const { repo } = checkout(root);
   const marker = path.join(root, 'action-ran');
-  const hookMarker = path.join(root, 'hook-ran');
-  fs.writeFileSync(path.join(repo, '.git', 'hooks', 'pre-push'), `#!/bin/sh\n${markerCommand(hookMarker)}\n`, { mode: 0o755 });
-  const result = await runActionCommand(`${markerCommand(marker)}; git push -q origin HEAD:main`, repo, engineCommandEnv(), 30_000);
+  const filterMarker = path.join(root, 'filter-ran');
+  git(repo, 'config', 'filter.x.clean', `sh -c '${markerCommand(filterMarker)}; cat'`);
+  fs.writeFileSync(path.join(repo, '.gitattributes'), '* filter=x\n');
+  const result = await runActionCommand(`${markerCommand(marker)}; git add -A; git push -q origin HEAD:main`, repo, engineCommandEnv(), 30_000);
   assert.equal(result.ok, false);
-  assert.match(result.output, /host git refused in .*executable hook/);
+  assert.match(result.output, /host git refused in .*filter\.x\.clean/);
   assert.equal(fs.existsSync(marker), false);
-  assert.equal(fs.existsSync(hookMarker), false);
+  assert.equal(fs.existsSync(filterMarker), false);
 });
 
 test('sdkEnv no longer hands a model process the store URL or the App identity', () => {
