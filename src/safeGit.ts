@@ -184,6 +184,13 @@ export class PoisonedCheckoutError extends Error {
 export function describeCheckoutRefusal(refusal: CheckoutRefusal): string {
   const shown = refusal.findings.slice(0, 6).join('; ');
   const more = refusal.findings.length > 6 ? `; +${refusal.findings.length - 6} more` : '';
+  // A broken gitfile is not a security finding: git itself cannot use the
+  // checkout (typically a pruned worktree, or one made inside a container
+  // whose paths the host cannot see). Say so, so nobody chases a false alarm.
+  if (refusal.findings.length === 1 && refusal.findings[0] === '.git is an unreadable or invalid gitfile') {
+    return `host git skipped ${refusal.checkout}: it is not a usable git checkout (its .git points to a missing or unreadable worktree). `
+      + 'Recreate the worktree or delete the directory.';
+  }
   return `host git refused in ${refusal.checkout}: its git control plane can execute programs (${shown}${more}). `
     + 'Weaver runs no git there until the operator removes them.';
 }
