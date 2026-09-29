@@ -7,7 +7,7 @@
 
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -82,6 +82,35 @@ test('the plan mounts only the SDK binary, the workspace and declared read dirs,
     '--entrypoint', '/opt/weaver/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude',
   ]);
   assert.deepEqual(plan.args.slice(image + 1), ['--output-format', 'stream-json', '--model', 'claude-opus-5']);
+});
+
+test('a checkout workspace mounts its git config and hooks read-only over the read-write tree', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-container-git-')));
+  roots.push(root);
+  const cwd = path.join(root, 'checkout');
+  fs.mkdirSync(cwd);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } });
+  // A worker cannot create a hooks directory the host never had.
+  fs.rmSync(path.join(cwd, '.git', 'hooks'), { recursive: true, force: true });
+  // A clone the workspace already holds is pinned too.
+  const nested = path.join(cwd, 'vendor', 'lib');
+  fs.mkdirSync(nested, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: nested, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } });
+  const plan = planContainerRun(spawnOptions(), {
+    assignmentId: 'asg_git',
+    cwd,
+    additionalDirectories: [],
+    workerVisibleEnv: {},
+  }, config);
+  const volumes = plan.args.filter((_, i) => plan.args[i - 1] === '--volume');
+  assert.deepEqual(volumes.slice(1), [
+    `${cwd}:${cwd}`,
+    `${cwd}/.git/config:${cwd}/.git/config:ro`,
+    `${cwd}/.git/hooks:${cwd}/.git/hooks:ro`,
+    `${nested}/.git/config:${nested}/.git/config:ro`,
+    `${nested}/.git/hooks:${nested}/.git/hooks:ro`,
+  ]);
+  assert.equal(fs.statSync(path.join(cwd, '.git', 'hooks')).isDirectory(), true);
 });
 
 test('only the Claude identity, SDK protocol names and declared secrets cross, by name, never a value in argv', () => {

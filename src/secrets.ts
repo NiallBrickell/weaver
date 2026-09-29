@@ -260,6 +260,24 @@ function stripExecutorSecretNames(
   for (const name of Object.keys(registered)) delete env[name];
 }
 
+/**
+ * The harness's own control-plane credentials: the shared store's write URL,
+ * the GitHub App identity, and the ingress/Pilot bearers. The runner needs
+ * them; no model process does — a coordinator's writes go through its
+ * in-process mutation tools, and a worker submits through its harness
+ * callback. sdkEnv copied all of them into every host-process model run
+ * (codex-sdk, local-sdk, pi) until 2026-09-29, where one `env` in a worker's
+ * shell was write access to the whole fleet around the revision check. Model
+ * and provider identity is deliberately NOT in this set: sdkEnv exists to hand
+ * a model process its own principal (and stripClaudeCredentials/each adapter
+ * narrows that further).
+ */
+const HARNESS_STATE_ENV = /^(?:WEAVER_STORE|WEAVER_GITHUB_APP_.*|WEAVER_SERVE_TOKEN|WEAVER_PILOT_TOKEN)$/;
+
+function stripHarnessStateNames(env: Record<string, string | undefined>): void {
+  for (const name of Object.keys(env)) if (HARNESS_STATE_ENV.test(name)) delete env[name];
+}
+
 export function sdkEnv(
   extra: Record<string, string> = {},
   stripAmbientNames: Iterable<string> = [],
@@ -272,8 +290,10 @@ export function sdkEnv(
   // declared subset: remove every applicable worker-secret name first, then
   // add the exact selected values supplied by the caller.
   for (const name of stripAmbientNames) delete env[name];
+  stripHarnessStateNames(env);
   Object.assign(env, extra);
   stripExecutorSecretNames(env, registered);
+  stripHarnessStateNames(env);
   stripClaudeCredentials(env);
   if (registered.CLAUDE_CODE_OAUTH_TOKEN) {
     env.CLAUDE_CODE_OAUTH_TOKEN = registered.CLAUDE_CODE_OAUTH_TOKEN;

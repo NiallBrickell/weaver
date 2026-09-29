@@ -113,6 +113,42 @@ is written into its URL, Git configuration, credential store, or command line.
   secret name, and every model/provider credential. They then receive exactly
   the action's applicable secrets and the token minted for that action, so an
   approved command can push but can never write to the shared store directly.
+- Host-side Git never obeys a checkout a worker could have written. Git
+  configuration can run programs (`core.fsmonitor`, hooks, `filter.*`
+  drivers, `diff.*.textconv`, a repository-local `credential.helper`,
+  `include.path` pulling any of them in), and container workers mount their
+  checkout read-write, so every Git (or `gh`) process Weaver starts in a
+  checkout goes through one hardened runner (`src/safeGit.ts`). Before
+  anything runs, it reads the checkout's Git configuration without executing
+  it and lists its hooks; an exec-capable key or an executable hook refuses
+  the checkout. Weaver runs nothing there — not a deconfliction probe, not the
+  nightly workspace collector (which keeps the directory and names the key),
+  not an approved command, its preflight or its readback — and records a
+  `checkout.git_refused` event naming the checkout and each key. An approved
+  action in a refused checkout settles before its one-shot claim with zero
+  attempts. The operator clears the finding by removing the key or hook
+  (`git config --unset …`, `rm .git/hooks/<name>`); nothing in the fleet can
+  waive it.
+- Every such Git process also runs with command-scope overrides
+  (`GIT_CONFIG_COUNT`, Git's highest precedence) that turn off what one value
+  can turn off: `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
+  `core.pager=cat`, an empty `diff.external`, `protocol.ext.allow=never`,
+  `safe.bareRepository=explicit`. Weaver's own probes additionally ignore the
+  system and global Git configuration and clear credential helpers, ssh and
+  askpass overrides. An approved command keeps the operator's system and
+  global configuration (commit identity, URL rewrites, LFS, credential
+  helpers), which live outside every worker mount; the overrides are appended
+  after the App's own `GIT_CONFIG_*` entries, so its process-local credential
+  helper still authenticates `git push`.
+- Container workers can still commit, but the Git control plane of each
+  repository their read-write mounts expose — the common `config`, `hooks`,
+  any `config.worktree`, a linked worktree's `.git` file and `commondir`
+  pointer — is bind-mounted read-only over it. A worker Git command that
+  writes configuration (`git config`, `git push -u`, `git remote add`) fails
+  in the container. This raises the bar rather than drawing the line: a file
+  that does not exist cannot be mounted, `.git` can be renamed away, and a
+  repository a worker clones itself is its own from birth, which is why the
+  host-side refusal above is the boundary.
 - Hosted runners set `WEAVER_DETERMINISTIC_ACTIONS_ONLY=1`. A model process
   sharing the controller Unix identity could otherwise read the App key, so
   hosted repo egress must be an exact `exec_run` command. After approval and

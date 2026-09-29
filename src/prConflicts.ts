@@ -21,13 +21,11 @@
  * new wake. Wake reasons are presentation and are never parsed (Wake contract).
  */
 
-import { execFileSync } from 'node:child_process';
-
+import { checkoutRefusal, recordCheckoutRefusal, runHarnessCommand } from './safeGit.js';
 import { arrive, newId } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 import { isRepoEgressAction } from './deconflict.js';
 import { githubAppEnvironment, GitHubAppHostVisibilityError } from './githubApp.js';
-import { engineCommandEnv } from './secrets.js';
 
 /** Between provider probes per workstream. PR mergeability changes at merge
  * cadence (minutes to hours), and each probe is one gh call per egressed
@@ -55,19 +53,19 @@ export interface PrConflictIO {
 }
 
 function tryRun(
-  bin: string,
+  bin: 'git' | 'gh',
   args: string[],
   cwd: string,
   environment: Record<string, string> = {},
 ): string | null {
   try {
-    return execFileSync(bin, args, {
+    // Harness-authored, but it runs in a model-influenced checkout whose Git
+    // configuration can execute commands (gh runs git internally too): the
+    // hardened runner refuses a poisoned checkout and never hands git the
+    // runner's secrets or the checkout's exec paths.
+    return runHarnessCommand(bin, args, {
       cwd,
-      // Harness-authored, but it runs in a model-influenced checkout whose
-      // Git configuration can execute commands: never the runner's secrets.
-      env: engineCommandEnv(environment),
-      encoding: 'utf8',
-      timeout: 30_000,
+      environment,
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
   } catch {
@@ -120,6 +118,14 @@ export async function probeWorkstreamPrConflicts(doc: WorkstreamDoc, io: PrConfl
   let woken = 0;
   const probedBranches = new Set<string>();
   for (const cwd of cwds) {
+    // A checkout whose git control plane can execute programs is never
+    // probed (gh and git would both obey it as the runner user). The refusal
+    // is recorded once on the stream so the operator sees which key did it.
+    const refusal = checkoutRefusal(cwd);
+    if (refusal) {
+      await recordCheckoutRefusal(slug, refusal, [], doc);
+      continue;
+    }
     let githubEnvironment: Record<string, string>;
     try {
       githubEnvironment = await githubAppEnvironment(cwd, 'read');

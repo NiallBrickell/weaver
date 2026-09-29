@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
   mkdtempSync,
@@ -86,6 +87,35 @@ test('deduplicates canonical source directories while rewriting every supplied a
     plan.dockerArgs.filter((argument) => argument === '--volume').length,
     2,
   );
+});
+
+test('OpenHands mounts pin each exposed repository\'s git control plane read-only at its container path', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'weaver-workspace-git-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x' };
+  const main = join(root, 'main');
+  mkdirSync(main);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: main, env });
+  execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'i'], { cwd: main, env });
+  // A linked worktree as the working directory, its main checkout declared
+  // as a source: the gitfile, the commondir pointer and the common config
+  // and hooks are all pinned where the worker sees them.
+  const linked = join(root, 'linked');
+  execFileSync('git', ['worktree', 'add', '-q', '-b', 'feat', linked], { cwd: main, env });
+
+  const plan = planWorkspaceMounts({ cwd: linked, additionalDirectories: [main], prompt: '' });
+  const readOnly = plan.dockerArgs.filter((argument) => argument.endsWith(':ro'));
+  assert.deepEqual(readOnly, [
+    `${main}/.git/config:/weaver-sources/1/.git/config:ro`,
+    `${main}/.git/hooks:/weaver-sources/1/.git/hooks:ro`,
+    `${main}/.git/worktrees/linked/commondir:/weaver-sources/1/.git/worktrees/linked/commondir:ro`,
+    `${linked}/.git:/workspace/.git:ro`,
+  ]);
+  // Read-only overlays come after the read-write sources they sit inside.
+  assert.deepEqual(plan.dockerArgs.slice(0, 4), [
+    '--volume', `${linked}:/workspace:rw`,
+    '--volume', `${main}:/weaver-sources/1:rw`,
+  ]);
 });
 
 test('fails clearly for a missing additional source without creating it', (t) => {

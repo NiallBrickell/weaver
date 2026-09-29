@@ -24,6 +24,7 @@ import {
   verifyAction,
 } from './engine.js';
 import { runCoordinatorPass } from './coordinator.js';
+import { GIT_EXEC_NEUTRALISING_CONFIG } from './safeGit.js';
 import { rejectSend } from './humanActs.js';
 import { providerSend, readLedger } from './world.js';
 import { arrive, createWorkstream, heartbeatRunner, load, newId, readArtifact, writeArtifact } from './store.js';
@@ -1247,6 +1248,39 @@ test('a GitHub read action with a non-repository cwd settles before claim exactl
   assert.equal(wakes[0]!.status, 'pending');
 });
 
+test('an approved engine action in a checkout with exec-capable git config settles before claim, naming the key', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-poisoned-checkout-'));
+  const marker = path.join(process.env.WEAVER_HOME!, 'must-not-run');
+  const fsmonitorMarker = path.join(process.env.WEAVER_HOME!, 'fsmonitor-ran');
+  execFileSync('git', ['init', '--quiet'], { cwd });
+  execFileSync('git', ['config', 'core.fsmonitor', `touch ${JSON.stringify(fsmonitorMarker)}`], { cwd });
+  await makeActionWorkstream('poisoned-checkout-ws', {
+    state: 'queued',
+    exec: {
+      cwd,
+      run: `touch ${JSON.stringify(marker)}; git push origin HEAD`,
+      verify: `git status --porcelain; touch ${JSON.stringify(marker)}`,
+      approval: { by: 'human', at: new Date().toISOString() },
+    },
+  });
+  try {
+    await tick('poisoned-checkout-ws', { maxPasses: 0 });
+    await tick('poisoned-checkout-ws', { maxPasses: 0 });
+    const doc = await load('poisoned-checkout-ws');
+    const action = doc.assignments[0]!;
+    assert.equal(action.state, 'failed');
+    assert.equal(action.attempts.length, 0, 'no one-shot attempt was claimed');
+    assert.equal(fs.existsSync(marker), false, 'neither the verifier nor the command ran');
+    assert.equal(fs.existsSync(fsmonitorMarker), false, 'no host git obeyed the checkout configuration');
+    const refused = doc.events.filter((event) => event.type === 'checkout.git_refused');
+    assert.equal(refused.length, 1, 'recorded once, however many ticks meet it');
+    assert.match(refused[0]!.summary, /core\.fsmonitor in .*\.git\/config/);
+    assert.equal(doc.events.filter((event) => event.type === 'action.preparation_failed').length, 1);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('a transient GitHub mint failure cannot be mislabeled as a durable zero-effect preparation failure', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-transient-'));
   execFileSync('git', ['init', '--quiet'], { cwd });
@@ -1639,7 +1673,13 @@ test('engine-run commands never inherit WEAVER_STORE or model credentials, yet k
       assert.equal(seen.get('ORDINARY_TOOL_SETTING'), 'kept-for-the-command');
       assert.equal(seen.get('DEPLOY_HOOK_TOKEN'), 'selected-action-secret-8802');
       assert.equal(seen.get('GH_TOKEN'), 'ghs_minted-action-token-4410');
-      assert.equal(seen.get('GIT_CONFIG_COUNT'), '4', `${file}: Git still authenticates through the App helper`);
+      // Git still authenticates through the App helper: its four entries keep
+      // their slots, and the neutralising overrides follow them (safeGit.ts).
+      assert.equal(seen.get('GIT_CONFIG_KEY_0'), 'credential.helper');
+      assert.equal(seen.get('GIT_CONFIG_KEY_1'), 'credential.https://github.com.helper', `${file}: Git still authenticates through the App helper`);
+      assert.equal(seen.get('GIT_CONFIG_KEY_3'), 'credential.https://github.com.useHttpPath');
+      assert.equal(seen.get('GIT_CONFIG_COUNT'), String(4 + GIT_EXEC_NEUTRALISING_CONFIG.length));
+      assert.equal(seen.get('GIT_CONFIG_KEY_5'), 'core.hooksPath');
     }
   } finally {
     for (const [name, value] of Object.entries(previous)) {
