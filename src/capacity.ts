@@ -25,6 +25,7 @@ import type {
   Wake,
   WorkstreamDoc,
 } from './types.js';
+import type { RunnerPresence } from './store/types.js';
 import { isPendingSteering } from './steering.js';
 import {
   coordinatorTargets,
@@ -752,7 +753,7 @@ function ownInfrastructureWaitSummary(
         : `${provider} usage is limited for ${wait.model}; dependent work is parked until its scheduled retry. Check that provider's usage page, wait for its reset, or run \`${retry}\` after restoring capacity. Weaver never changes billing.`;
     case 'auth':
       return claude
-        ? `Claude authentication needs attention for ${wait.model}; dependent work is parked. Run \`claude auth login\` in a terminal and complete the intended operator login. Weaver never accepts credentials or tokens; it retries when credential metadata changes, or after \`${retry}\`.`
+        ? `Claude authentication needs attention for ${wait.model}; dependent work is parked. Run \`claude auth login\` in a terminal and complete the intended operator login. Weaver never accepts credentials or tokens; replacing the credential this runner uses (a new login or setup-token) releases the wait on the next poll, or run \`${retry}\`.`
         : `${provider} authentication needs attention for ${wait.model}; dependent work is parked. Repair the configured ${wait.executor ?? 'executor'} credentials, then run \`${retry}\`. Weaver never accepts or rotates credentials.`;
     case 'session_limit':
       return `${provider}'s session limit is active for ${wait.model}; dependent work is parked until its scheduled retry.`;
@@ -975,6 +976,232 @@ export function wakeHeldByFleetCapacity(doc: WorkstreamDoc, wake: Wake, nowIso: 
   return entry?.wait.observedIn !== undefined && entry.wait.retryAt > nowIso;
 }
 
+// ---------------------------------------------------------------------------
+// Waits that can no longer be observed to recover. A provider wait targets one
+// exact executor/provider/model. When the fleet's seats move on (Fable 5 →
+// Fable 5.1), a wait on the old target is never retried by anything — no
+// runner launches there — so the work it holds sits out its whole timer for
+// nothing (2026-09-29: twenty jobs parked on claude-opus-5/claude-fable-5
+// until an operator retried each). Likewise a Claude auth wait whose
+// credential has since been replaced describes a credential nobody presents
+// any more. Both are RELEASED, never deleted: the wait is made due, marked
+// with why, and kept as history; the next real attempt is still the proof.
+
+/** The union of exact targets live runners publish, per role. A role is
+ * undefined — unknown — unless every live runner published seats for it and
+ * none is degraded: an older runner that publishes no seats, or a degraded one
+ * that publishes none while it cannot commit, may still offer the target, and
+ * "unknown" must never read as "nobody offers it". */
+export interface LiveSeats {
+  coordinator?: ReadonlySet<string>;
+  worker?: ReadonlySet<string>;
+}
+
+/** Derived from the shared presence rows alone — never from a document load. */
+export function liveSeats(
+  presences: readonly RunnerPresence[],
+  nowMs: number,
+  ttlMs: number,
+): LiveSeats {
+  const latest = new Map<string, RunnerPresence>();
+  for (const presence of presences) {
+    const at = Date.parse(presence.heartbeatAt);
+    const previous = latest.get(presence.runnerId);
+    if (Number.isFinite(at) && (!previous || Date.parse(previous.heartbeatAt) < at)) {
+      latest.set(presence.runnerId, presence);
+    }
+  }
+  const live = [...latest.values()].filter((presence) => nowMs - Date.parse(presence.heartbeatAt) <= ttlMs);
+  if (!live.length || live.some((presence) => presence.degraded !== undefined)) return {};
+  const union = (pick: (presence: RunnerPresence) => readonly CapacityTarget[] | undefined): Set<string> | undefined => {
+    if (live.some((presence) => pick(presence) === undefined)) return undefined;
+    return new Set(live.flatMap((presence) => pick(presence)!.map(capacityTargetKey)));
+  };
+  const coordinator = union((presence) => presence.coordinatorSeats);
+  const worker = union((presence) => presence.workerSeats);
+  return { ...(coordinator ? { coordinator } : {}), ...(worker ? { worker } : {}) };
+}
+
+/** Known, and absent from that role's live seats. */
+function unseatedForRole(seats: LiveSeats, role: 'coordinator' | 'worker', target: CapacityTarget): boolean {
+  const offered = seats[role];
+  return !!offered && !offered.has(capacityTargetKey(target));
+}
+
+/** A capacity record gates EVERY role's selection of its target, so it is
+ * stale only when neither role offers the target anywhere. A limit on a model
+ * that moved from the coordinator chain to the worker ladder is still a live
+ * fact about a pool the fleet launches on. */
+function unseatedEverywhere(seats: LiveSeats, target: CapacityTarget): boolean {
+  return unseatedForRole(seats, 'coordinator', target) && unseatedForRole(seats, 'worker', target);
+}
+
+/** Stamp a Claude SDK auth wait with the runner and NON-SECRET credential
+ * fingerprint it failed on. Other waits pass through untouched. */
+export function stampClaudeCredential(
+  wait: InfrastructureWait | null,
+  runnerId: string,
+  fingerprint: string | null,
+): InfrastructureWait | null {
+  if (!wait || wait.kind !== 'auth' || !isClaudeSdkWait(wait)) return wait;
+  return { ...wait, credential: { runnerId, fingerprint } };
+}
+
+/** The credential this runner presents now, for comparing against stamps. */
+export interface CurrentCredential {
+  runnerId: string;
+  fingerprint: string | null;
+}
+
+/** A Claude auth wait this runner can prove is about a replaced credential:
+ * stamped on this runner with a different fingerprint, or recorded before
+ * stamping existed (one retry re-establishes a stamped wait). An unknown
+ * current fingerprint proves nothing, and another runner's credential is
+ * that runner's to judge. */
+function credentialReplaced(wait: InfrastructureWait, current: CurrentCredential): boolean {
+  if (wait.kind !== 'auth' || !isClaudeSdkWait(wait) || wait.observedIn !== undefined) return false;
+  if (current.fingerprint === null) return false;
+  if (!wait.credential) return true;
+  return wait.credential.runnerId === current.runnerId && wait.credential.fingerprint !== current.fingerprint;
+}
+
+interface WaitReleasePlan {
+  entryKeys: string[];
+  wakeIds: string[];
+  assignmentIds: string[];
+  targets: CapacityTarget[];
+}
+
+function planWaitRelease(
+  doc: WorkstreamDoc,
+  nowIso: string,
+  entryStale: (wait: InfrastructureWait) => boolean,
+  heldStale: (wait: InfrastructureWait, releasedTargets: readonly CapacityTarget[]) => boolean,
+): WaitReleasePlan {
+  const entryKeys: string[] = [];
+  const targets: CapacityTarget[] = [];
+  for (const [key, entry] of Object.entries(doc.capacity?.byModel ?? {})) {
+    const target = targetOfWait(entry.wait);
+    if (!target || entry.wait.retryAt <= nowIso || !entryStale(entry.wait)) continue;
+    entryKeys.push(key);
+    targets.push(target);
+  }
+  const wakeIds = doc.wakes
+    .filter((wake) =>
+      wake.status === 'pending' &&
+      wake.condition.type === 'time' &&
+      wake.condition.dueAtVirtual > nowIso &&
+      !!wake.infrastructure &&
+      !!targetOfWait(wake.infrastructure) &&
+      heldStale(wake.infrastructure, targets))
+    .map((wake) => wake.id);
+  const assignmentIds = doc.assignments
+    .filter((assignment) => {
+      const wait = assignment.attempts.at(-1)?.infrastructure;
+      return assignment.state === 'queued' && !!wait && wait.retryAt > nowIso &&
+        !!targetOfWait(wait) && heldStale(wait, targets);
+    })
+    .map((assignment) => assignment.id);
+  return { entryKeys, wakeIds, assignmentIds, targets };
+}
+
+function planIsEmpty(plan: WaitReleasePlan): boolean {
+  return !plan.entryKeys.length && !plan.wakeIds.length && !plan.assignmentIds.length;
+}
+
+/** Make every planned wait due now and mark why; returns the released models.
+ * Nothing is deleted: records stay as history and the next real attempt
+ * either succeeds (clearing them the ordinary way) or records a fresh wait. */
+function applyWaitRelease(
+  doc: WorkstreamDoc,
+  nowIso: string,
+  plan: WaitReleasePlan,
+  reason: 'unseated' | 'credential_changed',
+): string[] {
+  const released = { at: nowIso, reason };
+  const models = new Set<string>();
+  for (const key of plan.entryKeys) {
+    const wait = doc.capacity!.byModel[key]!.wait;
+    wait.retryAt = nowIso;
+    wait.released = released;
+    models.add(wait.model);
+  }
+  for (const wake of doc.wakes) {
+    if (!plan.wakeIds.includes(wake.id) || !wake.infrastructure) continue;
+    wake.condition = { type: 'time', dueAtVirtual: nowIso };
+    wake.infrastructure.retryAt = nowIso;
+    wake.infrastructure.released = released;
+    models.add(wake.infrastructure.model);
+  }
+  for (const assignment of doc.assignments) {
+    const wait = assignment.attempts.at(-1)?.infrastructure;
+    if (!plan.assignmentIds.includes(assignment.id) || !wait) continue;
+    wait.retryAt = nowIso;
+    wait.released = released;
+    models.add(wait.model);
+  }
+  return [...models].sort();
+}
+
+function unseatedPlan(doc: WorkstreamDoc, seats: LiveSeats, nowIso: string): WaitReleasePlan {
+  return planWaitRelease(
+    doc,
+    nowIso,
+    (wait) => unseatedEverywhere(seats, targetOfWait(wait)!),
+    (wait) => unseatedForRole(seats, wait.source, targetOfWait(wait)!),
+  );
+}
+
+/** Whether any wait here targets a seat no live runner offers (cheap; no write). */
+export function hasUnseatedWaits(doc: WorkstreamDoc, seats: LiveSeats, nowIso: string): boolean {
+  if (!seats.coordinator && !seats.worker) return false;
+  return !planIsEmpty(unseatedPlan(doc, seats, nowIso));
+}
+
+/** Release, in place, every wait whose exact target no live runner offers for
+ * the role it holds; returns the released models. A capacity record is
+ * released only when neither role offers its target; its open capacity card
+ * closes as moot, since no seat is left for anyone to restore. */
+export function releaseUnseatedWaits(doc: WorkstreamDoc, seats: LiveSeats, nowIso: string): string[] {
+  if (!seats.coordinator && !seats.worker) return [];
+  const plan = unseatedPlan(doc, seats, nowIso);
+  if (planIsEmpty(plan)) return [];
+  const models = applyWaitRelease(doc, nowIso, plan, 'unseated');
+  for (const target of plan.targets) resolveCapacityAttention(doc, target, CAPACITY_UNSEATED_ACTOR);
+  return models;
+}
+
+function credentialPlan(doc: WorkstreamDoc, current: CurrentCredential, nowIso: string): WaitReleasePlan {
+  return planWaitRelease(
+    doc,
+    nowIso,
+    (wait) => credentialReplaced(wait, current),
+    // Wakes and parked attempts on a released target failed on the same
+    // credential (auth waits are per host and never borrowed).
+    (wait, targets) => targets.some((target) => waitMatchesTarget(wait, target)),
+  );
+}
+
+export function hasCredentialReplacedWaits(doc: WorkstreamDoc, current: CurrentCredential, nowIso: string): boolean {
+  return !planIsEmpty(credentialPlan(doc, current, nowIso));
+}
+
+/** Release, in place, Claude auth waits whose credential this runner has
+ * since replaced; returns the released models. The capacity card stays open:
+ * a new credential is not yet proof that it works. */
+export function releaseCredentialReplacedWaits(
+  doc: WorkstreamDoc,
+  current: CurrentCredential,
+  nowIso: string,
+): string[] {
+  const plan = credentialPlan(doc, current, nowIso);
+  return planIsEmpty(plan) ? [] : applyWaitRelease(doc, nowIso, plan, 'credential_changed');
+}
+
+/** `resolvedBy` for a capacity card closed because no live runner offers its
+ * target any more. A system actor: never a human intervention (stats.ts). */
+export const CAPACITY_UNSEATED_ACTOR = 'engine:capacity-unseated';
+
 export function capacityAttentionThreshold(category: CapacityCategory): number {
   return category === 'auth' ? 1 : 12;
 }
@@ -986,7 +1213,7 @@ export function capacityAttentionSummary(entry: CapacityBackoff, slug?: string):
   const prefix = `${capacityAttentionPrefix(wait)}${wait.kind}) has blocked work ${consecutiveBackoffs} times.`;
   if (wait.kind === 'auth') {
     return provider === 'Claude'
-      ? `${prefix} Run \`claude auth login\` and complete the intended operator login; Weaver reads no credential values. If credential metadata is unavailable, run \`${retry}\` afterward. Agent SDK plan guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan`
+      ? `${prefix} Run \`claude auth login\` and complete the intended operator login; Weaver reads no credential values. A replaced credential releases the wait on the runner's next poll; if it lives in the macOS keychain, run \`${retry}\` afterward. Agent SDK plan guidance: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan`
       : `${prefix} Repair the configured ${wait.executor ?? 'executor'} credentials, then run \`${retry}\`; Weaver reads no credential values.`;
   }
   if (wait.kind === 'usage_limit' || wait.kind === 'sdk_credit_exhausted') {

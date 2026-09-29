@@ -266,3 +266,29 @@ export function workerTargetForAssignment(
 ): CapacityTarget {
   return workerTargetsForAssignment(assignment, routes)[0]!;
 }
+
+/**
+ * Every exact target this host's configuration could hand a worker attempt,
+ * published in runner presence so the fleet can tell a wait on a seat that no
+ * runner offers any more (it can never be observed to recover) from a live
+ * one. Over-inclusion is the safe direction: a listed target only keeps its
+ * waits honoured. So this is the union of what workerTargetsForAssignment can
+ * return for ANY requirements — the standard and complex seat models, every
+ * reviewed route on the configured executor, the explicit fallback ladder —
+ * plus the Pilot-supervised action target.
+ */
+export function runnerWorkerSeats(
+  routes: readonly WorkModelRoute[] = WORK_MODEL_ROUTES,
+): CapacityTarget[] {
+  const seat = workerCapacityTarget();
+  const candidates = [
+    ...routes.filter((route) => route.target.executor === seat.executor).map((route) => route.target),
+    seat,
+    workerCapacityTarget(workerModelComplex()),
+    ...workerFallbackTargets(),
+    actionCapacityTarget(),
+  ];
+  return candidates.filter(
+    (target, index) => candidates.findIndex((candidate) => sameTarget(candidate, target)) === index,
+  );
+}

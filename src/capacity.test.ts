@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import {
   adoptFleetSeatWait,
@@ -11,13 +14,20 @@ import {
   ensureCapacityAttention,
   fleetSeatView,
   fleetSeatWaits,
+  hasCredentialReplacedWaits,
+  hasUnseatedWaits,
   infrastructureWaitSummary,
   isTransientInfrastructureText,
+  liveSeats,
   providerCapacityHeadline,
   recordCapacityBackoff,
+  releaseCredentialReplacedWaits,
+  releaseUnseatedWaits,
   retryCapacityNow,
   SdkFailureTracker,
+  stampClaudeCredential,
 } from './capacity.js';
+import { claudeCredentialFingerprint, CREDENTIAL_FINGERPRINT_RE, setExecutorSecret } from './secrets.js';
 import { coordinatorCapacityTarget, workerCapacityTarget } from './modelConfig.js';
 import type { Attempt, InfrastructureWait, PassRecord, WorkstreamDoc } from './types.js';
 
@@ -814,4 +824,123 @@ test('adopting a fleet wait neither counts as a backoff nor raises attention', (
   assert.equal(recordCapacityBackoff(veteran, seatWait({ sourceId: 'run_next', detectedAt: FLEET_NOW })).consecutiveBackoffs, 8);
   assert.equal(capacityBackoffFor(veteran, glm)!.wait.observedIn, undefined);
   assert.throws(() => adoptFleetSeatWait(fresh, seatWait()), /observed in another workstream/);
+});
+
+// ---------------------------------------------------------------------------
+// Waits nothing will ever observe recovering: released as history, never
+// deleted, and never on unknown evidence.
+
+test('live seats are the union of fresh presences, and any unknown or degraded runner makes a role unknown', () => {
+  const now = Date.parse(FLEET_NOW);
+  const fable = { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1' };
+  const presence = (runnerId: string, extra: Record<string, unknown> = {}, ageMs = 1_000) => ({
+    runnerId, heartbeatAt: new Date(now - ageMs).toISOString(), ...extra,
+  });
+  const seats = liveSeats([
+    presence('gcp', { coordinatorSeats: [fable], workerSeats: [glm] }),
+    presence('mac', { coordinatorSeats: [], workerSeats: [] }),
+    // A dead runner's stale seats neither add anything nor make a role unknown.
+    presence('old', {}, 10 * 60_000),
+  ], now, 120_000);
+  assert.deepEqual([...seats.coordinator!], ['local-sdk:anthropic:claude-fable-5-1']);
+  assert.deepEqual([...seats.worker!], ['pi:zai-coding-plan:zai-coding-plan/glm-5.3']);
+  assert.equal(liveSeats([presence('gcp', { coordinatorSeats: [fable] })], now, 120_000).worker, undefined);
+  assert.deepEqual(liveSeats([
+    presence('gcp', { coordinatorSeats: [fable], workerSeats: [glm] }),
+    presence('disk-full', { coordinatorSeats: [], degraded: 'state directory below the floor' }),
+  ], now, 120_000), {}, 'a degraded runner may still offer anything once it recovers');
+  assert.deepEqual(liveSeats([], now, 120_000), {}, 'no live runner is no evidence');
+});
+
+test('a capacity record is released only when no role offers its target, but each held wait follows its own role', () => {
+  // claude-opus-5 moved from the coordinator chain to the worker ladder: the
+  // coordinator's retry wake can never be served on it, but the account-level
+  // limit still gates the workers that do launch there.
+  const opus = { executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5' };
+  const wait = seatWait({ ...opus, source: 'coordinator', sourceId: 'pass_old' });
+  const doc = fleetDoc('moved', { waits: [wait] });
+  doc.wakes.push({
+    id: 'wake_retry', reason: 'provider retry', condition: { type: 'time', dueAtVirtual: wait.retryAt },
+    status: 'pending', createdAt: FLEET_NOW, infrastructure: { ...wait },
+  });
+  const seats = {
+    coordinator: new Set(['local-sdk:anthropic:claude-fable-5-1']),
+    worker: new Set(['local-sdk:anthropic:claude-opus-5']),
+  };
+  assert.equal(hasUnseatedWaits(doc, seats, FLEET_NOW), true);
+  assert.deepEqual(releaseUnseatedWaits(doc, seats, FLEET_NOW), ['claude-opus-5']);
+  const wake = doc.wakes[0]!;
+  assert.ok(wake.condition.type === 'time' && wake.condition.dueAtVirtual === FLEET_NOW);
+  assert.equal(wake.infrastructure!.released?.reason, 'unseated');
+  const entry = capacityBackoffFor(doc, opus)!;
+  assert.equal(entry.wait.retryAt, wait.retryAt, 'still seated for workers, so the limit keeps gating them');
+  assert.equal(entry.wait.released, undefined);
+
+  // Once no role offers it, the record itself is released — kept, marked, due.
+  const gone = { coordinator: seats.coordinator, worker: new Set<string>() };
+  assert.deepEqual(releaseUnseatedWaits(doc, gone, FLEET_NOW), ['claude-opus-5']);
+  assert.equal(capacityBackoffFor(doc, opus)!.wait.retryAt, FLEET_NOW);
+  assert.deepEqual(capacityBackoffFor(doc, opus)!.wait.released, { at: FLEET_NOW, reason: 'unseated' });
+  assert.deepEqual(releaseUnseatedWaits(doc, gone, FLEET_NOW), [], 'idempotent: a released wait holds nothing');
+
+  // Unknown seats release nothing.
+  const fresh = fleetDoc('unknown', { waits: [seatWait({ ...opus })] });
+  assert.equal(hasUnseatedWaits(fresh, { coordinator: seats.coordinator }, FLEET_NOW), false);
+  assert.deepEqual(releaseUnseatedWaits(fresh, {}, FLEET_NOW), []);
+});
+
+test('only a replaced credential on the same runner releases a Claude auth wait; the stamp holds no secret', () => {
+  const claude = { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1' };
+  const auth = seatWait({ ...claude, kind: 'auth', recovery: 'reauthenticate', source: 'coordinator' });
+  const stamped = stampClaudeCredential(auth, 'gcp', 'sha256:0123456789abcdef')!;
+  assert.deepEqual(stamped.credential, { runnerId: 'gcp', fingerprint: 'sha256:0123456789abcdef' });
+  assert.equal(stampClaudeCredential(seatWait(), 'gcp', 'sha256:0123456789abcdef')!.credential, undefined,
+    'only Claude SDK auth waits carry a credential stamp');
+  assert.equal(stampClaudeCredential({ ...auth, ...glm }, 'gcp', 'sha256:0123456789abcdef')!.credential, undefined);
+
+  const doc = fleetDoc('auth', { waits: [stamped] });
+  const same = { runnerId: 'gcp', fingerprint: 'sha256:0123456789abcdef' };
+  const replaced = { runnerId: 'gcp', fingerprint: 'sha256:fedcba9876543210' };
+  assert.equal(hasCredentialReplacedWaits(doc, same, FLEET_NOW), false);
+  assert.equal(hasCredentialReplacedWaits(doc, { runnerId: 'mac', fingerprint: 'sha256:fedcba9876543210' }, FLEET_NOW), false,
+    "another runner's credential is that runner's to judge");
+  assert.equal(hasCredentialReplacedWaits(doc, { runnerId: 'gcp', fingerprint: null }, FLEET_NOW), false,
+    'an unobservable credential is unknown, never changed');
+  assert.deepEqual(releaseCredentialReplacedWaits(doc, replaced, FLEET_NOW), ['claude-fable-5-1']);
+  const kept = capacityBackoffFor(doc, claude)!;
+  assert.deepEqual(kept.wait.released, { at: FLEET_NOW, reason: 'credential_changed' });
+  assert.equal(kept.wait.credential!.fingerprint, 'sha256:0123456789abcdef', 'the evidence is kept');
+
+  // A legacy auth wait recorded before stamping is retried once when this
+  // runner can observe its credential at all.
+  const legacy = fleetDoc('legacy', { waits: [auth] });
+  assert.equal(hasCredentialReplacedWaits(legacy, replaced, FLEET_NOW), true);
+  assert.equal(hasCredentialReplacedWaits(legacy, { runnerId: 'gcp', fingerprint: null }, FLEET_NOW), false);
+});
+
+test('the credential fingerprint is a truncated hash of the registered setup-token, never the token', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-cred-fp-'));
+  const saved = { home: process.env.WEAVER_HOME, config: process.env.CLAUDE_CONFIG_DIR };
+  process.env.WEAVER_HOME = home;
+  process.env.CLAUDE_CONFIG_DIR = path.join(home, 'claude');
+  try {
+    assert.equal(claudeCredentialFingerprint(), null, 'nothing observable is unknown');
+    fs.mkdirSync(path.join(home, 'claude'));
+    fs.writeFileSync(path.join(home, 'claude', '.credentials.json'), '{"secret":"file-login"}');
+    const fileLogin = claudeCredentialFingerprint();
+    assert.match(fileLogin!, CREDENTIAL_FINGERPRINT_RE);
+    const token = 'sk-ant-oat01-registered-token';
+    setExecutorSecret('CLAUDE_CODE_OAUTH_TOKEN', token);
+    const registered = claudeCredentialFingerprint()!;
+    assert.match(registered, CREDENTIAL_FINGERPRINT_RE);
+    assert.notEqual(registered, fileLogin, 'a registered setup-token wins, as it does at launch');
+    assert.ok(!registered.includes(token) && !registered.includes('registered-token'));
+    assert.equal(claudeCredentialFingerprint(), registered, 'stable while the token is unchanged');
+    setExecutorSecret('CLAUDE_CODE_OAUTH_TOKEN', `${token}-rotated`);
+    assert.notEqual(claudeCredentialFingerprint(), registered);
+  } finally {
+    if (saved.home === undefined) delete process.env.WEAVER_HOME; else process.env.WEAVER_HOME = saved.home;
+    if (saved.config === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved.config;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

@@ -6,6 +6,7 @@ import { defaultLedgerPath, loadLedger } from './evals/ledger.js';
 import {
   deterministicActionsOnly,
   runnerExecutorCapabilities,
+  runnerWorkerSeats,
   workerTargetForAssignment,
   workerTargetsForAssignment,
   WORK_MODEL_ROUTES,
@@ -477,4 +478,43 @@ describe('route evidence audit', () => {
   test('every checked-in route cites a complete clean cohort in the durable ledger', () => {
     assert.deepEqual(auditRoutingRegistry(loadLedger(defaultLedgerPath())), []);
   });
+});
+
+test('runner worker seats cover every target a worker attempt on this host could launch on', () => {
+  const names = [
+    'WEAVER_EXECUTOR', 'WEAVER_WORKER_MODEL', 'WEAVER_WORKER_MODEL_COMPLEX', 'WEAVER_WORKER_FALLBACKS',
+    'WEAVER_ACTION_EXECUTOR', 'WEAVER_ACTION_MODEL',
+  ] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) delete process.env[name];
+    process.env.WEAVER_EXECUTOR = 'pi';
+    process.env.WEAVER_WORKER_MODEL = 'openrouter/moonshotai/kimi-k3';
+    process.env.WEAVER_WORKER_MODEL_COMPLEX = 'openrouter/z-ai/glm-5.3';
+    process.env.WEAVER_WORKER_FALLBACKS = 'openhands:openrouter/z-ai/glm-5.3';
+    const seats = runnerWorkerSeats().map((target) => `${target.executor}:${target.provider}:${target.model}`);
+    assert.deepEqual(seats, [
+      'pi:zai-coding-plan:zai-coding-plan/glm-5.3',
+      'pi:openrouter:openrouter/moonshotai/kimi-k3',
+      'pi:openrouter:openrouter/z-ai/glm-5.3',
+      'openhands:openrouter:openrouter/z-ai/glm-5.3',
+      'local-sdk:anthropic:sonnet',
+    ]);
+    // Whatever any assignment would be routed to is published.
+    for (const profile of ['general', 'bounded-code-repair'] as const) {
+      for (const complexity of ['standard', 'high'] as const) {
+        const assignment = {
+          id: 'asg', kind: 'work', executionRequirements: { profile, modalities: ['text'], complexity },
+        } as unknown as Assignment;
+        for (const target of workerTargetsForAssignment(assignment)) {
+          assert.ok(seats.includes(`${target.executor}:${target.provider}:${target.model}`));
+        }
+      }
+    }
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
 });

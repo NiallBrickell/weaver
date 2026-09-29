@@ -8,22 +8,25 @@ import {
   effectiveConcurrency,
   memoryConcurrency,
   availableMemoryMb,
-  expediteBackoffWakes,
   fleetRecoveredSlugs,
-  infraBackoffSlugs,
   pendingManagerNoticeKeys,
   probeHoldsToRelease,
   releaseFleetRecovered,
+  releaseStaleWaits,
   RunnerDispatchTracker,
   runnerDispatchSignature,
   RunnerWorkstreamCache,
   runLoop,
+  staleWaitSlugs,
 } from './runner.js';
-import { arrive, createWorkstream, listRunnerPresence, listWorkstreamHeads, load, type RunnerOutput } from './store.js';
+import { arrive, createWorkstream, heartbeatRunner, listRunnerPresence, listWorkstreamHeads, load, type RunnerOutput } from './store.js';
 import type { InfrastructureWait } from './types.js';
 import { tick } from './engine.js';
 import { __setWorkerExecutorFactoryForTests } from './worker.js';
-import { adoptFleetSeatWait, retryCapacityNow } from './capacity.js';
+import { adoptFleetSeatWait, liveSeats, retryCapacityNow, type LiveSeats } from './capacity.js';
+import { RUNNER_PRESENCE_TTL_MS } from './coordinatorRunner.js';
+import { runCoordinatorPass } from './coordinator.js';
+import { claudeCredentialFingerprint, CREDENTIAL_FINGERPRINT_RE, setExecutorSecret } from './secrets.js';
 import { readFleetCapacity } from './fleetCapacity.js';
 
 let home: string;
@@ -81,6 +84,13 @@ function setCapacity(d: Awaited<ReturnType<typeof load>>, waits: InfrastructureW
   };
 }
 
+/** Live seats in which no runner offers claude-fable-5 (the wait() target). */
+const MOVED_ON: LiveSeats = {
+  coordinator: new Set(['local-sdk:anthropic:claude-fable-5-1']),
+  worker: new Set(['local-sdk:anthropic:sonnet']),
+};
+const NO_CREDENTIAL = { runnerId: 'mac', fingerprint: null };
+
 test('runner discovers only pending typed infrastructure waits, never magic prose', async () => {
   await make('typed');
   await make('prose');
@@ -106,7 +116,7 @@ test('runner discovers only pending typed infrastructure waits, never magic pros
     });
     setCapacity(d, [infrastructure]);
   });
-  assert.deepEqual(await infraBackoffSlugs(), ['typed']);
+  assert.deepEqual([...(await staleWaitSlugs(MOVED_ON, NO_CREDENTIAL)).keys()], ['typed']);
 });
 
 test('runner cache reloads only changed heads and evicts deleted or unreadable documents', async () => {
@@ -156,10 +166,10 @@ test('runner cache reloads only changed heads and evicts deleted or unreadable d
 test('a later logical scan observes a revision changed after the preceding scan', async () => {
   await make('fresh-between-decisions');
   const cache = new RunnerWorkstreamCache();
-  assert.deepEqual(await infraBackoffSlugs(cache), []);
+  assert.deepEqual([...(await staleWaitSlugs(MOVED_ON, NO_CREDENTIAL, cache)).keys()], []);
 
   await arrive('fresh-between-decisions', (doc) => setCapacity(doc, [wait('pass_between_scans')]));
-  assert.deepEqual(await infraBackoffSlugs(cache), ['fresh-between-decisions']);
+  assert.deepEqual([...(await staleWaitSlugs(MOVED_ON, NO_CREDENTIAL, cache)).keys()], ['fresh-between-decisions']);
 });
 
 test('unchanged quiescent workstreams dispatch once while revisions and due wakes retrigger', async () => {
@@ -286,7 +296,7 @@ test('resident runner reconciles an unchanged revision once and wakes on the nex
   assert.equal(calls, 2, 'a new durable revision receives one fresh reconciliation');
 });
 
-test('Claude credential changes never probe a non-Claude executor wait', async () => {
+test('a Claude credential change never releases a non-Claude executor wait', async () => {
   await make('kimi-wait');
   const infrastructure: InfrastructureWait = {
     ...wait('run_kimi'),
@@ -296,63 +306,251 @@ test('Claude credential changes never probe a non-Claude executor wait', async (
     provider: 'openrouter',
   };
   await arrive('kimi-wait', (d) => setCapacity(d, [infrastructure]));
-  assert.deepEqual(await infraBackoffSlugs(), []);
+  const changed = { runnerId: 'mac', fingerprint: 'sha256:0123456789abcdef' };
+  assert.deepEqual([...(await staleWaitSlugs({}, changed)).keys()], []);
 });
 
-test('successful probe expedition uses virtual time and unblocks worker attempts', async () => {
-  await make('expedite');
-  advanceClock('5d');
-  const infrastructure = wait('run_wait');
-  await arrive('expedite', (d) => {
+// ---------------------------------------------------------------------------
+// Waits nothing will ever observe recovering: a seat the fleet moved off, and
+// a Claude auth wait whose credential was replaced.
+
+const SEAT_ENV = [
+  'WEAVER_COORDINATOR_MODEL', 'WEAVER_COORDINATOR_EXECUTOR', 'WEAVER_COORDINATOR_FALLBACK_MODEL',
+  'WEAVER_COORDINATOR_FALLBACKS', 'WEAVER_EXECUTOR', 'WEAVER_WORKER_MODEL', 'WEAVER_WORKER_MODEL_COMPLEX',
+  'WEAVER_WORKER_FALLBACKS', 'WEAVER_RUNNER_ID', 'CLAUDE_CONFIG_DIR',
+] as const;
+
+async function withSeats<T>(env: Partial<Record<typeof SEAT_ENV[number], string>>, fn: () => Promise<T>): Promise<T> {
+  const saved = Object.fromEntries(SEAT_ENV.map((name) => [name, process.env[name]]));
+  for (const name of SEAT_ENV) delete process.env[name];
+  Object.assign(process.env, env);
+  try {
+    return await fn();
+  } finally {
+    for (const name of SEAT_ENV) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  }
+}
+
+function strandedCoordinatorWait(model: string, executor = 'local-sdk', provider = 'anthropic'): InfrastructureWait {
+  return {
+    kind: 'usage_limit', recovery: 'wait_or_enable_usage_credits', source: 'coordinator', sourceId: 'pass_old',
+    model, executor, provider,
+    detectedAt: virtualNow().toISOString(),
+    retryAt: new Date(virtualNow().getTime() + 6 * 60 * 60_000).toISOString(),
+  };
+}
+
+async function strand(slug: string, infrastructure: InfrastructureWait): Promise<void> {
+  await make(slug);
+  await arrive(slug, (d) => {
     d.wakes.push({
-      id: 'wake_wait', reason: 'opaque', condition: { type: 'time', dueAtVirtual: infrastructure.retryAt },
+      id: `wake_${slug}`, reason: 'provider retry', condition: { type: 'time', dueAtVirtual: infrastructure.retryAt },
       status: 'pending', createdAt: new Date().toISOString(), infrastructure,
     });
-    d.attention.push({
-      id: 'att_auth', kind: 'blocker', summary: 'Claude authentication needs attention', refId: 'wake_wait',
-      status: 'open', createdAt: new Date().toISOString(),
-    });
-    d.assignments.push({
-      id: 'asg_wait', objective: 'resume', briefing: 'n/a', kind: 'work', acceptanceCriteria: ['n/a'],
-      dependsOn: [], state: 'queued', attempts: [{ runId: 'run_wait', startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), infrastructure }],
-      adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
-    });
-    setCapacity(d, [infrastructure]);
+    d.capacity = {
+      state: 'backoff',
+      byModel: {
+        [`${infrastructure.executor}:${infrastructure.provider}:${infrastructure.model}`]: {
+          wait: infrastructure, consecutiveBackoffs: 3,
+          firstBackoffAtVirtual: infrastructure.detectedAt, lastBackoffAtVirtual: infrastructure.detectedAt,
+        },
+      },
+    };
   });
+}
 
-  await expediteBackoffWakes(['expedite'], () => {});
-  const doc = await load('expedite');
-  const wake = doc.wakes[0]!;
-  assert.equal(wake.condition.type, 'time');
-  assert.ok(wake.condition.type === 'time' && wake.condition.dueAtVirtual <= virtualNow().toISOString());
-  assert.equal(doc.assignments[0]!.attempts[0]!.infrastructure!.retryAt, wake.condition.type === 'time' ? wake.condition.dueAtVirtual : '');
-  assert.equal(doc.attention[0]!.status, 'resolved');
-  assert.equal(doc.capacity, null);
+/** A resident runner whose ticks are real engine ticks with a stub coordinator
+ * on the host's one seat, recording each model a pass actually launched on. */
+async function runRealTicks(ms: number, executorId = 'codex-sdk'): Promise<string[]> {
+  const launched: string[] = [];
+  const abort = new AbortController();
+  const loop = runLoop({
+    intervalMs: 5,
+    concurrency: 4,
+    executorCapabilities: new Set(['codex-sdk', 'local-sdk']),
+    signal: abort.signal,
+    sourceStale: () => false,
+    loadSample: () => ({ load1: 0.1, cores: 8 }),
+    memorySample: () => undefined,
+    log: () => {},
+    logError: () => {},
+    tickFn: (slug, opts) => tick(slug, {
+      ...opts,
+      coordinatorExecutor: {
+        id: executorId,
+        async execute(req) {
+          launched.push(req.model);
+          await req.tools.find((tool) => tool.name === 'finish_pass')!.handler({ summary: 'Reconciled on the current seat.' }, {});
+          return { costUsd: 0 };
+        },
+      },
+    }),
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  } finally {
+    abort.abort();
+    await loop;
+  }
+  return launched;
+}
+
+const CODEX_HOST = {
+  WEAVER_RUNNER_ID: 'gcp', WEAVER_COORDINATOR_EXECUTOR: 'codex-sdk', WEAVER_COORDINATOR_MODEL: 'gpt-5.5',
+  WEAVER_COORDINATOR_FALLBACKS: '',
+};
+
+test('a wait for a model no live runner offers is released as history and the job runs on the current seat', async () => {
+  await withSeats(CODEX_HOST, async () => {
+    await strand('stranded', strandedCoordinatorWait('claude-opus-5'));
+    const launched = await runRealTicks(300);
+
+    assert.deepEqual(launched, ['gpt-5.5'], 'the parked job ran once, on the seat the fleet offers now');
+    const doc = await load('stranded');
+    const entry = doc.capacity?.byModel['local-sdk:anthropic:claude-opus-5'];
+    assert.ok(entry, 'the capacity record is kept as history, never deleted');
+    assert.equal(entry.wait.released?.reason, 'unseated');
+    assert.equal(entry.consecutiveBackoffs, 3, 'releasing is not a backoff and rewrites no count');
+    assert.ok(entry.wait.retryAt <= virtualNow().toISOString(), 'the released wait no longer holds anything');
+    const released = doc.events.filter((event) => event.type === 'capacity.unseated_released');
+    assert.equal(released.length, 1, 'one typed event, however many polls saw the stream');
+    assert.match(released[0]!.summary, /wait for claude-opus-5 released: no runner offers that model any more/);
+    assert.notEqual(doc.wakes.find((wake) => wake.id === 'wake_stranded')!.status, 'pending');
+  });
 });
 
-test('a model probe expedites only waits for the model that actually recovered', async () => {
-  await make('models');
-  const fable = wait('pass_fable');
-  const sonnet = { ...wait('run_sonnet'), source: 'worker' as const, model: 'sonnet' };
-  await arrive('models', (d) => {
-    d.wakes.push(
-      {
-        id: 'wake_fable', reason: 'fable', condition: { type: 'time', dueAtVirtual: fable.retryAt },
-        status: 'pending', createdAt: new Date().toISOString(), infrastructure: fable,
-      },
-      {
-        id: 'wake_sonnet', reason: 'sonnet', condition: { type: 'time', dueAtVirtual: sonnet.retryAt },
-        status: 'pending', createdAt: new Date().toISOString(), infrastructure: sonnet,
-      },
-    );
-    setCapacity(d, [fable, sonnet]);
-  });
+test('a wait for a model a live runner still seats stays held until its retry', async () => {
+  await withSeats(CODEX_HOST, async () => {
+    await strand('still-seated', strandedCoordinatorWait('gpt-5.5', 'codex-sdk', 'openai'));
+    // Another live runner still seats claude-opus-5, so that wait holds too.
+    await heartbeatRunner('mac', new Date().toISOString(),
+      [{ executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5' }], undefined, undefined, []);
+    await strand('seated-elsewhere', strandedCoordinatorWait('claude-opus-5'));
 
-  await expediteBackoffWakes(['models'], () => {}, 'claude-fable-5');
-  const [fableWake, sonnetWake] = (await load('models')).wakes;
-  assert.ok(fableWake!.condition.type === 'time' && fableWake!.condition.dueAtVirtual <= virtualNow().toISOString());
-  assert.equal(sonnetWake!.condition.type === 'time' ? sonnetWake!.condition.dueAtVirtual : '', sonnet.retryAt);
-  assert.equal((await load('models')).capacity!.byModel.sonnet!.wait.model, 'sonnet');
+    const launched = await runRealTicks(150);
+
+    assert.deepEqual(launched, [], 'nothing launches while every wait still targets a live seat');
+    for (const slug of ['still-seated', 'seated-elsewhere']) {
+      const doc = await load(slug);
+      const entry = Object.values(doc.capacity!.byModel)[0]!;
+      assert.equal(entry.wait.released, undefined);
+      assert.ok(entry.wait.retryAt > virtualNow().toISOString());
+      assert.equal(doc.wakes.find((wake) => wake.id === `wake_${slug}`)!.status, 'pending');
+      assert.ok(!doc.events.some((event) => event.type === 'capacity.unseated_released'));
+    }
+  });
+});
+
+test('a runner that publishes no worker seats makes worker waits unknown, never unseated', async () => {
+  // An older runner (no workerSeats) is live: a worker wait on a model this
+  // host does not seat might still be seated there.
+  await heartbeatRunner('old', new Date().toISOString(), []);
+  await heartbeatRunner('new', new Date().toISOString(), [], undefined, undefined,
+    [{ executor: 'local-sdk', provider: 'anthropic', model: 'sonnet' }]);
+  const seats = liveSeats(await listRunnerPresence(), Date.now(), RUNNER_PRESENCE_TTL_MS);
+  assert.equal(seats.worker, undefined);
+  await strand('worker-unknown', { ...strandedCoordinatorWait('claude-opus-4-8'), source: 'worker', sourceId: 'run_old' });
+  assert.deepEqual([...(await staleWaitSlugs(seats, NO_CREDENTIAL)).keys()], []);
+});
+
+test('the seat set comes from presence rows and stale-wait discovery reads each body once through the runner cache', async () => {
+  await strand('cached-a', strandedCoordinatorWait('claude-fable-5'));
+  await strand('cached-b', strandedCoordinatorWait('claude-fable-5-1'));
+  await heartbeatRunner('gcp', new Date().toISOString(),
+    [{ executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1' }], undefined, undefined, []);
+  const loads: string[] = [];
+  const cache = new RunnerWorkstreamCache(listWorkstreamHeads, async (slug) => {
+    loads.push(slug);
+    return load(slug);
+  });
+  // liveSeats is a pure function of the presence rows: no document involved.
+  const seats = liveSeats(await listRunnerPresence(), Date.now(), RUNNER_PRESENCE_TTL_MS);
+  assert.deepEqual([...seats.coordinator!], ['local-sdk:anthropic:claude-fable-5-1']);
+  for (let i = 0; i < 3; i++) {
+    assert.deepEqual([...(await staleWaitSlugs(seats, NO_CREDENTIAL, cache)).keys()], ['cached-a']);
+  }
+  assert.deepEqual(loads.sort(), ['cached-a', 'cached-b'], 'three polls read every unchanged body exactly once');
+});
+
+test('releasing is idempotent, re-derived under the current revision, and coalesces with a concurrent re-park', async () => {
+  await strand('idempotent', strandedCoordinatorWait('claude-fable-5'));
+  await strand('re-parked', strandedCoordinatorWait('claude-fable-5'));
+  const stale = await staleWaitSlugs(MOVED_ON, NO_CREDENTIAL);
+  assert.deepEqual([...stale.keys()].sort(), ['idempotent', 're-parked']);
+  // Between the scan and the release, a real attempt re-records a fresh wait
+  // on a seat the fleet does offer: the release must act on that newer state.
+  await arrive('re-parked', (d) => {
+    const seated = { ...strandedCoordinatorWait('claude-fable-5-1'), sourceId: 'pass_new' };
+    d.capacity = { state: 'backoff', byModel: { 'local-sdk:anthropic:claude-fable-5-1': {
+      wait: seated, consecutiveBackoffs: 1, firstBackoffAtVirtual: seated.detectedAt, lastBackoffAtVirtual: seated.detectedAt,
+    } } };
+    for (const wake of d.wakes) wake.status = 'cancelled';
+  });
+  const reParkedRevision = (await load('re-parked')).revision;
+  await releaseStaleWaits(stale, MOVED_ON, NO_CREDENTIAL, () => {});
+  const reParked = await load('re-parked');
+  assert.equal(reParked.revision, reParkedRevision, 'nothing stale remained, so nothing was written');
+  assert.equal(reParked.capacity!.byModel['local-sdk:anthropic:claude-fable-5-1']!.wait.released, undefined);
+
+  const first = await load('idempotent');
+  assert.equal(first.capacity!.byModel['local-sdk:anthropic:claude-fable-5']!.wait.released?.reason, 'unseated');
+  // At-least-once delivery: the same release again is a no-op.
+  await releaseStaleWaits(stale, MOVED_ON, NO_CREDENTIAL, () => {});
+  const second = await load('idempotent');
+  assert.equal(second.revision, first.revision, 'a duplicate release writes nothing');
+  assert.equal(second.events.filter((event) => event.type === 'capacity.unseated_released').length, 1);
+});
+
+test('a replaced executor-only setup-token releases a Claude auth wait; an unchanged one does not; no secret is stored', async () => {
+  await withSeats({
+    WEAVER_RUNNER_ID: 'gcp', WEAVER_COORDINATOR_EXECUTOR: 'local-sdk', WEAVER_COORDINATOR_MODEL: 'claude-fable-5-1',
+    WEAVER_COORDINATOR_FALLBACKS: '', CLAUDE_CONFIG_DIR: path.join(home, 'no-claude-login'),
+  }, async () => {
+    const oldToken = 'sk-ant-oat01-OLD-token-value-never-stored';
+    setExecutorSecret('CLAUDE_CODE_OAUTH_TOKEN', oldToken);
+    const before = claudeCredentialFingerprint();
+    assert.match(before!, CREDENTIAL_FINGERPRINT_RE);
+
+    await make('auth-parked');
+    await arrive('auth-parked', (d) => immediateWake(d, 'wake_work'));
+    await runCoordinatorPass('auth-parked', ['work'], {
+      id: 'local-sdk', async execute() { throw new Error('401 Unauthorized: authentication failed'); },
+    });
+    const parked = await load('auth-parked');
+    const entry = parked.capacity!.byModel['local-sdk:anthropic:claude-fable-5-1']!;
+    assert.equal(entry.wait.kind, 'auth');
+    assert.deepEqual(entry.wait.credential, { runnerId: 'gcp', fingerprint: before });
+    assert.notEqual(entry.wait.credential!.fingerprint, oldToken);
+    assert.match(entry.wait.credential!.fingerprint!, CREDENTIAL_FINGERPRINT_RE);
+    assert.ok(!JSON.stringify(parked).includes('OLD-token'), 'the stored document never contains the secret');
+
+    const unchanged = { runnerId: 'gcp', fingerprint: claudeCredentialFingerprint() };
+    assert.deepEqual([...(await staleWaitSlugs({}, unchanged)).keys()], [], 'the same credential keeps the wait');
+    const elsewhere = { runnerId: 'mac', fingerprint: 'sha256:ffffffffffffffff' };
+    assert.deepEqual([...(await staleWaitSlugs({}, elsewhere)).keys()], [], "another host's credential proves nothing here");
+
+    // push-env replaces the registered setup-token (and restarts the runner:
+    // the baseline lives on the wait, so a restart loses nothing).
+    setExecutorSecret('CLAUDE_CODE_OAUTH_TOKEN', 'sk-ant-oat01-NEW-token-value');
+    const after = { runnerId: 'gcp', fingerprint: claudeCredentialFingerprint() };
+    assert.notEqual(after.fingerprint, before);
+    const stale = await staleWaitSlugs({}, after);
+    assert.deepEqual([...stale.keys()], ['auth-parked']);
+    await releaseStaleWaits(stale, {}, after, () => {});
+
+    const released = await load('auth-parked');
+    const kept = released.capacity!.byModel['local-sdk:anthropic:claude-fable-5-1']!;
+    assert.equal(kept.wait.released?.reason, 'credential_changed');
+    assert.ok(kept.wait.retryAt <= virtualNow().toISOString());
+    const retryWake = released.wakes.find((wake) => wake.infrastructure?.kind === 'auth')!;
+    assert.ok(retryWake.condition.type === 'time' && retryWake.condition.dueAtVirtual <= virtualNow().toISOString(),
+      'the parked retry is due now');
+    assert.ok(released.events.some((event) => event.type === 'capacity.credential_changed_released'));
+    assert.ok(!JSON.stringify(released).includes('NEW-token'));
+  });
 });
 
 test('an embedded runner whose owner aborts returns instead of pinning the process', async () => {
@@ -822,8 +1020,8 @@ const FLEET_ENV = ['WEAVER_COORDINATOR_MODEL', 'WEAVER_COORDINATOR_EXECUTOR', 'W
 async function withSingleSeatCoordinator<T>(fn: () => Promise<T>): Promise<T> {
   const saved = Object.fromEntries(FLEET_ENV.map((name) => [name, process.env[name]]));
   for (const name of FLEET_ENV) delete process.env[name];
-  // A Codex seat: the runner's credential probe is Claude-only by design, so
-  // no test here can ever send a real model call through it.
+  // One Codex seat keeps these fleet tests independent of the host's Claude
+  // chain; their ticks pass stub executors or stop before any launch.
   process.env.WEAVER_COORDINATOR_EXECUTOR = 'codex-sdk';
   process.env.WEAVER_COORDINATOR_MODEL = 'gpt-5.5';
   process.env.WEAVER_COORDINATOR_FALLBACKS = '';
@@ -889,43 +1087,47 @@ const quietLoop = {
 };
 
 test('the fleet snapshot comes from the runner cache with no extra document reads', async () => {
-  await make('glm-limited');
-  await make('bystander');
-  const wait = limitAt(GLM, -60_000, 30 * 60_000, 'run_glm');
-  await arrive('glm-limited', (d) => ownWait(d, { ...wait, source: 'worker' }));
+  // This host seats GLM on its worker ladder, so the parked wait is live
+  // (never released as unseated) and the stream sees no write of its own.
+  await withSeats({ WEAVER_WORKER_FALLBACKS: 'pi:zai-coding-plan/glm-5.3' }, async () => {
+    await make('glm-limited');
+    await make('bystander');
+    const wait = limitAt(GLM, -60_000, 30 * 60_000, 'run_glm');
+    await arrive('glm-limited', (d) => ownWait(d, { ...wait, source: 'worker' }));
 
-  const loads: string[] = [];
-  const cache = new RunnerWorkstreamCache(listWorkstreamHeads, async (slug) => {
-    loads.push(slug);
-    return load(slug);
+    const loads: string[] = [];
+    const cache = new RunnerWorkstreamCache(listWorkstreamHeads, async (slug) => {
+      loads.push(slug);
+      return load(slug);
+    });
+    const snapshots: Array<ReadonlyMap<string, InfrastructureWait> | undefined> = [];
+    const abort = new AbortController();
+    const loop = runLoop({
+      ...quietLoop,
+      signal: abort.signal,
+      workstreamCache: cache,
+      tickFn: async (_slug, opts) => {
+        snapshots.push(opts?.fleetCapacity);
+        return { cycles: 1, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
+      },
+    });
+    try {
+      await waitFor(() => snapshots.length >= 2, 'both streams to be reconciled');
+      // Several more polls, each running three cache scans.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    } finally {
+      abort.abort();
+      await loop;
+    }
+    assert.deepEqual(loads.sort(), ['bystander', 'glm-limited'],
+      'several polls and three scans each still read every document exactly once');
+    assert.equal(snapshots.length, 2, 'one reconciliation per unchanged stream');
+    for (const snapshot of snapshots) {
+      const shared = snapshot?.get('pi:zai-coding-plan:zai-coding-plan/glm-5.3');
+      assert.equal(shared?.observedIn, 'glm-limited');
+      assert.equal(shared?.retryAt, wait.retryAt);
+    }
   });
-  const snapshots: Array<ReadonlyMap<string, InfrastructureWait> | undefined> = [];
-  const abort = new AbortController();
-  const loop = runLoop({
-    ...quietLoop,
-    signal: abort.signal,
-    workstreamCache: cache,
-    tickFn: async (_slug, opts) => {
-      snapshots.push(opts?.fleetCapacity);
-      return { cycles: 1, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] };
-    },
-  });
-  try {
-    await waitFor(() => snapshots.length >= 2, 'both streams to be reconciled');
-    // Several more polls, each running three cache scans.
-    await new Promise((resolve) => setTimeout(resolve, 60));
-  } finally {
-    abort.abort();
-    await loop;
-  }
-  assert.deepEqual(loads.sort(), ['bystander', 'glm-limited'],
-    'several polls and three scans each still read every document exactly once');
-  assert.equal(snapshots.length, 2, 'one reconciliation per unchanged stream');
-  for (const snapshot of snapshots) {
-    const shared = snapshot?.get('pi:zai-coding-plan:zai-coding-plan/glm-5.3');
-    assert.equal(shared?.observedIn, 'glm-limited');
-    assert.equal(shared?.retryAt, wait.retryAt);
-  }
 });
 
 test('the deferral wake retriggers the dispatch signature exactly at the borrowed retry', async () => {
@@ -1121,4 +1323,71 @@ test('a probe hold ends early only when its window passes with no newer limit on
   assert.deepEqual(probeHoldsToRelease(holds, view([rejected], []), 1_000 + 300_000, 300_000), []);
   const shortRejection = { ...rejected, retryAt: new Date(Date.now() - 1).toISOString() };
   assert.deepEqual(probeHoldsToRelease(holds, view([], [shortRejection]), 1_000 + 300_000, 300_000), []);
+});
+
+test('live 2026-09-29 shape: a past-due GLM deferral never holds a stream whose chain leads with a healthy Claude seat', async () => {
+  // evals-health / session-replay-review / axiom-monitor-triage on the shared
+  // store: coordinatorRunnerOrder=[weaver-fleet], a pending fleet deferral wake
+  // for the third seat (GLM, borrowed from ci-deploy-pipeline-health) already
+  // past its time, a borrowed weekly limit on the retired primary
+  // claude-opus-5, expired August session waits, and due immediates — a human
+  // steer, a submitted result, a manager notice, a no_finish re-reconcile.
+  await withSeats({
+    WEAVER_RUNNER_ID: 'weaver-fleet', WEAVER_COORDINATOR_EXECUTOR: 'local-sdk',
+    WEAVER_COORDINATOR_MODEL: 'claude-fable-5-1',
+    WEAVER_COORDINATOR_FALLBACKS: 'local-sdk:claude-opus-5-5,local-sdk:openrouter/z-ai/glm-5.3',
+  }, async () => {
+    const glm = { executor: 'local-sdk', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.3' };
+    // The GLM limit is still live at its source, so the fleet keeps lending it.
+    await make('ci-deploy-pipeline-health');
+    await arrive('ci-deploy-pipeline-health', (d) => ownWait(d, limitAt(glm, -3 * 60 * 60_000, 60 * 60_000, 'pass_b2f8bed3')));
+
+    await make('evals-health');
+    const borrowedGlm: InfrastructureWait = {
+      ...limitAt(glm, -3 * 60 * 60_000, -8 * 60_000, 'pass_b2f8bed3'), observedIn: 'ci-deploy-pipeline-health',
+    };
+    const borrowedOpus: InfrastructureWait = {
+      ...limitAt({ executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5' }, -34 * 60 * 60_000, 26 * 60 * 60_000, 'pass_weekly'),
+      rateLimitType: 'seven_day', observedIn: 'retired-source',
+    };
+    const expiredSession: InfrastructureWait = {
+      ...limitAt({ executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-4-8' }, -37 * 24 * 60 * 60_000, -8 * 60_000, 'pass_eda93367'),
+      kind: 'session_limit', recovery: 'automatic_retry',
+    };
+    const reasons = [
+      'pass pass_cb8cc7de ended \'no_finish\' — its wakes were consumed; re-reconcile',
+      'human steering arrived: "Cost plan phase 2"',
+      'assignment asg_ab1c0167 submitted a result for review',
+      'notice(s) received from managed workstream erdo-onboarding-plan-step-drop',
+    ];
+    await arrive('evals-health', (d) => {
+      d.workstream.executionPolicy = { coordinatorRunnerOrder: ['weaver-fleet'] };
+      d.capacity = { state: 'backoff', byModel: Object.fromEntries([borrowedGlm, borrowedOpus, expiredSession].map((w) => [
+        `${w.executor}:${w.provider}:${w.model}`,
+        { wait: w, consecutiveBackoffs: w.observedIn ? 0 : 1, firstBackoffAtVirtual: w.detectedAt, lastBackoffAtVirtual: w.detectedAt },
+      ])) };
+      d.wakes.push({
+        id: 'wake_a78b25e3', reason: 'fleet capacity: OpenRouter usage is limited for openrouter/z-ai/glm-5.3',
+        condition: { type: 'time', dueAtVirtual: borrowedGlm.retryAt }, status: 'pending',
+        createdAt: new Date().toISOString(), infrastructure: { ...borrowedGlm },
+      });
+      reasons.forEach((reason, index) => d.wakes.push({
+        id: `wake_due_${index}`, reason, condition: { type: 'immediate' }, status: 'pending', createdAt: new Date().toISOString(),
+      }));
+    });
+
+    const launched = await runRealTicks(400, 'local-sdk');
+
+    assert.deepEqual(launched, ['claude-fable-5-1'], 'served once, on the healthy primary');
+    const doc = await load('evals-health');
+    const pass = doc.passes.at(-1)!;
+    for (const reason of reasons) assert.ok(pass.wakeReasons.includes(reason), `served: ${reason}`);
+    assert.ok(!pass.wakeReasons.some((reason) => reason.startsWith('fleet capacity:')), 'the deferral is never a pass reason');
+    assert.equal(doc.wakes.find((wake) => wake.id === 'wake_a78b25e3')!.status, 'cancelled',
+      'a past-due deferral is retired, never left holding anything');
+    assert.ok(doc.wakes.every((wake) => wake.status !== 'pending' || !wake.id.startsWith('wake_due_')));
+    const opus = doc.capacity?.byModel['local-sdk:anthropic:claude-opus-5'];
+    assert.ok(!opus || opus.wait.retryAt <= virtualNow().toISOString(),
+      'the borrowed limit on a model no runner seats no longer holds anything');
+  });
 });

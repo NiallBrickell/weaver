@@ -85,6 +85,7 @@ const SCHEMA = `
     runner_id         TEXT PRIMARY KEY,
     heartbeat_at      TEXT NOT NULL,
     coordinator_seats TEXT,
+    worker_seats      TEXT,
     degraded          TEXT,
     output            TEXT
   );
@@ -143,6 +144,10 @@ export class SqliteStore implements StateStore {
         `SELECT 1 FROM pragma_table_info('runner_presence') WHERE name = 'coordinator_seats'`,
       ).get();
       if (!seatsColumn) this.db.exec('ALTER TABLE runner_presence ADD COLUMN coordinator_seats TEXT');
+      const workerSeatsColumn = this.db.prepare(
+        `SELECT 1 FROM pragma_table_info('runner_presence') WHERE name = 'worker_seats'`,
+      ).get();
+      if (!workerSeatsColumn) this.db.exec('ALTER TABLE runner_presence ADD COLUMN worker_seats TEXT');
       const degradedColumn = this.db.prepare(
         `SELECT 1 FROM pragma_table_info('runner_presence') WHERE name = 'degraded'`,
       ).get();
@@ -378,10 +383,11 @@ export class SqliteStore implements StateStore {
 
   async heartbeatRunner(presence: RunnerPresence): Promise<void> {
     this.db.prepare(
-      `INSERT INTO runner_presence (runner_id, heartbeat_at, coordinator_seats, degraded, output) VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO runner_presence (runner_id, heartbeat_at, coordinator_seats, degraded, output, worker_seats) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (runner_id) DO UPDATE
          SET heartbeat_at = excluded.heartbeat_at,
              coordinator_seats = excluded.coordinator_seats,
+             worker_seats = excluded.worker_seats,
              degraded = excluded.degraded,
              output = excluded.output`,
     ).run(
@@ -390,22 +396,24 @@ export class SqliteStore implements StateStore {
       presence.coordinatorSeats === undefined ? null : JSON.stringify(presence.coordinatorSeats),
       presence.degraded ?? null,
       presence.output === undefined ? null : JSON.stringify(presence.output),
+      presence.workerSeats === undefined ? null : JSON.stringify(presence.workerSeats),
     );
   }
 
   async listRunnerPresence(): Promise<RunnerPresence[]> {
     return this.db.prepare(
-      'SELECT runner_id, heartbeat_at, coordinator_seats, degraded, output FROM runner_presence ORDER BY runner_id',
+      'SELECT runner_id, heartbeat_at, coordinator_seats, worker_seats, degraded, output FROM runner_presence ORDER BY runner_id',
     ).all()
       .map((row) => {
-        const { runner_id, heartbeat_at, coordinator_seats, degraded, output } = row as {
-          runner_id: string; heartbeat_at: string; coordinator_seats: string | null; degraded: string | null;
+        const { runner_id, heartbeat_at, coordinator_seats, worker_seats, degraded, output } = row as {
+          runner_id: string; heartbeat_at: string; coordinator_seats: string | null; worker_seats: string | null; degraded: string | null;
           output: string | null;
         };
         return {
           runnerId: runner_id,
           heartbeatAt: heartbeat_at,
           ...(coordinator_seats ? { coordinatorSeats: JSON.parse(coordinator_seats) as CapacityTarget[] } : {}),
+          ...(worker_seats ? { workerSeats: JSON.parse(worker_seats) as CapacityTarget[] } : {}),
           ...(typeof degraded === 'string' ? { degraded } : {}),
           ...(output ? { output: JSON.parse(output) as RunnerOutput } : {}),
         };

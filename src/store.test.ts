@@ -563,6 +563,16 @@ function contractSuite(backend: Backend): void {
       (await listRunnerPresence()).find((presence) => presence.runnerId === 'mac-primary'),
       { runnerId: 'mac-primary', heartbeatAt: '2026-08-29T10:00:08.000Z', coordinatorSeats: seats },
     );
+    // Worker seats round-trip beside coordinator seats, and like them are
+    // dropped by a heartbeat that omits them (unknown, never stale).
+    const workerSeats = [{ executor: 'openhands', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.3' }];
+    await heartbeatRunner('mac-primary', '2026-08-29T10:00:09.000Z', seats, undefined, undefined, workerSeats);
+    assert.deepEqual(
+      (await listRunnerPresence()).find((presence) => presence.runnerId === 'mac-primary'),
+      { runnerId: 'mac-primary', heartbeatAt: '2026-08-29T10:00:09.000Z', coordinatorSeats: seats, workerSeats },
+    );
+    await heartbeatRunner('mac-primary', '2026-08-29T10:00:10.000Z', seats);
+    assert.equal((await listRunnerPresence()).find((presence) => presence.runnerId === 'mac-primary')!.workerSeats, undefined);
     assert.equal((await load('test-ws')).revision, revision);
   });
 

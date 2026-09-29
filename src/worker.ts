@@ -31,6 +31,7 @@ import {
   resolveCapacityAttentionForRole,
   selectWorkerCapacityTarget,
   SdkFailureTracker,
+  stampClaudeCredential,
 } from './capacity.js';
 import { noteFleetRecovery } from './fleetCapacity.js';
 import {
@@ -40,7 +41,7 @@ import {
   type CapacityTarget,
 } from './modelConfig.js';
 import { deterministicActionsOnly, runnerExecutorCapabilities, workerSeatModelForAssignment } from './modelRouting.js';
-import { loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv, selectNamedSecrets } from './secrets.js';
+import { claudeCredentialFingerprint, loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv, selectNamedSecrets } from './secrets.js';
 import {
   GITHUB_APP_GIT_PLUMBING_ENV,
   GITHUB_APP_TOKEN_ENV,
@@ -1105,7 +1106,13 @@ export async function runWorker(
     wallNow: new Date(),
     wallFired,
   } as const;
-  const infrastructure = sdkFailure.classify(capacitySource);
+  // A Claude auth wait carries the runner and a non-secret fingerprint of the
+  // credential it failed on, so replacing that credential releases it.
+  const infrastructure = stampClaudeCredential(
+    sdkFailure.classify(capacitySource),
+    runnerClaimIdentity().id,
+    claudeCredentialFingerprint(),
+  );
   const capacityObservations = sdkFailure.capacityObservations(capacitySource);
 
   await finalizeWorkerRun(slug, assignmentId, runId, {

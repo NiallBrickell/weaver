@@ -235,7 +235,7 @@ function currentBoundary(doc: WorkstreamDoc): string[] {
       `- Typed completion evidence IDs (validated at conclusion): ${doc.workstream.conclusion.evidenceIds.join(', ')}`,
     ] : []),
     `- Diagnostic activity: ${doc.spend.coordinatorPasses} coordinator passes · ${doc.spend.humanInterventions ?? 0} human interventions`,
-    `- Provider backoffs: ${doc.capacity ? Object.values(doc.capacity.byModel).map((entry) => `${entry.wait.provider ?? 'unknown provider'} via ${entry.wait.executor ?? 'legacy executor'} · ${entry.wait.model} ${entry.wait.kind}, retry ${entry.wait.retryAt}`).join('; ') : 'none recorded'}`,
+    `- Provider backoffs: ${doc.capacity ? Object.values(doc.capacity.byModel).map((entry) => `${entry.wait.provider ?? 'unknown provider'} via ${entry.wait.executor ?? 'legacy executor'} · ${entry.wait.model} ${entry.wait.kind}, ${entry.wait.released ? `released ${entry.wait.released.at} (${entry.wait.released.reason === 'unseated' ? 'no runner offers this model any more' : 'credential replaced since the wait'}) — not blocking` : `retry ${entry.wait.retryAt}`}`).join('; ') : 'none recorded'}`,
     `- Standing course: ${standing.length ? standing.map((decision) => `${decision.id} “${flat(decision.title)}”`).join('; ') : 'none recorded'}`,
     `- Open needs-you items: ${open.length ? open.map((item) => `${item.id} ${flat(item.summary)}`).join('; ') : 'none'}`,
     ...gatedByEngine(doc).map((line) => `- Needs a person (engine egress gate): ${line}`),
