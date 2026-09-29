@@ -10,16 +10,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+
 import {
   billingBasis,
   computeOverview,
   isMergeAction,
   median,
   outcomeClassOf,
+  overviewInsights,
+  quantify,
   revisionMemo,
   TOP_LEVEL_LABEL,
+  type Insight,
+  type OverviewInsights,
 } from './overview.js';
 import type { Assignment, Attempt, ConclusionDisposition, PassRecord, WorkstreamDoc } from './types.js';
+import { fleetBoard, fleetGlance, fleetRunnerLine } from './ui/inspect/model.js';
+import { OverviewPage } from './ui/operator/overview-page.js';
 
 const NOW = new Date('2026-09-29T12:00:00Z');
 
@@ -195,7 +204,7 @@ test('cost splits coordinator vs worker, by family, and labels billing basis hon
   assert.equal(openrouter.basis, 'cash');
   assert.equal(openrouter.workerUsd, 2);
   assert.equal(o.cost.byProvider.find((p) => p.executor === 'codex-sdk')!.basis, 'unknown');
-  assert.equal(o.cost.byProvider.find((p) => p.executor === '—')!.label, 'Target not recorded (older records)');
+  assert.equal(o.cost.byProvider.find((p) => p.executor === '—')!.label, 'Not recorded (older records)');
   assert.deepEqual(o.cost.byBasis, { 'subscription-notional': 6, cash: 2, unknown: 2 });
 
   assert.equal(billingBasis(undefined, 'anthropic').basis, 'subscription-notional');
@@ -318,4 +327,232 @@ test('revisionMemo computes once per revision and shares one in-flight compute',
   assert.equal(computes, 2);
   assert.equal(await memo(), 'value-r2-2');
   assert.equal(computes, 2);
+});
+
+// ---------------------------------------------------------------------------
+// Insights: the takeaway sentences each section leads with
+
+const texts = (items: Insight[]) => items.map((item) => item.text);
+const allTexts = (insights: OverviewInsights) => Object.values(insights).flatMap(texts);
+
+test('quantify says a share the way a person would, and never rounds away the extremes', () => {
+  assert.equal(quantify(5, 5, 'results'), 'all results');
+  assert.equal(quantify(0, 5, 'results'), 'no results');
+  assert.equal(quantify(0, 0, 'results'), 'no results');
+  assert.equal(quantify(4, 5, 'results'), '4 in 5 results');
+  assert.equal(quantify(3466, 4206, 'results'), 'about 5 in 6 results');
+  assert.equal(quantify(1, 2, 'jobs'), 'half the jobs');
+  assert.equal(quantify(94, 100, 'results'), '94% of results');
+  // Close to all is still not all.
+  assert.equal(quantify(999, 1000, 'results'), '100% of results');
+});
+
+test('insights on an empty fleet say so plainly, with no numbers that are not there', () => {
+  const insights = overviewInsights(computeOverview([], [], NOW));
+  assert.deepEqual(texts(insights.intro), ["Weaver hasn't taken on any jobs yet."]);
+  assert.deepEqual(texts(insights.origins), ['There are no jobs yet, so nothing has started any work.']);
+  assert.deepEqual(texts(insights.now), ['Nothing is open on the board right now.']);
+  assert.deepEqual(texts(insights.outcomes), ['No job has finished yet.']);
+  assert.deepEqual(texts(insights.signals), ['Weaver has not checked any results yet.']);
+  assert.deepEqual(texts(insights.cost), ['No cost has been recorded yet.']);
+  for (const text of allTexts(insights)) assert.doesNotMatch(text, /NaN|undefined|Infinity|null/);
+});
+
+test('insights lead with what the numbers support: where work comes from and what is active now', () => {
+  const needsYou = doc('fix-needs-you', { parent: 'sentry-sweep' });
+  needsYou.attention = [{ id: 'att1', kind: 'approval', summary: 'Approve the merge', status: 'open', createdAt: '2026-09-28T00:00:00Z' }];
+  const working = doc('fix-working', { parent: 'sentry-sweep', assignments: [assignment('run1', { state: 'running', adoption: { state: 'proposed' } })] });
+  const capacity = doc('fix-capacity', { parent: 'sentry-sweep' });
+  capacity.wakes = [{
+    id: 'w1', reason: 'provider capacity', status: 'pending', createdAt: '2026-09-28T00:00:00Z',
+    condition: { type: 'wall_time', dueAt: '2026-09-29T13:00:00Z' },
+    infrastructure: { kind: 'rate_limit', source: 'coordinator', sourceId: 'p1', model: 'm', detectedAt: '2026-09-28T00:00:00Z', retryAt: '2026-09-29T13:00:00Z' } as unknown as NonNullable<WorkstreamDoc['wakes'][number]['infrastructure']>,
+  }];
+  const scheduled = doc('thread-reply', { parent: 'thread-review' });
+  scheduled.wakes = [{ id: 'w2', reason: 'check tomorrow', status: 'pending', createdAt: '2026-09-28T00:00:00Z', condition: { type: 'time', dueAtVirtual: '2026-09-30T00:00:00Z' } }];
+  const docs = [
+    doc('sentry-sweep', { status: 'done', conclusion: { at: '2026-09-20T00:00:00Z' } }),
+    doc('thread-review', { status: 'paused' }),
+    needsYou,
+    working,
+    capacity,
+    scheduled,
+    doc('ready-one'),
+  ];
+  const o = computeOverview(docs, [], NOW);
+  // The overview's job counts are the board's: the same buckets, labels and
+  // numbers fleetGlance gives the board tiles and the sidebar.
+  const glance = fleetGlance(fleetBoard(docs, [], new Map(), [], NOW, NOW), fleetRunnerLine([], undefined, NOW), NOW);
+  const boardOpen = glance.buckets.filter((b) => b.key !== 'done').map(({ key, label, count }) => ({ key, label, count }));
+  assert.deepEqual(o.now.buckets, boardOpen);
+  assert.deepEqual(computeOverview(docs, [], NOW, glance).now.buckets, boardOpen);
+  const insights = overviewInsights(o);
+  assert.deepEqual(texts(insights.origins), [
+    'Most jobs are started by other jobs, not by people: 4 of 7.',
+    'The jobs that started the most others are sentry-sweep (3) and thread-review (1).',
+  ]);
+  assert.deepEqual(texts(insights.now), [
+    'The board has 6 open jobs. 1 needs you, 1 is being worked on right now, 3 are waiting for their next scheduled step and 1 is paused.',
+    'The most active jobs sit under sentry-sweep: 3 of 5.',
+  ]);
+  assert.deepEqual(texts(insights.intro), [
+    'Weaver has taken on 7 jobs so far and split them into 1 smaller piece of work.',
+    '1 is finished, 5 are active and 1 is paused.',
+  ]);
+
+  // One bucket: every active job in the same state, one parent.
+  const one = overviewInsights(computeOverview([doc('routine'), doc('child-a', { parent: 'routine' }), doc('child-b', { parent: 'routine' })], [], NOW));
+  assert.deepEqual(texts(one.now), ['The board has 3 open jobs. All of them are waiting for their next scheduled step.', 'Nothing needs you right now.', 'The most active jobs sit under routine: 2 of 3.']);
+  assert.deepEqual(texts(one.origins), ['Most jobs are started by other jobs, not by people: 2 of 3.', 'All 2 of those came from routine.']);
+
+  // People-led fleet.
+  const people = overviewInsights(computeOverview([doc('a'), doc('b'), doc('c', { parent: 'a' })], [], NOW));
+  assert.equal(texts(people.origins)[0], 'Most jobs were started directly by people: 2 of 3. Other jobs started the remaining 1.');
+  const solo = overviewInsights(computeOverview([doc('a')], [], NOW));
+  assert.deepEqual(texts(solo.origins), ['Every job so far was started directly by a person: 1 of 1.']);
+  assert.deepEqual(texts(solo.now), ['The board has 1 open job. It is waiting for its next scheduled step.', 'Nothing needs you right now.']);
+
+  // A large blocked share of open work is flagged. The counts come from the
+  // board's glance, so the rule is tested over a glance directly.
+  const blockedGlance = { buckets: [
+    { key: 'needs-you' as const, label: 'Needs you', count: 0 },
+    { key: 'blocked' as const, label: 'Blocked', count: 1 },
+    { key: 'waiting' as const, label: 'Waiting', count: 1 },
+    { key: 'done' as const, label: 'Done', count: 4 },
+  ] };
+  const stuck = overviewInsights(computeOverview([capacity, doc('ready-one')], [], NOW, blockedGlance));
+  assert.deepEqual(texts(stuck.now).slice(0, 2), ['The board has 2 open jobs. 1 is blocked and 1 is waiting for its next scheduled step.', 'Nothing needs you right now.']);
+  assert.deepEqual(stuck.now.filter((i) => i.flag).map((i) => i.text), ['A lot of work is stuck: 1 of 2 open jobs are blocked because no model or runner can take them right now.']);
+});
+
+test('insights on how jobs ended separate the unrecorded past from what was recorded since', () => {
+  const finished = (slug: string, disposition?: string, cost = 0) =>
+    doc(slug, { status: 'done', conclusion: { at: '2026-09-20T00:00:00Z', ...(disposition ? { disposition } : {}) }, passes: [pass(cost)] });
+  const mixed = overviewInsights(computeOverview([
+    finished('old-1', undefined, 10), finished('old-2', undefined, 20), finished('old-3', undefined, 30),
+    finished('new-1', 'delivered', 4), finished('new-2', 'delivered', 6), finished('new-3', 'not_worth_doing', 2),
+    doc('closed', { status: 'done' }),
+    doc('parked', { status: 'paused' }),
+  ], [], NOW));
+  assert.deepEqual(texts(mixed.outcomes), [
+    '6 jobs have finished. 3 finished before Weaver started recording how a job ended. Since then, 2 delivered something and 1 wasn\'t worth doing.',
+    'A typical finished job cost $8.00.',
+    '1 more was closed without saying how it ended.',
+    '1 job is paused: a person stopped it, and it can be picked back up.',
+  ]);
+  const legacy = overviewInsights(computeOverview([finished('old-1'), finished('old-2'), finished('new-1', 'duplicate')], [], NOW));
+  assert.equal(texts(legacy.outcomes)[0], '3 jobs have finished. Most of them (2) finished before Weaver started recording how a job ended. Since then, 1 duplicated another job.');
+  const onlyLegacy = overviewInsights(computeOverview([finished('old-1')], [], NOW));
+  assert.deepEqual(texts(onlyLegacy.outcomes), ['1 job has finished. It finished before Weaver started recording how a job ended, so there is no breakdown yet.']);
+  const oneBucket = overviewInsights(computeOverview([finished('a', 'delivered'), finished('b', 'delivered')], [], NOW));
+  assert.deepEqual(texts(oneBucket.outcomes), ['2 jobs have finished. All of them delivered something.']);
+});
+
+test('usefulness insights state the share with its figures and flag what looks off', () => {
+  const judged = (prefix: string, n: number, rejected: number) => Array.from({ length: n }, (_, i) =>
+    assignment(`${prefix}${i}`, { adoption: { state: i < rejected ? 'rejected' : 'accepted' } }));
+  const o = computeOverview([
+    doc('sweep', { status: 'done', conclusion: { at: '2026-09-20T00:00:00Z' } }),
+    doc('sweep-fix', { parent: 'sweep', assignments: judged('s', 30, 15), interventions: 2 }),
+    doc('manual', { status: 'done', conclusion: { at: '2026-09-21T00:00:00Z' }, assignments: judged('m', 60, 3) }),
+  ], [], NOW);
+  const signals = overviewInsights(o).signals;
+  assert.deepEqual(texts(signals.filter((i) => !i.flag)), [
+    '4 in 5 results were accepted when Weaver checked them: 72 of 90.',
+    'All finished pieces of work succeeded on the first try: 90 of 90.',
+    '1 in 3 jobs needed a person to step in: 1 of 3. Across the fleet, a person stepped in (answering, approving, rejecting, steering or correcting) 1.0 times per successfully finished job, the number Weaver is trying to push down.',
+  ]);
+  assert.deepEqual(texts(signals.filter((i) => i.flag)), [
+    'Rejections are higher than usual for the work under sweep: 50% of their results were rejected, against 20% across all jobs.',
+  ]);
+
+  // A family below the minimum sample is never called out, however bad.
+  const small = computeOverview([doc('x', { assignments: judged('x', 5, 5) }), doc('y', { assignments: judged('y', 50, 0) })], [], NOW);
+  assert.equal(overviewInsights(small).signals.filter((i) => i.flag).length, 0);
+
+  // Capacity waits, merges and repairs of repairs.
+  const merge = (id: string, ok?: boolean) => assignment(id, {
+    kind: 'action',
+    exec: { cwd: '/repo', verify: 'gh pr view', run: 'gh pr merge 1 --merge', ...(ok === undefined ? {} : { verified: { ok, output: '', at: '2026-09-02T00:00:00Z' } }) },
+  });
+  const backoff: PassRecord = {
+    ...pass(0),
+    outcome: 'error',
+    infrastructure: { kind: 'rate_limit', source: 'coordinator', sourceId: 'p', model: 'm', detectedAt: '2026-09-02T00:00:00Z', retryAt: '2026-09-02T01:00:00Z' } as unknown as NonNullable<PassRecord['infrastructure']>,
+  };
+  const busy = computeOverview([
+    doc('steward'),
+    doc('repair', { parent: 'steward', assignments: [merge('m1', true), merge('m2', false), merge('m3', false), merge('m4')], passes: [pass(0), backoff] }),
+    doc('repair-of-repair', { parent: 'repair' }),
+  ], [], NOW);
+  const flags = texts(overviewInsights(busy).signals.filter((i) => i.flag));
+  assert.ok(flags.includes('Half the planning runs had to wait because the model provider was out of capacity: 1 of 2. That slows work down, but nothing is lost.'), flags.join('\n'));
+  assert.ok(flags.includes('1 job was opened by a job that another job had opened: 50% of the jobs started by other jobs. A rising share would mean fixes are causing more fixes.'), flags.join('\n'));
+  assert.ok(flags.includes('Weaver tried to merge 4 pull requests. 1 was confirmed merged when checked on GitHub afterwards, 2 didn\'t go through and 1 haven\'t run.'), flags.join('\n'));
+});
+
+test('cost insights name where the money goes, the biggest single job per day, and what is real money', () => {
+  const o = computeOverview([
+    doc('daily-update', { passes: [pass(60, 'local-sdk', 'anthropic')] }),
+    doc('sweep', { passes: [pass(10, 'local-sdk', 'anthropic')] }),
+    doc('fix', { parent: 'sweep', passes: [pass(10, 'local-sdk', 'anthropic')], assignments: [assignment('a1', { attempts: [attempt(20, 'pi', 'openrouter')] })] }),
+  ], [], NOW);
+  // Every fixture job was created on 1 Sep; NOW is midday on 29 Sep.
+  assert.equal(o.cost.days, 29);
+  assert.deepEqual(texts(overviewInsights(o).cost), [
+    'Weaver has recorded $100 of model cost over 29 days, about $3.45 a day.',
+    'Most of the spend is Weaver deciding what to do next, not the work itself: 80%.',
+    'The single most expensive job is “Title daily-update” at $60.00, about $2.07 a day over 29 days (60% of all spend).',
+    'Of the groups of work that one job started, the group under sweep costs the most: $40.00 (40% of the total).',
+    '$20.00 was real money, paid per use through OpenRouter. $80.00 is a list-price estimate for runs covered by a subscription, not money actually spent.',
+  ]);
+
+  // Mostly worker spend, all on a subscription, one job: no outlier to name.
+  const workers = computeOverview([
+    doc('solo', { passes: [pass(1, 'local-sdk', 'anthropic')], assignments: [assignment('a', { attempts: [attempt(9, 'local-sdk', 'anthropic')] })] }),
+  ], [], NOW);
+  assert.deepEqual(texts(overviewInsights(workers).cost), [
+    'Weaver has recorded $10.00 of model cost over 29 days, about $0.34 a day.',
+    'Most of the spend is the work itself: 90% went to the agents doing the jobs.',
+    'All of it is a list-price estimate for runs covered by a subscription, not money actually spent.',
+  ]);
+});
+
+/** The page's visible text, with tags, scripts and entity escapes removed and
+ * slug-shaped tokens (like `durable-readback-sweep`) dropped: a job's name is
+ * the fleet's data, not the page's vocabulary. */
+function visibleCopy(html: string): string {
+  return html
+    .replace(/<(script|style)[\s\S]*?<\/\1>/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\b[a-z0-9]+(?:-[a-z0-9]+)+\b/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+/** Internal vocabulary the overview must never show a newcomer. */
+const BANNED_OVERVIEW_PHRASES = [/typed record/i, /readback/i, /gated external effect/i, /durable/i, /\boutcomes\b/i];
+
+test('the rendered overview leads with its insights and uses none of the internal vocabulary', () => {
+  const docs = [
+    doc('durable-readback-outcomes-sweep'),
+    doc('child-one', { parent: 'durable-readback-outcomes-sweep', passes: [pass(5, 'local-sdk', 'anthropic')] }),
+    doc('child-two', { parent: 'durable-readback-outcomes-sweep', status: 'done', conclusion: { at: '2026-09-20T00:00:00Z', disposition: 'delivered' } }),
+  ];
+  const overview = computeOverview(docs, [], NOW);
+  const html = renderToStaticMarkup(createElement(OverviewPage, { overview, scopeLabel: 'Test fleet' }));
+  const copy = visibleCopy(html);
+  for (const sentence of allTexts(overviewInsights(overview))) {
+    assert.ok(copy.includes(visibleCopy(sentence).trim()), `missing insight: ${sentence}`);
+  }
+  assert.match(html, /data-testid="overview-insights"/);
+  assert.match(copy, /This counts merges, not whether the code was good\./);
+  assert.doesNotMatch(copy, /What this page cannot tell you yet/);
+  for (const phrase of BANNED_OVERVIEW_PHRASES) assert.doesNotMatch(copy, phrase);
+  // The slug itself still renders: stripping is only for the vocabulary check.
+  assert.match(html, /durable-readback-outcomes-sweep/);
 });

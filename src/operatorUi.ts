@@ -143,7 +143,9 @@ function overviewSource(): OverviewSource {
       const fleet = await loadFleet();
       return {
         revision: fleet.view.revision,
-        value: { fleet, overview: computeOverview(fleet.docs, fleet.policies, new Date()) },
+        // The board's own glance, so the overview's job counts match the
+        // board tiles and sidebar exactly.
+        value: { fleet, overview: computeOverview(fleet.docs, fleet.policies, new Date(), fleet.view.glance) },
       };
     },
   );

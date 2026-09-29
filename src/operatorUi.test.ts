@@ -1499,10 +1499,24 @@ test('the team overview is a read-only typed view linked from the nav, recompute
   const html = await response.text();
   assert.match(html, /data-testid="operator-overview-page"/);
   assert.match(html, /href="\/overview" aria-current="page"/);
-  assert.match(html, /1 of 2 workstreams were opened by other workstreams/);
-  assert.match(html, /What this page cannot tell you yet/);
-  assert.match(html, /No worked examples yet/);
+  // Each section leads with computed takeaway sentences, in plain English.
+  assert.match(html, /data-testid="overview-insights"/);
+  assert.match(html, /Half the jobs were started by other jobs and half directly by people: 1 each\./);
+  assert.match(html, /The board has 2 open jobs\./);
+  assert.match(html, /This counts merges, not whether the code was good\./);
+  assert.doesNotMatch(html, /What this page cannot tell you yet/);
+  assert.match(html, /No examples yet/);
   assert.match(html, /0 paused\./);
+  // None of the internal vocabulary reaches a newcomer. Scripts and
+  // slug-shaped tokens are dropped first: a job's name is data, not copy.
+  const page = html.slice(html.indexOf('data-testid="operator-overview-page"'));
+  const copy = page
+    .replace(/<(script|style)[\s\S]*?<\/\1>/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\b[a-z0-9]+(?:-[a-z0-9]+)+\b/g, ' ');
+  for (const phrase of [/typed record/i, /readback/i, /gated external effect/i, /durable/i, /\boutcomes\b/i]) {
+    assert.doesNotMatch(copy, phrase);
+  }
 
   assert.match(await (await fetch(`${base}/board`)).text(), /data-testid="team-overview-link" href="\/overview"/);
 
