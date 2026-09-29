@@ -522,18 +522,18 @@ test('a typed worker-model wait parks assignments without parsing prose', async 
   doc.capacity = {
     state: 'backoff',
     byModel: {
-      'claude-fable-5': {
+      'claude-fable-5-1': {
         ...workerEntry,
-        wait: { ...workerEntry.wait, source: 'coordinator', model: 'claude-fable-5' },
+        wait: { ...workerEntry.wait, source: 'coordinator', model: 'claude-fable-5-1' },
       },
     },
   };
   // The primary coordinator is limited, but its fallback remains available.
   assert.equal(coordinatorBackoffActive(doc), false);
   assert.deepEqual(runnableAssignments(doc), ['asg_first', 'asg_second']);
-  doc.capacity.byModel['claude-opus-4-8'] = {
+  doc.capacity.byModel['claude-opus-5-5'] = {
     ...workerEntry,
-    wait: { ...workerEntry.wait, source: 'coordinator', model: 'claude-opus-4-8' },
+    wait: { ...workerEntry.wait, source: 'coordinator', model: 'claude-opus-5-5' },
   };
   assert.equal(coordinatorBackoffActive(doc), true);
   doc.capacity = { state: 'backoff', byModel: { sonnet: workerEntry } };
@@ -2290,14 +2290,14 @@ function deferralWakes(doc: Awaited<ReturnType<typeof load>>) {
 }
 
 test('a coordinator chain parked by the fleet spends no pass and holds its due work behind ONE deferral wake', async () => {
-  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-4-8' }, async () => {
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5-1', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-5-5' }, async () => {
     const slug = 'fleet-parked-coordinator';
     await makeFleetStream(slug, (d) => d.wakes.push({
       id: 'wake_org', reason: 'review the new evidence', condition: { type: 'immediate' },
       status: 'pending', createdAt: new Date().toISOString(),
     }));
-    const primary = coordinatorCapacityTarget('claude-fable-5');
-    const fallback = coordinatorCapacityTarget('claude-opus-4-8');
+    const primary = coordinatorCapacityTarget('claude-fable-5-1');
+    const fallback = coordinatorCapacityTarget('claude-opus-5-5');
     const fleet = fleetOf(borrowed(primary, 45, 'pass_primary'), borrowed(fallback, 20, 'pass_fallback'));
 
     const report = await tick(slug, { fleetCapacity: fleet, coordinatorExecutor: NO_LAUNCH });
@@ -2342,13 +2342,13 @@ test('a coordinator chain parked by the fleet spends no pass and holds its due w
 });
 
 test('a fleet-parked coordinator primary sends the pass straight to its fallback — no doomed primary pass', async () => {
-  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-4-8' }, async () => {
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5-1', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-5-5' }, async () => {
     const slug = 'fleet-parked-primary';
     await makeFleetStream(slug, (d) => d.wakes.push({
       id: 'wake_org', reason: 'reconcile', condition: { type: 'immediate' },
       status: 'pending', createdAt: new Date().toISOString(),
     }));
-    const primary = coordinatorCapacityTarget('claude-fable-5');
+    const primary = coordinatorCapacityTarget('claude-fable-5-1');
     const models: string[] = [];
     const report = await tick(slug, {
       fleetCapacity: fleetOf(borrowed(primary, 45, 'pass_primary')),
@@ -2361,11 +2361,11 @@ test('a fleet-parked coordinator primary sends the pass straight to its fallback
         },
       },
     });
-    assert.deepEqual(models, ['claude-opus-4-8']);
+    assert.deepEqual(models, ['claude-opus-5-5']);
     assert.equal(report.passes.length, 1);
     const doc = await load(slug);
     assert.equal(doc.passes.length, 1);
-    assert.equal(doc.passes[0]!.model, 'claude-opus-4-8');
+    assert.equal(doc.passes[0]!.model, 'claude-opus-5-5');
     assert.equal(doc.passes[0]!.outcome, 'completed');
     assert.equal(doc.passes.filter((pass) => pass.infrastructure).length, 0, 'no backoff pass on the parked primary');
     assert.equal(doc.wakes.filter((wake) => /continue on fallback/.test(wake.reason)).length, 0,
@@ -2458,13 +2458,13 @@ test('a fleet-parked worker primary launches queued work on the free fallback se
 });
 
 test('an explicit retry of a borrowed wait is honoured, and a stream never borrows its own wait back', async () => {
-  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACKS: '' }, async () => {
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5-1', WEAVER_COORDINATOR_FALLBACKS: '' }, async () => {
     const slug = 'fleet-retry-honoured';
     await makeFleetStream(slug, (d) => d.wakes.push({
       id: 'wake_org', reason: 'reconcile', condition: { type: 'immediate' },
       status: 'pending', createdAt: new Date().toISOString(),
     }));
-    const primary = coordinatorCapacityTarget('claude-fable-5');
+    const primary = coordinatorCapacityTarget('claude-fable-5-1');
     const fleet = fleetOf(borrowed(primary, 45, 'pass_primary'));
     assert.equal(await parkOnFleetCapacity(slug, fleet), true);
     assert.equal(await parkOnFleetCapacity(slug, fleet), false, 'idempotent');
@@ -2484,10 +2484,10 @@ test('an explicit retry of a borrowed wait is honoured, and a stream never borro
 
 test('runners with different chains never ping-pong the deferral wake', async () => {
   const slug = 'fleet-two-hosts';
-  const primary = coordinatorCapacityTarget('claude-fable-5');
+  const primary = coordinatorCapacityTarget('claude-fable-5-1');
   const fleet = fleetOf(borrowed(primary, 45, 'pass_primary'));
   // Host A's chain is the primary alone: fully parked, so it defers.
-  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACKS: '' }, async () => {
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5-1', WEAVER_COORDINATOR_FALLBACKS: '' }, async () => {
     await makeFleetStream(slug, (d) => d.wakes.push({
       id: 'wake_org', reason: 'reconcile', condition: { type: 'immediate' },
       status: 'pending', createdAt: new Date().toISOString(),
@@ -2498,16 +2498,16 @@ test('runners with different chains never ping-pong the deferral wake', async ()
   assert.equal(deferralWakes(deferred).length, 1);
   // Host B has a free fallback seat, so it would not defer — but it must not
   // retire or move host A's wake either, or every write re-dispatches A.
-  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-4-8' }, async () => {
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5-1', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-5-5' }, async () => {
     assert.equal(await parkOnFleetCapacity(slug, fleet), false);
   });
   assert.equal((await load(slug)).revision, deferred.revision);
 });
 
 test('a lingering deferral wake never stands in for the quiescence backstop', async () => {
-  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-4-8' }, async () => {
+  await withFleetEnv({ WEAVER_COORDINATOR_MODEL: 'claude-fable-5-1', WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-5-5' }, async () => {
     const slug = 'fleet-backstop';
-    const wait = borrowed(coordinatorCapacityTarget('claude-fable-5'), 45, 'pass_primary');
+    const wait = borrowed(coordinatorCapacityTarget('claude-fable-5-1'), 45, 'pass_primary');
     await makeFleetStream(slug, (d) => {
       adoptFleetSeatWait(d, wait);
       d.wakes.push({

@@ -336,7 +336,7 @@ uses the tool-restricted Claude SDK directly with a registered
 declaration is explicit, and the daemon must answer. The hosted coordinator
 chain is Claude through that setup-token, then non-Claude OpenRouter through a
 fresh isolated API home; the hosted worker chain is Claude on the same
-setup-token first (`claude-opus-5` by default), then `openhands` on
+setup-token first (`claude-opus-5-5` by default), then `openhands` on
 `openrouter/z-ai/glm-5.3`. OpenRouter-backed Claude is refused on both so every
 Claude run stays subscription-backed. Pi, host-process Claude, and Codex remain
 valid on operator-controlled machines; copied device-login state and Anthropic
@@ -432,8 +432,8 @@ host profile choice, not an automatic model route. `WEAVER_GCP_WORKER_MODEL`,
 `WEAVER_GCP_COORDINATOR_MODEL`, and `WEAVER_GCP_COORDINATOR_FALLBACKS` may
 override the profile's model seats without weakening its substrate checks.
 
-The hosted coordinator chain defaults to `claude-fable-5` on the registered
-setup-token, then `claude-opus-5` on the same token, then the OpenRouter seat.
+The hosted coordinator chain defaults to `claude-fable-5-1` on the registered
+setup-token, then `claude-opus-5-5` on the same token, then the OpenRouter seat.
 A chain is only as good as the independence of its pools: when the Fable
 allowance ran out with nothing but an out-of-credit OpenRouter seat behind it,
 every coordinator pass on the host failed for a day while Opus would have

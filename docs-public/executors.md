@@ -240,7 +240,7 @@ technical declaration is explicit:
 ```dotenv
 WEAVER_EXECUTOR=openhands
 WEAVER_WORKER_FALLBACKS=
-WEAVER_COORDINATOR_MODEL=claude-fable-5
+WEAVER_COORDINATOR_MODEL=claude-fable-5-1
 WEAVER_COORDINATOR_EXECUTOR=local-sdk
 WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/z-ai/glm-5.2
 WEAVER_ACTION_EXECUTOR=local-sdk

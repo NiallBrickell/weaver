@@ -23,11 +23,11 @@ const SAFE_GCP_EXECUTION_ENV = [
   'WEAVER_LOCAL_SDK_CONTAINER=1',
   'WEAVER_LOCAL_SDK_CONTAINER_IMAGE=ghcr.io/openhands/agent-server:1.41.0-python',
   'WEAVER_OPENHANDS_HOST_GATEWAY_IP=10.170.0.2',
-  'WEAVER_WORKER_MODEL=claude-opus-5',
+  'WEAVER_WORKER_MODEL=claude-opus-5-5',
   'WEAVER_WORKER_FALLBACKS=openhands:openrouter/z-ai/glm-5.3',
-  'WEAVER_COORDINATOR_MODEL=claude-fable-5',
+  'WEAVER_COORDINATOR_MODEL=claude-fable-5-1',
   'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
-  'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3',
+  'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5-5,local-sdk:openrouter/z-ai/glm-5.3',
   'WEAVER_ACTION_EXECUTOR=local-sdk',
   'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
   'WEAVER_PILOT_URL=http://127.0.0.1:9721',
@@ -479,7 +479,7 @@ test('host env merge preserves local state and replaces the complete portable re
   ].join('\n'));
   const rendered = [
     'WEAVER_EXECUTOR=pi',
-    'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5',
+    'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5-5',
     'WEAVER_WORKER_MODEL_COMPLEX=zai-coding-plan/glm-5.3',
     'WEAVER_WORKER_FALLBACKS=pi:zai/glm-5.3',
     'WEAVER_WORKSPACE_ROOT=/home/weaver/workspaces',
@@ -497,7 +497,7 @@ test('host env merge preserves local state and replaces the complete portable re
     'WEAVER_HOUSE_JSON={"repoMap":"Primary application: /srv/application","tags":["application"]}',
     'WEAVER_EXECUTOR=pi',
     'CUSTOM_HOST_SETTING=keep-me',
-    'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5',
+    'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5-5',
     'WEAVER_WORKER_MODEL_COMPLEX=zai-coding-plan/glm-5.3',
     'WEAVER_WORKER_FALLBACKS=pi:zai/glm-5.3',
   ]);
@@ -629,7 +629,7 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
     'CLAUDE_CODE_OAUTH_TOKEN=registered-setup-token',
     'ZHIPU_API_KEY=unused-provider-secret',
     'WEAVER_EXECUTOR=pi',
-    'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5',
+    'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5-5',
     'WEAVER_WORKER_MODEL_COMPLEX=zai-coding-plan/glm-5.3',
     'WEAVER_WORKER_FALLBACKS=pi:zai/glm-5.3',
     'WEAVER_HOUSE_JSON={"repoMap":"Primary application: /srv/application","tags":["application"]}',
@@ -660,11 +660,11 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
   assert.equal(fs.readFileSync(path.join(root, 'calls', 'render-profile'), 'utf8'), [
     'WEAVER_EXECUTOR=local-sdk',
     'WEAVER_LOCAL_SDK_CONTAINER=1',
-    'WEAVER_WORKER_MODEL=claude-opus-5',
+    'WEAVER_WORKER_MODEL=claude-opus-5-5',
     'WEAVER_WORKER_FALLBACKS=openhands:openrouter/z-ai/glm-5.3',
     'WEAVER_COORDINATOR_EXECUTOR=local-sdk',
-    'WEAVER_COORDINATOR_MODEL=claude-fable-5',
-    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3',
+    'WEAVER_COORDINATOR_MODEL=claude-fable-5-1',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5-5,local-sdk:openrouter/z-ai/glm-5.3',
     'WEAVER_ACTION_EXECUTOR=local-sdk',
     'WEAVER_DETERMINISTIC_ACTIONS_ONLY=1',
     'WEAVER_RUNNER_EXECUTORS=openhands,local-sdk',
@@ -811,14 +811,14 @@ test('GCP start refuses a bare local-sdk worker: without the container seam it s
 });
 
 test('GCP start keeps every hosted worker seat on the route its executor owns', () => {
-  const routedClaude = SAFE_GCP_EXECUTION_ENV.replace('WEAVER_WORKER_MODEL=claude-opus-5', 'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.3');
+  const routedClaude = SAFE_GCP_EXECUTION_ENV.replace('WEAVER_WORKER_MODEL=claude-opus-5-5', 'WEAVER_WORKER_MODEL=openrouter/z-ai/glm-5.3');
   const first = run(['start'], undefined, '', false, routedClaude);
   assert.notEqual(first.result.status, 0);
   assert.match(first.result.stderr, /must be a subscription-backed Claude model for a containerized local-sdk seat/);
 
   const claudeOnOpenHands = SAFE_GCP_EXECUTION_ENV.replace(
     'WEAVER_WORKER_FALLBACKS=openhands:openrouter/z-ai/glm-5.3',
-    'WEAVER_WORKER_FALLBACKS=openhands:claude-opus-5',
+    'WEAVER_WORKER_FALLBACKS=openhands:claude-opus-5-5',
   );
   const second = run(['start'], undefined, '', false, claudeOnOpenHands);
   assert.notEqual(second.result.status, 0);
@@ -857,8 +857,8 @@ test('GCP start refuses the containerized profile on a checkout that cannot hono
 
 test('GCP start refuses an OpenRouter primary or device-login coordinator', () => {
   const routedPrimary = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_COORDINATOR_MODEL=claude-fable-5',
-    'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-5',
+    'WEAVER_COORDINATOR_MODEL=claude-fable-5-1',
+    'WEAVER_COORDINATOR_MODEL=openrouter/~anthropic/claude-opus-5-5',
   );
   const first = run(['start'], undefined, '', false, routedPrimary);
   assert.notEqual(first.result.status, 0);
@@ -877,7 +877,7 @@ test('GCP start refuses an OpenRouter primary or device-login coordinator', () =
 
 test('GCP start permits a non-Claude OpenRouter fallback and refuses Claude API billing there', () => {
   const chain = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5-5,local-sdk:openrouter/z-ai/glm-5.3',
     'WEAVER_COORDINATOR_FALLBACKS=local-sdk:openrouter/~anthropic/claude-haiku-4.5',
   );
   const first = run(['start'], undefined, '', false, chain);
@@ -886,7 +886,7 @@ test('GCP start permits a non-Claude OpenRouter fallback and refuses Claude API 
   assert.equal(fs.existsSync(path.join(first.root, 'calls', '1.systemctl-executed')), false);
 
   const legacy = SAFE_GCP_EXECUTION_ENV.replace(
-    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3\n',
+    'WEAVER_COORDINATOR_FALLBACKS=local-sdk:claude-opus-5-5,local-sdk:openrouter/z-ai/glm-5.3\n',
     'WEAVER_COORDINATOR_FALLBACK_MODEL=openrouter/~anthropic/claude-haiku-4.5\n',
   );
   const second = run(['start'], undefined, '', false, legacy);

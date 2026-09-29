@@ -1,7 +1,10 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
+  coordinatorEffort,
   coordinatorFallbackCapacityTarget,
+  effortForModel,
+  workerEffort,
   coordinatorTargets,
   parseCapacityTargetList,
   workerFallbackTargets,
@@ -18,6 +21,8 @@ const NAMES = [
   'WEAVER_WORKER_FALLBACKS',
   'WEAVER_WORKER_MODEL',
   'WEAVER_WORKER_MODEL_COMPLEX',
+  'WEAVER_COORDINATOR_EFFORT',
+  'WEAVER_WORKER_EFFORT',
 ] as const;
 
 function withEnv(values: Partial<Record<(typeof NAMES)[number], string>>, fn: () => void): void {
@@ -65,12 +70,12 @@ test('a provider-qualified Claude SDK route records its actual non-Claude API pr
 
 test('the local production chain is Claude subscription then Codex then non-Claude OpenRouter', () => {
   withEnv({
-    WEAVER_COORDINATOR_MODEL: 'claude-fable-5',
+    WEAVER_COORDINATOR_MODEL: 'claude-fable-5-1',
     WEAVER_COORDINATOR_EXECUTOR: 'local-sdk',
     WEAVER_COORDINATOR_FALLBACKS: 'codex-sdk:gpt-5.6-sol,local-sdk:openrouter/z-ai/glm-5.2',
   }, () => {
     assert.deepEqual(coordinatorTargets(), [
-      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' },
+      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1' },
       { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
       { executor: 'local-sdk', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.2' },
     ]);
@@ -104,11 +109,11 @@ test('worker-only substrates are refused from a coordinator chain at configurati
 test('an unset chain preserves the legacy single-fallback pair exactly', () => {
   withEnv({}, () => {
     assert.deepEqual(coordinatorTargets(), [
-      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' },
-      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-4-8' },
+      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1' },
+      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5-5' },
     ]);
     assert.deepEqual(coordinatorFallbackCapacityTarget(), {
-      executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-4-8',
+      executor: 'local-sdk', provider: 'anthropic', model: 'claude-opus-5-5',
     });
   });
   withEnv({
@@ -124,7 +129,7 @@ test('an unset chain preserves the legacy single-fallback pair exactly', () => {
 test('a set chain is ordered primary-first, deduped, and makes the legacy pair inert', () => {
   withEnv({
     WEAVER_COORDINATOR_FALLBACKS:
-      'codex-sdk:gpt-5.6-sol, local-sdk:claude-fable-5, codex-sdk:gpt-5.6-sol, local-sdk:openrouter/z-ai/glm-5.2',
+      'codex-sdk:gpt-5.6-sol, local-sdk:claude-fable-5-1, codex-sdk:gpt-5.6-sol, local-sdk:openrouter/z-ai/glm-5.2',
     WEAVER_COORDINATOR_FALLBACK_MODEL: 'claude-opus-5',
     WEAVER_COORDINATOR_FALLBACK_EXECUTOR: 'local-sdk',
   }, () => {
@@ -132,7 +137,7 @@ test('a set chain is ordered primary-first, deduped, and makes the legacy pair i
     // dedup keeps first occurrences in order, and the legacy opus pair is
     // ignored entirely once the explicit chain exists.
     assert.deepEqual(coordinatorTargets(), [
-      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' },
+      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1' },
       { executor: 'codex-sdk', provider: 'openai', model: 'gpt-5.6-sol' },
       { executor: 'local-sdk', provider: 'openrouter', model: 'openrouter/z-ai/glm-5.2' },
     ]);
@@ -143,10 +148,10 @@ test('a set chain is ordered primary-first, deduped, and makes the legacy pair i
   // An explicitly empty chain means "no fallback": the chain is the primary.
   withEnv({ WEAVER_COORDINATOR_FALLBACKS: ' , ' }, () => {
     assert.deepEqual(coordinatorTargets(), [
-      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5' },
+      { executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1' },
     ]);
     assert.deepEqual(coordinatorFallbackCapacityTarget(), {
-      executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+      executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1',
     });
   });
 });
@@ -173,4 +178,26 @@ test('the worker ladder is empty when unset and ordered when configured', () => 
       { executor: 'pi', provider: 'zai-coding-plan', model: 'zai-coding-plan/glm-5.3' },
     ]);
   });
+});
+
+test('effort is pinned per seat, not inherited from a model default that differs by model', () => {
+  withEnv({}, () => {
+    assert.equal(coordinatorEffort(), 'xhigh');
+    assert.equal(workerEffort(), 'xhigh');
+  });
+  withEnv({ WEAVER_COORDINATOR_EFFORT: 'High', WEAVER_WORKER_EFFORT: 'medium' }, () => {
+    assert.equal(coordinatorEffort(), 'high');
+    assert.equal(workerEffort(), 'medium');
+  });
+  // `default` hands the choice back to Claude Code.
+  withEnv({ WEAVER_COORDINATOR_EFFORT: 'default' }, () => assert.equal(coordinatorEffort(), undefined));
+  // An unknown level is refused, never guessed.
+  withEnv({ WEAVER_WORKER_EFFORT: 'ultra' }, () => assert.throws(() => workerEffort(), /WEAVER_WORKER_EFFORT must be one of/));
+});
+
+test('only Anthropic models take the pinned effort; a provider-routed model gets its route default', () => {
+  assert.equal(effortForModel('claude-opus-5-5', 'xhigh'), 'xhigh');
+  assert.equal(effortForModel('sonnet', 'xhigh'), 'xhigh');
+  assert.equal(effortForModel('openrouter/z-ai/glm-5.3', 'xhigh'), undefined);
+  assert.equal(effortForModel('claude-fable-5-1', undefined), undefined);
 });

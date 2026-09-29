@@ -521,7 +521,7 @@ cmd_push_env() {
   hosted_worker_executor="${WEAVER_GCP_EXECUTOR:-local-sdk}"
   case "$hosted_worker_executor" in
     local-sdk)
-      hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-claude-opus-5}"
+      hosted_worker_model="${WEAVER_GCP_WORKER_MODEL:-claude-opus-5-5}"
       hosted_worker_fallbacks="${WEAVER_GCP_WORKER_FALLBACKS:-openhands:openrouter/z-ai/glm-5.3}"
       hosted_local_sdk_container=1
       ;;
@@ -541,8 +541,8 @@ cmd_push_env() {
   # seat stays as the last hosted recovery path; Codex remains local-only
   # because personal device authentication is never copied to this
   # credential-bearing host.
-  hosted_coordinator_model="${WEAVER_GCP_COORDINATOR_MODEL:-claude-fable-5}"
-  hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-local-sdk:claude-opus-5,local-sdk:openrouter/z-ai/glm-5.3}"
+  hosted_coordinator_model="${WEAVER_GCP_COORDINATOR_MODEL:-claude-fable-5-1}"
+  hosted_coordinator_fallbacks="${WEAVER_GCP_COORDINATOR_FALLBACKS:-local-sdk:claude-opus-5-5,local-sdk:openrouter/z-ai/glm-5.3}"
 
   PUSH_ENV_RAW_TMP="$(mktemp)"
   PUSH_ENV_TMP="$(mktemp)"

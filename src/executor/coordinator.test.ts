@@ -300,6 +300,25 @@ describe('the projection cache marker', () => {
     }
   });
 
+  test('pins reasoning effort for Claude seats and leaves an OpenRouter seat at its route default', async () => {
+    const seen: Array<{ model: string; effort: unknown }> = [];
+    for (const model of ['claude-opus-5-5', 'openrouter/z-ai/glm-5.3']) {
+      const executor = new ClaudeCoordinatorExecutor({
+        loadExecutorSecrets: () => ({ OPENROUTER_API_KEY: 'router-key' }),
+        prepareApiHome: () => ({ path: '/tmp/router-home', cleanup() {} }),
+        runQuery: ((args: any) => {
+          seen.push({ model, effort: args.options.effort });
+          return (async function* () {})();
+        }) as any,
+      });
+      await executor.execute(request({ model, prompt: STABLE + VOLATILE, env: { PATH: '/usr/bin' } }));
+    }
+    assert.deepEqual(seen, [
+      { model: 'claude-opus-5-5', effort: 'xhigh' },
+      { model: 'openrouter/z-ai/glm-5.3', effort: undefined },
+    ]);
+  });
+
   test('is not sent without a stable prefix, on an OpenRouter seat, or when the operator disabled prompt caching', async () => {
     const cases: Partial<CoordinatorExecutionRequest>[] = [
       { stablePrefixLength: undefined },

@@ -10,6 +10,7 @@
 
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { effortForModel, workerEffort } from '../modelConfig.js';
 import { containerSpawner, type ClaudeContainerConfig } from './claudeContainer.js';
 import type {
   SubmitReply,
@@ -89,12 +90,15 @@ export class LocalSdkExecutor implements WorkerExecutor {
     let costUsd = 0;
     let sessionId: string | undefined;
     let error: string | undefined;
+    // Pinned: see workerEffort in modelConfig.
+    const effort = effortForModel(req.model, workerEffort());
     try {
       for await (const message of this.runQuery({
         prompt: req.prompt,
         options: {
           ...(spawnClaudeCodeProcess ? { spawnClaudeCodeProcess } : {}),
           model: req.model,
+          ...(effort ? { effort } : {}),
           systemPrompt: req.systemPrompt,
           tools: req.tools,
           env: req.env,

@@ -28,7 +28,7 @@ function observe(tracker: SdkFailureTracker, message: unknown): void {
 const source = {
   source: 'coordinator' as const,
   sourceId: 'pass_test',
-  model: 'claude-fable-5',
+  model: 'claude-fable-5-1',
   executor: 'local-sdk',
   provider: 'anthropic',
   now: new Date('2026-08-06T10:00:00.000Z'),
@@ -141,7 +141,7 @@ test('allowed warnings and ordinary model failures are not infrastructure', () =
   assert.deepEqual(warning.capacityObservations(source), [{
     executor: 'local-sdk',
     provider: 'anthropic',
-    model: 'claude-fable-5',
+    model: 'claude-fable-5-1',
     window: 'unspecified',
     status: 'allowed_warning',
     observedAt: source.wallNow.toISOString(),
@@ -209,7 +209,7 @@ test('legacy SDK-credit state continues the same usage-limit backoff lineage', (
     capacity: {
       state: 'backoff' as const,
       byModel: {
-        'claude-fable-5': {
+        'claude-fable-5-1': {
           wait: {
             ...wait,
             kind: 'sdk_credit_exhausted' as const,
@@ -224,7 +224,7 @@ test('legacy SDK-credit state continues the same usage-limit backoff lineage', (
   } as unknown as WorkstreamDoc;
 
   assert.equal(recordCapacityBackoff(doc, wait).consecutiveBackoffs, 5);
-  assert.equal(capacityBackoffFor(doc, coordinatorCapacityTarget('claude-fable-5'))!.wait.kind, 'usage_limit');
+  assert.equal(capacityBackoffFor(doc, coordinatorCapacityTarget('claude-fable-5-1'))!.wait.kind, 'usage_limit');
 });
 
 test('typed capacity state preserves independent models and category thresholds', () => {
@@ -241,7 +241,7 @@ test('typed capacity state preserves independent models and category thresholds'
   assert.equal(second.consecutiveBackoffs, 2);
   assert.deepEqual(
     Object.values(doc.capacity!.byModel).map((entry) => entry.wait.model).sort(),
-    ['claude-fable-5', 'sonnet'],
+    ['claude-fable-5-1', 'sonnet'],
   );
   assert.equal(capacityAttentionThreshold('usage_limit'), 12);
   assert.equal(capacityAttentionThreshold('sdk_credit_exhausted'), 12);
@@ -286,7 +286,7 @@ test('operator summaries expose supported recovery without account cycling', () 
 test('fresh provider utilization becomes honest remaining headroom and then expires', () => {
   const now = new Date('2026-08-06T10:00:00.000Z');
   const observation = {
-    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+    executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1',
     window: 'five_hour', status: 'allowed_warning' as const, utilization: 0.82,
     observedAt: now.toISOString(), resetAt: '2026-08-06T12:00:00.000Z',
   };
@@ -347,7 +347,7 @@ test('a three-seat chain blocks the coordinator only when every seat is parked',
       executor, provider, model, detectedAt: nowIso, retryAt,
     });
     const primaryWait = chainWait(
-      'local-sdk', 'anthropic', 'claude-fable-5', 'pass_primary',
+      'local-sdk', 'anthropic', 'claude-fable-5-1', 'pass_primary',
       new Date(source.now.getTime() + 60_000).toISOString(),
     );
     const doc = {
@@ -398,7 +398,7 @@ test('capacity presentation chooses the earliest transition across roles and doe
   process.env.WEAVER_EXECUTOR = 'codex-sdk';
   process.env.WEAVER_WORKER_MODEL = 'gpt-5.5';
   process.env.WEAVER_COORDINATOR_EXECUTOR = 'local-sdk';
-  process.env.WEAVER_COORDINATOR_MODEL = 'claude-fable-5';
+  process.env.WEAVER_COORDINATOR_MODEL = 'claude-fable-5-1';
   process.env.WEAVER_COORDINATOR_FALLBACK_EXECUTOR = 'local-sdk';
   process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = 'claude-opus-5';
   try {
@@ -444,7 +444,7 @@ test('capacity presentation chooses the earliest transition across roles and doe
     );
     recordCapacityBackoff(runnableCoordinatorDoc, {
       kind: 'rate_limit', recovery: 'automatic_retry', source: 'coordinator', sourceId: 'pass_primary',
-      executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5',
+      executor: 'local-sdk', provider: 'anthropic', model: 'claude-fable-5-1',
       detectedAt: now, retryAt: primaryRetryAt,
     });
     recordCapacityBackoff(runnableCoordinatorDoc, {
@@ -565,7 +565,7 @@ test('capacity presentation ignores withdrawn targets, shows preferred-route deg
 
 test('a block says whether recovery is a persons move or a timers', () => {
   const previousFallback = process.env.WEAVER_COORDINATOR_FALLBACK_MODEL;
-  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = process.env.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5';
+  process.env.WEAVER_COORDINATOR_FALLBACK_MODEL = process.env.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5-1';
   try {
     const build = (wait: ReturnType<SdkFailureTracker['classify']>) => {
       const doc = {
@@ -786,7 +786,7 @@ test('host-local, legacy, borrowed, and paused-stream waits never park the fleet
     // A copy is never a source: only first-hand observations are.
     fleetDoc('borrower', { waits: [seatWait({ ...workerCapacityTarget('sonnet', 'local-sdk'), observedIn: 'someone-else' })] }),
     // A paused stream's wait is never re-tested or released by the runner.
-    fleetDoc('paused', { status: 'paused', waits: [seatWait({ ...coordinatorCapacityTarget('claude-fable-5') })] }),
+    fleetDoc('paused', { status: 'paused', waits: [seatWait({ ...coordinatorCapacityTarget('claude-fable-5-1') })] }),
   ], FLEET_NOW);
   assert.equal(waits.size, 0);
 });

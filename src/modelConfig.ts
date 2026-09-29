@@ -10,11 +10,46 @@ export function coordinatorModel(): string {
   // The coordinator is the evaluative seat. It runs rarely, at the moments
   // that decide whether work is actually acceptable, so it gets the most
   // capable configured model; volume work stays on the worker model.
-  return process.env.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5';
+  return process.env.WEAVER_COORDINATOR_MODEL ?? 'claude-fable-5-1';
 }
 
 export function coordinatorFallbackModel(): string {
-  return process.env.WEAVER_COORDINATOR_FALLBACK_MODEL ?? 'claude-opus-4-8';
+  return process.env.WEAVER_COORDINATOR_FALLBACK_MODEL ?? 'claude-opus-5-5';
+}
+
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/**
+ * Reasoning effort is pinned, not inherited. Claude Code picks a default per
+ * model (measured 2026-09-29: Opus 5 and Fable 5 run at xhigh, Opus 5.5 at
+ * medium, Fable 5.1 at high), so moving a seat to a newer model would
+ * silently change how hard it thinks. `default` hands the choice back to
+ * Claude Code; an unknown value is refused rather than guessed.
+ */
+function effortSetting(name: string, fallback: EffortLevel): EffortLevel | undefined {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === 'default') return undefined;
+  if ((EFFORT_LEVELS as readonly string[]).includes(raw)) return raw as EffortLevel;
+  throw new Error(`${name} must be one of ${EFFORT_LEVELS.join(', ')} or default (got '${raw}')`);
+}
+
+/** Effort for every coordinator seat, including a shadow seat. */
+export function coordinatorEffort(): EffortLevel | undefined {
+  return effortSetting('WEAVER_COORDINATOR_EFFORT', 'xhigh');
+}
+
+/** Effort for Claude-family workers run through the local Claude SDK. */
+export function workerEffort(): EffortLevel | undefined {
+  return effortSetting('WEAVER_WORKER_EFFORT', 'xhigh');
+}
+
+/** The effort to send for a model: only Anthropic models take the setting;
+ * a provider-prefixed model (openrouter/…) routes to another vendor's model
+ * through Claude Code and gets whatever that route supports by default. */
+export function effortForModel(model: string, effort: EffortLevel | undefined): EffortLevel | undefined {
+  return effort && providerFromModel(model) === null ? effort : undefined;
 }
 
 export function coordinatorExecutorName(): string {

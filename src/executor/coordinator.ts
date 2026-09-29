@@ -21,6 +21,7 @@ import {
   redactSecrets,
   stripClaudeCredentials,
 } from '../secrets.js';
+import { coordinatorEffort, effortForModel } from '../modelConfig.js';
 import type { PassUsage } from '../types.js';
 import { startToolBridge, type BridgeToolDefinition, type ToolBridge } from './toolBridge.js';
 
@@ -231,10 +232,13 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
       // the rest of what this switches off (telemetry, error reporting,
       // update checks) is equally nothing a controller pass needs.
       env = { ...env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
+      const effort = effortForModel(req.model, coordinatorEffort());
       for await (const message of this.runQuery({
         prompt: blocks ? singleUserTurn(blocks) : req.prompt,
         options: {
           model,
+          // Pinned: see coordinatorEffort in modelConfig.
+          ...(effort ? { effort } : {}),
           systemPrompt: req.systemPrompt,
           // The coordinator is a controller over typed state, not a worker.
           // Its only capabilities are the revision-checked Weaver tools.
