@@ -69,9 +69,30 @@ is written into its URL, Git configuration, credential store, or command line.
 
 ## Runtime boundary
 
-- Ordinary workers — the OpenHands container and the containerized Claude
-  worker — receive neither the App private key nor an installation token.
-  They work from the controller's mounted checkout and cannot push to GitHub.
+- Ordinary workers — the OpenHands container, the containerized Claude
+  worker, and the in-process executors — never receive the App private key.
+  By default they receive no installation token either: they work from the
+  controller's mounted checkout and cannot reach GitHub's API with the App's
+  identity. One exception exists. When a work assignment asks for
+  `github_read` (the coordinator sets it when the worker needs GitHub facts
+  such as PR state, review threads, check runs, or issue lists) and the runner
+  allows it, the controller mints a token for that one attempt through the
+  same read path probes and readbacks use: the explicit read-only permission
+  map, narrowed to the one repository of the assignment's checkout (its first
+  working directory), expiring within an hour. The worker receives only
+  `GH_TOKEN` and the process-local Git credential helper described below, as
+  environment variables; the value never enters argv, a file, Git
+  configuration, the workstream document, events, or artifacts, and it joins
+  the worker's redaction set so an echo in output, a submission, or the tail
+  is scrubbed before storage. Such a token can read that repository's
+  metadata and contents but cannot push, merge, comment, or change anything:
+  those remain exact engine-run actions. Actions cannot ask for `github_read`,
+  because they already receive their own engine-minted tokens.
+- `WEAVER_WORKER_GITHUB_READ=0` turns the exception off for a runner. A
+  disabled runner, an unconfigured App, or any mint failure launches the work
+  without a token and tells the worker in one line of its brief that GitHub
+  API reads are unavailable, so it reports that instead of failing
+  obscurely; a mint failure never fails the assignment by itself.
 - A worker is never given Weaver's state or a credential store as a
   directory. Container executors mount worker directories read-write, so
   Weaver refuses any working or source directory that is, contains, or sits
@@ -149,8 +170,10 @@ where they override any `user.*` a checkout or a model may have configured.
 Each substrate must carry them across its own boundary: the in-process
 executors inherit the subprocess environment, the OpenHands container gets
 them as `--env` pairs, and the containerized local-sdk worker forwards exactly
-those four names (nothing else under `GIT_`, which can execute commands or
-redirect credentials). A substrate that drops them leaves git with no identity
+those four names from the host environment (nothing else under `GIT_`, which
+can execute commands or redirect credentials; the fixed credential-helper
+entries of a `github_read` assignment arrive separately, as harness-selected
+worker variables). A substrate that drops them leaves git with no identity
 in an empty container HOME, and a model asked "who are you" by `git commit`
 answers with an address it made up. `WEAVER_GIT_AUTHOR_NAME`/`_EMAIL` on the
 host override the App identity for deployments that need a different

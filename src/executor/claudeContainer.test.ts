@@ -153,6 +153,31 @@ test('the worker-pinned git author and committer cross by name; no other GIT_* d
   }
 });
 
+// An assignment that opted into github_read gets the controller-minted READ
+// token and its process-local credential helper as worker-visible names —
+// the only route a GitHub credential has into this container.
+test('an opted-in GitHub read environment crosses by name, never a value in argv', () => {
+  const token = 'ghs_worker-read-token-3308';
+  const githubRead = {
+    GH_TOKEN: token,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_CONFIG_COUNT: '4',
+    GIT_CONFIG_KEY_0: 'credential.helper',
+    GIT_CONFIG_VALUE_0: '',
+  };
+  const plan = planContainerRun(spawnOptions({
+    // The host-side SDK env carries the same values for in-process executors;
+    // the container takes them only from workerVisibleEnv.
+    env: { ...spawnOptions().env, ...githubRead },
+  }), { assignmentId: 'asg_gh', cwd: '/w', additionalDirectories: [], workerVisibleEnv: githubRead }, config);
+  const forwarded = plan.args.filter((_, i) => plan.args[i - 1] === '--env');
+  for (const name of Object.keys(githubRead)) {
+    assert.equal(forwarded.filter((candidate) => candidate === name).length, 1, `${name} crosses exactly once`);
+    assert.equal(plan.env[name], githubRead[name as keyof typeof githubRead]);
+  }
+  assert.ok(!plan.args.join(' ').includes(token), 'the token never reaches docker argv');
+});
+
 test('a declared worker secret cannot replace the pinned git identity', () => {
   const run = { assignmentId: 'a', cwd: '/w', additionalDirectories: [], workerVisibleEnv: {} };
   assert.throws(

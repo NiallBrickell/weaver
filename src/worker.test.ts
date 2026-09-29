@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, it, test } from 'node:test';
 import * as fs from 'node:fs';
@@ -17,7 +18,13 @@ import {
   runWorker,
   selectExecutor,
   workerExceptionReason,
+  workerGitHubReadEnabled,
+  workerGitHubReadEnvironment,
+  WORKER_GITHUB_READ_REDACTION_KEY,
+  __setWorkerGitHubReadMintForTests,
+  type WorkerGitHubReadMint,
 } from './worker.js';
+import { tailPath } from './tail.js';
 import { removeSecret, setExecutorSecret, setSecret } from './secrets.js';
 import { __resetGitHubAppForTests, __setGitHubAppTestDependencies, githubAppConfigured } from './githubApp.js';
 import { arrive, createWorkstream, load, readArtifact } from './store.js';
@@ -1890,3 +1897,353 @@ exit 0
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// ---------------------------------------------------------------------------
+// Opt-in read-only GitHub access for ordinary work (githubRead)
+
+const FAKE_READ_TOKEN = 'ghs_fake-worker-read-token-5190';
+const FAKE_GITHUB_READ_ENV: Record<string, string> = {
+  GH_TOKEN: FAKE_READ_TOKEN,
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_CONFIG_COUNT: '4',
+  GIT_CONFIG_KEY_0: 'credential.helper',
+  GIT_CONFIG_VALUE_0: '',
+  GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
+  GIT_CONFIG_VALUE_1: '!f() { test "$1" != get || printf \'%s\\n\' \'username=x-access-token\' "password=$GH_TOKEN"; }; f',
+  GIT_CONFIG_KEY_2: 'credential.https://github.com.username',
+  GIT_CONFIG_VALUE_2: 'x-access-token',
+  GIT_CONFIG_KEY_3: 'credential.https://github.com.useHttpPath',
+  GIT_CONFIG_VALUE_3: 'true',
+};
+
+describe('worker GitHub read environment', () => {
+  const calls: Array<{ cwd: string; access: string; minRemainingMs: number | undefined }> = [];
+  const fakeMint = async (cwd: string, access: 'read', options: { minRemainingMs?: number }) => {
+    calls.push({ cwd, access, minRemainingMs: options.minRemainingMs });
+    // A mint path that ever returned more than the read env must not widen
+    // what reaches the worker.
+    return { ...FAKE_GITHUB_READ_ENV, WEAVER_STORE: 'must-not-cross' };
+  };
+
+  it('mints nothing without the flag, and nothing for an action even with it', async () => {
+    calls.length = 0;
+    __setWorkerGitHubReadMintForTests(fakeMint);
+    try {
+      assert.deepEqual(await workerGitHubReadEnvironment({ kind: 'work' }, '/w', 45 * 60_000), { env: {}, redaction: {} });
+      assert.deepEqual(
+        await workerGitHubReadEnvironment({ kind: 'action', githubRead: true }, '/w', 45 * 60_000),
+        { env: {}, redaction: {} },
+      );
+      assert.equal(calls.length, 0);
+    } finally {
+      __setWorkerGitHubReadMintForTests();
+    }
+  });
+
+  it('with the flag mints exactly the READ environment for the checkout and redacts only the token', async () => {
+    calls.length = 0;
+    __setWorkerGitHubReadMintForTests(fakeMint);
+    try {
+      const read = await workerGitHubReadEnvironment({ kind: 'work', githubRead: true }, '/checkout', 45 * 60_000, {});
+      assert.deepEqual(calls, [{ cwd: '/checkout', access: 'read', minRemainingMs: 45 * 60_000 }]);
+      assert.deepEqual(read.env, FAKE_GITHUB_READ_ENV);
+      assert.deepEqual(read.redaction, { [WORKER_GITHUB_READ_REDACTION_KEY]: FAKE_READ_TOKEN });
+      assert.equal(read.unavailable, undefined);
+    } finally {
+      __setWorkerGitHubReadMintForTests();
+    }
+  });
+
+  it('WEAVER_WORKER_GITHUB_READ=0 disables minting with a plain reason', async () => {
+    calls.length = 0;
+    __setWorkerGitHubReadMintForTests(fakeMint);
+    try {
+      assert.equal(workerGitHubReadEnabled({}), true);
+      assert.equal(workerGitHubReadEnabled({ WEAVER_WORKER_GITHUB_READ: '1' }), true);
+      assert.equal(workerGitHubReadEnabled({ WEAVER_WORKER_GITHUB_READ: '0' }), false);
+      const read = await workerGitHubReadEnvironment(
+        { kind: 'work', githubRead: true }, '/checkout', 45 * 60_000, { WEAVER_WORKER_GITHUB_READ: '0' },
+      );
+      assert.deepEqual(read.env, {});
+      assert.deepEqual(read.redaction, {});
+      assert.match(read.unavailable ?? '', /disabled/);
+      assert.equal(calls.length, 0);
+    } finally {
+      __setWorkerGitHubReadMintForTests();
+    }
+  });
+
+  it('a mint failure or an unconfigured App yields no token and a reason, never a throw', async () => {
+    __setWorkerGitHubReadMintForTests(async () => { throw new Error('GitHub App token request failed (HTTP 404)'); });
+    const originalWrite = process.stderr.write;
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    try {
+      const failed = await workerGitHubReadEnvironment({ kind: 'work', githubRead: true }, '/checkout', 45 * 60_000, {});
+      assert.deepEqual(failed.env, {});
+      assert.match(failed.unavailable ?? '', /could not mint/);
+      __setWorkerGitHubReadMintForTests(async () => ({}));
+      const unconfigured = await workerGitHubReadEnvironment({ kind: 'work', githubRead: true }, '/checkout', 45 * 60_000, {});
+      assert.deepEqual(unconfigured.env, {});
+      assert.match(unconfigured.unavailable ?? '', /no GitHub App/);
+    } finally {
+      process.stderr.write = originalWrite;
+      __setWorkerGitHubReadMintForTests();
+    }
+  });
+});
+
+async function runGitHubReadWorker(options: {
+  slug: string;
+  githubRead?: boolean;
+  gate?: string;
+  mint?: WorkerGitHubReadMint;
+  onExecute?: (req: WorkerExecutionRequest) => Promise<{ costUsd: number; error?: string }>;
+}): Promise<{ request: WorkerExecutionRequest | undefined; stderr: string; home: string; workspace: string }> {
+  const home = workerHome();
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-read-work-'));
+  const previousGate = process.env.WEAVER_WORKER_GITHUB_READ;
+  const previousAmbient = process.env.GH_TOKEN;
+  delete process.env.GH_TOKEN;
+  if (options.gate === undefined) delete process.env.WEAVER_WORKER_GITHUB_READ;
+  else process.env.WEAVER_WORKER_GITHUB_READ = options.gate;
+  __setWorkerGitHubReadMintForTests(options.mint);
+  let request: WorkerExecutionRequest | undefined;
+  let stderr = '';
+  const originalWrite = process.stderr.write;
+  process.stderr.write = ((chunk: unknown) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  const executor: WorkerExecutor = {
+    async execute(req) {
+      request = req;
+      if (options.onExecute) return options.onExecute(req);
+      const reply = await req.submit.submitResult({
+        summary: 'Read the PR state.',
+        artifact: { title: 'PR state', kind: 'report', file_name: 'pr-state.md', content: '# PR state\n\nopen' },
+      });
+      assert.equal(reply.isError, undefined);
+      return { costUsd: 0 };
+    },
+  };
+  try {
+    await createWorkstream({
+      slug: options.slug, title: options.slug, objective: 'prove opt-in GitHub read access',
+      tags: [], successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    await arrive(options.slug, (doc) => doc.assignments.push({
+      id: 'asg_gh_read', objective: 'read the PR review threads',
+      briefing: 'Read the open PR review threads with gh and summarise them.',
+      kind: 'work', readDirs: [workspace],
+      ...(options.githubRead ? { githubRead: true } : {}),
+      acceptanceCriteria: ['threads summarised'], dependsOn: [], state: 'queued', attempts: [],
+      adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    }));
+    assert.equal(await runWorker(options.slug, 'asg_gh_read', executor), true);
+  } finally {
+    process.stderr.write = originalWrite;
+    __setWorkerGitHubReadMintForTests();
+    if (previousGate === undefined) delete process.env.WEAVER_WORKER_GITHUB_READ;
+    else process.env.WEAVER_WORKER_GITHUB_READ = previousGate;
+    if (previousAmbient !== undefined) process.env.GH_TOKEN = previousAmbient;
+  }
+  return { request, stderr, home, workspace };
+}
+
+function cleanupGitHubReadWorker(run: { home: string; workspace: string }): void {
+  delete process.env.WEAVER_HOME;
+  fs.rmSync(run.home, { recursive: true, force: true });
+  fs.rmSync(run.workspace, { recursive: true, force: true });
+}
+
+test('ordinary work without github_read gets no GitHub token and mints nothing', async () => {
+  let mints = 0;
+  const run = await runGitHubReadWorker({
+    slug: 'worker-gh-read-absent',
+    mint: async () => { mints += 1; return FAKE_GITHUB_READ_ENV; },
+  });
+  try {
+    assert.equal(mints, 0);
+    assert.ok(run.request);
+    assert.equal(run.request.env.GH_TOKEN, undefined);
+    assert.deepEqual(run.request.workerVisibleEnv, {});
+    assert.doesNotMatch(run.request.prompt, /GitHub read access|GitHub API reads are unavailable/);
+  } finally {
+    cleanupGitHubReadWorker(run);
+  }
+});
+
+test('github_read work receives exactly the read token env in both local and container transports', async () => {
+  const minted: Array<{ cwd: string; access: string }> = [];
+  const run = await runGitHubReadWorker({
+    slug: 'worker-gh-read-granted',
+    githubRead: true,
+    mint: async (cwd, access) => { minted.push({ cwd, access }); return FAKE_GITHUB_READ_ENV; },
+  });
+  try {
+    assert.deepEqual(minted, [{ cwd: run.workspace, access: 'read' }]);
+    assert.ok(run.request);
+    // Container executors receive exactly the read env and nothing else.
+    assert.deepEqual(run.request.workerVisibleEnv, FAKE_GITHUB_READ_ENV);
+    // In-process executors inherit it through the subprocess env.
+    for (const [name, value] of Object.entries(FAKE_GITHUB_READ_ENV)) assert.equal(run.request.env[name], value);
+    assert.equal(run.request.redactionSecrets?.[WORKER_GITHUB_READ_REDACTION_KEY], FAKE_READ_TOKEN);
+    assert.match(run.request.prompt, /## GitHub read access/);
+    assert.match(run.request.prompt, /READ-ONLY GitHub App token/);
+    assert.ok(!run.request.prompt.includes(FAKE_READ_TOKEN));
+    const doc = await load('worker-gh-read-granted');
+    assert.equal(doc.assignments[0]!.githubRead, true);
+    assert.ok(!JSON.stringify(doc).includes(FAKE_READ_TOKEN));
+  } finally {
+    cleanupGitHubReadWorker(run);
+  }
+});
+
+test('WEAVER_WORKER_GITHUB_READ=0 launches github_read work without a token and says so in the brief', async () => {
+  let mints = 0;
+  const run = await runGitHubReadWorker({
+    slug: 'worker-gh-read-gated',
+    githubRead: true,
+    gate: '0',
+    mint: async () => { mints += 1; return FAKE_GITHUB_READ_ENV; },
+  });
+  try {
+    assert.equal(mints, 0);
+    assert.ok(run.request, 'the worker still launches');
+    assert.equal(run.request.env.GH_TOKEN, undefined);
+    assert.deepEqual(run.request.workerVisibleEnv, {});
+    assert.match(run.request.prompt, /GitHub API reads are unavailable to this run \(this runner has disabled worker GitHub reads\)/);
+    assert.equal((await load('worker-gh-read-gated')).assignments[0]!.state, 'awaiting_review');
+  } finally {
+    cleanupGitHubReadWorker(run);
+  }
+});
+
+test('a GitHub read mint failure launches the work without a token and never fails the assignment', async () => {
+  const run = await runGitHubReadWorker({
+    slug: 'worker-gh-read-mint-failed',
+    githubRead: true,
+    mint: async () => { throw new Error('GitHub App token request failed (HTTP 422)'); },
+  });
+  try {
+    assert.ok(run.request, 'the worker still launches');
+    assert.equal(run.request.env.GH_TOKEN, undefined);
+    assert.deepEqual(run.request.workerVisibleEnv, {});
+    assert.match(run.request.prompt, /GitHub API reads are unavailable to this run/);
+    assert.match(run.stderr, /worker GitHub read token unavailable/);
+    const doc = await load('worker-gh-read-mint-failed');
+    assert.equal(doc.assignments[0]!.state, 'awaiting_review');
+    assert.equal(doc.assignments[0]!.adoption.state, 'proposed');
+  } finally {
+    cleanupGitHubReadWorker(run);
+  }
+});
+
+test('the GitHub read token is redacted from the submission, run errors, and the tail', async () => {
+  const run = await runGitHubReadWorker({
+    slug: 'worker-gh-read-redacted',
+    githubRead: true,
+    mint: async () => FAKE_GITHUB_READ_ENV,
+    onExecute: async (req) => {
+      req.onMessage?.({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: `echoed ${FAKE_READ_TOKEN} by mistake; useHttpPath is true` }] },
+      } as never);
+      const reply = await req.submit.submitResult({
+        summary: `Used ${FAKE_READ_TOKEN}.`,
+        artifact: {
+          title: `Token ${FAKE_READ_TOKEN}`,
+          kind: 'report',
+          file_name: 'leak.md',
+          content: `# Evidence\n\nGH_TOKEN=${FAKE_READ_TOKEN}; plumbing stays true`,
+        },
+      });
+      assert.equal(reply.isError, undefined);
+      return { costUsd: 0, error: `gh failed with ${FAKE_READ_TOKEN}` };
+    },
+  });
+  try {
+    const marker = `«secret:${WORKER_GITHUB_READ_REDACTION_KEY}»`;
+    const doc = await load('worker-gh-read-redacted');
+    assert.ok(!JSON.stringify(doc).includes(FAKE_READ_TOKEN));
+    assert.ok(doc.assignments[0]!.submission!.summary.includes(marker));
+    const artifact = await readArtifact('worker-gh-read-redacted', doc.deliverables[0]!.path);
+    assert.ok(!artifact.includes(FAKE_READ_TOKEN));
+    // Only the token is secret: the Git plumbing's literal `true` survives.
+    assert.match(artifact, /plumbing stays true/);
+    assert.ok(!run.stderr.includes(FAKE_READ_TOKEN));
+    assert.ok(run.stderr.includes(marker));
+    const tail = fs.readFileSync(tailPath('worker-gh-read-redacted'), 'utf8');
+    assert.ok(!tail.includes(FAKE_READ_TOKEN));
+    assert.match(tail, /useHttpPath is true/);
+  } finally {
+    cleanupGitHubReadWorker(run);
+  }
+});
+
+test('the real mint path requests only the read-only permission map, narrowed to the checkout repository', async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const appKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
+    .export({ type: 'pkcs8', format: 'pem' }).toString();
+  const previousAuthor = [process.env.WEAVER_GIT_AUTHOR_NAME, process.env.WEAVER_GIT_AUTHOR_EMAIL];
+  // The commit identity is not under test; the override keeps it off the fake.
+  process.env.WEAVER_GIT_AUTHOR_NAME = 'Test Bot';
+  process.env.WEAVER_GIT_AUTHOR_EMAIL = 'test-bot@example.com';
+  const home = workerHome();
+  const checkout = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-github-read-checkout-'));
+  execFileSync('git', ['init', '--quiet'], { cwd: checkout });
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/example-org/example-repo.git'], { cwd: checkout });
+  setExecutorSecret('WEAVER_GITHUB_APP_ID', '12345');
+  setExecutorSecret('WEAVER_GITHUB_APP_INSTALLATION_ID', '67890');
+  setExecutorSecret('WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64', Buffer.from(appKey).toString('base64'));
+  __setGitHubAppTestDependencies({
+    fetch: (async (input: string | URL | Request, init: RequestInit = {}) => {
+      assert.match(String(input), /\/app\/installations\/67890\/access_tokens$/);
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return Response.json({
+        token: FAKE_READ_TOKEN,
+        expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+        repositories: [{ full_name: 'example-org/example-repo' }],
+      }, { status: 201 });
+    }) as typeof globalThis.fetch,
+  });
+  let request: WorkerExecutionRequest | undefined;
+  try {
+    await createWorkstream({
+      slug: 'worker-gh-read-real-mint', title: 'real mint', objective: 'prove the read permission map',
+      tags: [], successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+    });
+    await arrive('worker-gh-read-real-mint', (doc) => doc.assignments.push({
+      id: 'asg_real_mint', objective: 'read check runs', briefing: 'Read the check runs.',
+      kind: 'work', readDirs: [checkout], githubRead: true,
+      acceptanceCriteria: ['checks read'], dependsOn: [], state: 'queued', attempts: [],
+      adoption: { state: 'none' }, createdAtVirtual: virtualNow().toISOString(),
+    }));
+    assert.equal(await runWorker('worker-gh-read-real-mint', 'asg_real_mint', {
+      async execute(req) {
+        request = req;
+        return { costUsd: 0 };
+      },
+    }), true);
+
+    assert.equal(bodies.length, 1);
+    assert.deepEqual(bodies[0]!.repositories, ['example-repo']);
+    const permissions = bodies[0]!.permissions as Record<string, string>;
+    assert.ok(Object.keys(permissions).length > 0, 'an explicit permission map, never the installation default');
+    for (const [scope, level] of Object.entries(permissions)) {
+      assert.equal(level, 'read', `${scope} must be read-only for a worker`);
+    }
+    assert.ok(request);
+    assert.equal(request.workerVisibleEnv?.GH_TOKEN, FAKE_READ_TOKEN);
+    assert.equal(request.env.GH_TOKEN, FAKE_READ_TOKEN);
+  } finally {
+    __resetGitHubAppForTests();
+    if (previousAuthor[0] === undefined) delete process.env.WEAVER_GIT_AUTHOR_NAME;
+    else process.env.WEAVER_GIT_AUTHOR_NAME = previousAuthor[0];
+    if (previousAuthor[1] === undefined) delete process.env.WEAVER_GIT_AUTHOR_EMAIL;
+    else process.env.WEAVER_GIT_AUTHOR_EMAIL = previousAuthor[1];
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(checkout, { recursive: true, force: true });
+  }
+});

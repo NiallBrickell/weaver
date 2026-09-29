@@ -41,7 +41,13 @@ import {
 } from './modelConfig.js';
 import { deterministicActionsOnly, runnerExecutorCapabilities, workerSeatModelForAssignment } from './modelRouting.js';
 import { loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv, selectNamedSecrets } from './secrets.js';
-import { workerGitIdentityEnv } from './githubApp.js';
+import {
+  GITHUB_APP_GIT_PLUMBING_ENV,
+  GITHUB_APP_TOKEN_ENV,
+  githubAppEnvironment,
+  workerGitIdentityEnv,
+  type GitHubAppMintOptions,
+} from './githubApp.js';
 import {
   arrive,
   listWorkstreams,
@@ -58,7 +64,7 @@ import {
   ExecutionSafetyLimitedError,
   parkIfExecutionLimited,
 } from './executionSafety.js';
-import type { InfrastructureWait, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
+import type { Assignment, InfrastructureWait, ProviderCapacityObservation, WorkstreamDoc } from './types.js';
 import { secureMcpHeaderCredentials, type SecuredMcpConfiguration } from './mcpConfig.js';
 import { pilotFetch, readPilotVerdict } from './pilot.js';
 import {
@@ -129,6 +135,113 @@ let testWorkerExecutorFactory: ((name: string) => WorkerExecutor) | undefined;
  * chosen. Pass nothing to restore real executors. */
 export function __setWorkerExecutorFactoryForTests(factory?: (name: string) => WorkerExecutor): void {
   testWorkerExecutorFactory = factory;
+}
+
+/**
+ * The runner-wide gate on `githubRead` work: on unless
+ * `WEAVER_WORKER_GITHUB_READ=0`. Disabling it never fails an assignment; the
+ * worker launches without a token and is told so in its brief.
+ */
+export function workerGitHubReadEnabled(environment: NodeJS.ProcessEnv = process.env): boolean {
+  return environment.WEAVER_WORKER_GITHUB_READ?.trim() !== '0';
+}
+
+/** The key the worker's read token carries in every redaction set. Distinct
+ * from `GH_TOKEN` so a workstream secret that happens to share that name
+ * cannot displace the App token's value from the same map. */
+export const WORKER_GITHUB_READ_REDACTION_KEY = 'GITHUB_APP_READ_TOKEN';
+
+const WORKER_GITHUB_READ_MINT_TIMEOUT_MS = 30_000;
+
+/** The exact names a worker's GitHub read environment may carry: the token and
+ * the process-local Git credential helper that only references it. Anything
+ * else a mint path might return is dropped rather than forwarded. */
+const WORKER_GITHUB_READ_ENV_NAMES: ReadonlySet<string> = new Set([
+  GITHUB_APP_TOKEN_ENV,
+  ...GITHUB_APP_GIT_PLUMBING_ENV,
+]);
+
+/** How the worker's read token is minted. Always the READ lifecycle of the
+ * same cwd-derived path probes and readbacks use; never a write scope. */
+export type WorkerGitHubReadMint = (
+  cwd: string,
+  access: 'read',
+  options: GitHubAppMintOptions,
+) => Promise<Record<string, string>>;
+
+let workerGitHubReadMint: WorkerGitHubReadMint = githubAppEnvironment;
+
+/** Test seam: fake the controller-side mint (no network). Pass nothing to
+ * restore the real GitHub App read path. */
+export function __setWorkerGitHubReadMintForTests(mint?: WorkerGitHubReadMint): void {
+  workerGitHubReadMint = mint ?? githubAppEnvironment;
+}
+
+export interface WorkerGitHubRead {
+  /** GH_TOKEN plus the Git credential-helper plumbing, or empty. */
+  env: Record<string, string>;
+  /** The token under WORKER_GITHUB_READ_REDACTION_KEY, or empty. */
+  redaction: Record<string, string>;
+  /** Why no token was supplied, when the assignment asked for one. */
+  unavailable?: string;
+}
+
+/**
+ * Mint the optional read-only GitHub token for one ordinary work attempt. The
+ * CONTROLLER mints it — never the worker — through the exact read path probes
+ * use: the read-only permission map, narrowed to the one repository resolved
+ * from the assignment's checkout, cached for at most its hour-long lifetime.
+ * A disabled gate, an unconfigured App, or any mint failure returns no token
+ * and a plain reason; it never fails the assignment.
+ */
+export async function workerGitHubReadEnvironment(
+  asg: Pick<Assignment, 'kind' | 'githubRead'>,
+  cwd: string,
+  minRemainingMs: number,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<WorkerGitHubRead> {
+  // Actions mint their own tokens on the engine's gated path; the flag is for
+  // ordinary work only and is refused on actions at dispatch.
+  if (asg.kind === 'action' || asg.githubRead !== true) return { env: {}, redaction: {} };
+  if (!workerGitHubReadEnabled(environment)) {
+    return { env: {}, redaction: {}, unavailable: 'this runner has disabled worker GitHub reads' };
+  }
+  let minted: Record<string, string>;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    // The claimed attempt's wall clock is not armed yet, so a GitHub request
+    // that never answers must not hold the launch: bound it here.
+    minted = await Promise.race([
+      workerGitHubReadMint(cwd, 'read', { minRemainingMs }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('GitHub App read token mint timed out')), WORKER_GITHUB_READ_MINT_TIMEOUT_MS);
+        timer.unref();
+      }),
+    ]);
+  } catch (error) {
+    // githubApp errors never carry a JWT, token, or key; the class and message
+    // are operator diagnostics, not worker context.
+    const reason = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`worker GitHub read token unavailable for ${cwd}: ${reason}\n`);
+    return { env: {}, redaction: {}, unavailable: 'the runner could not mint a read token for this checkout\'s repository' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  const token = minted[GITHUB_APP_TOKEN_ENV];
+  if (!token) {
+    return { env: {}, redaction: {}, unavailable: 'this runner has no GitHub App configured' };
+  }
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(minted)) {
+    if (WORKER_GITHUB_READ_ENV_NAMES.has(name)) env[name] = value;
+  }
+  return { env, redaction: { [WORKER_GITHUB_READ_REDACTION_KEY]: token } };
+}
+
+/** The token outlives the whole disposable run plus slack, within the App
+ * token's one-hour lifetime (the mint refuses a floor at or above it). */
+function workerGitHubReadMinRemainingMs(workerWallMs: number): number {
+  return Math.min(workerWallMs + 5 * 60_000, 55 * 60_000);
 }
 
 /**
@@ -654,12 +767,31 @@ export async function runWorker(
 
   let submitted = false;
   const sections: string[] = [];
+  const workerWallMs = timing?.wallMs
+    ?? (fleetSteward ? FLEET_ATTENTION_STEWARD_WALL_MS : 40 * 60_000);
+  const submissionReserveMs = Math.min(10 * 60_000, Math.floor(workerWallMs / 2));
+  const checkpointAtMs = workerWallMs - submissionReserveMs;
+  // Opt-in read-only GitHub access for ordinary work, minted HERE by the
+  // controller for this one attempt, after the claim so a lost race mints
+  // nothing. The value rides only the process/container environment and the
+  // redaction sets below — never argv, disk, git config, or typed state.
+  const githubRead = await workerGitHubReadEnvironment(
+    currentAssignment,
+    workCwd,
+    workerGitHubReadMinRemainingMs(workerWallMs),
+  );
   // Selected work credentials and action credentials exist only in this
   // disposable environment; every path back into durable state is scrubbed
   // so a value can never outlive the process.
   // Ephemeral MCP header credentials join the redaction set: they ride the
   // executor's env, never durable state — whatever substrate ran the loop.
-  const redactionSecrets = { ...loadRedactionSecrets(slug), ...secrets, ...operatorMcp.env };
+  // So does the GitHub read token: only the token, never its Git plumbing.
+  const redactionSecrets = {
+    ...loadRedactionSecrets(slug),
+    ...secrets,
+    ...operatorMcp.env,
+    ...githubRead.redaction,
+  };
 
   // The Weaver submission surface stays in the harness: whatever substrate
   // runs the model loop, only these closures can propose a submission through
@@ -734,11 +866,6 @@ export async function runWorker(
     },
   };
 
-  const workerWallMs = timing?.wallMs
-    ?? (fleetSteward ? FLEET_ATTENTION_STEWARD_WALL_MS : 40 * 60_000);
-  const submissionReserveMs = Math.min(10 * 60_000, Math.floor(workerWallMs / 2));
-  const checkpointAtMs = workerWallMs - submissionReserveMs;
-
   const prompt = [
     `# Assignment ${asg.id} (${asg.kind})`,
     ``,
@@ -768,6 +895,16 @@ export async function runWorker(
             .sort()
             .map((n) => `- ${n}`),
         ]
+      : []),
+    ...(Object.keys(githubRead.env).length
+      ? [
+          ``,
+          `## GitHub read access`,
+          `\`$GH_TOKEN\` holds a READ-ONLY GitHub App token for your working directory's GitHub repository, valid for this run only; \`gh\` uses it directly and Git fetches from github.com through a process-local credential helper. Use it for the GitHub facts this work needs — PR state, review threads, check runs, issues. It cannot push, merge, comment, or change anything on GitHub: those remain separate actions. Never echo its value or write it into files or your submission.`,
+        ]
+      : []),
+    ...(githubRead.unavailable
+      ? [``, `GitHub API reads are unavailable to this run (${githubRead.unavailable}); if the work depends on GitHub facts, report that they could not be read rather than guessing or hunting for credentials.`]
       : []),
     ...(harnessInputs.length ? [``, ...harnessInputs] : []),
     ...(inputs.length ? [``, `## Declared inputs`, ...inputs] : []),
@@ -838,17 +975,20 @@ export async function runWorker(
       // environment carried into sdkEnv.
       env: {
         ...sdkEnv(
-          { ...secrets, ...operatorMcp.env },
+          // The GitHub read environment is spread after the selected secrets
+          // so the App token wins over any same-named workstream credential.
+          { ...secrets, ...operatorMcp.env, ...githubRead.env },
           isAction ? [] : Object.keys(applicableSecrets),
         ),
         ...gitIdentityEnv,
       },
       // Container/sandbox adapters cannot inherit the host SDK environment:
       // doing so would cross ambient and executor-only identity into the
-      // worker. Ordinary work gets its exact resolved Assignment selection;
+      // worker. Ordinary work gets its exact resolved Assignment selection
+      // plus, when it asked and the runner allowed it, the GitHub read token;
       // actions remain on their separately supervised execution path.
-      ...(!isAction ? { workerVisibleEnv: { ...secrets } } : {}),
-      redactionSecrets: { ...applicableSecrets, ...operatorMcp.env },
+      ...(!isAction ? { workerVisibleEnv: { ...secrets, ...githubRead.env } } : {}),
+      redactionSecrets: { ...applicableSecrets, ...operatorMcp.env, ...githubRead.redaction },
       ...(isAction
         ? {
             cwd: asg.exec!.cwd,
@@ -885,7 +1025,7 @@ export async function runWorker(
         : Number(process.env.WEAVER_WORKER_MAX_TURNS) || 200,
       abort,
       onMessage: (message) => {
-        tailMessage(slug, 'worker', assignmentId, message, operatorMcp.env);
+        tailMessage(slug, 'worker', assignmentId, message, { ...operatorMcp.env, ...githubRead.redaction });
         sdkFailure.observe(message);
         if (message.type === 'result') {
           if (message.subtype !== 'success') resultSubtype = message.subtype;

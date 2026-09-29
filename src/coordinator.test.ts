@@ -1229,6 +1229,67 @@ test('create_assignment stores only explicitly available work credential names',
   assert.doesNotMatch(JSON.stringify(doc), /coordinator-selected-secret-value/);
 });
 
+test('create_assignment round-trips github_read on work and refuses it on an action', async () => {
+  let schemaDescription = '';
+  const checkout = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-coordinator-github-read-'));
+  let systemPrompt = '';
+  const executor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      systemPrompt = req.systemPrompt;
+      const create = req.tools.find((definition) => definition.name === 'create_assignment');
+      const finish = req.tools.find((definition) => definition.name === 'finish_pass');
+      assert.ok(create && finish);
+      schemaDescription = create.inputSchema.github_read?.description ?? '';
+      const withRead = await create.handler({
+        objective: 'summarise the open review threads',
+        briefing: 'Read the PR review threads with gh and summarise them.',
+        kind: 'work',
+        github_read: true,
+        read_dirs: [checkout],
+        acceptance_criteria: ['every open thread summarised'],
+      }, {});
+      assert.equal(withRead.isError, undefined);
+      const without = await create.handler({
+        objective: 'edit a file',
+        briefing: 'No GitHub facts needed.',
+        kind: 'work',
+        github_read: false,
+        acceptance_criteria: ['file edited'],
+      }, {});
+      assert.equal(without.isError, undefined);
+
+      const action = await create.handler({
+        objective: 'must not carry a worker read token',
+        briefing: 'This action declaration is invalid.',
+        kind: 'action',
+        github_read: true,
+        acceptance_criteria: ['never launched'],
+        exec_cwd: home,
+        exec_verify: 'true',
+        approval_ask: 'Approve nothing; this invalid declaration must be refused.',
+      }, {});
+      assert.equal(action.isError, true);
+      assert.match(JSON.stringify(action), /github_read is only valid on kind .*work.*own engine-minted GitHub token/);
+
+      await finish.handler({ summary: 'Dispatched GitHub-reading work.', acknowledged_steering: true }, {});
+      return { costUsd: 0, sessionId: 'github-read' };
+    },
+  };
+
+  const outcome = await runCoordinatorPass('coordinator-capacity', ['manual'], executor);
+  assert.equal(outcome.outcome, 'completed');
+  const doc = await load('coordinator-capacity');
+  assert.equal(doc.assignments.length, 2, 'the refused action was never persisted');
+  assert.equal(doc.assignments[0]!.githubRead, true);
+  assert.equal('githubRead' in doc.assignments[1]!, false, 'false is stored as absent, not as a field');
+  assert.match(schemaDescription, /READ-ONLY GitHub App token/);
+  assert.match(schemaDescription, /Refused on kind "action"/);
+  fs.rmSync(checkout, { recursive: true, force: true });
+  assert.match(systemPrompt, /dispatch that work with github_read rather than a separate read-only action/);
+  assert.match(systemPrompt, /readback is a kernel fact and must stay deterministic/);
+});
+
 test('create_assignment persists declared high complexity without choosing a model', async () => {
   const executor: CoordinatorExecutor = {
     id: 'local-sdk',

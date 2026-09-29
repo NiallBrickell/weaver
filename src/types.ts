@@ -158,6 +158,12 @@ export interface Assignment {
    * from the applicable global/workstream secret store immediately before
    * launch. Actions retain their existing all-applicable-secrets lifecycle. */
   credentialNames?: string[];
+  /** Ordinary work only: the controller mints a read-only GitHub App token,
+   * narrowed to the one repository of the worker's checkout (readDirs[0]),
+   * and supplies it as `GH_TOKEN` for this disposable attempt. It never grants
+   * write access, never enters typed state, and is refused on actions, which
+   * mint their own tokens on the gated engine path. Absent means no token. */
+  githubRead?: boolean;
   /** Project/source directories supplied as worker context. The first is the
    * cwd; the legacy field name is retained for stored-state compatibility. */
   readDirs?: string[];

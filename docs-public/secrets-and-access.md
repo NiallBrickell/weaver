@@ -44,11 +44,18 @@ from the global/workstream store, strips every unselected applicable secret
 name from the child environment (including an accidental ambient export), and
 injects the selected value for that attempt only. Executor/model identity
 credentials are a separate store and cannot be selected through this field.
-For OpenHands, the selected subset crosses the container boundary through a
-per-run mode-`0600` Docker env file. Only its path appears in the `docker run`
-arguments; Weaver deletes the file and its private temporary directory as soon
-as Docker has consumed it, including when container creation fails or aborts.
-The host/SDK environment is never forwarded wholesale into the container.
+For both container executors (OpenHands and the containerized Claude worker),
+the selected subset crosses the container boundary by name: each value is set
+only in the `docker` CLI's own process environment and `docker run` receives a
+name-only `--env NAME` argument, so no value appears in its arguments or is
+written to disk. The host/SDK environment is never forwarded wholesale into
+the container.
+
+A work assignment that needs GitHub facts (PR state, review threads, check
+runs, issues) can instead ask for `github_read`: the runner then mints a
+read-only GitHub App token for the assignment's checkout repository and
+supplies it the same way. See [GitHub access on a hosted
+runner](./github-app.md#runtime-boundary).
 
 Unknown, malformed, duplicate, empty, or revoked selections fail closed. A
 launch-time failure records no Attempt and starts no model process; the
