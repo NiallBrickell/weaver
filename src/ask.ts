@@ -10,6 +10,7 @@
  * so nothing here can leak a credential.
  */
 
+import { dispositionLabel } from './conclusion.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -37,6 +38,7 @@ function digestOne(slug: string, dir: string, archived = false): string {
   return [
     `## ${slug} [${ws.status}] — ${ws.title}`,
     `objective: ${ws.objective.replace(/\s+/g, ' ').slice(0, 220)}`,
+    ...(ws.conclusion ? [`conclusion: ${dispositionLabel(ws.conclusion)} — ${ws.conclusion.summary.replace(/\s+/g, ' ').slice(0, 200)}`] : []),
     ...(decisions.length ? ['recent decisions:', ...decisions] : []),
     ...(attention.length ? ['open attention:', ...attention] : []),
     ...(pilotUnavailable.length ? [`operational wait: approval service unavailable; ${pilotUnavailable.length} external action${pilotUnavailable.length === 1 ? '' : 's'} remain safely gated`] : []),
@@ -64,7 +66,7 @@ const ASK_SYSTEM = `You are the historian of a fleet of durable workstreams. The
 
 Rules:
 - Ground every claim in a citation: (slug, decision/event/deliverable id, timestamp). No id, no claim.
-- "Why wasn't X done" has exactly three honest answers: a recorded decision chose otherwise (cite it); it was tried and failed (cite the attempts); or NOTHING picked it up — say that plainly, name the closest existing stream if one fits, and give the exact command to start it (weaver do "..." or weaver steer <slug> "...").
+- "Why wasn't X done" has exactly four honest answers: a recorded decision chose otherwise (cite it); a workstream concluded it without delivery — its conclusion disposition says not worth doing, duplicate of another stream, or closed by human direction (cite the disposition and stream); it was tried and failed (cite the attempts); or NOTHING picked it up — say that plainly, name the closest existing stream if one fits, and give the exact command to start it (weaver do "..." or weaver steer <slug> "...").
 - Distinguish claimed from verified: a worker's submission is a claim; adoption and readback-confirmed actions are facts. Prefer facts.
 - Answer the question first, in 2-5 sentences, then the evidence. No speculation dressed as history.`;
 

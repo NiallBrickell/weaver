@@ -5,8 +5,14 @@
  * static HTML file (no server, no CDN, charts drawn client-side from embedded
  * JSON): recorded interventions per SUCCESSFUL OUTCOME over time, plus the
  * approval split, policy evidence, and per-workstream stats. The success
- * denominator is a qualified typed conclusion (WorkstreamCore.conclusion) —
- * adoption is not completion, so adopted work products ride alongside as an
+ * denominator is a qualified typed conclusion (WorkstreamCore.conclusion)
+ * whose disposition is `delivered` or `no_change_needed` — or a legacy
+ * conclusion recorded before dispositions existed (`unclassified`), kept so
+ * the curve has no break where dispositions began. A conclusion that closed
+ * WITHOUT delivery (`not_worth_doing`, `duplicate`, `directed_closed`) is
+ * reported separately, never as success and never hidden: it is how the page
+ * shows whether the fleet can kill work that is not worth doing. Adoption is
+ * not completion, so adopted work products ride alongside as an
  * explicit leading indicator, never relabeled as outcome success. Provider
  * capacity backoff is kept out of the logical-failure bucket, and pilot
  * auto-approvals (delegated authority) never count as learned-policy wins.
@@ -35,7 +41,8 @@ import type { PolicyRecord } from './policies.js';
 import { loadPolicies } from './policies.js';
 import { loadAllSecrets, redactSecrets } from './secrets.js';
 import { listWorkstreams, load, weaverHome } from './store.js';
-import type { PassRecord, WorkstreamDoc } from './types.js';
+import type { ConclusionDisposition, PassRecord, WorkstreamDoc } from './types.js';
+import { dispositionOf, isSuccessfulConclusion } from './conclusion.js';
 
 // ---------------------------------------------------------------------------
 // Compute layer — pure over typed state (this is what the tests exercise)
@@ -159,9 +166,10 @@ export function undatedInterventions(docs: WorkstreamDoc[]): number {
 export interface FleetDay {
   day: string;
   interventions: number;
-  /** Qualified typed conclusions (WorkstreamCore.conclusion) — the outcome
-   * denominator. A concluded workstream is a successful outcome; an adopted
-   * work product is not (adoption ≠ completion), so it is a leading indicator. */
+  /** Successful qualified typed conclusions (WorkstreamCore.conclusion with a
+   * success disposition, or legacy unclassified) — the outcome denominator. A
+   * closure without delivery is not counted here; an adopted work product is
+   * not either (adoption ≠ completion), so it is a leading indicator. */
   conclusions: number;
   adoptions: number;
   rejections: number;
@@ -187,7 +195,8 @@ export function fleetDays(docs: WorkstreamDoc[], today: string): FleetDay[] {
     for (const act of datedInterventions(doc)) touch(act.at).interventions += 1;
     // A qualified typed conclusion is the outcome; dated to the virtual day the
     // workstream believes it concluded, exactly like adoption pins.
-    if (doc.workstream.conclusion) touch(doc.workstream.conclusion.atVirtual).conclusions += 1;
+    const conclusion = doc.workstream.conclusion;
+    if (conclusion && isSuccessfulConclusion(conclusion)) touch(conclusion.atVirtual).conclusions += 1;
     for (const del of doc.deliverables) {
       if (del.adopted) touch(del.adopted.atVirtual).adoptions += 1;
     }
@@ -482,9 +491,12 @@ export interface WorkstreamRow {
   slug: string;
   title: string;
   status: string;
-  /** A qualified typed conclusion exists — this workstream is a successful
-   * outcome, not merely one with adopted work products. */
+  /** A qualified typed conclusion exists with a success disposition (or a
+   * legacy unclassified one) — this workstream is a successful outcome, not
+   * merely one with adopted work products or one closed without delivery. */
   concluded: boolean;
+  /** How the workstream ended; null while it has no conclusion. */
+  disposition: ConclusionDisposition | 'unclassified' | null;
   passes: number;
   interventions: number;
   adopted: number;
@@ -511,7 +523,8 @@ export function workstreamRows(docs: WorkstreamDoc[]): WorkstreamRow[] {
         slug: doc.workstream.slug,
         title: doc.workstream.title,
         status: doc.workstream.status,
-        concluded: !!doc.workstream.conclusion,
+        concluded: !!doc.workstream.conclusion && isSuccessfulConclusion(doc.workstream.conclusion),
+        disposition: doc.workstream.conclusion ? dispositionOf(doc.workstream.conclusion) : null,
         passes: doc.spend.coordinatorPasses,
         interventions,
         adopted,
@@ -538,8 +551,17 @@ export interface StatsPayload {
     passes: number;
     interventions: number; // durable lifetime counters
     undated: number; // interventions without a durable timestamp
-    /** Qualified typed conclusions — the SUCCESS denominator. */
+    /** Qualified typed conclusions that delivered or found no change needed,
+     * plus legacy unclassified ones — the SUCCESS denominator. */
     successfulOutcomes: number;
+    /** Of successfulOutcomes, how many are legacy conclusions recorded before
+     * dispositions existed — counted as success, never reclassified. */
+    unclassifiedOutcomes: number;
+    /** Per-disposition conclusion counts (unclassified = legacy). */
+    dispositions: Record<ConclusionDisposition | 'unclassified', number>;
+    /** Conclusions that closed WITHOUT delivery: not worth doing, duplicate,
+     * or closed by human direction. Never part of the success denominator. */
+    closedWithoutDelivery: number;
     /** Adopted work products — a leading indicator, NEVER the success count. */
     adoptions: number;
     autoApproved: number;
@@ -559,13 +581,31 @@ export interface StatsPayload {
   };
 }
 
+/** Conclusions by disposition, over every workstream that has one. */
+export function dispositionCounts(docs: WorkstreamDoc[]): Record<ConclusionDisposition | 'unclassified', number> {
+  const counts: Record<ConclusionDisposition | 'unclassified', number> = {
+    delivered: 0,
+    no_change_needed: 0,
+    not_worth_doing: 0,
+    duplicate: 0,
+    directed_closed: 0,
+    unclassified: 0,
+  };
+  for (const doc of docs) {
+    if (doc.workstream.conclusion) counts[dispositionOf(doc.workstream.conclusion)] += 1;
+  }
+  return counts;
+}
+
 export function computeStats(docs: WorkstreamDoc[], policies: PolicyRecord[], now: Date): StatsPayload {
   const days = fleetDays(docs, dayKey(now.toISOString()));
   const ratio = cumulativeRatio(days);
   const last = ratio[ratio.length - 1];
   const weekAgo = ratio.length > 7 ? ratio[ratio.length - 8] : undefined;
   const adoptions = days.reduce((n, d) => n + d.adoptions, 0);
-  const successfulOutcomes = docs.filter((d) => d.workstream.conclusion).length;
+  const dispositions = dispositionCounts(docs);
+  const successfulOutcomes = dispositions.delivered + dispositions.no_change_needed + dispositions.unclassified;
+  const closedWithoutDelivery = dispositions.not_worth_doing + dispositions.duplicate + dispositions.directed_closed;
   const counterInterventions = docs.reduce((n, d) => n + (d.spend.humanInterventions ?? 0), 0);
   const rows = workstreamRows(docs);
   return {
@@ -589,6 +629,9 @@ export function computeStats(docs: WorkstreamDoc[], policies: PolicyRecord[], no
       interventions: counterInterventions,
       undated: undatedInterventions(docs),
       successfulOutcomes,
+      unclassifiedOutcomes: dispositions.unclassified,
+      dispositions,
+      closedWithoutDelivery,
       adoptions,
       autoApproved: days.reduce((n, d) => n + d.autoApproved, 0),
       humanApproved: days.reduce((n, d) => n + d.humanApproved, 0),
@@ -1177,6 +1220,20 @@ function chartSection(id: string, title: string, hint: string): string {
   return `<div><h2>${esc(title)}</h2><p class="hint">${esc(hint)}</p><div id="chart-${id}"></div><div id="table-${id}"></div></div>`;
 }
 
+/** The per-workstream Outcome cell: success dispositions are ticked, closures
+ * without delivery are named plainly, legacy ones say so. */
+function outcomeCell(d: WorkstreamRow['disposition']): string {
+  switch (d) {
+    case null: return '—';
+    case 'delivered': return '✓ delivered';
+    case 'no_change_needed': return '✓ no change needed';
+    case 'unclassified': return '✓ concluded (unclassified, legacy)';
+    case 'not_worth_doing': return 'closed · not worth doing';
+    case 'duplicate': return 'closed · duplicate';
+    case 'directed_closed': return 'closed · human direction';
+  }
+}
+
 export function renderStatsHtml(stats: StatsPayload): string {
   const t = stats.totals;
   const per = t.interventionsPerOutcome;
@@ -1210,7 +1267,12 @@ export function renderStatsHtml(stats: StatsPayload): string {
     tile(
       'Successful outcomes',
       String(t.successfulOutcomes),
-      `<div class="delta">qualified typed conclusions · ${t.adoptions} adopted work products (leading indicator, not outcome success)</div>`,
+      `<div class="delta">${t.dispositions.delivered} delivered · ${t.dispositions.no_change_needed} no change needed${t.unclassifiedOutcomes ? ` · ${t.unclassifiedOutcomes} unclassified (legacy)` : ''} · ${t.adoptions} adopted work products (leading indicator, not outcome success)</div>`,
+    ),
+    tile(
+      'Closed without delivery',
+      String(t.closedWithoutDelivery),
+      `<div class="delta">${t.dispositions.not_worth_doing} not worth doing · ${t.dispositions.duplicate} duplicate · ${t.dispositions.directed_closed} closed by human direction — not success, not failure</div>`,
     ),
     tile(
       'Human interventions',
@@ -1240,7 +1302,7 @@ export function renderStatsHtml(stats: StatsPayload): string {
     .map(
       (r) => `<tr>
 <td><strong>${esc(r.slug)}</strong> <span style="color:var(--muted)">${esc(r.status)}</span></td>
-<td>${r.concluded ? '✓ concluded' : '—'}</td>
+<td>${outcomeCell(r.disposition)}</td>
 <td class="num">${r.passes}</td>
 <td class="num">${r.adopted}</td>
 <td class="num">${r.rejected}</td>
@@ -1301,7 +1363,7 @@ ${chartSection('policies', 'Policy population', 'Every policy starts shadow (unp
 </section>
 <section>
 <h2>Per workstream</h2>
-<p class="hint">A workstream is a successful outcome only once it carries a qualified typed conclusion (the “Outcome” column); adopted work is a leading indicator beside it. The intervention count per adopted work product varies with task mix and required authority. The fleet trend is a prompt to investigate; this table is where to look when it moves.</p>
+<p class="hint">A workstream is a successful outcome only once it carries a qualified typed conclusion that delivered or found no change needed (the “Outcome” column); one that closed as not worth doing, a duplicate, or by human direction is shown as closed without delivery, and a conclusion recorded before dispositions existed counts as success, marked unclassified. Adopted work is a leading indicator beside it. The intervention count per adopted work product varies with task mix and required authority. The fleet trend is a prompt to investigate; this table is where to look when it moves.</p>
 <div class="scroll-x"><table>
 <thead><tr><th>Workstream</th><th>Outcome</th><th class="num">Passes</th><th class="num">Adopted work</th><th class="num">Rejected</th><th class="num">Interventions</th><th class="num">Per adoption</th><th class="num">Auto-approved</th></tr></thead>
 <tbody>${rowsHtml}</tbody>
@@ -1320,14 +1382,14 @@ ${chartSection('policies', 'Policy population', 'Every policy starts shadow (unp
 <body>
 <main>
 <h1>Does each outcome need you less often?</h1>
-<p class="subtitle">${stats.totals.workstreams} workstream(s) · generated ${esc(stats.generatedAt)} · target: fewer human interventions per successful outcome, without weaker work or wider authority · success denominator: qualified typed conclusions · adopted work products shown as a leading indicator, not outcome success</p>
+<p class="subtitle">${stats.totals.workstreams} workstream(s) · generated ${esc(stats.generatedAt)} · target: fewer human interventions per successful outcome, without weaker work or wider authority · success denominator: qualified typed conclusions that delivered or found no change needed (legacy unclassified conclusions included) · closures without delivery reported separately · adopted work products shown as a leading indicator, not outcome success</p>
 ${body}
 <footer>
 Generated by <code>weaver stats</code> from durable typed state — steering timestamps, gate approvals, adoption pins, pass records, and policy evidence; never from the bounded event tail, which would fabricate convergence as old events fall off. An intervention is a steer, an approval or rejection of a gated action or send, an attention resolution, or a human adoption override — one keypress counts once, whatever it also auto-resolves; ${
     stats.totals.undated
       ? `${stats.totals.undated} intervention(s) (legacy/config edits) carry no durable timestamp and appear in totals only.`
       : `legacy/config edits would appear in totals only.`
-  } Adoption ≠ completion: the success denominator is qualified typed Workstream conclusions; adopted work products are reported alongside as a leading indicator, never as outcome success. Provider capacity/rate/auth backoff (a pass carrying a typed infrastructure wait) is reported separately from logical coordinator failure (error/no_finish with no infrastructure); a revision-conflict finish counts as neither. Pilot auto-approvals are delegated authority, reported separately from learned-policy effects.
+  } Adoption ≠ completion: the success denominator is qualified typed Workstream conclusions whose disposition is delivered or no change needed; a conclusion recorded before dispositions existed counts as success and is shown as unclassified, never reclassified by guessing. Closures without delivery (not worth doing, duplicate, closed by human direction) are counted separately and never enter the denominator. Adopted work products are reported alongside as a leading indicator, never as outcome success. Provider capacity/rate/auth backoff (a pass carrying a typed infrastructure wait) is reported separately from logical coordinator failure (error/no_finish with no infrastructure); a revision-conflict finish counts as neither. Pilot auto-approvals are delegated authority, reported separately from learned-policy effects.
 </footer>
 <script type="application/json" id="stats-data">${json}</script>
 <script>${SCRIPT}</script>

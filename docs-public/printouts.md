@@ -40,7 +40,7 @@ The report separates activity from proof:
 - Assignment attempts, coordinator passes, adoption decisions, deliverables, interactions, and action results come from durable typed state.
 - A deliverable is authoritative only after adoption; a worker submission alone is reported as a proposal.
 - A pull request, merge, deploy, or production check counts as confirmed only when the action's deterministic readback verifies the external effect.
-- A workstream conclusion must cite IDs that resolve to adopted deliverables, readback-confirmed actions, or a standing closure decision. Its free-form coordinator account stays explicitly informational and never inherits proof from an unrelated citation; the action and adoption sections say what those typed facts actually establish.
+- A workstream conclusion must cite IDs that resolve to adopted deliverables, readback-confirmed actions, or human steering, and it names its disposition (delivered, no change needed, not worth doing, duplicate, or closed by human direction), validated when it was recorded; the printout shows it on its own line. Its free-form coordinator account stays explicitly informational and never inherits proof from an unrelated citation; the action and adoption sections say what those typed facts actually establish.
 - Run-tail tool calls can show what a worker looked at. They are best-effort observations: rotation or a failed tail write can omit them, and worker prose saying “merged” or “tested in production” never proves either claim.
 
 This is the same authority boundary Weaver uses everywhere else: the printout makes the record readable, but cannot promote an observation or summary into truth.

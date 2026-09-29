@@ -3,6 +3,7 @@
  * Now · Since you left · Needs you · Next · Why.
  */
 
+import { dispositionLabel } from './conclusion.js';
 import type { WorkstreamDoc } from './types.js';
 import { virtualNow } from './clock.js';
 import {
@@ -61,6 +62,9 @@ export function renderStatus(doc: WorkstreamDoc, manages: { slug: string; status
   const out: string[] = [];
   out.push(`# ${ws.title} (${ws.slug}) — ${ws.status}`);
   out.push(`Objective: ${ws.objective}`);
+  if (ws.conclusion) {
+    out.push(`Conclusion: ${dispositionLabel(ws.conclusion)} — ${ws.conclusion.summary.replace(/\s+/g, ' ').slice(0, 200)} (evidence: ${ws.conclusion.evidenceIds.join(', ') || 'none cited'})`);
+  }
   const safety = executionPosition(doc);
   out.push(
     `Virtual now: ${virtualNow().toISOString()} · revision ${doc.revision}`,

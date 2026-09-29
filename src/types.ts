@@ -781,15 +781,45 @@ export interface WorkstreamCore {
   managedBy?: ManagedBy;
   /** Durable outcome claim and its cited typed evidence. The referenced facts
    * remain the authority; this prose cannot make an unverified act real. */
-  conclusion?: {
-    passId: Id;
-    atVirtual: Iso;
-    /** Coordinator account, informational; cited typed facts remain authority. */
-    summary: string;
-    /** Resolved at conclusion time to adopted/verified/standing typed facts. */
-    evidenceIds: Id[];
-  };
+  conclusion?: WorkstreamConclusion;
   createdAt: Iso;
+}
+
+/**
+ * How a workstream ended — a typed distinction, not prose. Concluding is not
+ * always shipping: a stream may investigate and find nothing to change, judge
+ * the work not worth its cost, discover it duplicates another stream, or be
+ * closed because the human said so. Only `delivered` and `no_change_needed`
+ * are successful outcomes; the rest are closures without delivery.
+ *
+ * Every disposition is validated at write time against typed facts the
+ * coordinator could not simply author (src/conclusion.ts): a coordinator can
+ * no more self-certify that work was pointless than that it was done.
+ */
+export type ConclusionDisposition =
+  | 'delivered'
+  | 'no_change_needed'
+  | 'not_worth_doing'
+  | 'duplicate'
+  | 'directed_closed';
+
+export interface WorkstreamConclusion {
+  passId: Id;
+  atVirtual: Iso;
+  /** Coordinator account, informational; cited typed facts remain authority. */
+  summary: string;
+  /** Resolved at conclusion time to adopted/verified/standing typed facts. */
+  evidenceIds: Id[];
+  /** Required on every new conclusion. Absent only on a conclusion written
+   * before dispositions existed: it reads as `unclassified` and is never
+   * backfilled by guessing. */
+  disposition?: ConclusionDisposition;
+  /** `duplicate` only: the slug of the existing workstream this one repeats
+   * (checked to exist, and not to be this workstream, at conclusion time). */
+  duplicateOf?: string;
+  /** `directed_closed` only: the steering record in this workstream whose
+   * human direction closed it. */
+  directedBy?: Id;
 }
 
 export interface WorkstreamDoc {

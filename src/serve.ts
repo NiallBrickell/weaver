@@ -17,6 +17,7 @@
  * Weaver does not grow those.
  */
 
+import { dispositionOf } from './conclusion.js';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 
@@ -136,6 +137,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, token: string):
       objective: doc.workstream.objective,
       revision: doc.revision,
       concluded: doc.workstream.conclusion ? doc.workstream.conclusion.summary : null,
+      disposition: doc.workstream.conclusion ? dispositionOf(doc.workstream.conclusion) : null,
       status_text: renderStatus(doc, managed, await listRunnerPresence()),
     });
   }

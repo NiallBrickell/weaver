@@ -1,7 +1,8 @@
 /**
  * The operator workspace is an adapter contract: intake survives without a
  * model, teammate follow-ups remain Observations, rendered pages expose typed
- * truth, and no authority route exists.
+ * truth, and no authority route exists — the one human act is a stop (close
+ * as not worth doing), which narrows and can never deliver, approve, or send.
  */
 
 import { afterEach, beforeEach, test } from 'node:test';
@@ -300,6 +301,41 @@ test('a teammate follow-up is an Observation, never Steering or authority', asyn
     const denied = await fetch(`${base}/workstreams/${created.slug}/${route}`, form({ message: 'do it' }));
     assert.equal(denied.status, 404, `${route} must not be an operator-ui route`);
   }
+});
+
+test('a teammate can close a job as not worth doing — revision-checked, attributed, and never delivery', async () => {
+  const created = await createTeamWorkstream({
+    message: 'Rewrite the cache layer.', requestId: 'close-request', actor: 'alice',
+  });
+  const page = await fetch(`${base}/workstreams/${created.slug}?tab=activity`);
+  const html = await page.text();
+  assert.match(html, /data-testid="close-form"/);
+  const revision = hiddenValue(html, 'revision');
+
+  // A stale page cannot close: an arrival since it rendered moves the revision.
+  await arrive(created.slug, (doc) => { doc.workstream.tags.push('arrived-later'); });
+  const stale = await fetch(`${base}/workstreams/${created.slug}/close`, form({ reason: 'not worth it', revision }));
+  assert.equal(stale.status, 409);
+  assert.equal((await load(created.slug)).workstream.status, 'active');
+
+  const missing = await fetch(`${base}/workstreams/${created.slug}/close`, form({ reason: ' ', revision: String((await load(created.slug)).revision) }));
+  assert.equal(missing.status, 400);
+
+  const current = (await load(created.slug)).revision;
+  const closed = await fetch(`${base}/workstreams/${created.slug}/close`, form({ reason: 'the measured gain is 3ms', revision: String(current) }));
+  assert.equal(closed.status, 303);
+  assert.match(closed.headers.get('location') ?? '', /closed=1$/);
+  const doc = await load(created.slug);
+  assert.equal(doc.workstream.status, 'done');
+  assert.equal(doc.workstream.conclusion!.disposition, 'not_worth_doing');
+  const steer = doc.steering.find((s) => s.id === doc.workstream.conclusion!.directedBy)!;
+  assert.ok(steer);
+  assert.ok(steer.by && !['coordinator', 'worker'].includes(steer.by), 'attributed to the signed-in operator');
+
+  const again = await fetch(`${base}/workstreams/${created.slug}/close`, form({ reason: 'again', revision: String(doc.revision) }));
+  assert.equal(again.status, 409, 'an already-concluded job is refused');
+  const donePage = await (await fetch(`${base}/workstreams/${created.slug}?tab=activity`)).text();
+  assert.doesNotMatch(donePage, /data-testid="close-form"/, 'a concluded job offers no close control');
 });
 
 test('authenticated browser mutations require a matching Origin before reading or storing input', async () => {

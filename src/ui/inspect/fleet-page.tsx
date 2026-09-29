@@ -243,7 +243,7 @@ export function FleetPage({ view }: { view: FleetBoardView }) {
               <a key={item.slug} href={`${item.slug}/inspect.html`} className="grid gap-1 px-4 py-3 hover:bg-zinc-900/50 sm:grid-cols-[minmax(12rem,1fr)_2fr_auto] sm:gap-4">
                 <span className="text-sm font-medium text-zinc-200">{item.title}</span>
                 <span className="truncate text-sm text-zinc-500">{item.outcome}</span>
-                <span className="text-xs text-zinc-400">{item.adoptedDeliverableCount} accepted result{item.adoptedDeliverableCount === 1 ? '' : 's'}</span>
+                <span className="text-xs text-zinc-400">{item.disposition ? `${item.disposition} · ` : ''}{item.adoptedDeliverableCount} accepted result{item.adoptedDeliverableCount === 1 ? '' : 's'}</span>
               </a>
             ))}
           </div>

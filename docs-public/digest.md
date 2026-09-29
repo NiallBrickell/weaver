@@ -27,7 +27,9 @@ can never contain a summary that is not backed by a record:
   command that answers it — `weaver approve-action <slug> <id>`,
   `weaver approve <slug> <id>`, or `weaver resolve <slug> <id> "your answer"`.
   At most 15 items are listed; the message says how many more are waiting.
-- **Closed in the last 24 hours** — concluded Workstreams, actions whose
+- **Closed in the last 24 hours** — concluded Workstreams (with how each
+  ended — delivered, no change needed, not worth doing, duplicate, or closed
+  by human direction; a conclusion from before dispositions shows none), actions whose
   deterministic readback confirmed the effect (merges are called out), and
   resolved cards. Worker prose claiming something happened never counts.
 - **Next 24 hours** — scheduled wakes per Workstream, soonest first.

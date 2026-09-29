@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { dispositionLabel, isSuccessfulConclusion } from '../../conclusion.js';
 
 import type { ClerkBrowserAssets } from '../../clerkOperatorAuth.js';
 import type { AssignmentBoardCard, AssignmentBoardLane } from '../../assignmentBoard.js';
@@ -1104,7 +1105,7 @@ function typedFacts(view: WorkstreamPageView): TypedFact[] {
     facts.push({
       key: `${doc.workstream.conclusion.passId}-conclusion`,
       at: doc.workstream.conclusion.atVirtual,
-      label: 'Outcome concluded',
+      label: `Outcome concluded — ${dispositionLabel(doc.workstream.conclusion)}`,
       summary: doc.workstream.conclusion.summary,
       detail: `${doc.workstream.conclusion.evidenceIds.length} cited typed evidence record${doc.workstream.conclusion.evidenceIds.length === 1 ? '' : 's'}`,
       tone: 'success',
@@ -1284,6 +1285,34 @@ function ObservationComposer({ slug, actor }: { slug: string; actor: string }) {
   );
 }
 
+/** The human kill switch, as a deliberate second step behind a disclosure:
+ * close the job as not worth doing, with a reason, against the revision this
+ * page was rendered at. Delivery is never claimed from here. */
+function CloseComposer({ slug, revision }: { slug: string; revision: number }) {
+  return (
+    <details data-testid="close-job" className="rounded-lg border border-zinc-800 bg-zinc-950/30 px-3 py-2">
+      <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-300">Close as not worth doing</summary>
+      <form data-testid="close-form" method="post" action={`/workstreams/${encodeURIComponent(slug)}/close`} className="mt-3">
+        <input type="hidden" name="revision" value={String(revision)} />
+        <p className="text-xs leading-5 text-zinc-500">Stops the job now and records it as closed without delivery. Say why, so the fleet learns what is not worth doing.</p>
+        <textarea
+          data-testid="close-reason"
+          name="reason"
+          required
+          rows={2}
+          placeholder="Why this is not worth doing"
+          className="mt-3 w-full resize-y rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-700 focus:border-violet-500/60"
+        />
+        <div className="mt-3 flex justify-end">
+          <button data-testid="close-submit" type="submit" className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400">
+            Close job
+          </button>
+        </div>
+      </form>
+    </details>
+  );
+}
+
 function assignmentVariant(card: AssignmentBoardCard): 'attention' | 'accent' | 'success' | 'outline' {
   if (card.assignmentState === 'gated' || card.assignmentState === 'failed') return 'attention';
   if (card.adoptionState === 'accepted') return 'success';
@@ -1387,11 +1416,13 @@ function Results({ view }: { view: WorkstreamPageView }) {
       <Card className="border-emerald-500/20 bg-emerald-500/5">
         <CardContent className="space-y-5 p-4">
           {view.doc.workstream.conclusion ? (() => {
-            const full = view.doc.workstream.conclusion.summary;
+            const conclusion = view.doc.workstream.conclusion;
+            const full = conclusion.summary;
             const human = firstSentence(full, 220);
+            const delivered = isSuccessfulConclusion(conclusion);
             return (
               <div data-testid="job-conclusion">
-                <Badge variant="success">Outcome confirmed</Badge>
+                <Badge variant={delivered ? 'success' : 'neutral'}>{delivered ? 'Outcome confirmed' : 'Closed without delivery'} · {dispositionLabel(conclusion)}</Badge>
                 <p className="mt-3 text-sm leading-6 text-zinc-200">{human}</p>
                 {human !== full ? (
                   <details className="mt-2">
@@ -1590,7 +1621,7 @@ function WorkspacePage({
                   : (
                     <Card className="border-emerald-500/20 bg-emerald-500/5">
                       <CardContent className="p-4">
-                        <Badge variant="success">Done</Badge>
+                        <Badge variant={isSuccessfulConclusion(ws.conclusion) ? 'success' : 'neutral'}>Done · {dispositionLabel(ws.conclusion)}</Badge>
                         <p className="mt-3 text-sm leading-6 text-zinc-200">{firstSentence(ws.conclusion.summary, 240)}</p>
                       </CardContent>
                     </Card>
@@ -1617,6 +1648,7 @@ function WorkspacePage({
           {tab === 'activity' ? (
             <div data-testid="workspace-activity" className="space-y-6">
               <ObservationComposer slug={ws.slug} actor={actor} />
+              {ws.status !== 'done' ? <CloseComposer slug={ws.slug} revision={view.doc.revision} /> : null}
               <section data-testid="recent-updates">
                 <div className="mb-3">
                   <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-600">Latest activity</p>

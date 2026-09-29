@@ -11,6 +11,7 @@
  * mutations as the CLI (src/humanActs.ts): approving here IS the approval.
  */
 
+import { dispositionLabel } from './conclusion.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -495,7 +496,7 @@ export async function snapshot(): Promise<Snapshot> {
       const conclusion = ws.conclusion;
       const text = conclusion?.summary ?? legacy?.summary.replace(/^coordinator concluded the workstream:\s*/, '');
       if (conclusion) {
-        details.push(`✓ typed completion evidence: ${conclusion.evidenceIds.join(', ')}`);
+        details.push(`✓ ${dispositionLabel(conclusion)} · typed evidence: ${conclusion.evidenceIds.join(', ')}`);
         details.push(`  coordinator account (informational): ${text!.slice(0, 105)}`);
       } else if (text) {
         details.push(`⚠ legacy conclusion, evidence unvalidated: ${text.slice(0, 105)}`);

@@ -1,4 +1,5 @@
 import type { AssignmentBoardCard, AssignmentBoardLane } from '../../assignmentBoard.js';
+import { dispositionLabel } from '../../conclusion.js';
 import type { PolicyRecord } from '../../policies.js';
 import type { Decision, Deliverable, EventRecord, Interaction, Observation } from '../../types.js';
 import { Badge, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, cn } from '../components/index.js';
@@ -492,7 +493,7 @@ export function WorkstreamPage({ view, totalPolicyCount }: { view: WorkstreamPag
           </CardContent>
           {ws.conclusion ? (
             <CardFooter className="block border-emerald-500/20 bg-emerald-500/5">
-              <p className="text-xs font-medium text-emerald-400">Outcome</p>
+              <p className="text-xs font-medium text-emerald-400">Outcome · {dispositionLabel(ws.conclusion)}</p>
               <p className="mt-1 text-sm leading-6 text-zinc-300">{ws.conclusion.summary}</p>
               <p className="mt-1 text-xs text-zinc-400">{ws.conclusion.evidenceIds.length} supporting evidence record{ws.conclusion.evidenceIds.length === 1 ? '' : 's'}</p>
             </CardFooter>

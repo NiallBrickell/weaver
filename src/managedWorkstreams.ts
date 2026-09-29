@@ -12,7 +12,8 @@
  * approvals, and neither write path here touches humanInterventions.
  */
 
-import type { ManagerDirection, WorkstreamCore, WorkstreamDoc } from './types.js';
+import { dispositionOf } from './conclusion.js';
+import type { ConclusionDisposition, ManagerDirection, WorkstreamCore, WorkstreamDoc } from './types.js';
 import { arrive, createWorkstream, load, newId } from './store.js';
 import { virtualNow } from './clock.js';
 import {
@@ -142,7 +143,16 @@ export interface ManagedWorkstreamSummary {
   activity: { coordinatorPasses: number };
   openAttention: { id: string; kind: string; summary: string }[];
   operationalWaits: { kind: 'approval-service-unavailable'; affectedActions: number; firstObservedAt: string }[];
-  conclusion?: { summary: string; evidenceIds: string[]; atVirtual: string };
+  conclusion?: {
+    summary: string;
+    evidenceIds: string[];
+    atVirtual: string;
+    /** How it ended; `unclassified` for a conclusion recorded before
+     * dispositions existed. */
+    disposition: ConclusionDisposition | 'unclassified';
+    duplicateOf?: string;
+    directedBy?: string;
+  };
   recentEvents: { type: string; summary: string; atVirtual: string }[];
   /** Directions THIS manager sent to the target — never another manager's. */
   directionsSent: { id: string; body: string; atVirtual: string }[];
@@ -186,7 +196,16 @@ export async function inspectManagedWorkstream(callingSlug: string, targetSlug: 
       }] : [];
     })(),
     ...(ws.conclusion
-      ? { conclusion: { summary: ws.conclusion.summary, evidenceIds: [...ws.conclusion.evidenceIds], atVirtual: ws.conclusion.atVirtual } }
+      ? {
+          conclusion: {
+            summary: ws.conclusion.summary,
+            evidenceIds: [...ws.conclusion.evidenceIds],
+            atVirtual: ws.conclusion.atVirtual,
+            disposition: dispositionOf(ws.conclusion),
+            ...(ws.conclusion.duplicateOf ? { duplicateOf: ws.conclusion.duplicateOf } : {}),
+            ...(ws.conclusion.directedBy ? { directedBy: ws.conclusion.directedBy } : {}),
+          },
+        }
       : {}),
     recentEvents: doc.events.slice(-10).map((e) => ({ type: e.type, summary: e.summary, atVirtual: e.atVirtual })),
     directionsSent: (doc.managerDirections ?? [])
