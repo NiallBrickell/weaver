@@ -45,6 +45,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
+import { pgSslOption, storeTls, type StoreTls } from './pgTls.js';
 import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type ProbeCursor, type ProbeCursorState, type RunnerOutput, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 /**
@@ -239,6 +240,9 @@ export const PG_IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000;
 /** Client-side backstop above the server ceiling, for a server gone silent. */
 export const PG_QUERY_TIMEOUT_MS = 90_000;
 
+/** Hosts whose weaker-than-verified TLS has already been reported by this process. */
+const tlsWarned = new Set<string>();
+
 function notePgConnectionError(error: unknown): void {
   process.stderr.write(`[store] postgres connection error: ${error instanceof Error ? error.message : String(error)}\n`);
 }
@@ -246,6 +250,8 @@ function notePgConnectionError(error: unknown): void {
 export class PgStore implements StateStore {
   private readonly pool: pg.Pool;
   private readonly connectionString: string;
+  /** Transport security for every connection this store opens (pool and tick lock). */
+  private readonly tls: StoreTls;
   private ready: Promise<void> | undefined;
   /**
    * Process-local document bodies, keyed by slug and validated on EVERY read
@@ -265,10 +271,18 @@ export class PgStore implements StateStore {
 
   constructor(connectionString: string) {
     this.connectionString = connectionString;
+    // Decided once, before any connection: a public host gets TLS, and a
+    // refused WEAVER_STORE_TLS=off throws here so the store never starts.
+    this.tls = storeTls(connectionString);
+    if (this.tls.warning && !tlsWarned.has(this.tls.host)) {
+      tlsWarned.add(this.tls.host);
+      process.stderr.write(`${this.tls.warning}\n`);
+    }
     // allowExitOnIdle: idle pooled connections must not pin a finished CLI
     // process open — closeStore() is the deliberate shutdown, this is the net.
     this.pool = new pg.Pool({
       connectionString,
+      ...pgSslOption(this.tls),
       max: 10,
       allowExitOnIdle: true,
       application_name: 'weaver',
@@ -977,6 +991,7 @@ export class PgStore implements StateStore {
     // concurrency; session death still auto-releases (why no pid file here).
     const client = new pg.Client({
       connectionString: this.connectionString,
+      ...pgSslOption(this.tls),
       application_name: 'weaver-tick',
       keepAlive: true,
       keepAliveInitialDelayMillis: 10_000,

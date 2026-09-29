@@ -129,6 +129,36 @@ portable runner configuration — configured coordinator and worker fallbacks,
 complex-work model, repository context, workspace root, and Pilot endpoint —
 as env lines for piping over SSH (it refuses to print to a terminal).
 
+### Transport security for `WEAVER_STORE`
+
+The store URL's host decides TLS, because the credential in it can rewrite the
+whole fleet:
+
+- **A private host** — a unix socket, `localhost`, a loopback or RFC 1918
+  address, a single-label Docker/compose name such as `postgres`,
+  `host.docker.internal`, or `*.railway.internal` — keeps node-postgres's
+  default: no TLS unless `PGSSLMODE` asks for it. The network, not TLS, keeps
+  that traffic private.
+- **Any other host** requires TLS and verifies the certificate chain and host
+  name against the public CA store (verify-full).
+- **Railway's public proxy** (`*.proxy.rlwy.net`) is encrypted but not verified
+  by default, because its certificate chains to a per-database CA and does not
+  name the proxy host. Weaver logs that on every process start; pin the CA to
+  verify it (see [Railway: what is encrypted, and what is verified](./railway.md#what-is-encrypted-and-what-is-verified)).
+- **An explicit TLS parameter in the URL** (`sslmode`, `sslrootcert`,
+  `uselibpqcompat`, …) always wins, with node-postgres's meaning: in pg 8,
+  `prefer`, `require`, and `verify-ca` all mean verify-full unless the URL adds
+  `uselibpqcompat=true`; `sslmode=no-verify` is encrypted without verification;
+  `sslmode=disable` is plaintext, and on a public host Weaver says so loudly.
+- **`WEAVER_STORE_TLS=off`** forces plaintext for a local test database. It is
+  the only accepted value, and the store refuses to start when it is set
+  against any host that is not private.
+
+A provider whose certificate does not chain to a public CA fails the default
+with a certificate error rather than falling back to plaintext; pin its CA with
+`sslrootcert`, or accept an unverified channel explicitly with
+`sslmode=no-verify`.
+
 ## Joining the fleet from another machine
 
 Any machine that can reach the database — directly, or through a tunnel you
