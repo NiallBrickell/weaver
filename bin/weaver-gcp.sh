@@ -550,6 +550,41 @@ cmd_push_env() {
   PUSH_EXECUTOR_SECRETS_TMP="$(mktemp)"
   trap 'rm -f -- "${PUSH_ENV_RAW_TMP:-}" "${PUSH_ENV_TMP:-}" "${PUSH_EXECUTOR_SECRETS_RAW_TMP:-}" "${PUSH_EXECUTOR_SECRETS_TMP:-}"' EXIT
   chmod 600 "$PUSH_ENV_RAW_TMP" "$PUSH_ENV_TMP" "$PUSH_EXECUTOR_SECRETS_RAW_TMP" "$PUSH_EXECUTOR_SECRETS_TMP"
+  # Read and vet the executor store BEFORE anything else: `login
+  # --render-remote-env` mints a WEAVER_SERVE_TOKEN into the local store when
+  # it has none, and the executor-secrets sync below replaces the host's store
+  # exactly. WEAVER_HOME defaults to ./state under the checkout, so a fresh
+  # worktree reads an empty store; pushing that would revoke every hosted
+  # identity and swap the host's serve token (2026-09-30). Exact sync stays
+  # (revocation must propagate), but a store that cannot run the host is
+  # refused before any SSH. The names mirror bin/weaver-gcp-preflight.sh.
+  # bin/weaver.mjs resolves WEAVER_HOME as: environment, else the checkout's
+  # .env, else <checkout>/state — mirrored here only for the error message.
+  local local_home="${WEAVER_HOME:-}" required name
+  if [ -z "$local_home" ] && [ -r "$REPO/.env" ]; then
+    local_home="$(sed -n 's/^WEAVER_HOME=//p' "$REPO/.env" | tail -1)"
+  fi
+  local_home="${local_home:-$REPO/state}"
+  "$REPO/bin/weaver.mjs" login --render-remote-executor-secrets > "$PUSH_EXECUTOR_SECRETS_RAW_TMP"
+  awk -F= '
+    $1 == "CLAUDE_CODE_OAUTH_TOKEN" ||
+    $1 == "OPENROUTER_API_KEY" ||
+    $1 == "WEAVER_GITHUB_APP_ID" ||
+    $1 == "WEAVER_GITHUB_APP_INSTALLATION_ID" ||
+    $1 == "WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64" ||
+    $1 == "WEAVER_PILOT_TOKEN" ||
+    $1 == "WEAVER_SERVE_TOKEN" ||
+    $1 == "WEAVER_DIGEST_SLACK_TOKEN" ||
+    $1 == "WEAVER_DIGEST_SLACK_CHANNEL" { print }
+  ' "$PUSH_EXECUTOR_SECRETS_RAW_TMP" > "$PUSH_EXECUTOR_SECRETS_TMP"
+  for name in CLAUDE_CODE_OAUTH_TOKEN OPENROUTER_API_KEY WEAVER_GITHUB_APP_ID \
+    WEAVER_GITHUB_APP_INSTALLATION_ID WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64 WEAVER_PILOT_TOKEN; do
+    grep -q "^${name}=." "$PUSH_EXECUTOR_SECRETS_TMP" || required="${required:+$required, }$name"
+  done
+  if [ -n "${required:-}" ]; then
+    echo "❌ push-env refused: the local executor secret store ($local_home) lacks $required, which the host's preflight requires; pushing it would revoke those identities on the host. Run from the checkout that holds your operator store, or set WEAVER_HOME to it." >&2
+    exit 1
+  fi
   env \
     WEAVER_EXECUTOR="$hosted_worker_executor" \
     ${hosted_local_sdk_container:+WEAVER_LOCAL_SDK_CONTAINER=1} \
@@ -580,18 +615,6 @@ cmd_push_env() {
   if [ ! -s "$PUSH_ENV_TMP" ]; then
     echo "❌ weaver login produced no remote env — run: weaver login" >&2; exit 1
   fi
-  "$REPO/bin/weaver.mjs" login --render-remote-executor-secrets > "$PUSH_EXECUTOR_SECRETS_RAW_TMP"
-  awk -F= '
-    $1 == "CLAUDE_CODE_OAUTH_TOKEN" ||
-    $1 == "OPENROUTER_API_KEY" ||
-    $1 == "WEAVER_GITHUB_APP_ID" ||
-    $1 == "WEAVER_GITHUB_APP_INSTALLATION_ID" ||
-    $1 == "WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64" ||
-    $1 == "WEAVER_PILOT_TOKEN" ||
-    $1 == "WEAVER_SERVE_TOKEN" ||
-    $1 == "WEAVER_DIGEST_SLACK_TOKEN" ||
-    $1 == "WEAVER_DIGEST_SLACK_CHANNEL" { print }
-  ' "$PUSH_EXECUTOR_SECRETS_RAW_TMP" > "$PUSH_EXECUTOR_SECRETS_TMP"
   push_remote_installer
   "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env merge' < "$PUSH_ENV_TMP"
   "${GSSH[@]}" --command 'sudo /usr/local/sbin/weaver-install-env executor-secrets' < "$PUSH_EXECUTOR_SECRETS_TMP"

@@ -452,6 +452,13 @@ serve, and the GitHub App identity) is installed at
 `/home/weaver/state/executor-secrets.env`. Both are mode `0600`; the second is
 the canonical adapter-only store read by Weaver executors. Removing a locally
 registered allowed credential and pushing again removes it from the host too.
+Because that sync is exact, `push-env` first refuses (before any SSH) a local
+executor store that lacks an identity the host's preflight requires:
+`CLAUDE_CODE_OAUTH_TOKEN`, `OPENROUTER_API_KEY`, the three
+`WEAVER_GITHUB_APP_*` values, or `WEAVER_PILOT_TOKEN`. The error names the
+store it read. `WEAVER_HOME` defaults to `state/` inside the checkout, so run
+`push-env` from the checkout that holds your operator store, or set
+`WEAVER_HOME`.
 Provider keys are filtered out of the ambient systemd environment and exist
 only in that executor store. The hosted OpenRouter worker defaults to
 `openrouter/z-ai/glm-5.2`: its checked-in cohort completed the submission

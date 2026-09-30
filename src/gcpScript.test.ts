@@ -623,11 +623,20 @@ test('set-store refuses a non-Postgres value before invoking gcloud', () => {
   assert.equal(fs.existsSync(path.join(root, 'calls', 'count')), false);
 });
 
+const IDENTITIES = [
+  'CLAUDE_CODE_OAUTH_TOKEN=registered-setup-token',
+  'OPENROUTER_API_KEY=registered-provider-secret',
+  'WEAVER_GITHUB_APP_ID=1',
+  'WEAVER_GITHUB_APP_INSTALLATION_ID=2',
+  'WEAVER_GITHUB_APP_PRIVATE_KEY_BASE64=a2V5',
+  'WEAVER_PILOT_TOKEN=pilot-secret',
+];
+
 test('push-env upgrades a stale remote installer before securely forwarding identities and config', () => {
   const rendered = [
-    'OPENROUTER_API_KEY=registered-provider-secret',
+    ...IDENTITIES.slice(0, 2).reverse(),
+    ...IDENTITIES.slice(2),
     'ANTHROPIC_API_KEY=forbidden-api-secret',
-    'CLAUDE_CODE_OAUTH_TOKEN=registered-setup-token',
     'ZHIPU_API_KEY=unused-provider-secret',
     'WEAVER_EXECUTOR=pi',
     'WEAVER_COORDINATOR_FALLBACKS=codex-sdk:gpt-5.6-sol,local-sdk:claude-opus-5-5',
@@ -648,6 +657,7 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
   assert.equal(call(root, 3, 'stdin'), [
     'OPENROUTER_API_KEY=registered-provider-secret',
     'CLAUDE_CODE_OAUTH_TOKEN=registered-setup-token',
+    ...IDENTITIES.slice(2),
     '',
   ].join('\n'));
   assert.match(call(root, 3, 'args'), /weaver-install-env executor-secrets/);
@@ -673,8 +683,23 @@ test('push-env upgrades a stale remote installer before securely forwarding iden
   ].join('\n'));
 });
 
+test('push-env refuses a local store that cannot run the host, before any gcloud call', () => {
+  for (const missing of ['OPENROUTER_API_KEY', 'WEAVER_PILOT_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'WEAVER_GITHUB_APP_ID']) {
+    const rendered = `WEAVER_EXECUTOR=pi\n${IDENTITIES.filter((line) => !line.startsWith(`${missing}=`)).join('\n')}\n`;
+    const { result, root } = run(['push-env'], undefined, rendered);
+    assert.equal(result.status, 1, missing);
+    assert.match(result.stderr, new RegExp(`lacks ${missing}\\b`));
+    assert.match(result.stderr, /WEAVER_HOME/);
+    assert.equal(fs.existsSync(path.join(root, 'calls', 'count')), false, `${missing}: no gcloud/ssh call`);
+  }
+  const empty = run(['push-env'], undefined, 'WEAVER_EXECUTOR=pi\n');
+  assert.equal(empty.result.status, 1);
+  assert.match(empty.result.stderr, /the local executor secret store \(\S+\) lacks CLAUDE_CODE_OAUTH_TOKEN, OPENROUTER_API_KEY/);
+  assert.equal(fs.existsSync(path.join(empty.root, 'calls', 'count')), false);
+});
+
 test('push-env never copies personal Codex device authentication to the host', () => {
-  const f = fixture('WEAVER_EXECUTOR=pi\n');
+  const f = fixture(`WEAVER_EXECUTOR=pi\n${IDENTITIES.join('\n')}\n`);
   const codexHome = String(f.env.CODEX_HOME);
   fs.mkdirSync(codexHome, { recursive: true });
   fs.writeFileSync(path.join(codexHome, 'auth.json'), '{"personal":"device-login"}\n', { mode: 0o600 });
@@ -733,7 +758,7 @@ test('push-worker-secrets rejects an empty, malformed, or duplicate selection be
 });
 
 test('restart remains an explicit push-env and update option', () => {
-  const pushed = run(['push-env', '--restart'], undefined, 'WEAVER_EXECUTOR=pi\n');
+  const pushed = run(['push-env', '--restart'], undefined, `WEAVER_EXECUTOR=pi\n${IDENTITIES.join('\n')}\n`);
   assert.equal(pushed.result.status, 0, pushed.result.stderr);
   assert.match(call(pushed.root, 4, 'args'), /systemctl restart weaver-run weaver-serve/);
 
@@ -1272,6 +1297,7 @@ test('a refused preflight never reaches systemctl on the host', () => {
 test('push-env delivers the digest destination only into the executor-only store', () => {
   const rendered = [
     'WEAVER_EXECUTOR=pi',
+    ...IDENTITIES,
     'WEAVER_DIGEST_SLACK_TOKEN=xoxb-digest-secret',
     'WEAVER_DIGEST_SLACK_CHANNEL=D0OPERATOR',
     '',
@@ -1281,7 +1307,7 @@ test('push-env delivers the digest destination only into the executor-only store
   assert.match(call(root, 2, 'args'), /weaver-install-env merge/);
   assert.ok(!call(root, 2, 'stdin').includes('WEAVER_DIGEST_SLACK'), 'never the ambient service env');
   assert.match(call(root, 3, 'args'), /weaver-install-env executor-secrets/);
-  assert.equal(call(root, 3, 'stdin'), 'WEAVER_DIGEST_SLACK_TOKEN=xoxb-digest-secret\nWEAVER_DIGEST_SLACK_CHANNEL=D0OPERATOR\n');
+  assert.equal(call(root, 3, 'stdin'), `${IDENTITIES.join('\n')}\nWEAVER_DIGEST_SLACK_TOKEN=xoxb-digest-secret\nWEAVER_DIGEST_SLACK_CHANNEL=D0OPERATOR\n`);
   assert.ok(!allCallArgs(root).includes('xoxb-digest-secret'));
 });
 
