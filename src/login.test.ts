@@ -162,6 +162,17 @@ test('GitHub App identity travels only in the executor-secret render', () => {
   assert.ok(!general.lines.some((line) => line.startsWith('WEAVER_GITHUB_APP_')));
 });
 
+test('probe credential allowlist is emitted only when the operator set it', () => {
+  const set = renderRemoteEnvLines(
+    { WEAVER_SERVE_TOKEN: 't' },
+    { WEAVER_PROBE_CREDENTIALS: 'sentry,edp', WEAVER_SHADOW_EFFORT: 'high' },
+  );
+  assert.ok(set.lines.includes('WEAVER_PROBE_CREDENTIALS=sentry,edp'));
+  assert.ok(set.lines.includes('WEAVER_SHADOW_EFFORT=high'));
+  const unset = renderRemoteEnvLines({ WEAVER_SERVE_TOKEN: 't' }, {});
+  assert.ok(!unset.lines.some((l) => /^WEAVER_(PROBE_CREDENTIALS|SHADOW_EFFORT)=/.test(l)));
+});
+
 test('WEAVER_STORE, WEAVER_HOME and WEAVER_WORKSPACE_ROOT are never emitted — provisioning owns them', () => {
   const { lines } = renderRemoteEnvLines(
     { WEAVER_SERVE_TOKEN: 't' },
