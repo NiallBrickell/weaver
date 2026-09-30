@@ -258,6 +258,11 @@ WEAVER_HOUSE_JSON={"repoMap":"Primary application: /absolute/path/on-the-runner"
 # Optional: bearer tokens for the /api/v1/ JSON API. Unset disables each one.
 WEAVER_READ_TOKEN=<a long random value>
 WEAVER_RESPOND_TOKEN=<a different long random value>
+# Optional: Apple push notifications (see notifications.md). Unset disables them.
+WEAVER_APNS_KEY=<the whole .p8 file>
+WEAVER_APNS_KEY_ID=<the key's 10-character Key ID>
+WEAVER_APNS_TEAM_ID=<the Apple Developer Team ID>
+WEAVER_APNS_TOPIC=<the app bundle id; defaults to ai.erdo.team>
 ```
 
 The Clerk identity values are atomic: a partial configuration fails startup
@@ -275,7 +280,10 @@ without a model pass. Do not put credentials in it.
 
 `WEAVER_READ_TOKEN` and `WEAVER_RESPOND_TOKEN` let programs such as a team
 page or a phone app read the fleet, and answer open cards, over
-[the team REST API](./rest-api.md) without a browser sign-in.
+[the team REST API](./rest-api.md) without a browser sign-in. The
+`WEAVER_APNS_*` values let the same service push a notification to registered
+phones and Macs when something new needs a person; see
+[Push notifications](./notifications.md).
 
 The checked-in service contract pins:
 

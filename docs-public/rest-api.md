@@ -8,7 +8,9 @@ example on [Railway](./railway.md)); `weaver serve` stays private on the
 machine that runs the work.
 
 The API can read everything the [operator workspace](./operator-workspace.md)
-shows and do exactly one thing: answer an open "needs you" card. It cannot
+shows and change exactly two things: it can answer an open "needs you" card,
+and it can register the phones and Macs that get a
+[push notification](./notifications.md) when a new card opens. It cannot
 start, steer, approve, merge, send, or close anything. An answer is recorded
 the same way as one typed into the browser: as new information for the job,
 which wakes it so Weaver can act on it. It does not close the card by itself
@@ -28,10 +30,11 @@ service:
 | Variable | What it can do |
 | --- | --- |
 | `WEAVER_READ_TOKEN` | Every `GET` below. |
-| `WEAVER_RESPOND_TOKEN` | Every `GET`, plus answering a card. |
+| `WEAVER_RESPOND_TOKEN` | Every `GET`, plus answering a card and registering or removing a device. |
 
 Leave a variable unset and that token simply does not exist. A request with
-no token or a wrong one gets `401`; a read token trying to answer gets `403`.
+no token or a wrong one gets `401`; a read token trying to answer a card or
+change a device gets `403`.
 Browser sign-in (Clerk or the Basic password) never works here, and these
 tokens never open the browser pages, so the two stay separate. Because
 nothing rides a cookie, there is no same-origin check: any program holding a
@@ -207,3 +210,99 @@ reason a runner that is checking in still cannot do any work (for example a
 full disk), or `null`. The seat lists are `null` for runners too old to report
 them. For paging on a dead fleet, use [`/healthz/fleet`](./fleet-health.md),
 which needs no token.
+
+### `POST /api/v1/devices`
+
+Register a phone or Mac for push notifications. Needs the respond token. The
+app sends the APNs device token Apple gave it at launch:
+
+```json
+{ "token": "a1b2c3…", "platform": "ios", "environment": "production", "bundle_id": "ai.erdo.team" }
+```
+
+`token` is the device token as hex (64 to 200 characters; case does not
+matter). `platform` is `ios` or `macos`. `environment` is `sandbox` for a
+development build (run from Xcode) and `production` for TestFlight and App
+Store builds: Apple issues a token for one of its two push gateways, and a
+push sent to the other one is refused. `bundle_id` is the app's bundle
+identifier.
+
+A new device gets `201 {"id": "…"}`. Registering a token that is already
+known returns `200` with the same `id` and just records that the device was
+seen again, so an app can register on every launch without creating
+duplicates. Anything malformed gets `400`.
+
+### `GET /api/v1/devices`
+
+The registered devices, oldest first. Either token may list them:
+
+```json
+{
+  "devices": [
+    {
+      "id": "6f0c…",
+      "platform": "ios",
+      "environment": "production",
+      "bundle_id": "ai.erdo.team",
+      "created_at": "2026-09-30T09:00:00.000Z",
+      "last_seen_at": "2026-09-30T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+The device token itself is never returned: it is what Apple uses to reach
+that phone, so it stays on the server.
+
+### `DELETE /api/v1/devices/:id`
+
+Stop pushing to one device, for example when someone signs out of the app.
+Needs the respond token. `204` on success, `404` for an unknown id.
+
+## Push notifications
+
+When a new card appears in `/api/v1/needs`, `weaver ui` sends one push to
+every registered device, once. The alert's title is the job's title and its
+body is the card's `title` followed by as much of its `text` as fits in 180
+characters, the same wording the API returns. Pushes for one job are grouped
+together on the phone (`thread-id` is the job's slug).
+
+Each push also carries the card's identity, so the app can open it or answer
+it without looking it up:
+
+```json
+{
+  "aps": {
+    "alert": { "title": "Release train", "body": "Approve the production deploy? (A) Approve and deploy now. (B) Decline…" },
+    "sound": "default",
+    "thread-id": "release-train",
+    "category": "NEED_APPROVE_DECLINE"
+  },
+  "need": {
+    "workstream": "release-train",
+    "source_type": "attention",
+    "source_id": "att_…",
+    "version": "3f1c…",
+    "approve_choice": "A",
+    "decline_choice": "B"
+  }
+}
+```
+
+`category` is `NEED_APPROVE_DECLINE` when the card has exactly two choices and
+one plainly means yes (it starts with words like "approve", "yes", "go ahead"
+or "proceed") while the other plainly means no ("decline", "no", "stop",
+"don't"). The app can then offer Approve and Decline buttons on the
+notification, which answer the card through the responses endpoint above
+with `approve_choice` or `decline_choice` as the `choice`. Every other card
+uses `category` `NEED` and has no choice fields, so the person opens the app
+to read it.
+
+"Once" means once per version of a card. If a card's wording changes it has
+a new `version`, and that counts as a new card. A push is never repeated:
+not on the next check, not after `weaver ui` restarts, and not when more than
+one copy of the service is running. If Apple reports a device token as no
+longer valid, that device is removed. Cards that were already open when
+notifications were first turned on are not pushed.
+
+Setting up the Apple key is described in [Push notifications](./notifications.md).

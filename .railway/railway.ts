@@ -47,6 +47,13 @@ export default defineRailway(() => {
       // Unset disables that token; values live only in Railway.
       WEAVER_READ_TOKEN: preserve(),
       WEAVER_RESPOND_TOKEN: preserve(),
+      // Apple push notifications for new open needs
+      // (docs-public/notifications.md). Any of the first three unset leaves
+      // the notifier off; the .p8 key lives only in Railway.
+      WEAVER_APNS_KEY: preserve(),
+      WEAVER_APNS_KEY_ID: preserve(),
+      WEAVER_APNS_TEAM_ID: preserve(),
+      WEAVER_APNS_TOPIC: preserve(),
     },
   });
 

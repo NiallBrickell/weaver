@@ -26,7 +26,13 @@ import {
   arrive,
   artifactsDir,
   casProbeCursor,
+  claimNeedNotification,
   closeStore,
+  completeNeedNotification,
+  deleteDevice,
+  findNeedNotifications,
+  listDevices,
+  registerDevice,
   createWorkstream,
   findBySourceKey,
   heartbeatRunner,
@@ -143,7 +149,7 @@ const pgBackend: Backend = {
     await closeStore();
     process.env.WEAVER_STORE = PG_URL;
     freshHome(); // secrets and machine-local locks still live under WEAVER_HOME
-    for (const tables of ['workstreams, artifacts, policies, runner_presence', 'probe_cursors']) {
+    for (const tables of ['workstreams, artifacts, policies, runner_presence', 'probe_cursors', 'devices, need_notifications']) {
       try {
         await pgAdmin((c) => c.query(`TRUNCATE ${tables}`));
       } catch (e) {
@@ -574,6 +580,55 @@ function contractSuite(backend: Backend): void {
     await heartbeatRunner('mac-primary', '2026-08-29T10:00:10.000Z', seats);
     assert.equal((await listRunnerPresence()).find((presence) => presence.runnerId === 'mac-primary')!.workerSeats, undefined);
     assert.equal((await load('test-ws')).revision, revision);
+  });
+
+  test('devices are unique on token, and a need claim is an atomic insert-if-absent', async () => {
+    await makeWorkstream('push-ws');
+    const revision = (await load('push-ws')).revision;
+    const token = 'AB'.repeat(32);
+    const t0 = new Date('2026-09-30T08:00:00.000Z');
+    const t1 = new Date('2026-09-30T09:00:00.000Z');
+    const first = await registerDevice({ token, platform: 'ios', environment: 'sandbox', bundleId: 'ai.erdo.team', actor: 'api:team' }, t0);
+    assert.equal(first.created, true);
+    assert.match(first.device.id, /^[0-9a-f-]{36}$/);
+    assert.equal(first.device.token, token.toLowerCase(), 'tokens are stored as lowercase hex');
+    // Same token (any case) again: the same row, a fresh last_seen_at.
+    const again = await registerDevice({ token: token.toLowerCase(), platform: 'ios', environment: 'sandbox', bundleId: 'ai.erdo.team', actor: 'api:team' }, t1);
+    assert.equal(again.created, false);
+    assert.equal(again.device.id, first.device.id);
+    assert.equal(again.device.createdAt, t0.toISOString());
+    assert.equal(again.device.lastSeenAt, t1.toISOString());
+    // Racing registrations of one new token land one row.
+    const raced = await Promise.all([0, 1, 2].map(() =>
+      registerDevice({ token: 'cd'.repeat(40), platform: 'macos', environment: 'production', bundleId: 'ai.erdo.team', actor: 'api:team' }, t1)));
+    assert.equal(new Set(raced.map((r) => r.device.id)).size, 1);
+    assert.equal(raced.filter((r) => r.created).length, 1);
+    const devices = await listDevices();
+    assert.deepEqual(devices.map((d) => [d.id, d.platform, d.environment, d.lastSeenAt]), [
+      [first.device.id, 'ios', 'sandbox', t1.toISOString()],
+      [raced[0]!.device.id, 'macos', 'production', t1.toISOString()],
+    ]);
+    await assert.rejects(registerDevice({ token: 'xyz', platform: 'ios', environment: 'sandbox', bundleId: 'b', actor: 'a' }), /hex/);
+    assert.equal(await deleteDevice(first.device.id), true);
+    assert.equal(await deleteDevice(first.device.id), false);
+    assert.equal(await deleteDevice('not-a-uuid'), false);
+    assert.deepEqual((await listDevices()).map((d) => d.id), [raced[0]!.device.id]);
+
+    // The claim: exactly one of several racing inserts wins, and a later one
+    // (a restart) changes nothing.
+    const key = 'push-ws|attention|att_1|v1';
+    const claim = { key, createdAt: t0.toISOString(), sentCount: 0, failedCount: 0 };
+    const wins = await Promise.all([0, 1, 2, 3].map(() => claimNeedNotification(claim)));
+    assert.equal(wins.filter(Boolean).length, 1);
+    assert.equal(await claimNeedNotification({ ...claim, lastError: 'late' }), false);
+    await completeNeedNotification(key, { sentCount: 2, failedCount: 1, lastError: 'device x: APNs 500 InternalServerError' });
+    assert.deepEqual(await findNeedNotifications([key, 'absent|key', key]), [
+      { key, createdAt: t0.toISOString(), sentCount: 2, failedCount: 1, lastError: 'device x: APNs 500 InternalServerError' },
+    ]);
+    await completeNeedNotification(key, { sentCount: 3, failedCount: 0 });
+    assert.deepEqual(await findNeedNotifications([key]), [{ key, createdAt: t0.toISOString(), sentCount: 3, failedCount: 0 }]);
+    assert.deepEqual(await findNeedNotifications([]), []);
+    assert.equal((await load('push-ws')).revision, revision, 'delivery state never touches a document');
   });
 
   test('probe cursors CAS on next_check_at, never bump a Workstream revision, and follow rename', async () => {

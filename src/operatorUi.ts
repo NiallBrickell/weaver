@@ -37,7 +37,8 @@ import {
 import { AlreadyConcludedError, closeWorkstream } from './humanActs.js';
 import { ManagedWorkstreamError } from './managedWorkstreams.js';
 import { NeedResponseError, needVersion, recordNeedResponse } from './needResponses.js';
-import { API_PREFIX, createRestApi, restApiTokensFromEnv, type RestApiHandler, type RestApiTokens } from './restApi.js';
+import { API_PREFIX, WorkstreamIndex, createRestApi, restApiTokensFromEnv, type RestApiHandler, type RestApiTokens } from './restApi.js';
+import { needNotifierFromEnv } from './notify/notifier.js';
 import { deriveFallback, loadHouse } from './onboard.js';
 import { computeOverview, revisionMemo, type OverviewPayload } from './overview.js';
 import { loadPolicies, type PolicyRecord } from './policies.js';
@@ -98,6 +99,11 @@ export interface OperatorUiOptions {
   /** Bearer tokens for the `/api/v1/` JSON API (src/restApi.ts). Defaults to
    * WEAVER_READ_TOKEN / WEAVER_RESPOND_TOKEN; unset tokens are disabled. */
   apiTokens?: RestApiTokens;
+  /** Run the APNs need notifier (src/notify/notifier.ts) in this process.
+   * `weaver ui` turns it on; it stays disabled, with one logged reason, when
+   * the WEAVER_APNS_* settings are incomplete. Off by default, so a test
+   * that embeds the workspace can never reach Apple. */
+  notifications?: boolean;
 }
 
 export interface RunningOperatorUi {
@@ -550,6 +556,10 @@ class FleetRevisionEvents {
   private heartbeatAt = 0;
   private observation: Promise<string | undefined> = Promise.resolve(undefined);
 
+  /** `onChange` hears every observed fleet-revision change (the push
+   * notifier's cheap early wake-up; its own interval covers the rest). */
+  constructor(private readonly onChange?: () => void) {}
+
   async subscribe(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const revision = await this.observe();
     res.writeHead(200, {
@@ -623,6 +633,7 @@ class FleetRevisionEvents {
       const revision = await currentFleetRevision();
       if (this.revision && revision !== this.revision) {
         for (const client of this.clients) this.writeRevision(client, revision);
+        this.onChange?.();
       }
       this.revision = revision;
       return revision;
@@ -1369,9 +1380,13 @@ export async function startOperatorUi(opts: OperatorUiOptions = {}): Promise<Run
   if (!LOOPBACK_HOSTS.has(host) && !opts.token && !opts.clerk) {
     throw new Error('Clerk authentication or WEAVER_UI_TOKEN is required when weaver ui binds beyond loopback');
   }
-  const revisionEvents = new FleetRevisionEvents();
+  // One fleet index for the REST API and the push notifier, so pushing
+  // costs no reads beyond what serving /api/v1/needs already costs.
+  const index = new WorkstreamIndex();
+  const notifier = opts.notifications ? needNotifierFromEnv(index) : null;
+  const revisionEvents = new FleetRevisionEvents(notifier ? () => notifier.kick() : undefined);
   const overview = overviewSource();
-  const restApi = createRestApi({ tokens: opts.apiTokens ?? restApiTokensFromEnv() });
+  const restApi = createRestApi({ tokens: opts.apiTokens ?? restApiTokensFromEnv(), index });
   const server = createServer((req, res) => {
     handle(req, res, opts.token, opts.clerk, revisionEvents, overview, restApi).catch((error: unknown) => {
       if (res.headersSent) {
@@ -1393,10 +1408,12 @@ export async function startOperatorUi(opts: OperatorUiOptions = {}): Promise<Run
     server.listen(opts.port ?? 0, host, () => {
       const address = server.address();
       if (!address || typeof address === 'string') return reject(new Error('unexpected server address'));
+      notifier?.start();
       resolve({
         server,
         port: address.port,
         close: () => {
+          notifier?.stop();
           revisionEvents.close();
           return new Promise<void>((done, fail) => server.close((error) => error ? fail(error) : done()));
         },

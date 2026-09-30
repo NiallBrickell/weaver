@@ -24,6 +24,8 @@
  * between read and write, forcing the caller to reconcile from newer state.
  */
 
+import { randomUUID } from 'node:crypto';
+
 // Circular at module level (secrets.ts uses this file's path helpers), but
 // both sides only call functions at runtime, so ESM resolves it fine.
 import type { CapacityTarget } from './modelConfig.js';
@@ -33,7 +35,7 @@ import { FsStore, artifactsDir, newId, printoutJournalDir, sha256, weaverHome, w
 import { PgStore } from './store/pg.js';
 import { SqliteStore } from './store/sqlite.js';
 import { RevisionConflictError, SourceKeyConflictError, type Mutator, type StateStore } from './store/types.js';
-import type { ManagedWorkstreamHead, ProbeCursor, ProbeCursorState, RunnerOutput, RunnerPresence, WorkstreamHead } from './store/types.js';
+import type { Device, ManagedWorkstreamHead, NeedNotification, NeedNotificationOutcome, ProbeCursor, ProbeCursorState, RunnerOutput, RunnerPresence, WorkstreamHead } from './store/types.js';
 import type { WorkstreamCore, WorkstreamDoc } from './types.js';
 import { assertRunnerId } from './runnerIdentity.js';
 
@@ -44,6 +46,7 @@ export type { RunnerPresence };
 export type { RunnerOutput };
 export type { WorkstreamHead };
 export type { ProbeCursor, ProbeCursorState };
+export type { Device, NeedNotification, NeedNotificationOutcome };
 
 let activeStore: StateStore | undefined;
 
@@ -149,6 +152,85 @@ export async function casProbeCursor(
     };
   }
   return getStore().casProbeCursor(slug, wakeId, expected, state);
+}
+
+// ---------------------------------------------------------------------------
+// Push-notification delivery state (devices + need claims). Operational rows
+// beside the fleet: none of these calls touches a Workstream revision.
+
+export const DEVICE_PLATFORMS = ['ios', 'macos'] as const;
+export const DEVICE_ENVIRONMENTS = ['sandbox', 'production'] as const;
+const DEVICE_TOKEN = /^[0-9a-f]{64,200}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function isDeviceToken(value: string): boolean {
+  return DEVICE_TOKEN.test(value.toLowerCase());
+}
+
+export interface DeviceRegistration {
+  token: string;
+  platform: Device['platform'];
+  environment: Device['environment'];
+  bundleId: string;
+  actor: string;
+}
+
+/** Register (or re-register) one APNs device token. The token is normalized
+ * to lowercase hex, so one device cannot register twice by changing case. */
+export async function registerDevice(
+  input: DeviceRegistration,
+  now = new Date(),
+): Promise<{ device: Device; created: boolean }> {
+  const token = input.token.trim().toLowerCase();
+  if (!DEVICE_TOKEN.test(token)) throw new Error('a device token must be 64-200 hex characters');
+  if (!(DEVICE_PLATFORMS as readonly string[]).includes(input.platform)) throw new Error(`unknown device platform '${input.platform}'`);
+  if (!(DEVICE_ENVIRONMENTS as readonly string[]).includes(input.environment)) throw new Error(`unknown APNs environment '${input.environment}'`);
+  const bundleId = input.bundleId.trim();
+  if (!bundleId || bundleId.length > 200) throw new Error('a device bundle id is required (at most 200 characters)');
+  const at = now.toISOString();
+  return getStore().registerDevice({
+    id: randomUUID(),
+    token,
+    platform: input.platform,
+    environment: input.environment,
+    bundleId,
+    actor: input.actor,
+    createdAt: at,
+    lastSeenAt: at,
+  });
+}
+
+export async function listDevices(): Promise<Device[]> {
+  return getStore().listDevices();
+}
+
+/** False for an unknown id — including one that is not a uuid at all. */
+export async function deleteDevice(id: string): Promise<boolean> {
+  if (!UUID.test(id)) return false;
+  return getStore().deleteDevice(id);
+}
+
+export async function findNeedNotifications(keys: readonly string[]): Promise<NeedNotification[]> {
+  return getStore().findNeedNotifications(keys);
+}
+
+/** Atomic insert-if-absent; true only for the caller that created the row. */
+function assertInstant(value: string): number {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) throw new Error(`invalid need notification time '${value}'`);
+  return ms;
+}
+
+export async function claimNeedNotification(claim: NeedNotification): Promise<boolean> {
+  if (!claim.key) throw new Error('a need notification claim needs a key');
+  return getStore().claimNeedNotification({ ...claim, createdAt: new Date(assertInstant(claim.createdAt)).toISOString() });
+}
+
+export async function completeNeedNotification(key: string, outcome: NeedNotificationOutcome): Promise<void> {
+  for (const [name, value] of [['sent', outcome.sentCount], ['failed', outcome.failedCount]] as const) {
+    if (!Number.isInteger(value) || value < 0) throw new Error(`need notification ${name} count must be a non-negative integer`);
+  }
+  return getStore().completeNeedNotification(key, outcome);
 }
 
 export async function load(slug: string): Promise<WorkstreamDoc> {

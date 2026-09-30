@@ -7,7 +7,8 @@
  * Clerk/Basic session that guards the browser pages:
  *
  *  - `WEAVER_READ_TOKEN` may GET every resource.
- *  - `WEAVER_RESPOND_TOKEN` may GET, and may also answer an open card.
+ *  - `WEAVER_RESPOND_TOKEN` may GET, and may also answer an open card and
+ *    register or remove a push-notification device.
  *
  * A token whose variable is unset is disabled; with neither set, every call is
  * 401. There is no same-origin check because nothing here rides a cookie.
@@ -34,10 +35,17 @@ import { liveRunnerIds } from './coordinatorRunner.js';
 import { NeedResponseError, needVersion, recordNeedResponse } from './needResponses.js';
 import { loadAllSecrets, redactSecrets } from './secrets.js';
 import {
+  DEVICE_ENVIRONMENTS,
+  DEVICE_PLATFORMS,
+  deleteDevice,
+  isDeviceToken,
+  listDevices,
   listRunnerPresence,
   listWorkstreamHeads,
   load,
+  registerDevice,
   workstreamExists,
+  type Device,
   type RunnerPresence,
   type WorkstreamHead,
 } from './store.js';
@@ -114,7 +122,7 @@ export interface ApiEvent {
   message: string;
 }
 
-function excerpt(text: string, max: number): string {
+export function excerpt(text: string, max: number): string {
   const line = displayText(text);
   if (line.length <= max) return line;
   const cut = line.slice(0, max - 1);
@@ -215,7 +223,7 @@ export function workstreamSummary(doc: WorkstreamDoc): ApiWorkstreamSummary {
 // ---------------------------------------------------------------------------
 // The cheap fleet index
 
-interface IndexedWorkstream {
+export interface IndexedWorkstream {
   summary: ApiWorkstreamSummary;
   needs: ApiNeed[];
 }
@@ -593,6 +601,66 @@ function runnerView(presence: RunnerPresence, live: Set<string>, nowMs: number) 
   };
 }
 
+/** What a device listing shows: never the APNs token, which is a delivery
+ * credential for that phone. */
+function deviceView(device: Device) {
+  return {
+    id: device.id,
+    platform: device.platform,
+    environment: device.environment,
+    bundle_id: device.bundleId,
+    created_at: device.createdAt,
+    last_seen_at: device.lastSeenAt,
+  };
+}
+
+function requiredEnum<T extends string>(body: Record<string, unknown>, key: string, allowed: readonly T[]): T {
+  const value = optionalString(body, key);
+  if (!value || !(allowed as readonly string[]).includes(value)) {
+    throw new ApiError(400, `${key} must be one of ${allowed.join(', ')}`);
+  }
+  return value as T;
+}
+
+/**
+ * Push-notification devices. Registering and removing are respond-token
+ * writes (the same token that may answer the cards being pushed); listing is
+ * a read. None of it touches a Workstream: devices are delivery state.
+ */
+async function devicesRoute(req: IncomingMessage, res: ServerResponse, method: string, parts: string[], role: Role): Promise<void> {
+  if (parts.length === 1 && method === 'GET') {
+    return sendJson(res, 200, { devices: (await listDevices()).map(deviceView) });
+  }
+  if (parts.length === 1 && method === 'POST') {
+    if (role !== 'respond') throw new ApiError(403, 'This token can only read');
+    const body = await readJsonBody(req);
+    const token = optionalString(body, 'token')?.trim() ?? '';
+    if (!isDeviceToken(token)) throw new ApiError(400, 'token must be the APNs device token as 64-200 hex characters');
+    const platform = requiredEnum(body, 'platform', DEVICE_PLATFORMS);
+    const environment = requiredEnum(body, 'environment', DEVICE_ENVIRONMENTS);
+    const bundleId = optionalString(body, 'bundle_id')?.trim() ?? '';
+    if (!bundleId || bundleId.length > 200 || !/^[A-Za-z0-9.-]+$/.test(bundleId)) {
+      throw new ApiError(400, 'bundle_id must be the app bundle identifier');
+    }
+    const { device, created } = await registerDevice({ token, platform, environment, bundleId, actor: API_ACTOR });
+    return sendJson(res, created ? 201 : 200, { id: device.id });
+  }
+  if (parts.length === 2 && method === 'DELETE') {
+    if (role !== 'respond') throw new ApiError(403, 'This token can only read');
+    if (!(await deleteDevice(parts[1]!))) throw new ApiError(404, 'Device not found');
+    res.writeHead(204, {
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+      'strict-transport-security': 'max-age=31536000',
+    });
+    res.end();
+    return;
+  }
+  if (parts.length <= 2) throw new ApiError(405, 'Method not allowed');
+  throw new ApiError(404, 'Not found');
+}
+
 export interface RestApiOptions {
   tokens: RestApiTokens;
   index?: WorkstreamIndex;
@@ -615,6 +683,8 @@ export function createRestApi(opts: RestApiOptions): RestApiHandler {
     } catch {
       throw new ApiError(400, 'malformed path');
     }
+
+    if (parts[0] === 'devices') return devicesRoute(req, res, method, parts, role);
 
     if (method === 'POST') {
       if (role !== 'respond') throw new ApiError(403, 'This token can only read');
