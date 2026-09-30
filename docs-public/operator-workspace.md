@@ -252,6 +252,11 @@ proxy because it does not encrypt traffic itself. Responses advertise a
 one-year HTTP Strict Transport Security policy to HTTPS clients. Use Clerk,
 not the Basic fallback, for a public shared workspace.
 
+Programs that need the same fleet view without a browser session (a team
+page, a phone app) use the separate bearer-token
+[team REST API](./rest-api.md) under `/api/v1/`; Clerk and Basic auth never
+apply there, and those tokens never open these pages.
+
 For a shared deployment, use the [Railway guide](./railway.md): the UI and
 Postgres are hosted together while the initially separate execution host reads
 and writes the same durable fleet.

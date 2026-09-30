@@ -195,7 +195,7 @@ test('typed human direction is visible above timestamped current course and surv
   assert.match(html, /Withdrawn before Weaver read it/);
   assert.match(html, /<time dateTime="2026-08-14T09:45:00.000Z"/);
   assert.match(html, /snapshot r\d+ generated/);
-  assert.match(html, /Continue after the assignment unless the human direction changes the course/);
+  assert.match(html, /Continue after the task unless your direction changes the course/);
   assert.doesNotMatch(withoutTechnicalDetails(html), /\b(?:asg|dec|steer|pass|run|del|wake|att|int|obs|reply|pol|ws)_[a-z0-9_-]+\b/i);
 });
 
@@ -249,7 +249,7 @@ test('fleet page groups Workstreams by current position and folds concluded outc
   assert.match(html, />Ready</);
   assert.match(html, /Choose the launch boundary/);
   assert.match(html, /Check the provider reply/);
-  assert.match(html, /Complete the assignment/);
+  assert.match(html, /Complete the task/);
   assert.match(html, /The outcome is verified/);
   assert.match(html, /data-board-search/);
   assert.doesNotMatch(html, /Since you left/);

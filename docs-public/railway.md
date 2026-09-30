@@ -255,6 +255,9 @@ WEAVER_UI_ALLOWED_EMAIL_DOMAINS=<the exact company email domain>
 # Optional on Railway; set only when a custom UI domain is canonical.
 WEAVER_UI_PUBLIC_ORIGIN=https://<the custom UI domain>
 WEAVER_HOUSE_JSON={"repoMap":"Primary application: /absolute/path/on-the-runner","tags":["application"]}
+# Optional: bearer tokens for the /api/v1/ JSON API. Unset disables each one.
+WEAVER_READ_TOKEN=<a long random value>
+WEAVER_RESPOND_TOKEN=<a different long random value>
 ```
 
 The Clerk identity values are atomic: a partial configuration fails startup
@@ -269,6 +272,10 @@ email on the exact configured domain.
 `WEAVER_HOUSE_JSON` uses the same shape as `WEAVER_HOME/house.json`. It lets a
 stateless UI attach the canonical repository map and policy tags to new work
 without a model pass. Do not put credentials in it.
+
+`WEAVER_READ_TOKEN` and `WEAVER_RESPOND_TOKEN` let programs such as a team
+page or a phone app read the fleet, and answer open cards, over
+[the team REST API](./rest-api.md) without a browser sign-in.
 
 The checked-in service contract pins:
 

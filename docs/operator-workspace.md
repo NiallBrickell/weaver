@@ -333,6 +333,33 @@ actor (or a request-scoped equivalent), while the CLI continues to supply its
 environment-derived actor. Browser writes call those first-class mutations;
 they never accept an arbitrary document patch.
 
+### The `/api/v1/` machine API
+
+Machine clients (the engineering Team page, a native app) cannot reach
+`weaver serve`, which stays private on the execution host, so `weaver ui`
+also answers a bearer-token JSON API under `/api/v1/` (`src/restApi.ts`,
+public contract in [docs-public/rest-api.md](../docs-public/rest-api.md)). It
+is dispatched before the Clerk/Basic block and owns its auth completely:
+`WEAVER_READ_TOKEN` reads, `WEAVER_RESPOND_TOKEN` also answers a card, and a
+browser session never works there. It has no same-origin check because no
+credential rides a cookie.
+
+Answering a card is the browser's own code path: the form route and the API
+both call `recordNeedResponse` (`src/needResponses.ts`), so validation, the
+card version check, the idempotency key and the Observation shape cannot
+drift between them. The API's actor is `api:team`.
+
+The fleet listing must not reintroduce the full-fleet load that twice
+dominated the Railway bill. `WorkstreamIndex` reads `listWorkstreamHeads()`
+(slug and revision only) and calls `load()` only for a head whose revision
+differs from the one its cached summary was derived from; it keeps the small
+derived summary and open cards, never the document, and shares one refresh
+across all callers for ten seconds. `/api/v1/needs` reads the same index, so
+it loads nothing the listing has not already derived. The per-job endpoints
+load one document through the store's change-token body cache. The event feed
+is built from `workstreamTimeline`, never `doc.events`, and its copy is
+written for teammates, with no Weaver-internal vocabulary.
+
 ## Cross-system status
 
 Weaver should be the generic durable status spine, not the implementation of

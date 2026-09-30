@@ -36,6 +36,8 @@ import {
 } from './ingress.js';
 import { AlreadyConcludedError, closeWorkstream } from './humanActs.js';
 import { ManagedWorkstreamError } from './managedWorkstreams.js';
+import { NeedResponseError, needVersion, recordNeedResponse } from './needResponses.js';
+import { API_PREFIX, createRestApi, restApiTokensFromEnv, type RestApiHandler, type RestApiTokens } from './restApi.js';
 import { deriveFallback, loadHouse } from './onboard.js';
 import { computeOverview, revisionMemo, type OverviewPayload } from './overview.js';
 import { loadPolicies, type PolicyRecord } from './policies.js';
@@ -64,12 +66,9 @@ import {
   fleetNeeds,
   fleetRunnerLine,
   isFleetBucket,
-  presentNeed,
-  workstreamNeeds,
   workstreamPage,
   type FleetBoardView,
   type FleetGlanceView,
-  type FleetNeed,
   type ManagedWorkstreamLink,
   type WorkstreamCardView,
 } from './ui/inspect/model.js';
@@ -96,6 +95,9 @@ export interface OperatorUiOptions {
   token?: string;
   /** Exclusive hosted auth mode. When present, the Basic token is ignored. */
   clerk?: ClerkOperatorAuthenticator;
+  /** Bearer tokens for the `/api/v1/` JSON API (src/restApi.ts). Defaults to
+   * WEAVER_READ_TOKEN / WEAVER_RESPOND_TOKEN; unset tokens are disabled. */
+  apiTokens?: RestApiTokens;
 }
 
 export interface RunningOperatorUi {
@@ -189,10 +191,6 @@ function safeActor(value: string): string {
 
 function workspaceTab(value: string | null): WorkspaceTab {
   return value === 'overview' || value === 'work' || value === 'activity' || value === 'details' ? value : DEFAULT_WORKSPACE_TAB;
-}
-
-function needVersion(need: FleetNeed): string {
-  return sha256(JSON.stringify([need.source.type, need.source.id, need.kind, need.summary])).slice(0, 32);
 }
 
 function sourceKeyFor(message: string, requestId: string): string {
@@ -1069,6 +1067,7 @@ async function handle(
   clerk?: ClerkOperatorAuthenticator,
   revisionEvents?: FleetRevisionEvents,
   overview?: OverviewSource,
+  restApi?: RestApiHandler,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
@@ -1097,6 +1096,14 @@ async function handle(
     } catch {
       return sendJson(res, 503, { ok: false, unhealthy: 1, error: 'store unreachable' });
     }
+  }
+
+  // The machine API authenticates with its own bearer tokens and never falls
+  // through to the browser's Clerk/Basic session below (no cookie, so no
+  // same-origin check either). See src/restApi.ts.
+  if (url.pathname.startsWith(API_PREFIX)) {
+    if (!restApi) return sendJson(res, 404, { error: 'Not found' });
+    return restApi(req, res);
   }
 
   let actor: string;
@@ -1294,54 +1301,17 @@ async function handle(
 
   if (method === 'POST' && parts.length === 3 && parts[0] === 'workstreams' && parts[2] === 'responses') {
     const slug = parts[1]!;
-    const doc = await load(slug);
+    await load(slug);
     const form = await readForm(req);
-    const sourceType = (form.get('need_source_type') ?? '').trim();
-    const sourceId = (form.get('need_id') ?? '').trim();
-    const submittedVersion = (form.get('need_version') ?? '').trim();
-    const responseId = (form.get('response_id') ?? '').trim();
-    if (!['attention', 'assignment', 'interaction'].includes(sourceType) || !sourceId || !submittedVersion) {
-      throw new OperatorUiHttpError(400, 'The decision response is malformed');
-    }
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(responseId)) {
-      throw new OperatorUiHttpError(400, 'The response id is malformed');
-    }
-    const need = workstreamNeeds(doc).find((candidate) =>
-      candidate.source.type === sourceType && candidate.source.id === sourceId,
-    );
-    if (!need || needVersion(need) !== submittedVersion) {
-      throw new OperatorUiHttpError(409, 'This decision changed or is no longer open. Reload the job before responding.');
-    }
-
-    const presentation = presentNeed(need.summary);
-    const labels = presentation.choices.map((choice) => choice.label);
-    if (new Set(labels).size !== labels.length) {
-      throw new OperatorUiHttpError(409, 'This decision has ambiguous options and cannot be answered from the browser.');
-    }
-    const choice = (form.get('choice') ?? '').trim();
-    const custom = (form.get('custom') ?? '').trim();
-    const note = (form.get('note') ?? '').trim();
-    if (custom.length > MAX_MESSAGE_LENGTH || note.length > MAX_MESSAGE_LENGTH) {
-      throw new OperatorUiHttpError(400, `A response field must be at most ${MAX_MESSAGE_LENGTH} characters`);
-    }
-    let answer: string;
-    if (choice === 'custom') {
-      if (!custom) throw new OperatorUiHttpError(400, 'A custom response is required');
-      answer = `Other — ${custom}`;
-    } else {
-      const selected = presentation.choices.find((candidate) => candidate.label === choice);
-      if (!selected) throw new OperatorUiHttpError(400, 'Choose one of the current options or write a custom response');
-      answer = `${selected.label} — ${selected.text}`;
-    }
-    const summary = `Response to ${need.kind} request: ${answer}${note ? `\nCondition or note: ${note}` : ''}`;
-    if (summary.length > MAX_MESSAGE_LENGTH) {
-      throw new OperatorUiHttpError(400, `The complete response must be at most ${MAX_MESSAGE_LENGTH} characters`);
-    }
-    await recordObservation(slug, {
-      source: `operator-ui-response:${actor}`,
-      summary,
-      ingressKey: `ui-response:${submittedVersion}:${responseId}:${sha256(summary).slice(0, 24)}`,
-    });
+    await recordNeedResponse(slug, {
+      sourceType: form.get('need_source_type') ?? '',
+      sourceId: form.get('need_id') ?? '',
+      version: form.get('need_version') ?? '',
+      responseId: form.get('response_id') ?? '',
+      choice: form.get('choice') ?? '',
+      custom: form.get('custom') ?? '',
+      note: form.get('note') ?? '',
+    }, actor);
     return redirect(res, `/workstreams/${encodeURIComponent(slug)}?tab=overview&responded=1`);
   }
 
@@ -1401,14 +1371,15 @@ export async function startOperatorUi(opts: OperatorUiOptions = {}): Promise<Run
   }
   const revisionEvents = new FleetRevisionEvents();
   const overview = overviewSource();
+  const restApi = createRestApi({ tokens: opts.apiTokens ?? restApiTokensFromEnv() });
   const server = createServer((req, res) => {
-    handle(req, res, opts.token, opts.clerk, revisionEvents, overview).catch((error: unknown) => {
+    handle(req, res, opts.token, opts.clerk, revisionEvents, overview, restApi).catch((error: unknown) => {
       if (res.headersSent) {
         res.destroy();
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      if (error instanceof OperatorUiHttpError) {
+      if (error instanceof OperatorUiHttpError || error instanceof NeedResponseError) {
         sendText(res, error.status, `Request could not be stored\n\n${message}\n`);
         return;
       }
