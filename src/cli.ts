@@ -239,7 +239,12 @@ async function runIntake(message: string, done?: string, runnerId?: string): Pro
 }
 
 async function main(): Promise<void> {
-  loadDotenv(); // repo-root .env fills unset config; explicit env still wins
+  // The repo-root .env fills unset config; explicit env still wins. Never under
+  // the test runner: NODE_TEST_CONTEXT is inherited by every CLI a test spawns,
+  // and an operator checkout's .env names the production store — on 30 Sep 2026
+  // a local `npm test` paused 32 live workstreams and re-homed the fleet steward
+  // onto a test runner id because pause/watch CLI tests read it.
+  if (!process.env.NODE_TEST_CONTEXT) loadDotenv();
   const [cmd, ...rest] = args();
   // Intake is the default action: bare `weaver`, or a first word that is not a
   // subcommand, is a message to onboard (alias `w=weaver`). Every real
