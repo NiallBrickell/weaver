@@ -4,6 +4,8 @@
 
 The claim is deliberately narrow: **"stored a memory" is not learning.** Learning is the next matching workstream's plan being different for an inspectable, attributable reason — and needing fewer human interventions without weaker verification.
 
+The **Policies** page of the [operator workspace](./operator-workspace.md) shows the whole store — doctrine, active, contested, shadow, and superseded — with each policy's scope tags, provenance, and evidence.
+
 ## Two ledgers
 
 Weaver keeps two ledgers, and what may cross between them is the whole design:

@@ -22,7 +22,7 @@ import {
   type RunningOperatorUi,
 } from './operatorUi.js';
 import type { ClerkOperatorAuthenticator } from './clerkOperatorAuth.js';
-import { arrive, createWorkstream, heartbeatRunner, listWorkstreams, load, newId, writeArtifact, type RunnerOutput } from './store.js';
+import { arrive, createWorkstream, heartbeatRunner, listWorkstreams, load, mutatePolicies, newId, writeArtifact, type RunnerOutput } from './store.js';
 import { OPERATOR_SCRIPT } from './ui/operator/render.js';
 import { recordCapacityBackoff } from './capacity.js';
 import { viewOf } from './watch.js';
@@ -1564,4 +1564,107 @@ test('the team overview is a read-only typed view linked from the nav, recompute
 
   // A read surface only: no write route exists under it.
   assert.equal((await fetch(`${base}/overview`, form({}))).status, 404);
+});
+
+test('the policies page lists the fleet policy store by standing, linked from the nav', async () => {
+  const at = '2026-09-01T10:00:00.000Z';
+  await mutatePolicies((store) => {
+    store.policies.push(
+      {
+        id: 'pol_rule', statement: 'Merge with a merge commit, never squash.', scope: { tags: ['code'] },
+        effect: { kind: 'narrow_authority', description: 'Refuse squash merges.' }, widensAuthority: false, status: 'shadow',
+        provenance: { source: 'backfill:rules', ref: 'CLAUDE.md § Git', interventionSummary: 'rules file' }, evidence: [], createdAt: at,
+      },
+      {
+        id: 'pol_active', statement: 'Run the typecheck before opening a PR.', scope: { tags: ['code', 'weaver'] },
+        effect: { kind: 'add_verification', description: 'Typecheck first.' }, widensAuthority: false, status: 'active',
+        provenance: { workstreamSlug: 'fix-ci', passId: 'pass_1', interventionSummary: 'operator asked for a typecheck' },
+        evidence: [{ workstreamSlug: 'other-job', passId: 'pass_2', note: 'followed it cleanly', interventionFree: true, applyingDecisionId: 'dec_1', at }],
+        createdAt: at,
+      },
+      {
+        id: 'pol_trial', statement: 'Link the tracker issue in every PR body.', scope: { tags: ['code'] },
+        effect: { kind: 'advisory', description: 'Link issues.' }, widensAuthority: false, status: 'shadow',
+        provenance: { workstreamSlug: 'fix-ci', passId: 'pass_3', interventionSummary: 'correction' }, evidence: [], createdAt: at,
+      },
+      {
+        id: 'pol_old', statement: 'Squash every merge.', scope: { tags: ['code'] },
+        effect: { kind: 'advisory', description: 'old' }, widensAuthority: false, status: 'superseded', supersededBy: 'pol_rule',
+        provenance: { workstreamSlug: 'fix-ci', passId: 'pass_0', interventionSummary: 'old' }, evidence: [], createdAt: at,
+      },
+    );
+  });
+
+  assert.match(await (await fetch(`${base}/board`)).text(), /data-testid="policies-link" href="\/policies"/);
+  const response = await fetch(`${base}/policies`);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /data-testid="operator-policies-page"/);
+  assert.match(html, /href="\/policies" aria-current="page"/);
+  assert.match(html, /2 rules are guiding jobs now \(1 yours, 1 learned\)\. 1 lesson is on trial/);
+  const section = (key: string) => {
+    const start = html.indexOf(`data-testid="policies-group-${key}"`);
+    assert.ok(start >= 0, `expected group ${key}`);
+    const end = html.indexOf('data-testid="policies-group-', start + 1);
+    return html.slice(start, end < 0 ? undefined : end);
+  };
+  assert.match(section('doctrine'), /Merge with a merge commit, never squash\./);
+  assert.match(section('doctrine'), /From your rules file: CLAUDE\.md § Git/);
+  assert.match(section('active'), /Run the typecheck before opening a PR\./);
+  assert.match(section('active'), /1 of 1 went cleanly/);
+  assert.match(section('active'), /href="\/workstreams\/other-job"/);
+  assert.match(section('shadowUnproven'), /Link the tracker issue/);
+  assert.match(section('superseded'), /Squash every merge\./);
+  assert.match(html, /<details[^>]*data-testid="policies-group-superseded"/, 'retired policies stay folded');
+});
+
+test('the analytics page shows interventions per successful outcome over time from the stats computation', async () => {
+  const day = (offset: number) => new Date(Date.now() - offset * 86_400_000).toISOString();
+  const first = await createTeamWorkstream({ message: 'Fix the checkout bug', requestId: 'analytics-1', actor: 'alice' });
+  const second = await createTeamWorkstream({ message: 'Fix the login bug', requestId: 'analytics-2', actor: 'alice' });
+  for (const [slug, offset, interventions] of [[first.slug, 3, 3], [second.slug, 1, 1]] as const) {
+    await arrive(slug, (doc) => {
+      doc.workstream.status = 'done';
+      doc.workstream.conclusion = { passId: 'pass_x', atVirtual: day(offset), summary: 'Shipped.', evidenceIds: [], disposition: 'delivered' };
+      doc.spend.humanInterventions = interventions;
+      doc.assignments.push({
+        id: newId('asg'), objective: 'o', briefing: 'b', kind: 'work', acceptanceCriteria: [], dependsOn: [], state: 'completed',
+        attempts: [{ runId: newId('run'), startedAt: day(offset), endedAt: day(offset) }],
+        adoption: { state: 'rejected' }, createdAtVirtual: day(offset),
+      });
+    });
+  }
+
+  assert.match(await (await fetch(`${base}/board`)).text(), /data-testid="analytics-link" href="\/analytics"/);
+  const response = await fetch(`${base}/analytics`);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /data-testid="operator-analytics-page"/);
+  assert.match(html, /href="\/analytics" aria-current="page"/);
+  // Lifetime counter over qualified conclusions: (3 + 1) / 2.
+  assert.match(html, /Each job that finished well needed a person 2\.00 times on average \(4 times across 2 jobs\)/);
+  assert.match(html, /data-testid="analytics-curve-line"/);
+  assert.match(html, /100%<\/p><p[^>]*>of checked results rejected/);
+  assert.match(html, /data-testid="analytics-jobs"/);
+  assert.match(html, new RegExp(`href="/workstreams/${first.slug}"`));
+});
+
+test('the fleet page shows when each routine last ran and next runs', async () => {
+  await createWorkstream({
+    slug: 'error-sweep', title: 'Sweep production errors', objective: 'o', tags: ['routine'],
+    successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true },
+  });
+  const ranAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+  const nextAt = new Date(Date.now() + 5 * 3_600_000).toISOString();
+  await arrive('error-sweep', (doc) => {
+    doc.passes.push({ id: 'pass_sweep', startedAt: ranAt, endedAt: ranAt, baseRevision: 1, wakeReasons: [], changes: [], outcome: 'completed' });
+    doc.wakes.push({ id: 'wake_sweep', reason: 'Next hourly sweep', condition: { type: 'wall_time', dueAt: nextAt }, status: 'pending', createdAt: ranAt });
+  });
+  const html = await (await fetch(`${base}/fleet`)).text();
+  const row = html.slice(html.indexOf('data-testid="fleet-routine-error-sweep"'));
+  assert.ok(html.includes('data-testid="fleet-routines"'));
+  assert.match(row, /Sweep production errors/);
+  assert.match(row, new RegExp(`data-testid="routine-last-run"[^>]*><time dateTime="${ranAt}"[^>]*>2 hours ago`));
+  assert.match(row, new RegExp(`data-testid="routine-next-run"[^>]*><time dateTime="${nextAt}"[^>]*>in 5 hours`));
+  assert.match(row, /Next hourly sweep/);
 });

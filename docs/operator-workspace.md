@@ -247,6 +247,43 @@ objective must not keep the Workstream active forever. Concluded Workstreams
 may still carry a needs-you overlay; conclusion and housekeeping attention are
 different facts.
 
+### Policies, analytics and routine schedules
+
+Until September 2026 the policy store and the intervention curve existed only
+as static files a person had to regenerate on the machine that held the store:
+the `learned.html` page written by `weaver inspect` (its own page since `89804c6`,
+14 Aug) and the `stats.html` page written by `weaver stats` (`c533958`). The
+hosted workspace (`e52216d`, 25 Aug, and every nav change since, including the
+Overview in #221) never linked either, so on the hosted UI they were
+unreachable rather than deleted. They are now live pages in the sidebar:
+
+- `/policies` renders `learnedGroups` (the same grouping the static Learned
+  page used) with each policy's scope tags, provenance and evidence.
+- `/analytics` renders `computeStats` — the one implementation behind
+  `weaver stats` — plus the Overview's accepted/rejected counts. No second
+  metric implementation exists.
+
+Both read the Overview's `revisionMemo`: one `loadFleet()` per fleet revision,
+however many people view these pages, so they add no per-view document loads
+on a hosted store. `computeStats` runs once per revision inside that memo.
+The fleet revision is built from workstream heads only, so a policy-store
+write that touches no workstream (a CLI supersede, a backfill refresh) would
+not invalidate it: `/policies` therefore reads the policy store fresh — one
+document, not a fleet loop — and only the analytics policy counts wait for
+the next fleet revision.
+
+The Fleet page lists routines with `routineSchedule` (`src/fleetHealth.ts`),
+pure over documents `loadFleet()` already read. "Last run" is the newest
+**completed** pass without a typed infrastructure wait — a capacity backoff,
+a revision conflict or a failure is not a run. "Next run" is the earliest
+pending time or wall-time wake that is the routine's own: provider retries,
+runaway-guard waits and fleet deferrals are recovery, not schedule. Virtual
+wake times are shifted onto the wall clock by the current clock offset. A
+routine waiting only on an unsatisfied probe shows "when something changes"
+with the probe cadence, because the probe cursor (its real next check) is not
+part of the document. "Behind schedule" reuses `routineHealth`, the same rule
+the fleet notice counts.
+
 ## Delivery architecture
 
 Add a separate `weaver ui` process. Do not widen `weaver serve`.

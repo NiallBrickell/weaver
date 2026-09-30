@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 
-import { fleetAttentionEvidence, runnerOutput } from './fleetHealth.js';
+import { fleetAttentionEvidence, routineSchedule, runnerOutput } from './fleetHealth.js';
 import { arrive, closeStore, createWorkstream, load } from './store.js';
 import type { InfrastructureWait } from './types.js';
 
@@ -611,6 +611,61 @@ test('runnerOutput uses createdAt as an immediate wake\'s due time, and virtual 
 
     const virtualOnly = runnerOutput([await load('due-virtual')], wallNow, nowVirtual);
     assert.equal(virtualOnly.oldestUnservedDueAt, '2026-09-23T00:00:00.000Z');
+  } finally {
+    await closeStore();
+    delete process.env.WEAVER_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('routine schedule reads last run from completed passes and next run from the routine\'s own wakes only', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-fleet-routine-schedule-'));
+  process.env.WEAVER_HOME = home;
+  const wallNow = new Date('2026-08-26T11:00:00.000Z');
+  // A one-hour virtual offset: time wakes are virtual, so they must be
+  // shifted back onto the wall clock the page shows.
+  const nowVirtual = new Date('2026-08-26T12:00:00.000Z');
+  const base = { successCriteria: [], constraints: [], autonomy: { sendsRequireApproval: true } };
+  try {
+    await createWorkstream({ ...base, slug: 'sweep', title: 'Sweep errors', objective: 'o', tags: ['routine'] });
+    await createWorkstream({ ...base, slug: 'dormant', title: 'Dormant sweep', objective: 'o', tags: ['routine'] });
+    await createWorkstream({ ...base, slug: 'one-off', title: 'One-off job', objective: 'o', tags: [] });
+    await arrive('sweep', (doc) => {
+      doc.passes.push(
+        { id: 'p1', startedAt: '2026-08-26T08:00:00.000Z', endedAt: '2026-08-26T08:05:00.000Z', baseRevision: 1, wakeReasons: [], changes: [], outcome: 'completed' },
+        // Newer, but not a run: capacity backoff, a conflict, and a failure.
+        { id: 'p2', startedAt: '2026-08-26T09:00:00.000Z', endedAt: '2026-08-26T09:01:00.000Z', baseRevision: 2, wakeReasons: [], changes: [], outcome: 'completed', infrastructure: {
+          kind: 'session_limit', recovery: 'automatic_retry', source: 'coordinator', sourceId: 'p2', model: 'm', executor: 'local-sdk', provider: 'anthropic',
+          detectedAt: '2026-08-26T09:01:00.000Z', retryAt: '2026-08-26T10:00:00.000Z',
+        } },
+        { id: 'p3', startedAt: '2026-08-26T09:30:00.000Z', baseRevision: 2, wakeReasons: [], changes: [], outcome: 'conflicted' },
+        { id: 'p4', startedAt: '2026-08-26T09:40:00.000Z', baseRevision: 2, wakeReasons: [], changes: [], outcome: 'error' },
+      );
+      doc.assignments.push({
+        id: 'asg_1', objective: 'o', briefing: 'b', kind: 'work', acceptanceCriteria: [], dependsOn: [], state: 'completed',
+        attempts: [{ runId: 'r1', startedAt: '2026-08-26T08:10:00.000Z', endedAt: '2026-08-26T08:20:00.000Z' }],
+        adoption: { state: 'accepted' }, createdAtVirtual: '2026-08-26T08:05:00.000Z',
+      });
+      doc.wakes.push(
+        { id: 'w_retry', reason: 'provider retry', condition: { type: 'time', dueAtVirtual: '2026-08-26T12:10:00.000Z' }, status: 'pending', createdAt: '2026-08-26T09:01:00.000Z', infrastructure: {
+          kind: 'session_limit', recovery: 'automatic_retry', source: 'coordinator', sourceId: 'p2', model: 'm', executor: 'local-sdk', provider: 'anthropic',
+          detectedAt: '2026-08-26T09:01:00.000Z', retryAt: '2026-08-26T12:10:00.000Z',
+        } },
+        { id: 'w_daily', reason: 'Daily error sweep', condition: { type: 'time', dueAtVirtual: '2026-08-27T09:00:00.000Z' }, status: 'pending', createdAt: '2026-08-26T08:05:00.000Z' },
+        { id: 'w_fired', reason: 'old', condition: { type: 'time', dueAtVirtual: '2026-08-26T07:00:00.000Z' }, status: 'fired', createdAt: '2026-08-25T08:05:00.000Z' },
+      );
+    });
+    const rows = routineSchedule([await load('sweep'), await load('dormant'), await load('one-off')], wallNow, nowVirtual);
+    assert.deepEqual(rows.map((row) => row.slug), ['dormant', 'sweep'], 'only routines, behind ones first');
+    const sweep = rows.find((row) => row.slug === 'sweep')!;
+    assert.equal(sweep.lastRunAt, '2026-08-26T08:05:00.000Z');
+    assert.equal(sweep.lastWorkerRunAt, '2026-08-26T08:10:00.000Z');
+    assert.deepEqual(sweep.next, { at: '2026-08-27T08:00:00.000Z', reason: 'Daily error sweep' });
+    assert.equal(sweep.behind, false);
+    const dormant = rows.find((row) => row.slug === 'dormant')!;
+    assert.equal(dormant.behind, true);
+    assert.equal(dormant.lastRunAt, undefined);
+    assert.equal(dormant.next, undefined);
   } finally {
     await closeStore();
     delete process.env.WEAVER_HOME;
