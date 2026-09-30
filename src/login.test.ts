@@ -11,6 +11,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
+  currentConfig,
   ensureServeToken,
   renderRemoteEnvLines,
   renderRemoteExecutorSecretLines,
@@ -252,4 +253,21 @@ test('.env update handles an empty or missing file and duplicate keys determinis
   // win, so leaving a later duplicate would make the update ineffective.
   const dup = updateEnvContent('A_KEY=old\nA_KEY=older\n', { A_KEY: 'new' });
   assert.equal(dup, 'A_KEY=new\nA_KEY=new\n');
+});
+
+test('the render reads every optional setting from the environment, so push-env cannot silently drop one', () => {
+  const names = ['WEAVER_SHADOW_COORDINATOR', 'WEAVER_SHADOW_RATE', 'WEAVER_SHADOW_EFFORT', 'WEAVER_PROBE_CREDENTIALS'];
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) process.env[name] = `value-of-${name}`;
+    const config = currentConfig();
+    for (const name of names) assert.equal(config[name], `value-of-${name}`, name);
+    const { lines } = renderRemoteEnvLines({ WEAVER_SERVE_TOKEN: 't' }, config);
+    for (const name of names) assert.ok(lines.includes(`${name}=value-of-${name}`), `${name} rendered`);
+  } finally {
+    for (const name of names) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  }
 });
