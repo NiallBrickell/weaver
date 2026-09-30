@@ -216,7 +216,16 @@ export interface Assignment {
      * regardless of the coordinator's approvalMode. Computed from typed facts
      * the model cannot author — the changed paths, the workstream's origin,
      * whether the command shape is classifiable — never from prose. */
-    egressGate?: { reasons: EgressGateReason[]; fingerprint: string; at: Iso };
+    egressGate?: {
+      reasons: EgressGateReason[];
+      fingerprint: string;
+      at: Iso;
+      /** EGRESS_CLASSIFIER_VERSION that produced the verdict; absent = 1. */
+      classifier?: number;
+      /** The approval mode the gate overrode when it made the act a person's,
+       * so a later classifier that clears the command can give it back. */
+      modeBeforeGate?: 'pilot-or-human' | 'human-only' | 'unset';
+    };
     /** Human rejection of a gated action — the mirror of approval, kept
      * durable (state 'cancelled' alone dates and attributes nothing). */
     rejection?: { actor: string; at: Iso; reason: string };

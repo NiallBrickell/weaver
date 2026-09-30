@@ -97,6 +97,7 @@ import {
   approvalCoversGate,
   commandHasEgress,
   describeEgressGate,
+  EGRESS_CLASSIFIER_VERSION,
   egressGateSeam,
   evaluateEgressGate,
   isWorkflowPermissionRefusal,
@@ -315,8 +316,11 @@ export async function gateRepoEgressActions(slug: string, runner: RunnerClaimIde
     await arrive(slug, (d, event) => {
       const a2 = d.assignments.find((x) => x.id === asg.id);
       if (!a2?.exec || a2.state !== 'gated' || a2.exec.approval || a2.exec.egressGate || a2.exec.run !== asg.exec!.run) return;
-      a2.exec.egressGate = { reasons: gate.reasons, fingerprint: gate.fingerprint, at: new Date().toISOString() };
+      a2.exec.egressGate = {
+        reasons: gate.reasons, fingerprint: gate.fingerprint, at: new Date().toISOString(), classifier: EGRESS_CLASSIFIER_VERSION,
+      };
       if (!gate.humanOnly) return;
+      a2.exec.egressGate.modeBeforeGate = a2.exec.approvalMode ?? 'unset';
       a2.exec.approvalMode = 'human-only';
       const why = describeEgressGate(gate.reasons);
       recordEgressGateCard(d, a2, why);
@@ -324,7 +328,66 @@ export async function gateRepoEgressActions(slug: string, runner: RunnerClaimIde
       routed++;
     });
   }
+  await recheckOutdatedClassifications(slug, runner);
   return routed;
+}
+
+/**
+ * An action parked because an older classifier could not read its command is
+ * checked once by the current one. On 2026-09-30 thirteen ordinary push-and-PR
+ * actions waited on a person because a PR body mentioned "https" or "source";
+ * the fixed classifier clears them, and nothing else ever looks at a stored
+ * verdict again. A command the current classifier clears goes back to the
+ * approval mode the gate overrode, and its card closes; one it still cannot
+ * read keeps its card. Holds for other reasons are facts about the change,
+ * not the classifier, and are never revisited here.
+ */
+async function recheckOutdatedClassifications(slug: string, runner: RunnerClaimIdentity): Promise<void> {
+  const doc = await load(slug);
+  const stale = doc.assignments.filter(
+    (a) => a.kind === 'action' && a.state === 'gated' && a.exec?.run && !a.exec.approval && a.exec.egressGate
+      && (a.exec.egressGate.classifier ?? 1) < EGRESS_CLASSIFIER_VERSION
+      && a.exec.egressGate.reasons.some((r) => r.kind === 'unclassified-egress')
+      && assignmentMatchesRunner(a, runner),
+  );
+  for (const asg of stale) {
+    const gate = await actionEgressGate(doc, asg);
+    await arrive(slug, (d, event) => {
+      const a2 = d.assignments.find((x) => x.id === asg.id);
+      const prior = a2?.exec?.egressGate;
+      if (!a2?.exec || !prior || a2.state !== 'gated' || a2.exec.approval || a2.exec.run !== asg.exec!.run) return;
+      if ((prior.classifier ?? 1) >= EGRESS_CLASSIFIER_VERSION) return;
+      if (!gate || gate.humanOnly) {
+        // Still a person's act: record that the current classifier looked, so
+        // it is not asked again, and keep the card as it is.
+        prior.classifier = EGRESS_CLASSIFIER_VERSION;
+        return;
+      }
+      const mode = prior.modeBeforeGate;
+      a2.exec.egressGate = {
+        reasons: gate.reasons, fingerprint: gate.fingerprint, at: new Date().toISOString(), classifier: EGRESS_CLASSIFIER_VERSION,
+      };
+      // A gate recorded before modeBeforeGate existed overrode a mode nobody
+      // kept. The coordinator's choice is advice under the engine gate, so the
+      // act returns to the default route: Pilot, then a person if Pilot declines.
+      if (mode === 'human-only') {
+        a2.exec.approvalMode = 'human-only';
+      } else if (mode === 'pilot-or-human') {
+        a2.exec.approvalMode = 'pilot-or-human';
+      } else {
+        delete a2.exec.approvalMode;
+      }
+      if (a2.exec.approvalMode === 'human-only') return;
+      for (const att of d.attention) {
+        if (att.kind === 'approval' && att.refId === a2.id && att.status === 'open') {
+          att.status = 'resolved';
+          att.resolvedAt = new Date().toISOString();
+          att.resolvedBy = 'engine:egress-gate'; // system actor — never a human intervention
+        }
+      }
+      event('action.egress_gate_cleared', `${a2.id} no longer needs a person: the current command classifier reads its command (was: ${describeEgressGate(prior.reasons)})`, [a2.id]);
+    });
+  }
 }
 
 /**

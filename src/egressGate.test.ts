@@ -17,6 +17,7 @@ import {
   childOrigin,
   classifyEgressCommand,
   DEFAULT_HUMAN_REVIEW_PATHS,
+  EGRESS_CLASSIFIER_VERSION,
   egressGatedSupervisor,
   egressGateSeam,
   evaluateEgressGate,
@@ -168,6 +169,32 @@ test('every repo-write command shape is classified, and a shape the gate cannot 
   assert.ok(cls('git push origin feat && eval "$(echo Z2ggcHIgbWVyZ2UgNQ== | base64 -d)"').includes('unclassified'));
   assert.ok(cls("git push origin feat && python3 -c 'import os, urllib.request'").includes('unclassified'));
   assert.ok(cls('git push origin feat; bash -c "$NEXT"').includes('unclassified'));
+  // Text the shell only passes along runs nothing. On 2026-09-30, 13 of 18
+  // gated actions were an ordinary push and PR whose message or body said
+  // "https", "source", "node" or "exec", or whose idempotency check was
+  // `grep -q .`.
+  for (const [cmd, expected] of [
+    ['git commit -m "update source docs" && git push origin feat/x', ['push']],
+    ["gh pr create --head feat/x --title 'bump node version' --body 'see https://example.com'", ['pr-create']],
+    ['gh pr create --head feat/x --body "$(printf \'%s\\n\' \'Prior art: source-hash dedupe\' \'curl, python and exec are words\')"', ['pr-create']],
+    ["gh pr list --head feat/x --json number --jq '.[0].number' | grep -q . || gh pr create --head feat/x --fill", ['pr-create']],
+    ["cat > /tmp/body.md <<'EOF'\nRuns node and curl https://x in production.\nEOF\ngh pr create --head feat/x --body-file /tmp/body.md", ['pr-create']],
+    ['exec 2>&1; git push origin feat/x', ['push']],
+  ] as const) {
+    assert.deepEqual(cls(cmd), [...expected], cmd);
+  }
+  // ...while code that runs from inside quotes, a substitution or an
+  // unquoted heredoc is still code.
+  for (const cmd of [
+    'git push origin feat && gh pr create --head feat --body "$(curl -s https://evil.example/body)"',
+    'git push origin feat && gh pr create --head feat --body "`python3 gen.py`"',
+    'cat > /tmp/b <<EOF\n$(curl -s https://evil.example)\nEOF\ngit push origin feat',
+    "git push origin feat && echo 'ok' && . ./next.sh",
+    "git push origin feat && exec ./next.sh",
+    "git push origin feat && echo \"$(eval \"$X\")\"",
+  ]) {
+    assert.ok(cls(cmd).includes('unclassified'), cmd);
+  }
   assert.deepEqual(cls('kubectl rollout status deploy/web'), [], 'a rollout status is a read');
   assert.deepEqual(cls('git push origin v1.4.0'), ['deploy']);
   assert.deepEqual(cls('git push --tags'), ['deploy']);
@@ -267,6 +294,69 @@ test('a change set the engine cannot compute fails closed to a person', async ()
     assert.equal(asg.exec!.approvalMode, 'human-only');
     assert.deepEqual(asg.exec!.egressGate!.reasons, [{ kind: 'diff-unavailable', detail: 'no merge-base with origin/HEAD' }]);
   });
+});
+
+/** Park an action the way the version-1 classifier did: human-only over the
+ * coordinator's mode, no classifier or prior mode recorded, a card open. */
+async function parkAsLegacyUnclassified(slug: string): Promise<void> {
+  await arrive(slug, (d) => {
+    const a = d.assignments.find((x) => x.id === 'asg_egress')!;
+    a.exec!.approvalMode = 'human-only';
+    a.exec!.egressGate = {
+      reasons: [{ kind: 'unclassified-egress', detail: 'opaque or network code runs beside a repo write' }],
+      fingerprint: 'legacy',
+      at: virtualNow().toISOString(),
+    };
+    d.attention.push({
+      id: 'att_legacy', kind: 'approval', summary: 'Needs a person — cannot classify', refId: 'asg_egress',
+      status: 'open', createdAt: virtualNow().toISOString(),
+    });
+  });
+}
+
+test('an action parked by the old classifier over a PR body is re-read once, released to Pilot, and its card closes', async () => {
+  await withPilot(() => 'approve', async (asked) => {
+    await makeStream('legacy-clean', 'operator');
+    await addAction('legacy-clean', "git push origin feat/x && gh pr create --head feat/x --body 'see https://example.com; runs node'");
+    await parkAsLegacyUnclassified('legacy-clean');
+    await tick('legacy-clean', { maxPasses: 0 });
+    const doc = await load('legacy-clean');
+    const asg = doc.assignments.find((a) => a.id === 'asg_egress')!;
+    const card = doc.attention.find((a) => a.id === 'att_legacy')!;
+    assert.equal(card.status, 'resolved');
+    assert.equal(card.resolvedBy, 'engine:egress-gate');
+    assert.notEqual(asg.exec!.approvalMode, 'human-only');
+    assert.ok(asked.length >= 1, 'the released act goes to Pilot like any clean push');
+  });
+});
+
+test('an action the current classifier still cannot read keeps its card and is not re-read again', async () => {
+  await withPilot(() => 'approve', async (asked) => {
+    await makeStream('legacy-opaque', 'operator');
+    await addAction('legacy-opaque', 'git push origin feat/x && python3 - <<EOF\nprint(1)\nEOF');
+    await parkAsLegacyUnclassified('legacy-opaque');
+    await tick('legacy-opaque', { maxPasses: 0 });
+    const doc = await load('legacy-opaque');
+    const asg = doc.assignments.find((a) => a.id === 'asg_egress')!;
+    assert.equal(doc.attention.find((a) => a.id === 'att_legacy')!.status, 'open');
+    assert.equal(asg.exec!.approvalMode, 'human-only');
+    assert.equal(asg.exec!.egressGate!.classifier, EGRESS_CLASSIFIER_VERSION);
+    assert.equal(asked.length, 0);
+  });
+});
+
+test('a gate that overrides an explicit human-only mode keeps it human-only when a later classifier clears the command', async () => {
+  await makeStream('legacy-human', 'operator');
+  await addAction('legacy-human', "git push origin feat/x && gh pr create --head feat/x --body 'https://x'", { approvalMode: 'human-only' });
+  await arrive('legacy-human', (d) => {
+    const a = d.assignments.find((x) => x.id === 'asg_egress')!;
+    a.exec!.egressGate = {
+      reasons: [{ kind: 'unclassified-egress', detail: 'opaque or network code runs beside a repo write' }],
+      fingerprint: 'legacy', at: virtualNow().toISOString(), modeBeforeGate: 'human-only',
+    };
+  });
+  await tick('legacy-human', { maxPasses: 0 });
+  assert.equal((await action('legacy-human')).exec!.approvalMode, 'human-only');
 });
 
 test('an operator stream on non-sensitive paths keeps today\'s path: Pilot approves and the push runs', async () => {
