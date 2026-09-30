@@ -23,9 +23,10 @@ import { randomUUID } from 'node:crypto';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { BridgeToolDefinition } from './executor/toolBridge.js';
 import type { CoordinatorExecutor } from './executor/coordinator.js';
-import type { CapacityTarget } from './modelConfig.js';
+import type { CapacityTarget, EffortSetting } from './modelConfig.js';
 import { armWall } from './wall.js';
 import type {
+  PassUsage,
   ShadowAgreement,
   ShadowMove,
   ShadowPassClass,
@@ -406,6 +407,9 @@ export interface ShadowRunInput {
   reads: ShadowReadPort;
   env: Record<string, string | undefined>;
   realMoves: readonly ShadowMove[];
+  /** The seat's own reasoning effort, already resolved by the caller
+   * (shadowSeatEffort): sent on this run's request only and recorded. */
+  effort?: EffortSetting;
   now?: () => Date;
   wallMs?: number;
 }
@@ -424,8 +428,10 @@ export async function runShadowCoordinator(input: ShadowRunInput): Promise<Shado
     at: (input.now ?? (() => new Date()))().toISOString(),
     passClass: passClassOf(realMoves),
     realMoves,
+    ...(input.effort ? { effort: input.effort } : {}),
   };
   let costUsd: number | undefined;
+  let usage: PassUsage | undefined;
   let error: string | undefined;
   const abort = new AbortController();
   const wall = armWall(abort, input.wallMs ?? SHADOW_WALL_MS, 'shadow coordinator');
@@ -439,10 +445,12 @@ export async function runShadowCoordinator(input: ShadowRunInput): Promise<Shado
       model: input.seat.model,
       systemPrompt: input.systemPrompt,
       tools,
+      ...(input.effort ? { effort: input.effort } : {}),
       env: input.env,
       abort,
     });
     costUsd = outcome.costUsd;
+    usage = outcome.usage;
     if (outcome.error) error = outcome.error;
   } catch (caught) {
     error = caught instanceof Error ? caught.message : String(caught);
@@ -454,6 +462,7 @@ export async function runShadowCoordinator(input: ShadowRunInput): Promise<Shado
     ...base,
     moves,
     ...(costUsd !== undefined ? { costUsd } : {}),
+    ...(usage ? { usage } : {}),
     ...(error ? { error: error.slice(0, 500) } : { agreement: computeAgreement(realMoves, moves) }),
   };
 }

@@ -741,7 +741,15 @@ export interface ShadowPassRecord {
   realMoves: ShadowMove[];
   /** What the shadow seat would have done. Captured, never applied. */
   moves: ShadowMove[];
+  /** Reasoning effort the shadow seat ran at (`WEAVER_SHADOW_EFFORT`, else
+   * the coordinator effort it inherited). Absent where effort does not apply
+   * (a Codex or provider-routed seat) and on records made before it was kept.
+   * The report groups by seat and effort so unlike runs never mix. */
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'default';
   costUsd?: number;
+  /** The shadow run's own token anatomy, so its cost can be read beside the
+   * real pass's `usage`. Absent when the provider reported none. */
+  usage?: PassUsage;
   /** A failed shadow run is recorded and swallowed; it has no agreement. */
   error?: string;
   agreement?: ShadowAgreement;

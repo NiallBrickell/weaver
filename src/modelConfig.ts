@@ -28,14 +28,25 @@ const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh',
  * Claude Code; an unknown value is refused rather than guessed.
  */
 function effortSetting(name: string, fallback: EffortLevel): EffortLevel | undefined {
+  const setting = effortEnv(name);
+  if (setting === undefined) return fallback;
+  return setting === 'default' ? undefined : setting;
+}
+
+/** A pinned effort, or `default` to hand the choice back to Claude Code. */
+export type EffortSetting = EffortLevel | 'default';
+
+/** The effort an env var names, or undefined when it is unset. */
+function effortEnv(name: string): EffortSetting | undefined {
   const raw = process.env[name]?.trim().toLowerCase();
-  if (!raw) return fallback;
-  if (raw === 'default') return undefined;
+  if (!raw) return undefined;
+  if (raw === 'default') return 'default';
   if ((EFFORT_LEVELS as readonly string[]).includes(raw)) return raw as EffortLevel;
   throw new Error(`${name} must be one of ${EFFORT_LEVELS.join(', ')} or default (got '${raw}')`);
 }
 
-/** Effort for every coordinator seat, including a shadow seat. */
+/** Effort for every live coordinator seat. A shadow seat inherits it unless
+ * `WEAVER_SHADOW_EFFORT` overrides it for that seat alone. */
 export function coordinatorEffort(): EffortLevel | undefined {
   return effortSetting('WEAVER_COORDINATOR_EFFORT', 'xhigh');
 }
@@ -207,6 +218,9 @@ export interface ShadowCoordinatorConfig {
   target: CapacityTarget;
   /** Fraction of completed coordinator passes shadowed, in (0, 1]. */
   rate: number;
+  /** `WEAVER_SHADOW_EFFORT`: the shadow seat's own reasoning effort. Absent
+   * means it inherits the live coordinator effort. */
+  effort?: EffortSetting;
 }
 
 /**
@@ -238,7 +252,19 @@ export function shadowCoordinatorConfig(): ShadowCoordinatorConfig | null {
       `WEAVER_SHADOW_COORDINATOR executor '${target.executor}' is not a coordinator executor — supported: local-sdk, codex-sdk`,
     );
   }
-  return rate > 0 ? { target, rate } : null;
+  const effort = effortEnv('WEAVER_SHADOW_EFFORT');
+  return rate > 0 ? { target, rate, ...(effort ? { effort } : {}) } : null;
+}
+
+/**
+ * The effort the shadow seat actually runs at, as sent to the executor and
+ * recorded on its ShadowPassRecord, so a report never mixes efforts. Absent
+ * where effort does not apply: a Codex seat ignores it, and a provider-routed
+ * (openrouter/…) model gets its route's default, exactly as a live seat does.
+ */
+export function shadowSeatEffort(config: ShadowCoordinatorConfig): EffortSetting | undefined {
+  if (config.target.executor !== 'local-sdk' || providerFromModel(config.target.model) !== null) return undefined;
+  return config.effort ?? coordinatorEffort() ?? 'default';
 }
 
 /** A legacy coordinator always ran through the local Claude Agent SDK. A

@@ -21,7 +21,7 @@ import {
   redactSecrets,
   stripClaudeCredentials,
 } from '../secrets.js';
-import { coordinatorEffort, effortForModel } from '../modelConfig.js';
+import { coordinatorEffort, effortForModel, type EffortSetting } from '../modelConfig.js';
 import type { PassUsage } from '../types.js';
 import { startToolBridge, type BridgeToolDefinition, type ToolBridge } from './toolBridge.js';
 
@@ -37,6 +37,10 @@ export interface CoordinatorExecutionRequest {
   systemPrompt: string;
   model: string;
   tools: BridgeToolDefinition[];
+  /** Overrides the coordinator effort for this run only (`default` sends
+   * none). Only the measurement-only shadow seat sets it, so the live pass
+   * always runs at coordinatorEffort(). Codex ignores it. */
+  effort?: EffortSetting;
   env: Record<string, string | undefined>;
   abort: AbortController;
   onClaudeMessage?: (message: SDKMessage) => void;
@@ -232,12 +236,14 @@ export class ClaudeCoordinatorExecutor implements CoordinatorExecutor {
       // the rest of what this switches off (telemetry, error reporting,
       // update checks) is equally nothing a controller pass needs.
       env = { ...env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
-      const effort = effortForModel(req.model, coordinatorEffort());
+      const requested = req.effort === undefined ? coordinatorEffort() : req.effort === 'default' ? undefined : req.effort;
+      const effort = effortForModel(req.model, requested);
       for await (const message of this.runQuery({
         prompt: blocks ? singleUserTurn(blocks) : req.prompt,
         options: {
           model,
-          // Pinned: see coordinatorEffort in modelConfig.
+          // Pinned: see coordinatorEffort in modelConfig (a shadow seat may
+          // carry its own, WEAVER_SHADOW_EFFORT).
           ...(effort ? { effort } : {}),
           systemPrompt: req.systemPrompt,
           // The coordinator is a controller over typed state, not a worker.
