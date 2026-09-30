@@ -164,6 +164,80 @@ function routineHealth(doc: WorkstreamDoc, wallNow: Date, nowVirtual: Date) {
   };
 }
 
+/** One routine's schedule, for the fleet page: when it last ran, when it
+ * runs next, and whether it has fallen behind. */
+export interface RoutineScheduleRow {
+  slug: string;
+  title: string;
+  status: WorkstreamDoc['workstream']['status'];
+  /** Wall-clock end of the newest completed coordinator pass. Passes that
+   * waited on model capacity, conflicted, or failed are not a run. */
+  lastRunAt?: string;
+  /** Wall-clock start of the newest worker attempt on this routine's own
+   * assignments. */
+  lastWorkerRunAt?: string;
+  /** The routine's own next scheduled wake, as wall-clock time. Provider
+   * retries, runaway-guard waits, and fleet deferrals are excluded: they are
+   * recovery, not the routine's schedule. */
+  next?: { at: string; reason: string };
+  /** A standing watch for changes instead of (or beside) a timed wake. */
+  watchEverySeconds?: number;
+  /** Same rule the fleet notice uses for "behind schedule". */
+  behind: boolean;
+}
+
+/**
+ * Every routine's last and next run, read from the same typed records the
+ * fleet notice reads — completed passes, attempts, and pending wakes — and
+ * never from events or transcripts. Pure over already-loaded documents, so a
+ * page can call it on a cached fleet without touching the store.
+ */
+export function routineSchedule(
+  docs: WorkstreamDoc[],
+  wallNow = new Date(),
+  nowVirtual = virtualNow(),
+): RoutineScheduleRow[] {
+  const offsetMs = nowVirtual.getTime() - wallNow.getTime();
+  return docs
+    .filter((doc) => doc.workstream.tags.includes('routine') && doc.workstream.status !== 'done')
+    .map((doc) => {
+      const lastRunAt = doc.passes
+        .filter((pass) => pass.outcome === 'completed' && !pass.infrastructure)
+        .map((pass) => pass.endedAt ?? pass.startedAt)
+        .sort()
+        .at(-1);
+      const lastWorkerRunAt = doc.assignments
+        .flatMap((assignment) => assignment.attempts.map((attempt) => attempt.startedAt))
+        .sort()
+        .at(-1);
+      const pending = doc.wakes.filter((wake) =>
+        wake.status === 'pending' && !wake.infrastructure && !wake.executionSafety && !isFleetDeferralWake(wake),
+      );
+      const timed = pending
+        .flatMap((wake) => {
+          if (wake.condition.type === 'time') {
+            return [{ at: new Date(Date.parse(wake.condition.dueAtVirtual) - offsetMs).toISOString(), reason: wake.reason }];
+          }
+          if (wake.condition.type === 'wall_time') return [{ at: wake.condition.dueAt, reason: wake.reason }];
+          return [];
+        })
+        .sort((a, b) => a.at.localeCompare(b.at));
+      const watch = pending.find((wake) => wake.condition.type === 'probe' && !wake.condition.satisfiedBy);
+      const health = routineHealth(doc, wallNow, nowVirtual);
+      return {
+        slug: doc.workstream.slug,
+        title: doc.workstream.title,
+        status: doc.workstream.status,
+        ...(lastRunAt ? { lastRunAt } : {}),
+        ...(lastWorkerRunAt ? { lastWorkerRunAt } : {}),
+        ...(timed[0] ? { next: timed[0] } : {}),
+        ...(watch && watch.condition.type === 'probe' ? { watchEverySeconds: watch.condition.spec.everySeconds } : {}),
+        behind: !!health && (health.dormant || health.overdueWakes.length > 0 || health.awaitingReviewAssignmentIds.length > 0),
+      };
+    })
+    .sort((a, b) => Number(b.behind) - Number(a.behind) || a.title.localeCompare(b.title));
+}
+
 /**
  * Shared-dependency failures are fleet facts, not N human decisions. This pure
  * projection is deliberately model-free: it still explains the outage when no

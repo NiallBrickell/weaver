@@ -27,6 +27,26 @@ the fleet's work comes from, how outcomes ended, and what it costs. On desktop t
 same groups and stays available when you open a job; on mobile **All jobs**
 returns to that list without repeating it above the selected job.
 
+Two more pages sit beside them in the sidebar:
+
+- **Policies** is the fleet's policy store: your own rules first, then lessons
+  learned from your corrections that are in use, under review, on trial, or
+  retired. Each row opens to show the full statement, the tags that decide
+  which jobs it applies to, where it came from, and the evidence behind it
+  (which jobs followed it cleanly and which still needed a person). It is the
+  same store `weaver policies` shows; see [learning](./learning.md).
+- **Analytics** answers "is Weaver needing me less often?": times a person
+  stepped in per job that finished well, as a line over time with the
+  week-on-week change, beside the rejection rate, how jobs ended, who stepped
+  in, how many actions were approved automatically, first-try success, and the
+  jobs that needed you most. The numbers come from the same computation as
+  [`weaver stats`](./stats.md).
+
+The **Fleet** page also lists every routine with when it last ran (the last
+planning run that finished, not one that waited on model capacity or failed),
+when it last put an agent to work, and when it runs next. A routine that is
+behind schedule is marked and listed first. See [routines](./routines.md).
+
 Each job has five task-oriented tabs. Only the selected tab body is rendered,
 so scrolling is never the way you navigate between unrelated parts of a job.
 Opening a job without choosing a tab lands on **Timeline**:

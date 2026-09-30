@@ -27,6 +27,7 @@ import {
   fleetAttentionEvidence,
   fleetIncidents,
   isFleetAttentionSteward,
+  routineSchedule,
 } from './fleetHealth.js';
 import {
   createOrGetFleetAttentionStewardWorkstream,
@@ -38,6 +39,7 @@ import { ManagedWorkstreamError } from './managedWorkstreams.js';
 import { deriveFallback, loadHouse } from './onboard.js';
 import { computeOverview, revisionMemo, type OverviewPayload } from './overview.js';
 import { loadPolicies, type PolicyRecord } from './policies.js';
+import { computeStats, type StatsPayload } from './stats.js';
 import { DEFAULT_TIMELINE_LIMIT, workstreamTimeline } from './timeline.js';
 import { liveRunnerPid, runnerLoopHealthy, runnerSourceStale } from './runner.js';
 import { loadAllSecrets, redactSecrets } from './secrets.js';
@@ -79,6 +81,8 @@ import {
   renderOperatorFleetHtml,
   renderOperatorOverviewHtml,
   renderOperatorNewHtml,
+  renderOperatorPoliciesHtml,
+  renderOperatorAnalyticsHtml,
   renderOperatorWorkspaceHtml,
   type OperatorFleetView,
   DEFAULT_WORKSPACE_TAB,
@@ -126,7 +130,7 @@ interface LoadedFleet {
   policies: PolicyRecord[];
 }
 
-type OverviewSource = () => Promise<{ fleet: LoadedFleet; overview: OverviewPayload }>;
+type OverviewSource = () => Promise<{ fleet: LoadedFleet; overview: OverviewPayload; stats: StatsPayload }>;
 
 /**
  * The overview reads every document, like the board, so it must not add a
@@ -134,7 +138,9 @@ type OverviewSource = () => Promise<{ fleet: LoadedFleet; overview: OverviewPayl
  * and keeps the result until the cheap head-only revision probe changes: any
  * number of viewers within one revision cost one fleet load. The key is the
  * revision loadFleet itself observed, so a write that lands mid-load is a miss
- * on the next view rather than a stale hit.
+ * on the next view rather than a stale hit. The policies and analytics pages
+ * read the same memo: `computeStats` is the one implementation behind
+ * `weaver stats`, run once per revision here rather than once per view.
  */
 function overviewSource(): OverviewSource {
   return revisionMemo(
@@ -145,7 +151,11 @@ function overviewSource(): OverviewSource {
         revision: fleet.view.revision,
         // The board's own glance, so the overview's job counts match the
         // board tiles and sidebar exactly.
-        value: { fleet, overview: computeOverview(fleet.docs, fleet.policies, new Date(), fleet.view.glance) },
+        value: {
+          fleet,
+          overview: computeOverview(fleet.docs, fleet.policies, new Date(), fleet.view.glance),
+          stats: computeStats(fleet.docs, fleet.policies, new Date()),
+        },
       };
     },
   );
@@ -1173,6 +1183,7 @@ async function handle(
     const fleet = await loadFleet();
     return sendHtml(res, 200, renderOperatorFleetHtml({
       fleet: fleet.view,
+      routines: routineSchedule(fleet.docs, new Date(), virtualNow()),
       actor,
       notice: noticeFrom(url),
       ...(clerk ? { signOutAction: '/sign-out' } : {}),
@@ -1186,6 +1197,32 @@ async function handle(
       overview: payload,
       ...(url.searchParams.get('now') ? { nowTab: url.searchParams.get('now')! } : {}),
       ...(url.searchParams.get('example') ? { exampleTab: url.searchParams.get('example')! } : {}),
+      actor,
+      notice: noticeFrom(url),
+      ...(clerk ? { signOutAction: '/sign-out' } : {}),
+    }));
+  }
+
+  if (method === 'GET' && url.pathname === '/policies') {
+    // The fleet revision covers workstream heads, not the policy store, so a
+    // memoized copy would miss a CLI supersede or backfill until some job
+    // moved. The store is one document; read it fresh.
+    const [{ fleet }, { policies }] = await Promise.all([(overview ?? overviewSource())(), loadPolicies()]);
+    return sendHtml(res, 200, renderOperatorPoliciesHtml({
+      fleet: fleet.view,
+      policies,
+      actor,
+      notice: noticeFrom(url),
+      ...(clerk ? { signOutAction: '/sign-out' } : {}),
+    }));
+  }
+
+  if (method === 'GET' && url.pathname === '/analytics') {
+    const { fleet, stats, overview: payload } = await (overview ?? overviewSource())();
+    return sendHtml(res, 200, renderOperatorAnalyticsHtml({
+      fleet: fleet.view,
+      stats,
+      overview: payload,
       actor,
       notice: noticeFrom(url),
       ...(clerk ? { signOutAction: '/sign-out' } : {}),

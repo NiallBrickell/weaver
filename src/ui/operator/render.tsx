@@ -13,9 +13,13 @@ import type {
   Steering,
   Wake,
 } from '../../types.js';
+import type { RoutineScheduleRow } from '../../fleetHealth.js';
 import type { OverviewPayload } from '../../overview.js';
+import type { PolicyRecord } from '../../policies.js';
+import type { StatsPayload } from '../../stats.js';
 import type { WorkstreamTimeline } from '../../timeline.js';
 import { Badge, Card, CardContent, CardHeader, CardTitle, cn } from '../components/index.js';
+import { AnalyticsPage, PoliciesPage, RoutinesCard } from './learning-pages.js';
 import { OverviewPage } from './overview-page.js';
 import { Timeline } from './timeline.js';
 import {
@@ -97,7 +101,20 @@ export interface OperatorBoardRenderProps extends OperatorBaseRenderProps {
   filter?: FleetBucket;
 }
 
-export interface OperatorFleetRenderProps extends OperatorBaseRenderProps {}
+export interface OperatorFleetRenderProps extends OperatorBaseRenderProps {
+  /** Every routine's last and next run (`routineSchedule`). */
+  routines?: RoutineScheduleRow[];
+  now?: Date;
+}
+
+export interface OperatorPoliciesRenderProps extends OperatorBaseRenderProps {
+  policies: PolicyRecord[];
+}
+
+export interface OperatorAnalyticsRenderProps extends OperatorBaseRenderProps {
+  stats: StatsPayload;
+  overview: OverviewPayload;
+}
 
 export interface OperatorOverviewRenderProps extends OperatorBaseRenderProps {
   overview: OverviewPayload;
@@ -540,6 +557,8 @@ function toneDot(tone: FleetGlanceView['tone']): string {
   return tone === 'critical' ? 'bg-rose-400' : tone === 'warning' ? 'bg-amber-400' : 'bg-emerald-400';
 }
 
+type OperatorPage = 'board' | 'fleet' | 'overview' | 'policies' | 'analytics' | 'new' | 'workspace';
+
 function bucketHref(key: FleetBucket, active?: FleetBucket): string {
   return active === key ? '/board' : `/board?state=${key}`;
 }
@@ -611,7 +630,7 @@ function WorkstreamSidebar({
   actor: string;
   signOutAction?: string;
   currentSlug?: string;
-  currentPage: 'board' | 'fleet' | 'overview' | 'new' | 'workspace';
+  currentPage: OperatorPage;
   filter?: FleetBucket;
 }) {
   const selectedDone = currentSlug
@@ -666,6 +685,22 @@ function WorkstreamSidebar({
           className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-center text-xs font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-white"
         >
           Overview
+        </a>
+        <a
+          data-testid="policies-link"
+          href="/policies"
+          aria-current={currentPage === 'policies' ? 'page' : undefined}
+          className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-center text-xs font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-white"
+        >
+          Policies
+        </a>
+        <a
+          data-testid="analytics-link"
+          href="/analytics"
+          aria-current={currentPage === 'analytics' ? 'page' : undefined}
+          className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-center text-xs font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-white"
+        >
+          Analytics
         </a>
         <a
           data-testid="new-work-link"
@@ -789,7 +824,7 @@ function OperatorShell({
   revisionEndpoint: string;
   initialRevision: string;
   currentSlug?: string;
-  currentPage: 'board' | 'fleet' | 'overview' | 'new' | 'workspace';
+  currentPage: OperatorPage;
   filter?: FleetBucket;
   children: ReactNode;
 }) {
@@ -1046,7 +1081,7 @@ function statusTone(claim: FleetStatusClaim): string {
   return 'text-zinc-300';
 }
 
-function FleetPage({ fleet }: { fleet: OperatorFleetView }) {
+function FleetPage({ fleet, routines, now }: { fleet: OperatorFleetView; routines?: RoutineScheduleRow[]; now: Date }) {
   const claims = [fleet.status.storage, fleet.status.execution, fleet.status.attention];
   return (
     <div data-testid="operator-fleet-page">
@@ -1119,6 +1154,7 @@ function FleetPage({ fleet }: { fleet: OperatorFleetView }) {
             </CardContent>
           </Card>
         </div>
+        {routines ? <RoutinesCard routines={routines} now={now} /> : null}
       </div>
     </div>
   );
@@ -1977,7 +2013,7 @@ export function renderOperatorFleetHtml(props: OperatorFleetRenderProps): string
       initialRevision={props.fleet.revision}
       currentPage="fleet"
     >
-      <FleetPage fleet={props.fleet} />
+      <FleetPage fleet={props.fleet} {...(props.routines ? { routines: props.routines } : {})} now={props.now ?? new Date()} />
     </OperatorShell>,
   );
 }
@@ -1992,6 +2028,34 @@ export function renderOperatorOverviewHtml(props: OperatorOverviewRenderProps): 
       currentPage="overview"
     >
       <OverviewPage overview={props.overview} scopeLabel={props.fleet.scope.label} {...(props.nowTab ? { nowTab: props.nowTab } : {})} {...(props.exampleTab ? { exampleTab: props.exampleTab } : {})} />
+    </OperatorShell>,
+  );
+}
+
+export function renderOperatorPoliciesHtml(props: OperatorPoliciesRenderProps): string {
+  return documentHtml(
+    <OperatorShell
+      {...props}
+      title="Weaver · Policies"
+      revisionEndpoint="/api/fleet-revision"
+      initialRevision={props.fleet.revision}
+      currentPage="policies"
+    >
+      <PoliciesPage policies={props.policies} />
+    </OperatorShell>,
+  );
+}
+
+export function renderOperatorAnalyticsHtml(props: OperatorAnalyticsRenderProps): string {
+  return documentHtml(
+    <OperatorShell
+      {...props}
+      title="Weaver · Analytics"
+      revisionEndpoint="/api/fleet-revision"
+      initialRevision={props.fleet.revision}
+      currentPage="analytics"
+    >
+      <AnalyticsPage stats={props.stats} overview={props.overview} />
     </OperatorShell>,
   );
 }
