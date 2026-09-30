@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,4 +26,16 @@ test('loadDotenv fills unset vars but never overrides what the environment alrea
 test('loadDotenv is a no-op when no .env is present', () => {
   const absent = path.join(os.tmpdir(), `weaver-no-such-env-${process.pid}.env`);
   assert.doesNotThrow(() => loadDotenv(absent));
+});
+
+test('a CLI spawned under the test runner never reads the checkout .env', () => {
+  // The guard keys on NODE_TEST_CONTEXT, which node:test sets for this file and
+  // every process it spawns; if it ever stops being inherited the guard is dead.
+  assert.ok(process.env.NODE_TEST_CONTEXT, 'node:test must mark this process');
+  const cli = fs.readFileSync(new URL('./cli.ts', import.meta.url), 'utf8');
+  assert.match(cli, /if \(!process\.env\.NODE_TEST_CONTEXT\) loadDotenv\(\);/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-ctx-'));
+  const probe = path.join(dir, 'probe.mjs');
+  fs.writeFileSync(probe, 'console.log(process.env.NODE_TEST_CONTEXT ?? "")');
+  assert.notEqual(execFileSync(process.execPath, [probe], { env: process.env }).toString().trim(), '');
 });
