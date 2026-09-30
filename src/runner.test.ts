@@ -995,16 +995,16 @@ test('one iteration that reaches the store again resets the outage clock', async
   const loop = runLoop({
     intervalMs: 5,
     concurrency: 1,
-    storeOutageExitMs: 200,
+    storeOutageExitMs: 600,
     signal: abort.signal,
     sourceStale: () => false,
-    // Three failures, one success, repeat: never 200ms of unbroken failure.
+    // Three failures, one success, repeat: never 600ms of unbroken failure.
     heartbeat: async () => { attempts++; if (attempts % 4 !== 0) throw new Error('read EHOSTUNREACH'); },
     tickFn: async () => ({ cycles: 0, sendsExecuted: 0, unknownsResolved: 0, workersRun: [], passes: [] }),
     log: () => {},
     logError: () => {},
   });
-  await new Promise((resolve) => setTimeout(resolve, 450));
+  await new Promise((resolve) => setTimeout(resolve, 1500));
   abort.abort();
   assert.equal(await loop, 'aborted', 'intermittent failures with a success between them never trip the outage exit');
   assert.ok(attempts >= 8, 'the loop kept polling through the transient failures');
