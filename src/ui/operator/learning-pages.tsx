@@ -252,15 +252,17 @@ function InterventionCurve({ ratio }: { ratio: RatioPoint[] }) {
   );
 }
 
-function trendSentence(stats: StatsPayload): string | null {
+export function trendSentence(stats: StatsPayload): string | null {
   const current = stats.ratio.at(-1)?.ratio ?? null;
   const weekAgo = stats.totals.perOutcomeWeekAgo;
   if (current === null || weekAgo === null) return null;
   const diff = current - weekAgo;
-  if (Math.abs(diff) < 0.005) return `Unchanged from a week ago (${weekAgo.toFixed(2)}).`;
-  return diff < 0
-    ? `Down from ${weekAgo.toFixed(2)} a week ago, so jobs are needing you less.`
-    : `Up from ${weekAgo.toFixed(2)} a week ago, so jobs are needing you more.`;
+  // The chart counts only dated interventions, so its level sits below the
+  // lifetime headline. Quoting both chart endpoints keeps the comparison like
+  // with like; "down from 3.58" beside a headline of 3.85 read as a contradiction.
+  const trend = `On the chart, which counts only dated interventions, it is ${current.toFixed(2)} now against ${weekAgo.toFixed(2)} a week ago`;
+  if (Math.abs(diff) < 0.005) return `${trend}: unchanged.`;
+  return diff < 0 ? `${trend}, so jobs are needing you less.` : `${trend}, so jobs are needing you more.`;
 }
 
 const RECENT_DAYS = 14;
