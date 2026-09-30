@@ -163,22 +163,22 @@ const NEED_RANK: Record<FleetNeedKind, number> = {
 const RECENT_MOVEMENT_MS = 24 * 60 * 60_000;
 
 const INTERNAL_REF_LABELS: Record<string, string> = {
-  asg: 'the assignment',
+  asg: 'the task',
   dec: 'the decision',
-  steer: 'the human direction',
-  pass: 'the coordinator pass',
-  run: 'the execution attempt',
+  steer: 'your direction',
+  pass: 'a planning step',
+  run: 'a run',
   del: 'the result',
-  att: 'the attention item',
-  wake: 'the checkpoint',
-  note: 'the related Workstream update',
-  mdir: 'the coordinating Workstream note',
-  dir: 'the coordinating Workstream note',
-  int: 'the interaction',
-  obs: 'the observation',
-  pol: 'the policy',
+  att: 'the request for help',
+  wake: 'the next check',
+  note: 'the related update',
+  mdir: 'the note from the parent job',
+  dir: 'the note from the parent job',
+  int: 'the message',
+  obs: 'the new information',
+  pol: 'the rule',
   reply: 'the reply',
-  ws: 'the Workstream record',
+  ws: 'the job',
 };
 
 /** Storage identifiers remain provenance; people get recognizable nouns. */
@@ -189,7 +189,7 @@ export function displayText(value: string): string {
     )
     .replace(/\bFallback\s*\/\s*decision point for\b:?\s*/gi, 'Continue after ')
     .replace(/\bBackstop for\b:?\s*/gi, 'Follow up on ')
-    .replace(/\bexec_verify\b/gi, 'readback')
+    .replace(/\bexec_verify\b/gi, 'the check')
     .replace(/\s+/g, ' ')
     .trim();
 }

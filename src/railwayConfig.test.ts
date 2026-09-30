@@ -81,4 +81,6 @@ test("Railway IaC pins the shared store and UI deployment contract", async () =>
   assert.deepEqual(ui.variables.WEAVER_UI_PUBLIC_ORIGIN, { type: "preserve" });
   assert.equal(ui.variables.WEAVER_UI_TOKEN, undefined);
   assert.deepEqual(ui.variables.WEAVER_HOUSE_JSON, { type: "preserve" });
+  assert.deepEqual(ui.variables.WEAVER_READ_TOKEN, { type: "preserve" });
+  assert.deepEqual(ui.variables.WEAVER_RESPOND_TOKEN, { type: "preserve" });
 });

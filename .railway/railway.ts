@@ -43,6 +43,10 @@ export default defineRailway(() => {
       WEAVER_UI_ALLOWED_EMAIL_DOMAINS: preserve(),
       WEAVER_UI_PUBLIC_ORIGIN: preserve(),
       WEAVER_HOUSE_JSON: preserve(),
+      // Bearer tokens for the /api/v1/ JSON API (docs-public/rest-api.md).
+      // Unset disables that token; values live only in Railway.
+      WEAVER_READ_TOKEN: preserve(),
+      WEAVER_RESPOND_TOKEN: preserve(),
     },
   });
 
