@@ -1350,6 +1350,8 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       const result = await gcWorkspacesCommand({ dryRun, idleDays });
       if (!result.ok) fail(result.message);
       process.stdout.write(`${result.message}\n`);
+      // Report everything, then signal that some removal failed.
+      if (result.failed) process.exitCode = 1;
       break;
     }
 

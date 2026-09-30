@@ -242,3 +242,65 @@ test('the filesystem root and the home directory are refused as a root; a missin
   const report = gcWorkspaces({ root: path.join(tmpRoot(), 'never-created'), referenced: new Set(), idleMs: 0 });
   assert.deepEqual([report.removed, report.kept, report.pruned], [[], [], []]);
 });
+
+const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+
+/** Restore write bits so the shared afterEach can delete what a test locked. */
+function unlock(dir: string): void {
+  try {
+    fs.chmodSync(dir, 0o755);
+  } catch {
+    return;
+  }
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) unlock(path.join(dir, entry.name));
+  }
+}
+
+test('a read-only tree like the Go module cache (0555 dirs, 0444 files) is removed', { skip: isRoot }, () => {
+  const root = tmpRoot();
+  const mod = path.join(root, 'stale-gocache', 'mod', 'cel.dev', 'expr@v0.25.3');
+  fs.mkdirSync(mod, { recursive: true });
+  fs.writeFileSync(path.join(mod, '.bazelversion'), '7\n', { mode: 0o444 });
+  for (const dir of [mod, path.dirname(mod), path.dirname(path.dirname(mod)), path.join(root, 'stale-gocache')]) fs.chmodSync(dir, 0o555);
+  age(path.join(root, 'stale-gocache'), 10);
+  try {
+    const report = gcWorkspaces({ root, referenced: new Set(), idleMs: 3 * DAY_MS, nowMs: NOW });
+    assert.deepEqual(report.failed, []);
+    assert.deepEqual(report.removed, ['stale-gocache']);
+    assert.ok(!fs.existsSync(path.join(root, 'stale-gocache')));
+  } finally {
+    unlock(root);
+  }
+});
+
+test('an entry that cannot be removed is reported and does not stop the other workspaces being pruned', { skip: isRoot }, () => {
+  const root = tmpRoot();
+  // `stuck` keeps work (a repo with commits on no remote), so only its build
+  // output is pruned — and that sits in a directory this process cannot write,
+  // which no amount of chmod-ing the pruned tree itself can fix.
+  const stuck = clonedRepo(root, 'a-stuck');
+  fs.writeFileSync(path.join(stuck, 'unpushed.txt'), 'x\n');
+  git(stuck, 'add', 'unpushed.txt');
+  git(stuck, 'commit', '-q', '-m', 'unpushed');
+  const cache = path.join(stuck, 'vendor', 'node_modules');
+  fs.mkdirSync(cache, { recursive: true });
+  fs.writeFileSync(path.join(cache, 'x.js'), '1\n');
+  age(stuck, 10);
+  fs.chmodSync(path.join(stuck, 'vendor'), 0o555);
+  const stale = path.join(root, 'z-stale');
+  fs.mkdirSync(stale);
+  fs.writeFileSync(path.join(stale, 'a.txt'), 'old\n');
+  age(stale, 10);
+  try {
+    const report = gcWorkspaces({ root, referenced: new Set(), idleMs: 3 * DAY_MS, nowMs: NOW });
+    assert.deepEqual(report.removed, ['z-stale']);
+    assert.ok(!fs.existsSync(stale));
+    assert.equal(report.failed.length, 1);
+    assert.equal(report.failed[0]!.path, path.join('a-stuck', 'vendor', 'node_modules'));
+    assert.deepEqual(report.pruned, []);
+    assert.match(renderWorkspaceGcReport(report), /failed a-stuck\/vendor\/node_modules — /);
+  } finally {
+    unlock(root);
+  }
+});

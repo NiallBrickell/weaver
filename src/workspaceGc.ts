@@ -35,7 +35,7 @@
  * naming a workspace.
  */
 
-import { readdirSync, rmSync, statSync, statfsSync } from 'node:fs';
+import { chmodSync, lstatSync, readdirSync, rmSync, statSync, statfsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { workerWorkspaceRoot } from './executor/workspaceMounts.js';
@@ -235,8 +235,57 @@ export interface WorkspaceGcReport {
   referenced: string[];
   /** Children touched inside the idle window. */
   recent: string[];
+  /** Paths that could not be removed even after making their directories writable. */
+  failed: Array<{ path: string; reason: string }>;
   freeBytesBefore: number | null;
   freeBytesAfter: number | null;
+}
+
+/** Give the owner write permission on every directory under `path` (and on
+ * `path` itself), never following symlinks. Go's module cache is written
+ * 0444/0555 on purpose, so a plain recursive rm cannot unlink inside it —
+ * `go clean -modcache` does the same chmod first. */
+function makeTreeWritable(path: string): void {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return;
+  }
+  if (!stat.isDirectory()) return;
+  try {
+    chmodSync(path, stat.mode | 0o700);
+  } catch {
+    // Not ours to change; the retry will report why it still cannot go.
+  }
+  let names: string[];
+  try {
+    names = readdirSync(path);
+  } catch {
+    return;
+  }
+  for (const name of names) makeTreeWritable(join(path, name));
+}
+
+/** Remove `path`; a failure gets one retry after the tree is made
+ * writable. Returns why it still could not be removed, or null. */
+function removeTree(path: string): string | null {
+  const remove = () => rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+  try {
+    remove();
+    return null;
+  } catch {
+    // Read-only directories surface as EACCES/EPERM on Linux but as
+    // ENOTEMPTY on macOS (the unlink inside fails, then the rmdir), so any
+    // failure earns the one writable-retry.
+  }
+  makeTreeWritable(path);
+  try {
+    remove();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 function freeBytesAt(path: string): number | null {
@@ -270,6 +319,7 @@ export function gcWorkspaces(options: WorkspaceGcOptions): WorkspaceGcReport {
     kept: [],
     referenced: [],
     recent: [],
+    failed: [],
     freeBytesBefore: freeBytesAt(root),
     freeBytesAfter: null,
   };
@@ -321,7 +371,15 @@ export function gcWorkspaces(options: WorkspaceGcOptions): WorkspaceGcReport {
     }
   }
   if (!dryRun) {
-    for (const path of [...toRemove, ...toPrune]) rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+    // One entry that will not go must not abort the sweep: every other
+    // workspace is still reclaimed, and the failure is reported.
+    for (const path of [...toRemove, ...toPrune]) {
+      const reason = removeTree(path);
+      if (reason === null) continue;
+      report.failed.push({ path: relative(root, path), reason });
+      report.removed = report.removed.filter((child) => join(root, child) !== path);
+      report.pruned = report.pruned.filter((pruned) => join(root, pruned) !== path);
+    }
   }
   report.freeBytesAfter = dryRun ? report.freeBytesBefore : freeBytesAt(root);
   return report;
@@ -338,6 +396,7 @@ export function renderWorkspaceGcReport(report: WorkspaceGcReport): string {
     ...report.removed.map((child) => `  ${verb} ${child}`),
     ...report.kept.map(({ child, reason }) => `  kept ${child} — ${reason}`),
     ...report.pruned.map((path) => `  ${report.dryRun ? 'would prune' : 'pruned'} ${path}`),
+    ...report.failed.map(({ path, reason }) => `  failed ${path} — ${reason}`),
     `free: ${gib(report.freeBytesBefore)} → ${gib(report.freeBytesAfter)}`,
   ];
   return lines.join('\n');
@@ -349,7 +408,7 @@ export interface WorkspaceGcCommandOptions {
 }
 
 /** The CLI entry: read the fleet once, refuse if any part of it is unreadable, collect. */
-export async function gcWorkspacesCommand(options: WorkspaceGcCommandOptions): Promise<{ ok: boolean; message: string }> {
+export async function gcWorkspacesCommand(options: WorkspaceGcCommandOptions): Promise<{ ok: boolean; message: string; failed?: number }> {
   if (!Number.isFinite(options.idleDays) || options.idleDays < 0) {
     return { ok: false, message: `--idle-days must be a non-negative number, got '${options.idleDays}'` };
   }
@@ -379,5 +438,5 @@ export async function gcWorkspacesCommand(options: WorkspaceGcCommandOptions): P
     idleMs: options.idleDays * DAY_MS,
     dryRun: options.dryRun,
   });
-  return { ok: true, message: renderWorkspaceGcReport(report) };
+  return { ok: true, message: renderWorkspaceGcReport(report), failed: report.failed.length };
 }
