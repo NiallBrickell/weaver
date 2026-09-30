@@ -24,6 +24,8 @@ import {
 import type { ClerkOperatorAuthenticator } from './clerkOperatorAuth.js';
 import { arrive, createWorkstream, heartbeatRunner, listWorkstreams, load, mutatePolicies, newId, writeArtifact, type RunnerOutput } from './store.js';
 import { OPERATOR_SCRIPT } from './ui/operator/render.js';
+import { trendSentence } from './ui/operator/learning-pages.js';
+import type { StatsPayload } from './stats.js';
 import { recordCapacityBackoff } from './capacity.js';
 import { viewOf } from './watch.js';
 import { snapshot as terminalSnapshot } from './tui.js';
@@ -1667,4 +1669,15 @@ test('the fleet page shows when each routine last ran and next runs', async () =
   assert.match(row, new RegExp(`data-testid="routine-last-run"[^>]*><time dateTime="${ranAt}"[^>]*>2 hours ago`));
   assert.match(row, new RegExp(`data-testid="routine-next-run"[^>]*><time dateTime="${nextAt}"[^>]*>in 5 hours`));
   assert.match(row, /Next hourly sweep/);
+});
+
+test('the analytics trend quotes both chart endpoints, so it cannot contradict the lifetime headline', () => {
+  // Lifetime headline 3.85, chart (dated acts only) 3.30 now vs 3.58 a week ago:
+  // the trend must name 3.30, not read as "down from 3.58" beside 3.85.
+  const stats = { ratio: [{ ratio: 3.3 }], totals: { perOutcomeWeekAgo: 3.58, interventionsPerOutcome: 3.85 } } as unknown as StatsPayload;
+  const sentence = trendSentence(stats)!;
+  assert.match(sentence, /3\.30 now against 3\.58 a week ago/);
+  assert.match(sentence, /needing you less/);
+  const up = { ratio: [{ ratio: 4 }], totals: { perOutcomeWeekAgo: 3.58 } } as unknown as StatsPayload;
+  assert.match(trendSentence(up)!, /4\.00 now against 3\.58 a week ago, so jobs are needing you more/);
 });
