@@ -319,6 +319,25 @@ describe('the projection cache marker', () => {
     ]);
   });
 
+  test('a per-request effort overrides the coordinator effort for that run only, and an OpenRouter seat still gets none', async () => {
+    const seen: unknown[] = [];
+    const executor = new ClaudeCoordinatorExecutor({
+      loadExecutorSecrets: () => ({ OPENROUTER_API_KEY: 'router-key' }),
+      prepareApiHome: () => ({ path: '/tmp/router-home', cleanup() {} }),
+      runQuery: ((args: any) => {
+        seen.push(args.options.effort);
+        return (async function* () {})();
+      }) as any,
+    });
+    const run = (model: string, effort?: CoordinatorExecutionRequest['effort']) =>
+      executor.execute(request({ model, prompt: STABLE + VOLATILE, env: { PATH: '/usr/bin' }, ...(effort ? { effort } : {}) }));
+    await run('claude-fable-5-1', 'medium');
+    await run('claude-fable-5-1');
+    await run('claude-fable-5-1', 'default');
+    await run('openrouter/z-ai/glm-5.3', 'low');
+    assert.deepEqual(seen, ['medium', 'xhigh', undefined, undefined]);
+  });
+
   test('is not sent without a stable prefix, on an OpenRouter seat, or when the operator disabled prompt caching', async () => {
     const cases: Partial<CoordinatorExecutionRequest>[] = [
       { stablePrefixLength: undefined },

@@ -70,7 +70,9 @@ import {
   coordinatorModel,
   coordinatorTargets,
   shadowCoordinatorConfig,
+  shadowSeatEffort,
   type CapacityTarget,
+  type EffortSetting,
   type ShadowCoordinatorConfig,
 } from './modelConfig.js';
 import {
@@ -2028,7 +2030,9 @@ function launchShadowIfSampled(args: {
   }
   const run = (async () => {
     let record: ShadowPassRecord;
+    let effort: EffortSetting | undefined;
     try {
+      effort = shadowSeatEffort(args.config);
       record = await runShadowCoordinator({
         seat: args.config.target,
         executor: args.executor ?? selectCoordinatorExecutor(args.config.target.executor),
@@ -2039,6 +2043,9 @@ function launchShadowIfSampled(args: {
         reads: shadowReadPort(args.slug, args.snapshot, args.policies),
         env: sdkEnv(),
         realMoves: args.realMoves,
+        // The seat's own effort rides this run's request only; the live pass
+        // above already ran at coordinatorEffort().
+        ...(effort ? { effort } : {}),
       });
     } catch (e) {
       // Executor construction or env failed before the run began.
@@ -2047,6 +2054,7 @@ function launchShadowIfSampled(args: {
         at: new Date().toISOString(),
         passClass: passClassOf(args.realMoves),
         realMoves: args.realMoves.slice(0, 80),
+        ...(effort ? { effort } : {}),
         moves: [],
         error: (e instanceof Error ? e.message : String(e)).slice(0, 500),
       };

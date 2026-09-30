@@ -41,6 +41,7 @@ The coordinator always runs on the strongest seat in its configured chain (`WEAV
 ```bash
 WEAVER_SHADOW_COORDINATOR=local-sdk:claude-sonnet-5   # one executor:model, local-sdk or codex-sdk
 WEAVER_SHADOW_RATE=0.1                                 # fraction of completed passes to shadow; 0 or unset = off
+WEAVER_SHADOW_EFFORT=medium                            # optional: the shadow seat's own reasoning effort; unset = the coordinator's
 ```
 
 After a real pass completes, Weaver samples it at that rate. A sampled pass is replayed once by the shadow seat, detached from the real pass, with the same system prompt, the same projection text the real coordinator saw, and the same tool schemas. It runs through the coordinator's own isolated executor construction; only the tool set is swapped. Every tool is a capture twin: reads are served from the pass's snapshot, and writes are checked against that snapshot, recorded as `{tool, target ids}`, and answered with a plausible success. The twin never calls the real tool's code, so a shadow cannot write the Workstream, fire a wake, dispatch an assignment, or reach anything outside Weaver.
@@ -51,7 +52,9 @@ Weaver stores the comparison on the pass record as `shadow`. It holds the class 
 weaver shadow-report [--since 2026-09-15T00:00:00Z]
 ```
 
-The report prints agreement for each pass class with its denominators, the real and shadow cost on the same passes, and the disagreeing pass ids so you can read what each seat did.
+The report prints agreement for each pass class with its denominators, the real and shadow cost and tokens on the same passes, and the disagreeing pass ids so you can read what each seat did. Results are grouped by shadow seat and reasoning effort, so runs at different efforts are never averaged together.
+
+The shadow seat can also be the live model at a lower effort. Set `WEAVER_SHADOW_COORDINATOR` to the live seat and `WEAVER_SHADOW_EFFORT` to the effort you are considering: the shadow runs at that effort while live passes keep `WEAVER_COORDINATOR_EFFORT`.
 
 **Promoting a seat is your decision, never Weaver's.** No agreement rate moves a class of passes onto the shadow seat automatically. The shadow seat is not a coordinator seat: it never joins the capacity chain, the runner's executor declaration, or the seats a runner publishes. It does spend real quota on its own seat, and that spend appears only in `weaver shadow-report`, not in coordinator spend. Keep the rate small.
 

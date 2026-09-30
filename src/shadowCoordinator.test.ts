@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { runCoordinatorPass, settleShadowRuns } from './coordinator.js';
 import type { CoordinatorExecutor, CoordinatorExecutionRequest } from './executor/coordinator.js';
 import type { BridgeToolDefinition } from './executor/toolBridge.js';
-import { shadowCoordinatorConfig } from './modelConfig.js';
+import { shadowCoordinatorConfig, shadowSeatEffort } from './modelConfig.js';
 import { buildProjection } from './projection.js';
 import {
   buildCaptureTools,
@@ -24,7 +24,7 @@ import type { Assignment, PassRecord, ShadowMove, ShadowPassRecord, WorkstreamDo
 
 const SLUG = 'shadow-seat';
 const ENV_NAMES = [
-  'WEAVER_SHADOW_COORDINATOR', 'WEAVER_SHADOW_RATE', 'WEAVER_COORDINATOR_EXECUTOR', 'WEAVER_COORDINATOR_MODEL',
+  'WEAVER_SHADOW_COORDINATOR', 'WEAVER_SHADOW_RATE', 'WEAVER_SHADOW_EFFORT', 'WEAVER_COORDINATOR_EFFORT', 'WEAVER_COORDINATOR_EXECUTOR', 'WEAVER_COORDINATOR_MODEL',
   'WEAVER_COORDINATOR_FALLBACKS', 'WEAVER_COORDINATOR_FALLBACK_MODEL', 'WEAVER_COORDINATOR_FALLBACK_EXECUTOR', 'WEAVER_RUNNER_ID',
 ] as const;
 let home: string;
@@ -130,6 +130,106 @@ test('shadow config: unset or rate 0 is off, bad values fail loudly, a worker-on
   assert.throws(() => shadowCoordinatorConfig(), /exactly one/);
 });
 
+test('shadow effort: unset inherits the coordinator effort, a level or default is the seat\'s own, junk fails loudly', () => {
+  process.env.WEAVER_SHADOW_COORDINATOR = 'local-sdk:claude-fable-5-1';
+  process.env.WEAVER_SHADOW_RATE = '0.1';
+  const config = () => shadowCoordinatorConfig()!;
+  assert.equal(config().effort, undefined, 'unset carries no override');
+  assert.equal(shadowSeatEffort(config()), 'xhigh', 'and inherits the pinned coordinator effort');
+  process.env.WEAVER_COORDINATOR_EFFORT = 'high';
+  assert.equal(shadowSeatEffort(config()), 'high');
+  process.env.WEAVER_COORDINATOR_EFFORT = 'default';
+  assert.equal(shadowSeatEffort(config()), 'default');
+  delete process.env.WEAVER_COORDINATOR_EFFORT;
+  process.env.WEAVER_SHADOW_EFFORT = ' Medium ';
+  assert.equal(config().effort, 'medium');
+  assert.equal(shadowSeatEffort(config()), 'medium');
+  process.env.WEAVER_SHADOW_EFFORT = 'default';
+  assert.equal(shadowSeatEffort(config()), 'default');
+  process.env.WEAVER_SHADOW_EFFORT = 'turbo';
+  assert.throws(() => shadowCoordinatorConfig(), /WEAVER_SHADOW_EFFORT must be one of/);
+  // Effort does not apply to a Codex seat or a provider-routed model, so none is recorded.
+  process.env.WEAVER_SHADOW_EFFORT = 'low';
+  process.env.WEAVER_SHADOW_COORDINATOR = 'codex-sdk:gpt-5.5';
+  assert.equal(shadowSeatEffort(config()), undefined);
+  process.env.WEAVER_SHADOW_COORDINATOR = 'local-sdk:openrouter/z-ai/glm-5.3';
+  assert.equal(shadowSeatEffort(config()), undefined);
+});
+
+test('only the shadow run carries the shadow effort; the live pass keeps the coordinator effort', async () => {
+  process.env.WEAVER_SHADOW_COORDINATOR = 'local-sdk:claude-fable-5-1';
+  process.env.WEAVER_SHADOW_RATE = '1';
+  process.env.WEAVER_SHADOW_EFFORT = 'medium';
+  let liveReq: CoordinatorExecutionRequest | undefined;
+  let shadowReq: CoordinatorExecutionRequest | undefined;
+  const live = realExecutor();
+  const liveExecutor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      liveReq = req;
+      return live.execute(req);
+    },
+  };
+  const shadowExecutor: CoordinatorExecutor = {
+    id: 'local-sdk',
+    async execute(req) {
+      shadowReq = req;
+      await tool(req, 'finish_pass').handler({ summary: 'shadow done' }, {});
+      return {
+        costUsd: 0.05,
+        usage: { inputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 900, outputTokens: 120, toolCalls: 1 },
+      };
+    },
+  };
+  await runCoordinatorPass(SLUG, ['manual'], liveExecutor, undefined, { shadowExecutor, shadowSample: () => 0 });
+  await settleShadowRuns();
+  assert.ok(liveReq && shadowReq);
+  assert.equal(liveReq.effort, undefined, 'the live pass never carries an override');
+  assert.equal(shadowReq.effort, 'medium');
+  const shadow = (await load(SLUG)).passes.at(-1)!.shadow!;
+  assert.equal(shadow.effort, 'medium');
+  assert.equal(shadow.costUsd, 0.05);
+  assert.deepEqual(shadow.usage, { inputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 900, outputTokens: 120, toolCalls: 1 });
+});
+
+test('the report keeps each seat\'s efforts apart', async () => {
+  const m = (tool: string, ...targets: string[]): ShadowMove => ({ tool, targets });
+  const usage = (outputTokens: number, cacheCreationInputTokens: number) =>
+    ({ inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens, outputTokens, toolCalls: 0 });
+  const doc = await load(SLUG);
+  const agree = [m('adopt_submission', 'asg_1')];
+  doc.passes = [
+    { ...pass('pass_x1', '2026-09-20T00:00:00.000Z', shadowRecord('dispatch-only', agree, agree, {
+      seat: 'local-sdk:claude-fable-5-1', effort: 'xhigh', usage: usage(500, 3000),
+    })), usage: usage(520, 3100) },
+    { ...pass('pass_m1', '2026-09-21T00:00:00.000Z', shadowRecord('dispatch-only', agree, [m('reject_submission', 'asg_1')], {
+      seat: 'local-sdk:claude-fable-5-1', effort: 'medium', usage: usage(200, 3000),
+    })), usage: usage(510, 3050) },
+    pass('pass_m2', '2026-09-22T00:00:00.000Z', shadowRecord('dispatch-only', agree, agree, {
+      seat: 'local-sdk:claude-fable-5-1', effort: 'medium',
+    })),
+    pass('pass_legacy', '2026-09-23T00:00:00.000Z', shadowRecord('dispatch-only', agree, agree, { seat: 'local-sdk:claude-fable-5-1' })),
+  ];
+  const report = aggregateShadowReport([doc]);
+  assert.deepEqual(report.groups.map((g) => [g.label, g.effort]), [
+    ['local-sdk:claude-fable-5-1', undefined],
+    ['local-sdk:claude-fable-5-1 · effort medium', 'medium'],
+    ['local-sdk:claude-fable-5-1 · effort xhigh', 'xhigh'],
+  ]);
+  const row = (label: string) => report.groups.find((g) => g.label === label)!.rows.find((r) => r.passClass === 'dispatch-only')!;
+  const medium = row('local-sdk:claude-fable-5-1 · effort medium');
+  assert.deepEqual([medium.sampled, medium.compared, medium.adoptReject], [2, 2, 1]);
+  assert.deepEqual([medium.realOutputTokens, medium.shadowOutputTokens, medium.shadowCacheWriteTokens], [510, 200, 3000]);
+  const xhigh = row('local-sdk:claude-fable-5-1 · effort xhigh');
+  assert.deepEqual([xhigh.sampled, xhigh.adoptReject, xhigh.shadowOutputTokens], [1, 1, 500]);
+  assert.equal(row('local-sdk:claude-fable-5-1').sampled, 1, 'a record without an effort never mixes into an effort group');
+  assert.deepEqual(report.disagreements.map((d) => [d.passId, d.label]), [['pass_m1', 'local-sdk:claude-fable-5-1 · effort medium']]);
+  const rendered = renderShadowReport(report);
+  assert.match(rendered, /local-sdk:claude-fable-5-1 · effort medium:\n- dispatch-only: 2 sampled, 2 compared, 0 failed/);
+  assert.match(rendered, /tokens: output real 510 · shadow 200; cache writes real 3050 · shadow 3000/);
+  assert.match(rendered, /pass_m1 \[dispatch-only\] on adopt\/reject \(local-sdk:claude-fable-5-1 · effort medium\)/);
+});
+
 test('unset or rate 0 runs no shadow and records nothing', async () => {
   for (const rate of [undefined, '0']) {
     if (rate === undefined) delete process.env.WEAVER_SHADOW_RATE;
@@ -202,6 +302,7 @@ test('a sampled shadow sees the exact projection, cannot write, and its moves ar
   assert.equal(shadowReq.systemPrompt, seen.systemPrompt);
   assert.deepEqual(shadowReq.tools.map((definition) => definition.name), seen.toolNames);
   assert.equal(shadowReq.model, 'claude-sonnet-5');
+  assert.equal(shadowReq.effort, 'xhigh', 'no WEAVER_SHADOW_EFFORT: the shadow inherits the coordinator effort');
 
   // Zero write path: every capture call above left the store byte-identical.
   assert.ok(before && after);
@@ -474,7 +575,8 @@ test('the report aggregates agreement per pass class with denominators, cost, an
     pass('pass_plain', '2026-09-24T00:00:00.000Z'),
   ];
   const report = aggregateShadowReport([doc], '2026-09-10T00:00:00.000Z');
-  const row = (c: string) => report.rows.find((r) => r.passClass === c)!;
+  assert.deepEqual(report.groups.map((g) => g.label), ['local-sdk:claude-sonnet-5']);
+  const row = (c: string) => report.groups[0]!.rows.find((r) => r.passClass === c)!;
   assert.deepEqual(
     [row('verify-then-dispatch').sampled, row('verify-then-dispatch').compared, row('verify-then-dispatch').adoptReject, row('verify-then-dispatch').headline, row('verify-then-dispatch').dispatch],
     [2, 2, 1, 1, 2],
