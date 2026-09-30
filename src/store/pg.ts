@@ -46,7 +46,7 @@ import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDo
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
 import { pgSslOption, storeTls, type StoreTls } from './pgTls.js';
-import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type ProbeCursor, type ProbeCursorState, type RunnerOutput, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Device, type ManagedWorkstreamHead, type Mutator, type NeedNotification, type NeedNotificationOutcome, type ProbeCursor, type ProbeCursorState, type RunnerOutput, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 /**
  * Idempotent, run on first use of every process. The `revision` COLUMN is the
@@ -98,6 +98,26 @@ const SCHEMA = `
     failures      integer     NOT NULL DEFAULT 0,
     last_error    text,
     PRIMARY KEY (slug, wake_id)
+  );
+  -- Push-notification delivery state, beside the fleet like probe_cursors:
+  -- registering a device or claiming a need never touches a document.
+  CREATE TABLE IF NOT EXISTS devices (
+    id           text        PRIMARY KEY,
+    token        text        NOT NULL UNIQUE,
+    platform     text        NOT NULL,
+    environment  text        NOT NULL,
+    bundle_id    text        NOT NULL,
+    actor        text        NOT NULL,
+    created_at   timestamptz NOT NULL,
+    last_seen_at timestamptz NOT NULL
+  );
+  -- The row existing is the delivery claim (INSERT ... ON CONFLICT DO NOTHING).
+  CREATE TABLE IF NOT EXISTS need_notifications (
+    key          text        PRIMARY KEY,
+    created_at   timestamptz NOT NULL,
+    sent_count   integer     NOT NULL DEFAULT 0,
+    failed_count integer     NOT NULL DEFAULT 0,
+    last_error   text
   );
 
   -- Existing fleets used jsonb. Convert once, without decoding and rewriting
@@ -249,6 +269,28 @@ function notePgConnectionError(error: unknown): void {
   process.stderr.write(`[store] postgres connection error: ${error instanceof Error ? error.message : String(error)}\n`);
 }
 
+const PG_DEVICE_COLUMNS = `id, token, platform, environment, bundle_id, actor,
+  to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
+  to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_seen_at`;
+
+interface PgDeviceRow {
+  id: string; token: string; platform: string; environment: string; bundle_id: string;
+  actor: string; created_at: string; last_seen_at: string;
+}
+
+function pgDeviceFromRow(row: PgDeviceRow): Device {
+  return {
+    id: row.id,
+    token: row.token,
+    platform: row.platform as Device['platform'],
+    environment: row.environment as Device['environment'],
+    bundleId: row.bundle_id,
+    actor: row.actor,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at,
+  };
+}
+
 export class PgStore implements StateStore {
   private readonly pool: pg.Pool;
   private readonly connectionString: string;
@@ -336,7 +378,9 @@ export class PgStore implements StateStore {
           AND to_regclass('artifacts') IS NOT NULL
           AND to_regclass('policies') IS NOT NULL
           AND to_regclass('runner_presence') IS NOT NULL
-          AND to_regclass('probe_cursors') IS NOT NULL AS present`,
+          AND to_regclass('probe_cursors') IS NOT NULL
+          AND to_regclass('devices') IS NOT NULL
+          AND to_regclass('need_notifications') IS NOT NULL AS present`,
     );
     if (tables.rows[0]?.present !== true) return false;
     const shape = await client.query(
@@ -979,6 +1023,76 @@ export class PgStore implements StateStore {
       [...values, expectedNextCheckAt],
     );
     return updated.rowCount === 1;
+  }
+
+  /** One statement, atomic on UNIQUE(token): a racing registration of the
+   * same token takes the DO UPDATE arm and gets the winner's id back.
+   * `xmax = 0` is true only for a row version this statement inserted. */
+  async registerDevice(device: Device): Promise<{ device: Device; created: boolean }> {
+    await this.ensureReady();
+    const result = await this.pool.query(
+      `INSERT INTO devices (id, token, platform, environment, bundle_id, actor, created_at, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz)
+       ON CONFLICT (token) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at
+       RETURNING ${PG_DEVICE_COLUMNS}, (xmax = 0) AS inserted`,
+      [device.id, device.token, device.platform, device.environment, device.bundleId, device.actor, device.createdAt, device.lastSeenAt],
+    );
+    const row = result.rows[0] as PgDeviceRow & { inserted: boolean };
+    return { device: pgDeviceFromRow(row), created: row.inserted === true };
+  }
+
+  async listDevices(): Promise<Device[]> {
+    await this.ensureReady();
+    const result = await this.pool.query(`SELECT ${PG_DEVICE_COLUMNS} FROM devices ORDER BY created_at, id`);
+    return (result.rows as PgDeviceRow[]).map(pgDeviceFromRow);
+  }
+
+  async deleteDevice(id: string): Promise<boolean> {
+    await this.ensureReady();
+    const result = await this.pool.query('DELETE FROM devices WHERE id = $1', [id]);
+    return result.rowCount === 1;
+  }
+
+  async findNeedNotifications(keys: readonly string[]): Promise<NeedNotification[]> {
+    if (!keys.length) return [];
+    await this.ensureReady();
+    const result = await this.pool.query(
+      `SELECT key,
+              to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
+              sent_count, failed_count, last_error
+       FROM need_notifications WHERE key = ANY($1::text[])`,
+      [[...new Set(keys)]],
+    );
+    return result.rows.map((row) => ({
+      key: row.key as string,
+      createdAt: row.created_at as string,
+      sentCount: Number(row.sent_count),
+      failedCount: Number(row.failed_count),
+      ...(typeof row.last_error === 'string' ? { lastError: row.last_error } : {}),
+    }));
+  }
+
+  /** INSERT ... ON CONFLICT DO NOTHING RETURNING: under concurrent inserts of
+   * one key Postgres lets exactly one statement create the row; every other
+   * statement waits on it, sees the conflict, and returns no row. */
+  async claimNeedNotification(claim: NeedNotification): Promise<boolean> {
+    await this.ensureReady();
+    const result = await this.pool.query(
+      `INSERT INTO need_notifications (key, created_at, sent_count, failed_count, last_error)
+       VALUES ($1, $2::timestamptz, $3, $4, $5)
+       ON CONFLICT (key) DO NOTHING
+       RETURNING key`,
+      [claim.key, claim.createdAt, claim.sentCount, claim.failedCount, claim.lastError ?? null],
+    );
+    return result.rowCount === 1;
+  }
+
+  async completeNeedNotification(key: string, outcome: NeedNotificationOutcome): Promise<void> {
+    await this.ensureReady();
+    await this.pool.query(
+      'UPDATE need_notifications SET sent_count = $2, failed_count = $3, last_error = $4 WHERE key = $1',
+      [key, outcome.sentCount, outcome.failedCount, outcome.lastError ?? null],
+    );
   }
 
   /**

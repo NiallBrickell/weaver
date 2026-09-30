@@ -48,7 +48,7 @@ import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc } from './doc.js';
 import { moveLocalSidecars, policyJournalDir, printoutJournalDir } from './fs.js';
-import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type ProbeCursor, type ProbeCursorState, type RunnerOutput, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Device, type ManagedWorkstreamHead, type Mutator, type NeedNotification, type NeedNotificationOutcome, type ProbeCursor, type ProbeCursorState, type RunnerOutput, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 /**
  * Idempotent, run once per process at construction. TEXT for doc JSON (SQLite
@@ -99,6 +99,23 @@ const SCHEMA = `
     last_error    TEXT,
     PRIMARY KEY (slug, wake_id)
   );
+  CREATE TABLE IF NOT EXISTS devices (
+    id           TEXT PRIMARY KEY,
+    token        TEXT NOT NULL UNIQUE,
+    platform     TEXT NOT NULL,
+    environment  TEXT NOT NULL,
+    bundle_id    TEXT NOT NULL,
+    actor        TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS need_notifications (
+    key          TEXT    PRIMARY KEY,
+    created_at   TEXT    NOT NULL,
+    sent_count   INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT
+  );
 `;
 
 /** SQLITE_BUSY (5) / SQLITE_LOCKED (6): another process holds the write lock
@@ -110,6 +127,26 @@ function isBusy(error: unknown): boolean {
 
 export function expandTilde(p: string): string {
   return p === '~' ? os.homedir() : p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p;
+}
+
+const DEVICE_COLUMNS = 'SELECT id, token, platform, environment, bundle_id, actor, created_at, last_seen_at FROM devices';
+
+interface DeviceRow {
+  id: string; token: string; platform: string; environment: string; bundle_id: string;
+  actor: string; created_at: string; last_seen_at: string;
+}
+
+function deviceFromRow(row: DeviceRow): Device {
+  return {
+    id: row.id,
+    token: row.token,
+    platform: row.platform as Device['platform'],
+    environment: row.environment as Device['environment'],
+    bundleId: row.bundle_id,
+    actor: row.actor,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at,
+  };
 }
 
 export class SqliteStore implements StateStore {
@@ -482,6 +519,69 @@ export class SqliteStore implements StateStore {
       );
       return true;
     });
+  }
+
+  /** One IMMEDIATE transaction: the token lookup and the insert cannot be
+   * split by another process, and UNIQUE(token) backs it regardless. */
+  async registerDevice(device: Device): Promise<{ device: Device; created: boolean }> {
+    return this.txn(() => {
+      const existing = this.db.prepare(`${DEVICE_COLUMNS} WHERE token = ?`).get(device.token) as DeviceRow | undefined;
+      if (existing) {
+        this.db.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?').run(device.lastSeenAt, existing.id);
+        return { device: { ...deviceFromRow(existing), lastSeenAt: device.lastSeenAt }, created: false };
+      }
+      this.db.prepare(
+        `INSERT INTO devices (id, token, platform, environment, bundle_id, actor, created_at, last_seen_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(device.id, device.token, device.platform, device.environment, device.bundleId, device.actor, device.createdAt, device.lastSeenAt);
+      return { device: { ...device }, created: true };
+    });
+  }
+
+  async listDevices(): Promise<Device[]> {
+    return (this.db.prepare(`${DEVICE_COLUMNS} ORDER BY created_at, id`).all() as unknown as DeviceRow[]).map(deviceFromRow);
+  }
+
+  async deleteDevice(id: string): Promise<boolean> {
+    return Number(this.db.prepare('DELETE FROM devices WHERE id = ?').run(id).changes) === 1;
+  }
+
+  async findNeedNotifications(keys: readonly string[]): Promise<NeedNotification[]> {
+    const unique = [...new Set(keys)];
+    const out: NeedNotification[] = [];
+    // Bounded IN lists: SQLite caps bound parameters per statement.
+    for (let i = 0; i < unique.length; i += 500) {
+      const chunk = unique.slice(i, i + 500);
+      const rows = this.db.prepare(
+        `SELECT key, created_at, sent_count, failed_count, last_error FROM need_notifications
+         WHERE key IN (${chunk.map(() => '?').join(', ')})`,
+      ).all(...chunk) as Array<{ key: string; created_at: string; sent_count: number; failed_count: number; last_error: string | null }>;
+      for (const row of rows) {
+        out.push({
+          key: row.key,
+          createdAt: row.created_at,
+          sentCount: Number(row.sent_count),
+          failedCount: Number(row.failed_count),
+          ...(row.last_error !== null ? { lastError: row.last_error } : {}),
+        });
+      }
+    }
+    return out;
+  }
+
+  /** `INSERT … ON CONFLICT DO NOTHING` is one statement under SQLite's write
+   * lock; `changes` says whether this caller's row is the one that exists. */
+  async claimNeedNotification(claim: NeedNotification): Promise<boolean> {
+    const result = this.db.prepare(
+      `INSERT INTO need_notifications (key, created_at, sent_count, failed_count, last_error)
+       VALUES (?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+    ).run(claim.key, claim.createdAt, claim.sentCount, claim.failedCount, claim.lastError ?? null);
+    return Number(result.changes) === 1;
+  }
+
+  async completeNeedNotification(key: string, outcome: NeedNotificationOutcome): Promise<void> {
+    this.db.prepare('UPDATE need_notifications SET sent_count = ?, failed_count = ?, last_error = ? WHERE key = ?')
+      .run(outcome.sentCount, outcome.failedCount, outcome.lastError ?? null, key);
   }
 
   /**

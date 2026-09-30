@@ -27,7 +27,7 @@ import { acquireProcessLock } from '../processLock.js';
 import type { PolicyMutationReceipt, PolicyStore } from '../policies.js';
 import type { EventRecord, PrintoutMutationReceipt, WorkstreamCore, WorkstreamDoc } from '../types.js';
 import { creationReceipt, emptyPolicyStore, eventHelperFor, initialDoc, newId, sha256 } from './doc.js';
-import { RevisionConflictError, SourceKeyConflictError, type ManagedWorkstreamHead, type Mutator, type ProbeCursor, type ProbeCursorState, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
+import { RevisionConflictError, SourceKeyConflictError, type Device, type ManagedWorkstreamHead, type Mutator, type NeedNotification, type NeedNotificationOutcome, type ProbeCursor, type ProbeCursorState, type RunnerPresence, type StateStore, type WorkstreamHead } from './types.js';
 
 export { newId, sha256 };
 
@@ -103,6 +103,49 @@ function withProbeCursors<T>(fn: (cursors: ProbeCursor[]) => { result: T; write:
   } finally {
     release();
   }
+}
+
+function devicesPath(): string {
+  return path.join(weaverHome(), '.devices.json');
+}
+
+function needNotificationsPath(): string {
+  return path.join(weaverHome(), '.need-notifications.json');
+}
+
+function readJsonFile<T>(file: string, empty: T, what: string): T {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as T;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return empty;
+    throw new Error(`cannot read ${what}: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/** Serialized read-modify-write of one home-level sidecar file, under a
+ * cross-process lock and synchronous inside it (the probe-cursor pattern):
+ * the lock is what makes an insert-if-absent atomic across two UI processes
+ * sharing one WEAVER_HOME. */
+function withJsonFile<S, T>(file: string, empty: S, what: string, fn: (state: S) => { result: T; write: boolean }): T {
+  fs.mkdirSync(weaverHome(), { recursive: true });
+  const release = acquireProcessLock(`${file}.lock`, { timeoutMs: 10_000, pollMs: 25 });
+  if (!release) throw new Error(`${what} lock timeout`);
+  try {
+    const state = readJsonFile(file, empty, what);
+    const { result, write } = fn(state);
+    if (write) {
+      const tmp = `${file}.tmp-${process.pid}`;
+      fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`);
+      fs.renameSync(tmp, file);
+    }
+    return result;
+  } finally {
+    release();
+  }
+}
+
+function sortDevices(devices: Device[]): Device[] {
+  return devices.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 }
 
 /** Serialize the actual read/check/write region across local processes. */
@@ -391,6 +434,58 @@ export class FsStore implements StateStore {
       if (index >= 0) cursors[index] = row;
       else cursors.push(row);
       return { result: true, write: true };
+    });
+  }
+
+  async registerDevice(device: Device): Promise<{ device: Device; created: boolean }> {
+    return withJsonFile<Device[], { device: Device; created: boolean }>(devicesPath(), [], 'devices', (devices) => {
+      const existing = devices.find((candidate) => candidate.token === device.token);
+      if (existing) {
+        existing.lastSeenAt = device.lastSeenAt;
+        return { result: { device: { ...existing }, created: false }, write: true };
+      }
+      devices.push({ ...device });
+      sortDevices(devices);
+      return { result: { device: { ...device }, created: true }, write: true };
+    });
+  }
+
+  async listDevices(): Promise<Device[]> {
+    return sortDevices(readJsonFile<Device[]>(devicesPath(), [], 'devices'));
+  }
+
+  async deleteDevice(id: string): Promise<boolean> {
+    return withJsonFile<Device[], boolean>(devicesPath(), [], 'devices', (devices) => {
+      const index = devices.findIndex((device) => device.id === id);
+      if (index < 0) return { result: false, write: false };
+      devices.splice(index, 1);
+      return { result: true, write: true };
+    });
+  }
+
+  async findNeedNotifications(keys: readonly string[]): Promise<NeedNotification[]> {
+    if (!keys.length) return [];
+    const rows = readJsonFile<Record<string, NeedNotification>>(needNotificationsPath(), {}, 'need notifications');
+    return [...new Set(keys)].filter((key) => Object.hasOwn(rows, key)).map((key) => ({ ...rows[key]! }));
+  }
+
+  async claimNeedNotification(claim: NeedNotification): Promise<boolean> {
+    return withJsonFile<Record<string, NeedNotification>, boolean>(needNotificationsPath(), {}, 'need notifications', (rows) => {
+      if (Object.hasOwn(rows, claim.key)) return { result: false, write: false };
+      rows[claim.key] = { ...claim };
+      return { result: true, write: true };
+    });
+  }
+
+  async completeNeedNotification(key: string, outcome: NeedNotificationOutcome): Promise<void> {
+    withJsonFile<Record<string, NeedNotification>, void>(needNotificationsPath(), {}, 'need notifications', (rows) => {
+      if (!Object.hasOwn(rows, key)) return { result: undefined, write: false };
+      const row = rows[key]!;
+      row.sentCount = outcome.sentCount;
+      row.failedCount = outcome.failedCount;
+      if (outcome.lastError === undefined) delete row.lastError;
+      else row.lastError = outcome.lastError;
+      return { result: undefined, write: true };
     });
   }
 

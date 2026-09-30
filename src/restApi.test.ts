@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import { createTeamWorkstream, startOperatorUi, type RunningOperatorUi } from './operatorUi.js';
 import { needVersion } from './needResponses.js';
 import { WorkstreamIndex, workstreamEvents } from './restApi.js';
-import { arrive, heartbeatRunner, listWorkstreamHeads, load, type WorkstreamHead } from './store.js';
+import { arrive, heartbeatRunner, listDevices, listWorkstreamHeads, load, type WorkstreamHead } from './store.js';
 import type { WorkstreamDoc } from './types.js';
 import { workstreamNeeds } from './ui/inspect/model.js';
 
@@ -340,4 +340,72 @@ test('runner presence reports age, seats, and degradation without loading workst
   assert.equal(stale!.live, false);
   assert.equal(stale!.degraded, 'state directory is full');
   assert.ok(Number(stale!.age_seconds) >= 3_599);
+});
+
+function sendJsonRequest(method: string, pathname: string, body: unknown, token?: string): Promise<Response> {
+  return fetch(`${base}${pathname}`, {
+    method,
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+
+test('devices: respond token registers and removes, read token only lists, and the token is never listed', async () => {
+  const token = 'AbCd'.repeat(16);
+  const registration = { token, platform: 'ios', environment: 'sandbox', bundle_id: 'ai.erdo.team' };
+
+  assert.equal((await postJson('/api/v1/devices', registration)).status, 401);
+  assert.equal((await get('/api/v1/devices')).status, 401);
+  const forbidden = await postJson('/api/v1/devices', registration, READ);
+  assert.equal(forbidden.status, 403);
+  assert.deepEqual(await listDevices(), [], 'a read-token POST registers nothing');
+
+  const created = await postJson('/api/v1/devices', registration, RESPOND);
+  assert.equal(created.status, 201);
+  const { id } = await created.json() as { id: string };
+  assert.match(id, /^[0-9a-f-]{36}$/);
+  const again = await postJson('/api/v1/devices', { ...registration, token: token.toLowerCase() }, RESPOND);
+  assert.equal(again.status, 200, 'the same token re-registers');
+  assert.deepEqual(await again.json(), { id });
+
+  for (const reader of [READ, RESPOND]) {
+    const listed = await get('/api/v1/devices', reader);
+    assert.equal(listed.status, 200);
+    const text = await listed.text();
+    assert.ok(!text.toLowerCase().includes(token.toLowerCase()), 'the APNs token is never returned');
+    const body = JSON.parse(text) as { devices: Array<Record<string, unknown>> };
+    assert.equal(body.devices.length, 1);
+    assert.deepEqual(Object.keys(body.devices[0]!).sort(), ['bundle_id', 'created_at', 'environment', 'id', 'last_seen_at', 'platform']);
+    assert.equal(body.devices[0]!.id, id);
+  }
+
+  assert.equal((await sendJsonRequest('DELETE', `/api/v1/devices/${id}`, undefined, READ)).status, 403);
+  assert.equal((await listDevices()).length, 1, 'a read-token DELETE removes nothing');
+  const removed = await sendJsonRequest('DELETE', `/api/v1/devices/${id}`, undefined, RESPOND);
+  assert.equal(removed.status, 204);
+  assert.equal(await removed.text(), '');
+  assert.equal((await sendJsonRequest('DELETE', `/api/v1/devices/${id}`, undefined, RESPOND)).status, 404);
+  assert.equal((await sendJsonRequest('DELETE', '/api/v1/devices/not-a-uuid', undefined, RESPOND)).status, 404);
+  assert.deepEqual(await listDevices(), []);
+});
+
+test('devices: registration input is validated', async () => {
+  const good = { token: 'ab'.repeat(32), platform: 'macos', environment: 'production', bundle_id: 'ai.erdo.team' };
+  const bad: Array<Record<string, unknown>> = [
+    { ...good, token: 'ab'.repeat(31) },
+    { ...good, token: 'ab'.repeat(101) },
+    { ...good, token: 'zz'.repeat(32) },
+    { ...good, token: 123 },
+    { ...good, platform: 'android' },
+    { ...good, environment: 'staging' },
+    { ...good, bundle_id: '' },
+    { ...good, bundle_id: 'has spaces' },
+  ];
+  for (const body of bad) {
+    const response = await postJson('/api/v1/devices', body, RESPOND);
+    assert.equal(response.status, 400, JSON.stringify(body));
+  }
+  assert.equal((await sendJsonRequest('PUT', '/api/v1/devices', good, RESPOND)).status, 405);
+  assert.deepEqual(await listDevices(), []);
+  assert.equal((await postJson('/api/v1/devices', { ...good, token: 'ab'.repeat(100) }, RESPOND)).status, 201, '200 hex characters is allowed');
 });

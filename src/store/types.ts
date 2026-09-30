@@ -118,6 +118,45 @@ export interface ProbeCursor {
 /** The replacement state for one cursor row (identity fields excluded). */
 export type ProbeCursorState = Omit<ProbeCursor, 'slug' | 'wakeId'>;
 
+/**
+ * One phone or Mac registered for push notifications about open needs.
+ * Operational delivery state beside the fleet, never inside a Workstream
+ * document: registering a device must not bump any revision. The APNs token
+ * is the device's identity at Apple and is unique here, so registering the
+ * same token again refreshes `lastSeenAt` and keeps the original `id`. The
+ * token is a delivery credential: the REST API never lists it.
+ */
+export interface Device {
+  id: string;
+  /** Lowercase hex APNs device token. */
+  token: string;
+  platform: 'ios' | 'macos';
+  /** Which APNs gateway issued the token (a sandbox token fails in production). */
+  environment: 'sandbox' | 'production';
+  bundleId: string;
+  /** Who registered it (the API actor). */
+  actor: string;
+  createdAt: string;
+  lastSeenAt: string;
+}
+
+/**
+ * The delivery claim for one open need at one card version. The row existing
+ * IS the claim: backends create it with an atomic insert-if-absent, so two UI
+ * processes racing the same need send it once, and a restart never sends it
+ * again. The key is `${workstream}|${source_type}|${source_id}|${version}`.
+ */
+export interface NeedNotification {
+  key: string;
+  createdAt: string;
+  sentCount: number;
+  failedCount: number;
+  lastError?: string;
+}
+
+/** The delivery outcome written back onto a claimed row. */
+export type NeedNotificationOutcome = Pick<NeedNotification, 'sentCount' | 'failedCount' | 'lastError'>;
+
 /** Cheap identity of a Workstream's current durable head. Runners use this
  * before loading documents so an unchanged shared fleet costs one narrow
  * metadata query rather than retransmitting every document every poll. */
@@ -224,6 +263,21 @@ export interface StateStore {
     expectedNextCheckAt: string | null,
     next: ProbeCursorState | null,
   ): Promise<boolean>;
+  /** Insert a device, or — when its token is already registered — refresh
+   * that row's `lastSeenAt` and return it with its original id. Atomic on the
+   * token: two racing registrations of one token yield one row. */
+  registerDevice(device: Device): Promise<{ device: Device; created: boolean }>;
+  /** Every registered device, ordered by creation time then id. */
+  listDevices(): Promise<Device[]>;
+  /** Remove one device; false when no device has this id. */
+  deleteDevice(id: string): Promise<boolean>;
+  /** The stored claims among these keys (absent keys are simply missing). */
+  findNeedNotifications(keys: readonly string[]): Promise<NeedNotification[]>;
+  /** Atomic insert-if-absent of one claim row. True only for the caller whose
+   * insert created it; false, changing nothing, when the key already exists. */
+  claimNeedNotification(claim: NeedNotification): Promise<boolean>;
+  /** Record the delivery outcome on an existing claim row. */
+  completeNeedNotification(key: string, outcome: NeedNotificationOutcome): Promise<void>;
   /** Cross-process tick exclusion; null when another live process holds it. */
   tryTickLock(slug: string): Promise<(() => Promise<void>) | null>;
   /** Move one workstream's whole stored identity to a new slug: the doc's

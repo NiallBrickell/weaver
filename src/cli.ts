@@ -1125,7 +1125,7 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
       const clerkConfig = clerkOperatorAuthConfigFromEnv();
       const clerk = clerkConfig ? createClerkOperatorAuthenticator(clerkConfig) : undefined;
       const { startOperatorUi } = await import('./operatorUi.js');
-      const running = await startOperatorUi({ host, port, token, clerk });
+      const running = await startOperatorUi({ host, port, token, clerk, notifications: true });
       const access = clerk
         ? 'Clerk authentication with verified email-domain access'
         : token

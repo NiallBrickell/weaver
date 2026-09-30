@@ -21,6 +21,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Operator workspace](./operator-workspace.md) — create work, see fleet status at a glance, inspect one Workstream, and add follow-up from a browser
 - [The team overview](./overview.md) — a read-only page for teammates new to Weaver: how it works, where work comes from, how outcomes end, whether it is useful, and what it costs
 - [The team REST API](./rest-api.md) — bearer-token JSON for team pages and apps: jobs, what they are waiting for, plain-English history, and answering what needs you
+- [Push notifications](./notifications.md) — an Apple push to every registered phone and Mac when something new needs you, and how to set up the APNs key
 - [Fleet health for external monitoring](./fleet-health.md) — an unauthenticated `/healthz/fleet` endpoint an outside monitor can page on when every runner goes dark
 - [Printouts](./printouts.md) — an exact, copyable account since the last delivered printout
 - [The daily digest](./digest.md) — what needs you, pushed to your Slack at 07:30 with the exact command that answers each item
