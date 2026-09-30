@@ -474,6 +474,7 @@ test('host env merge preserves local state and replaces the complete portable re
     // the host back to OpenHands must not leave the container flag behind.
     'WEAVER_LOCAL_SDK_CONTAINER=1',
     'WEAVER_LOCAL_SDK_CONTAINER_IMAGE=ghcr.io/openhands/agent-server:1.41.0-python',
+    'WEAVER_PROBE_CREDENTIALS=revoked-credential',
     'CUSTOM_HOST_SETTING=keep-me',
     '',
   ].join('\n'));
