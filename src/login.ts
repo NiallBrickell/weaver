@@ -267,8 +267,13 @@ export function ensureServeToken(): string {
 }
 
 /** Effective model/executor config, defaults resolved; optionals only when set. */
-function currentConfig(): Record<string, string | undefined> {
+export function currentConfig(): Record<string, string | undefined> {
   return {
+    // Every optional name renders straight from the environment unless a
+    // line below derives it. Listing them by hand here left the shadow seat
+    // and the probe credential allowlist in the render list but never read,
+    // so push-env silently dropped them.
+    ...Object.fromEntries(OPTIONAL_CONFIG_NAMES.map((name) => [name, process.env[name]])),
     WEAVER_EXECUTOR: workerExecutorName(),
     WEAVER_WORKER_MODEL: workerModel(),
     WEAVER_COORDINATOR_MODEL: coordinatorModel(),
