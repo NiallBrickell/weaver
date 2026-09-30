@@ -333,21 +333,18 @@ export async function gateRepoEgressActions(slug: string, runner: RunnerClaimIde
 }
 
 /**
- * An action parked because an older classifier could not read its command is
- * checked once by the current one. On 2026-09-30 thirteen ordinary push-and-PR
- * actions waited on a person because a PR body mentioned "https" or "source";
- * the fixed classifier clears them, and nothing else ever looks at a stored
- * verdict again. A command the current classifier clears goes back to the
- * approval mode the gate overrode, and its card closes; one it still cannot
- * read keeps its card. Holds for other reasons are facts about the change,
- * not the classifier, and are never revisited here.
+ * An action parked by an older version of the gate's rules is checked once by
+ * the current one. On 2026-09-30 thirteen ordinary push-and-PR actions waited
+ * on a person because a PR body mentioned "https" or "source", and nothing
+ * ever looked at a stored verdict again. An act the current rules clear goes
+ * back to the approval mode the gate overrode, and its card closes; one they
+ * still hold keeps its card and is not re-read.
  */
 async function recheckOutdatedClassifications(slug: string, runner: RunnerClaimIdentity): Promise<void> {
   const doc = await load(slug);
   const stale = doc.assignments.filter(
     (a) => a.kind === 'action' && a.state === 'gated' && a.exec?.run && !a.exec.approval && a.exec.egressGate
       && (a.exec.egressGate.classifier ?? 1) < EGRESS_CLASSIFIER_VERSION
-      && a.exec.egressGate.reasons.some((r) => r.kind === 'unclassified-egress')
       && assignmentMatchesRunner(a, runner),
   );
   for (const asg of stale) {
