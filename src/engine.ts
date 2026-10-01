@@ -95,16 +95,19 @@ import {
 import { RUNNER_PRESENCE_TTL_MS, coordinatorRunnerEligibility } from './coordinatorRunner.js';
 import {
   approvalCoversGate,
+  classifyEgressCommand,
   commandHasEgress,
   describeEgressGate,
   EGRESS_CLASSIFIER_VERSION,
   egressGateSeam,
   evaluateEgressGate,
   isWorkflowPermissionRefusal,
+  resolvePlainCustomers,
   untrustedMergePolicy,
   workstreamOriginForAuthority,
   type EgressGateResult,
 } from './egressGate.js';
+import { actionSecretsWithoutPlainSend, PLAIN_API_KEY_NAME } from './plain.js';
 
 /**
  * The shell a declared action's `run`/`verify` command is executed with.
@@ -266,19 +269,27 @@ async function actionEgressGate(doc: WorkstreamDoc, asg: Assignment): Promise<Eg
   const run = asg.exec?.run;
   if (asg.kind !== 'action' || !asg.exec || !run || !commandHasEgress(run)) return null;
   // A merge's file list is read with the READ token; a mint that cannot
-  // happen leaves the read to fail, and the gate then fails closed.
+  // happen leaves the read to fail, and the gate then fails closed. A
+  // customer reply touches no repository and mints nothing.
   let env: Record<string, string> = {};
-  try {
-    env = await actionGitHubAppEnvironment(asg.exec, 'read', { minRemainingMs: ACTION_GITHUB_TOKEN_MIN_REMAINING_MS });
-  } catch {
-    env = {};
+  if (classifyEgressCommand(run).some((shape) => shape.class !== 'customer-reply')) {
+    try {
+      env = await actionGitHubAppEnvironment(asg.exec, 'read', { minRemainingMs: ACTION_GITHUB_TOKEN_MIN_REMAINING_MS });
+    } catch {
+      env = {};
+    }
   }
+  // A reply's approver depends on its recipient, read back from Plain here —
+  // at gate time and again by the pre-egress revalidation — with the host's
+  // worker credential, which never leaves this process for the lookup.
+  const plainCustomers = await resolvePlainCustomers(run, loadSecrets(doc.workstream.slug)[PLAIN_API_KEY_NAME]);
   return evaluateEgressGate({
     origin: workstreamOriginForAuthority(doc.workstream),
     command: run,
     cwd: asg.exec.cwd,
     env,
     io: egressGateSeam.io,
+    plainCustomers,
   });
 }
 
@@ -446,7 +457,9 @@ async function actionExecutionSecrets(
         minRemainingMs: ACTION_GITHUB_TOKEN_MIN_REMAINING_MS,
       })
     : {};
-  const workerSecrets = loadSecrets(slug);
+  // PLAIN_API_KEY reaches an action only when its literal command is the
+  // recognised customer reply the gate judged (src/plain.ts).
+  const workerSecrets = actionSecretsWithoutPlainSend(loadSecrets(slug), asg.exec?.run);
   return {
     secrets: { ...workerSecrets, ...githubEnvironment },
     // Only the installation token is a credential. The Git plumbing beside it

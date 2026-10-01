@@ -95,6 +95,10 @@ Constraints a coordinator writes for a workstream it creates are shown to that w
 
 The fleet's GitHub token has no permission to change workflow files. A push that touches `.github/workflows` is refused by GitHub, and Weaver tells you so plainly: a person pushes or merges workflow changes, and the fleet never retries them.
 
+## Replies to customers
+
+A reply on a support thread is a send, so the engine applies the same idea to it. The reply runs only as one exact command, `weaver plain reply <thread>` with the text in a heredoc, and the engine reads the thread's customer back from Plain before deciding who approves it: a verified `@erdo.ai` address may go to Pilot, and everyone else, or a customer Plain could not tell it about, needs a person. Any other route to a customer message through Plain is a command the engine cannot inspect, so it needs a person too, and an action whose command is not the recognised reply never receives the Plain key. It reads the customer again immediately before the send, and an unknown result is read back from the thread's timeline, never sent twice. See [Support threads in Plain](./plain.md).
+
 ## Repo deconfliction
 
 Weaver conflict-checks its own state on every write; the same discipline extends across the git-repo seam. Before an action does an irreversible repo egress (`gh pr create`, `gh pr merge`, `git push`), Weaver looks at the shared state the egress is about to write into, and it draws a line between two very different findings.

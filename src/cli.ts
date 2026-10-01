@@ -130,6 +130,8 @@ const USAGE = `weaver — manages outcomes across agent runs (MVP)
   weaver login --status                      per-executor auth status + model config with sources (names only, never values)
   weaver login --render-remote-env           emit KEY=value lines to provision a headless host (refuses a TTY — pipe it, e.g. over SSH)
   weaver login --render-remote-executor-secrets  emit the exact adapter-only secret store for secure host provisioning (refuses a TTY)
+  weaver plain reply <thread_id>             send the reply text on stdin to a Plain support thread (run by the engine as an approved action, never by hand)
+  weaver plain reply-sent <thread_id>        readback: exit 0 when the thread already carries the stdin reply from the machine user
   weaver pilot-auth-check                    production preflight: authenticated Pilot /internal/auth-check must return HTTP 204
   weaver github-app-setup <organization>     browser-confirmed local setup: create, install, verify, and store an all-repositories GitHub App
   weaver github-auth-check                   production preflight: dedicated GitHub App must mint and use a read-only installation token
@@ -982,6 +984,25 @@ async function runCommand(cmd: string, rest: string[]): Promise<void> {
     case 'login': {
       const { runLogin } = await import('./login.js');
       await runLogin(rest);
+      break;
+    }
+
+    case 'plain': {
+      // Runs as an approved action's exact command or its readback; touches
+      // no Weaver state, so it works in the engine's store-less environment.
+      const { runPlainCli } = await import('./plain.js');
+      const code = await runPlainCli(rest, {
+        env: process.env,
+        stdin: async () => {
+          if (process.stdin.isTTY) return '';
+          const chunks: Buffer[] = [];
+          for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+          return Buffer.concat(chunks).toString('utf8');
+        },
+        out: (text) => process.stdout.write(text),
+        err: (text) => process.stderr.write(text),
+      });
+      if (code !== 0) process.exit(code);
       break;
     }
 

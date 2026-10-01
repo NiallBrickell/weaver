@@ -40,6 +40,17 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
+import {
+  autoApprovableCustomer,
+  emailDomain,
+  parsePlainReplyCommand,
+  PLAIN_AUTO_REPLY_DOMAIN,
+  plainReplyTextHash,
+  plainSeam,
+  plainSendOutsideReplyCommand,
+  type PlainCustomerLookup,
+  type PlainIO,
+} from './plain.js';
 import { engineCommandEnv } from './secrets.js';
 import type { Assignment, EgressGateReason, WorkstreamCore, WorkstreamOrigin } from './types.js';
 
@@ -221,7 +232,7 @@ export function untrustedMergePolicy(env: NodeJS.ProcessEnv = process.env): Untr
 // ---------------------------------------------------------------------------
 // Command classification
 
-export type EgressClass = 'push' | 'pr-create' | 'merge' | 'deploy' | 'unclassified';
+export type EgressClass = 'push' | 'pr-create' | 'merge' | 'deploy' | 'customer-reply' | 'unclassified';
 
 export type EgressShape =
   | {
@@ -240,6 +251,10 @@ export type EgressShape =
   | { class: 'pr-create'; dir?: string; head?: string; base?: string; repo?: string; command: string }
   | { class: 'merge'; dir?: string; repo?: string; selector?: string; command: string }
   | { class: 'deploy'; command: string }
+  /** A customer-facing support reply in the one recognised shape
+   * (`weaver plain reply`, src/plain.ts). Who must approve it depends on the
+   * thread's customer, which the engine reads back from Plain. */
+  | { class: 'customer-reply'; threadId: string; textHash: string; command: string }
   | { class: 'unclassified'; detail: string; command: string };
 
 const TRUNK_BRANCHES = /^(main|master|trunk|production|prod|release(\/.*)?|develop)$/i;
@@ -472,7 +487,15 @@ export const EGRESS_CLASSIFIER_VERSION = 3;
  */
 export function classifyEgressCommand(cmd: string): EgressShape[] {
   if (!cmd?.trim()) return [];
+  // The recognised reply is the whole command, and its heredoc body is the
+  // customer's message, not code: it is never scanned for other shapes.
+  const reply = parsePlainReplyCommand(cmd);
+  if (reply) {
+    return [{ class: 'customer-reply', threadId: reply.threadId, textHash: plainReplyTextHash(reply.text), command: cmd.slice(0, 200) }];
+  }
   const shapes: EgressShape[] = [];
+  const plainSend = plainSendOutsideReplyCommand(cmd);
+  if (plainSend) shapes.push({ class: 'unclassified', detail: plainSend, command: cmd.slice(0, 200) });
   for (const segment of segments(cmd)) {
     if (/\bgit\b[^&|;\n]*\bpush\b/.test(segment)) shapes.push(...classifyGitPush(cmd, segment));
     if (/\bgh\s+\S/.test(segment)) shapes.push(...classifyGh(cmd, segment));
@@ -709,6 +732,10 @@ export interface EgressGateInput {
   globs?: readonly string[];
   /** Defaults to WEAVER_UNTRUSTED_MERGE; throws on an unknown value. */
   untrustedMerge?: UntrustedMergePolicy;
+  /** The customer of each replied-to Plain thread, read back from Plain by
+   * the async caller (resolvePlainCustomers). A reply whose thread is absent
+   * here was not read back and needs a person. */
+  plainCustomers?: ReadonlyMap<string, PlainCustomerLookup>;
 }
 
 export function evaluateEgressGate(input: EgressGateInput): EgressGateResult {
@@ -726,6 +753,28 @@ export function evaluateEgressGate(input: EgressGateInput): EgressGateResult {
   for (const shape of shapes) {
     if (shape.class === 'unclassified') {
       reasons.push({ kind: 'unclassified-egress', detail: shape.detail });
+      continue;
+    }
+    if (shape.class === 'customer-reply') {
+      // Who must approve depends on who receives it, read back from Plain —
+      // never from the command, the brief, or anything a model wrote.
+      const lookup = input.plainCustomers?.get(shape.threadId);
+      if (!lookup) {
+        reasons.push({ kind: 'customer-reply-unverified', detail: 'the thread\'s customer was not read back from Plain for this act' });
+      } else if (!lookup.ok) {
+        reasons.push({ kind: 'customer-reply-unverified', detail: lookup.error });
+      } else if (!autoApprovableCustomer(lookup)) {
+        reasons.push({
+          kind: 'customer-reply-external',
+          domain: emailDomain(lookup.email) ?? 'an unreadable address',
+          ...(lookup.verified ? {} : { unverified: true }),
+        });
+      }
+      // The recipient joins the fingerprint as a hash: a person's approval
+      // covers this text to this customer, and a thread whose customer
+      // changed after approval is a different act.
+      const recipient = lookup?.ok ? createHash('sha256').update(lookup.email.toLowerCase()).digest('hex').slice(0, 16) : 'unread';
+      identities.push(`customer-reply:${shape.threadId}:${shape.textHash}:${recipient}`);
       continue;
     }
     if (shape.class === 'deploy') {
@@ -771,6 +820,33 @@ export function evaluateEgressGate(input: EgressGateInput): EgressGateResult {
   return { egress: shapes.length > 0, humanOnly: deduped.length > 0, reasons: deduped, fingerprint };
 }
 
+/**
+ * Read back, from Plain, the customer of every thread this command replies
+ * to — the input the gate decides a reply's approver from. Runs at gate time
+ * and again immediately before egress. A missing key or a failed read is
+ * recorded as a failed lookup, which the gate turns into a person's act.
+ */
+export async function resolvePlainCustomers(
+  command: string,
+  apiKey: string | undefined,
+  io: PlainIO = plainSeam.io,
+): Promise<Map<string, PlainCustomerLookup>> {
+  const lookups = new Map<string, PlainCustomerLookup>();
+  for (const shape of classifyEgressCommand(command)) {
+    if (shape.class !== 'customer-reply' || lookups.has(shape.threadId)) continue;
+    if (!apiKey?.trim()) {
+      lookups.set(shape.threadId, { ok: false, error: 'PLAIN_API_KEY is not set on this runner' });
+      continue;
+    }
+    try {
+      lookups.set(shape.threadId, await io.threadCustomer(shape.threadId, apiKey));
+    } catch (error) {
+      lookups.set(shape.threadId, { ok: false, error: errorText(error) });
+    }
+  }
+  return lookups;
+}
+
 function dedupeReasons(reasons: EgressGateReason[]): EgressGateReason[] {
   const seen = new Set<string>();
   return reasons.filter((reason) => {
@@ -806,6 +882,10 @@ export function describeEgressGateReason(reason: EgressGateReason): string {
       return `the engine cannot classify this repo write (${reason.detail}), so it fails closed to a person`;
     case 'diff-unavailable':
       return `the engine could not compute what this changes (${reason.detail}), so it fails closed to a person`;
+    case 'customer-reply-external':
+      return `customer replies need a person unless the customer is a verified ${PLAIN_AUTO_REPLY_DOMAIN} address (this one is at ${reason.domain}${reason.unverified ? ', unverified' : ''})`;
+    case 'customer-reply-unverified':
+      return `the engine could not read this thread's customer back from Plain (${reason.detail}), so the reply fails closed to a person`;
     case 'workflow-permission':
       return 'GitHub refused the push because it changes workflow files and the fleet token has no workflows permission: a person must push or merge it';
   }
