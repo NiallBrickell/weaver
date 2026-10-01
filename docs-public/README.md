@@ -14,6 +14,7 @@ Weaver manages an outcome across fresh agents, reviews, failures, approvals, and
 - [Running Weaver as a team](./team.md) — any org shape from three durable layers; specialists without personas or rosters
 - [Giving it work](./giving-it-work.md) — the shapes of work a workstream can hold, and the arc from objective to verified effect
 - [Watching a tracker](./linear.md) — point a workstream at Linear, Jira, or anything with an MCP server, and labeled issues become real work
+- [Support threads in Plain](./plain.md) — support workstreams keep a Plain thread's status and notes current themselves; a reply to the customer is an approved send, and only a verified erdo.ai customer's goes to Pilot
 - [Connecting bots](./bots.md) — a fleet of disposable bots (any language) keep their durable memory in Weaver over `weaver serve`
 - [Hosting Weaver](./hosting.md) — run the resident runner and ingress against one Postgres, with an operator-only workstation when execution lives on hosted runners
 - [Hosting the team workspace on Railway](./railway.md) — shared Postgres + browser UI, with execution left on an honestly provisioned host

@@ -855,6 +855,11 @@ export type EgressGateReason =
   | { kind: 'untrusted-origin'; egress: 'merge' | 'deploy'; setting?: 'person' }
   | { kind: 'unclassified-egress'; detail: string }
   | { kind: 'diff-unavailable'; detail: string }
+  /** A customer-facing reply whose customer, read back from Plain, is not a
+   * verified erdo.ai address. Only the domain is stored, never the address. */
+  | { kind: 'customer-reply-external'; domain: string; unverified?: boolean }
+  /** A customer-facing reply whose customer could not be read back. */
+  | { kind: 'customer-reply-unverified'; detail: string }
   /** GitHub refused a push touching workflow files: the fleet's token has no
    * `workflows` permission by design. A person pushes or merges it. */
   | { kind: 'workflow-permission' };
