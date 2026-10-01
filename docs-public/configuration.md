@@ -177,6 +177,12 @@ The [daily digest](./digest.md) posts with the fleet's existing Slack bot
 overrides the bot. Neither is visible to a Workstream. `WEAVER_UI_PUBLIC_ORIGIN` (or Railway's
 assigned domain) supplies the digest's links to each Workstream page.
 
+A [Plain support reply](./plain.md) is sent with the executor-only
+`PLAIN_REPLY_API_KEY` (`weaver secret set PLAIN_REPLY_API_KEY --executor`),
+which only the engine's exact `weaver plain reply` command and its readback
+receive; workers keep the thread current with `PLAIN_API_KEY`, a worker secret
+issued without Plain's reply permission.
+
 Hosted GitHub access uses three executor-only values rather than a personal
 CLI login or PAT: `WEAVER_GITHUB_APP_ID`,
 `WEAVER_GITHUB_APP_INSTALLATION_ID`, and

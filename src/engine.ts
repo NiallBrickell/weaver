@@ -27,7 +27,7 @@ import {
   parkIfExecutionLimited,
   retireLegacyDollarBudgetCard,
 } from './executionSafety.js';
-import { engineCommandEnv, loadRedactionSecrets, loadSecrets, redactSecrets } from './secrets.js';
+import { engineCommandEnv, loadExecutorSecrets, loadRedactionSecrets, loadSecrets, redactSecrets } from './secrets.js';
 import {
   actionGitHardenedEnv,
   CHECKOUT_REFUSED_EVENT,
@@ -107,7 +107,7 @@ import {
   workstreamOriginForAuthority,
   type EgressGateResult,
 } from './egressGate.js';
-import { actionSecretsWithoutPlainSend, PLAIN_API_KEY_NAME } from './plain.js';
+import { actionSecretsForPlain, PLAIN_REPLY_API_KEY_NAME } from './plain.js';
 
 /**
  * The shell a declared action's `run`/`verify` command is executed with.
@@ -280,9 +280,9 @@ async function actionEgressGate(doc: WorkstreamDoc, asg: Assignment): Promise<Eg
     }
   }
   // A reply's approver depends on its recipient, read back from Plain here —
-  // at gate time and again by the pre-egress revalidation — with the host's
-  // worker credential, which never leaves this process for the lookup.
-  const plainCustomers = await resolvePlainCustomers(run, loadSecrets(doc.workstream.slug)[PLAIN_API_KEY_NAME]);
+  // at gate time and again by the pre-egress revalidation — with the
+  // executor-only send key, which never leaves this process for the lookup.
+  const plainCustomers = await resolvePlainCustomers(run, loadExecutorSecrets()[PLAIN_REPLY_API_KEY_NAME]);
   return evaluateEgressGate({
     origin: workstreamOriginForAuthority(doc.workstream),
     command: run,
@@ -457,9 +457,14 @@ async function actionExecutionSecrets(
         minRemainingMs: ACTION_GITHUB_TOKEN_MIN_REMAINING_MS,
       })
     : {};
-  // PLAIN_API_KEY reaches an action only when its literal command is the
-  // recognised customer reply the gate judged (src/plain.ts).
-  const workerSecrets = actionSecretsWithoutPlainSend(loadSecrets(slug), asg.exec?.run);
+  // No action holds the worker's PLAIN_API_KEY; the executor-only
+  // PLAIN_REPLY_API_KEY reaches an action only when its literal command is
+  // the recognised customer reply the gate judged (src/plain.ts).
+  const workerSecrets = actionSecretsForPlain(
+    loadSecrets(slug),
+    asg.exec?.run,
+    loadExecutorSecrets()[PLAIN_REPLY_API_KEY_NAME],
+  );
   return {
     secrets: { ...workerSecrets, ...githubEnvironment },
     // Only the installation token is a credential. The Git plumbing beside it

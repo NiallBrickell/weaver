@@ -1294,21 +1294,24 @@ test('a refused preflight never reaches systemctl on the host', () => {
   }
 });
 
-test('push-env delivers the digest destination only into the executor-only store', () => {
+test('push-env delivers the digest destination and the Plain send key only into the executor-only store', () => {
   const rendered = [
     'WEAVER_EXECUTOR=pi',
     ...IDENTITIES,
     'WEAVER_DIGEST_SLACK_TOKEN=xoxb-digest-secret',
     'WEAVER_DIGEST_SLACK_CHANNEL=D0OPERATOR',
+    'PLAIN_REPLY_API_KEY=plainApiKey_reply-secret',
     '',
   ].join('\n');
   const { result, root } = run(['push-env'], undefined, rendered);
   assert.equal(result.status, 0, result.stderr);
   assert.match(call(root, 2, 'args'), /weaver-install-env merge/);
   assert.ok(!call(root, 2, 'stdin').includes('WEAVER_DIGEST_SLACK'), 'never the ambient service env');
+  assert.ok(!call(root, 2, 'stdin').includes('PLAIN_REPLY_API_KEY'), 'never the ambient service env');
   assert.match(call(root, 3, 'args'), /weaver-install-env executor-secrets/);
-  assert.equal(call(root, 3, 'stdin'), `${IDENTITIES.join('\n')}\nWEAVER_DIGEST_SLACK_TOKEN=xoxb-digest-secret\nWEAVER_DIGEST_SLACK_CHANNEL=D0OPERATOR\n`);
+  assert.equal(call(root, 3, 'stdin'), `${IDENTITIES.join('\n')}\nWEAVER_DIGEST_SLACK_TOKEN=xoxb-digest-secret\nWEAVER_DIGEST_SLACK_CHANNEL=D0OPERATOR\nPLAIN_REPLY_API_KEY=plainApiKey_reply-secret\n`);
   assert.ok(!allCallArgs(root).includes('xoxb-digest-secret'));
+  assert.ok(!allCallArgs(root).includes('plainApiKey_reply-secret'));
 });
 
 test('GCP start refuses a hosted Pilot with no rules file and names push-pilot-config', () => {

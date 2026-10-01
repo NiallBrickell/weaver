@@ -15,10 +15,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { classifyEgressCommand, egressGatedSupervisor, egressGateSeam, evaluateEgressGate, liveEgressDiffIO } from './egressGate.js';
-import { tick } from './engine.js';
+import { tick, verifyAction } from './engine.js';
 import { approveAction } from './humanActs.js';
 import {
-  actionSecretsWithoutPlainSend,
+  actionSecretsForPlain,
   autoApprovableCustomer,
   emailDomain,
   livePlainIO,
@@ -31,7 +31,7 @@ import {
   type FetchLike,
   type PlainCustomerLookup,
 } from './plain.js';
-import { setSecret } from './secrets.js';
+import { engineCommandEnv, removeExecutorSecret, selectNamedSecrets, setExecutorSecret, setSecret } from './secrets.js';
 import { arrive, createWorkstream, load } from './store.js';
 import { virtualNow } from './clock.js';
 import { __resetGitHubAppForTests } from './githubApp.js';
@@ -56,8 +56,8 @@ function fakeWeaverOnPath(home: string): string {
   const log = path.join(home, 'sent.log');
   fs.writeFileSync(
     path.join(bin, 'weaver'),
-    `#!/bin/sh\nif [ "$2" = reply ]; then printf '%s key=%s\\n' "$3" "\${PLAIN_API_KEY:+set}" >> "${log}"; cat >> "${log}"; exit 0; fi\n` +
-      `if [ "$2" = reply-sent ]; then test -f "${log}"; exit $?; fi\nexit 1\n`,
+    `#!/bin/sh\nif [ "$2" = reply ]; then printf '%s reply-key=%s worker-key=%s\\n' "$3" "\${PLAIN_REPLY_API_KEY:+set}" "\${PLAIN_API_KEY:+set}" >> "${log}"; cat >> "${log}"; exit 0; fi\n` +
+      `if [ "$2" = reply-sent ]; then test -n "$PLAIN_REPLY_API_KEY" && test -f "${log}"; exit $?; fi\nexit 1\n`,
     { mode: 0o755 },
   );
   process.env.PATH = `${bin}:${originalPath}`;
@@ -142,7 +142,8 @@ beforeEach(() => {
   delete process.env.WEAVER_RUNNER_ID;
   delete process.env.WEAVER_RUNNER_PLACEMENT_ONLY;
   __resetGitHubAppForTests();
-  setSecret('PLAIN_API_KEY', 'plain-test-key');
+  setSecret('PLAIN_API_KEY', 'plain-worker-key');
+  setExecutorSecret('PLAIN_REPLY_API_KEY', 'plain-test-key');
 });
 
 afterEach(() => {
@@ -174,6 +175,7 @@ test('only the exact reply command is a customer reply; every other route to a P
     `weaver plain reply ${THREAD} <<EOF\nhello\nEOF`,
     `curl -s https://core-api.uk.plain.com/graphql/v1 -H "Authorization: Bearer $PLAIN_API_KEY" -d '{"query":"mutation { replyToThread(input:{threadId:\\"${THREAD}\\",textContent:\\"hi\\"}) { error { message } } }"}'`,
     'node send-reply.js --key "$PLAIN_API_KEY"',
+    'python3 send.py --key "${PLAIN_REPLY_API_KEY}"',
   ]) {
     assert.deepEqual(cls(smuggled), ['unclassified'], smuggled);
   }
@@ -230,11 +232,37 @@ test('the gate decides the approver from the customer it read back, and a missin
   );
 });
 
-test('PLAIN_API_KEY reaches an action only when its command is the recognised reply', () => {
-  const secrets = { PLAIN_API_KEY: 'k', SENTRY_AUTH_TOKEN: 's' };
-  assert.deepEqual(actionSecretsWithoutPlainSend(secrets, plainReplyCommand(THREAD, TEXT)), secrets);
-  assert.deepEqual(actionSecretsWithoutPlainSend(secrets, 'gh pr merge 12 --merge'), { SENTRY_AUTH_TOKEN: 's' });
-  assert.deepEqual(actionSecretsWithoutPlainSend(secrets, undefined), { SENTRY_AUTH_TOKEN: 's' }, 'a model-driven action never holds it');
+test('only the recognised reply action holds the send key, and no action holds the worker key', () => {
+  const secrets = { PLAIN_API_KEY: 'w', PLAIN_REPLY_API_KEY: 'misplaced', SENTRY_AUTH_TOKEN: 's' };
+  assert.deepEqual(
+    actionSecretsForPlain(secrets, plainReplyCommand(THREAD, TEXT), 'r'),
+    { SENTRY_AUTH_TOKEN: 's', PLAIN_REPLY_API_KEY: 'r' },
+    'the executor-only key, never a worker-store copy',
+  );
+  assert.deepEqual(actionSecretsForPlain(secrets, plainReplyCommand(THREAD, TEXT), undefined), { SENTRY_AUTH_TOKEN: 's' });
+  assert.deepEqual(actionSecretsForPlain(secrets, 'gh pr merge 12 --merge', 'r'), { SENTRY_AUTH_TOKEN: 's' });
+  assert.deepEqual(actionSecretsForPlain(secrets, undefined, 'r'), { SENTRY_AUTH_TOKEN: 's' }, 'a model-driven action never holds it');
+});
+
+test('no assignment or probe can select the send key, and the worker store refuses it', () => {
+  assert.throws(
+    () => selectNamedSecrets({ PLAIN_REPLY_API_KEY: 'r', PLAIN_API_KEY: 'w' }, ['PLAIN_REPLY_API_KEY']),
+    /PLAIN_REPLY_API_KEY' is executor-only/,
+  );
+  assert.deepEqual(selectNamedSecrets({ PLAIN_API_KEY: 'w' }, ['PLAIN_API_KEY']), { PLAIN_API_KEY: 'w' }, 'the worker key stays selectable');
+  assert.throws(() => setSecret('PLAIN_REPLY_API_KEY', 'r'), /--executor/);
+  assert.throws(() => setSecret('PLAIN_REPLY_API_KEY', 'r', 'some-stream'), /--executor/);
+  // The engine passes it through to the one command that was handed it, and
+  // strips it from every other engine command's ambient environment.
+  const ambient = process.env.PLAIN_REPLY_API_KEY;
+  process.env.PLAIN_REPLY_API_KEY = 'plain-test-key';
+  try {
+    assert.equal(engineCommandEnv({ PLAIN_REPLY_API_KEY: 'plain-test-key' }).PLAIN_REPLY_API_KEY, 'plain-test-key');
+    assert.equal(engineCommandEnv({}).PLAIN_REPLY_API_KEY, undefined);
+  } finally {
+    if (ambient === undefined) delete process.env.PLAIN_REPLY_API_KEY;
+    else process.env.PLAIN_REPLY_API_KEY = ambient;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -257,7 +285,8 @@ test('a reply to an erdo.ai customer goes through Pilot and runs once as the exa
     assert.ok(plain.asked.length >= 2, 'the customer was read back at gate time and again before egress');
   });
   const sent = fs.readFileSync(log, 'utf8');
-  assert.match(sent, new RegExp(`^${THREAD} key=set\\n`), 'the approved reply held the key');
+  assert.match(sent, new RegExp(`^${THREAD} reply-key=set worker-key=\\n`), 'the approved reply held the send key and not the worker key');
+  assert.equal(await verifyAction('reply-internal', 'asg_reply'), true, 'the reply-sent readback held the send key too');
   assert.ok(sent.includes('Thanks for flagging this.'));
 });
 
@@ -295,6 +324,21 @@ test('a reply whose customer cannot be read back fails closed to a person', asyn
     await tick('reply-unread', { maxPasses: 0 });
     const asg = await reply('reply-unread');
     assert.equal(asked.length, 0);
+    assert.equal(asg.exec!.approvalMode, 'human-only');
+    assert.equal(asg.exec!.egressGate!.reasons[0]?.kind, 'customer-reply-unverified');
+  });
+});
+
+test('a runner without the executor-only send key cannot verify the customer, so the reply is a person\'s act', async () => {
+  fakeWeaverOnPath(process.env.WEAVER_HOME!);
+  removeExecutorSecret('PLAIN_REPLY_API_KEY');
+  plainSeam.io = customers({ [THREAD]: { ok: true, email: 'niall@erdo.ai', verified: true } });
+  await withPilot(() => 'approve', async (asked) => {
+    await makeSupportStream('reply-nokey');
+    await addReply('reply-nokey');
+    await tick('reply-nokey', { maxPasses: 0 });
+    const asg = await reply('reply-nokey');
+    assert.equal(asked.length, 0, 'the worker key is never used for the readback');
     assert.equal(asg.exec!.approvalMode, 'human-only');
     assert.equal(asg.exec!.egressGate!.reasons[0]?.kind, 'customer-reply-unverified');
   });
@@ -351,7 +395,7 @@ function plainServer(handler: (body: { query: string; variables: Record<string, 
   return fn;
 }
 
-function cli(argv: string[], stdin: string, fetchImpl: FetchLike, env: NodeJS.ProcessEnv = { PLAIN_API_KEY: 'plain-test-key' }) {
+function cli(argv: string[], stdin: string, fetchImpl: FetchLike, env: NodeJS.ProcessEnv = { PLAIN_REPLY_API_KEY: 'plain-test-key' }) {
   const out: string[] = [];
   const err: string[] = [];
   return runPlainCli(argv, { env, stdin: async () => stdin, out: (t) => out.push(t), err: (t) => err.push(t), fetch: fetchImpl })
@@ -380,6 +424,9 @@ test('weaver plain reply sends the stdin text once as the machine user and repor
 
   const noKey = await cli(['reply', THREAD], TEXT, ok, {});
   assert.equal(noKey.code, 1);
+  const workerKeyOnly = await cli(['reply', THREAD], TEXT, ok, { PLAIN_API_KEY: 'plain-worker-key' });
+  assert.equal(workerKeyOnly.code, 1, 'the worker key is never a send key');
+  assert.match(workerKeyOnly.err, /PLAIN_REPLY_API_KEY is not set/);
   assert.equal((await cli(['reply', 'not-a-thread'], TEXT, ok)).code, 1);
 });
 

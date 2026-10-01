@@ -41,7 +41,7 @@ import {
   type CapacityTarget,
 } from './modelConfig.js';
 import { deterministicActionsOnly, runnerExecutorCapabilities, workerSeatModelForAssignment } from './modelRouting.js';
-import { actionSecretsWithoutPlainSend } from './plain.js';
+import { actionSecretsForPlain } from './plain.js';
 import { claudeCredentialFingerprint, loadRedactionSecrets, loadSecrets, redactSecrets, sdkEnv, selectNamedSecrets } from './secrets.js';
 import {
   GITHUB_APP_GIT_PLUMBING_ENV,
@@ -618,10 +618,10 @@ export async function runWorker(
     // Validate durable names against values present on THIS execution host
     // before recording an Attempt. Missing/revoked names therefore fail
     // closed without manufacturing a run that never launched.
-    // A model-driven action never holds PLAIN_API_KEY: a customer reply is
+    // A model-driven action holds neither Plain key: a customer reply is
     // only ever the exact engine command the egress gate judged (plain.ts).
     secrets = isAction
-      ? actionSecretsWithoutPlainSend(applicableSecrets, undefined)
+      ? actionSecretsForPlain(applicableSecrets, undefined, undefined)
       : selectNamedSecrets(applicableSecrets, currentAssignment.credentialNames ?? []);
   } catch (caught) {
     const reason = caught instanceof Error ? caught.message : String(caught);

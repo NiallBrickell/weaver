@@ -16,9 +16,20 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { PLAIN_REPLY_API_KEY_NAME } from './plain.js';
 import { weaverHome, workstreamDir } from './store.js';
 
 const NAME_RE = /^[A-Z][A-Z0-9_]*$/;
+
+/**
+ * Executor-only credentials the ENGINE hands to one exact command it judged,
+ * never to a model. PLAIN_REPLY_API_KEY can message a support customer, so it
+ * lives only in the executor-only store; no assignment or probe may select it
+ * (selectNamedSecrets refuses it like any executor identity), the worker store
+ * refuses to hold it, and only the recognised `weaver plain reply` action and
+ * its readback receive it (plain.ts actionSecretsForPlain).
+ */
+export const ENGINE_ONLY_SECRET_NAMES: ReadonlySet<string> = new Set([PLAIN_REPLY_API_KEY_NAME]);
 
 export function globalSecretsPath(): string {
   return path.join(weaverHome(), 'secrets.env');
@@ -182,6 +193,9 @@ export function selectNamedSecrets(
     }
     if (seen.has(name)) throw new Error(`duplicate credential name '${name}'`);
     seen.add(name);
+    if (ENGINE_ONLY_SECRET_NAMES.has(name)) {
+      throw new Error(`credential '${name}' is executor-only — only the engine's exact command that needs it receives it`);
+    }
     const value = available[name];
     if (value === undefined) throw new Error(`credential '${name}' is not available to this workstream`);
     if (value.length === 0) throw new Error(`credential '${name}' has an empty value`);
@@ -221,6 +235,9 @@ export function renderSelectedGlobalSecretLines(names: string[]): string[] {
 }
 
 export function setSecret(name: string, value: string, slug?: string): void {
+  if (ENGINE_ONLY_SECRET_NAMES.has(name)) {
+    throw new Error(`${name} is executor-only — store it with: weaver secret set ${name} --executor`);
+  }
   setSecretAt(name, value, slug ? workstreamSecretsPath(slug) : globalSecretsPath());
 }
 
@@ -367,7 +384,8 @@ export function isHarnessInternalEnvName(name: string): boolean {
  * store, then adds exactly the values the caller selected (the action's
  * applicable worker secrets and the GitHub App environment minted for it).
  * A selected value can never reintroduce the store URL, the App identity, or
- * an executor-registered credential.
+ * an executor-registered credential — except an ENGINE_ONLY_SECRET_NAMES
+ * credential, which exists to be handed to one exact engine command.
  */
 export function engineCommandEnv(selected: Record<string, string> = {}): Record<string, string> {
   const registered = loadExecutorSecrets();
@@ -378,6 +396,11 @@ export function engineCommandEnv(selected: Record<string, string> = {}): Record<
   stripExecutorSecretNames(env, registered);
   Object.assign(env, selected);
   stripExecutorSecretNames(env, registered);
+  // The one deliberate exception: an engine-only credential the caller put
+  // in `selected` (only actionSecretsForPlain does, for the recognised reply).
+  for (const name of ENGINE_ONLY_SECRET_NAMES) {
+    if (selected[name] !== undefined) env[name] = selected[name];
+  }
   for (const name of Object.keys(env)) {
     if (name === 'WEAVER_STORE' || name.startsWith('WEAVER_GITHUB_APP_')) delete env[name];
   }
