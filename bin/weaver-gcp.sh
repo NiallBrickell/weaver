@@ -203,7 +203,9 @@ grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fs
 
 # Base runtime
 apt-get update -q
-apt-get install -qy git curl ca-certificates gnupg jq iproute2
+# postgresql-client: approved probes read Postgres sources with psql, and a
+# probe runs on this host with only PATH, so a missing client fails every check.
+apt-get install -qy git curl ca-certificates gnupg jq iproute2 postgresql-client
 
 # The image ships gcloud; with no service account it can authenticate as
 # nothing, but a credential-less box shouldn't carry the tool at all.
