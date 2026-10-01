@@ -835,7 +835,7 @@ export async function resolvePlainCustomers(
   for (const shape of classifyEgressCommand(command)) {
     if (shape.class !== 'customer-reply' || lookups.has(shape.threadId)) continue;
     if (!apiKey?.trim()) {
-      lookups.set(shape.threadId, { ok: false, error: 'PLAIN_API_KEY is not set on this runner' });
+      lookups.set(shape.threadId, { ok: false, error: 'PLAIN_REPLY_API_KEY is not set in this runner\'s executor-only secret store' });
       continue;
     }
     try {

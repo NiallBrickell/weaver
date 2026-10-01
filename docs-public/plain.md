@@ -12,9 +12,10 @@ email.
 ## What a support workstream does in Plain
 
 Each `support-help-request-*` workstream the intake routine opens works one
-Plain thread. Its workers hold the `PLAIN_API_KEY` credential and do the
-tracker half themselves, with no approval, because every one of these changes
-is internal and can be undone:
+Plain thread. Its workers hold the `PLAIN_API_KEY` credential, which is issued
+without Plain's `thread:reply` permission and so cannot message a customer.
+They do the tracker half themselves, with no approval, because every one of
+these changes is internal and can be undone:
 
 - **When work starts**, the thread is marked as being worked on: status
   *Investigating* (`markThreadAsTodo` with `statusDetail: IN_PROGRESS`) and agent
@@ -69,19 +70,22 @@ and its readback is the same text through `weaver plain reply-sent th_...`.
 The engine runs that command once, verbatim, after approval. Nothing else can
 send: a curl call to Plain's `replyToThread`, a script holding the key, or a
 reply in any other shape is something the engine cannot inspect, so it always
-goes to a person. An action whose command is anything other than the
-recognised reply does not receive `PLAIN_API_KEY` at all.
+goes to a person. The reply is sent with a second key, `PLAIN_REPLY_API_KEY`,
+which only the engine holds: the recognised reply command and its readback
+receive it, no other action does, and no worker can ask for it. No action
+receives the workers' `PLAIN_API_KEY`.
 
 **Who approves a reply** is decided by the engine from Plain itself. At
 approval time, and again immediately before the send, it reads the thread's
-customer back from Plain with `PLAIN_API_KEY`:
+customer back from Plain with `PLAIN_REPLY_API_KEY`:
 
 - a **verified `@erdo.ai` address**, exactly that domain, goes to Pilot, which
   approves it under the operator's rules (below);
 - **every other customer** needs a person, and the card says so: *customer
   replies need a person unless the customer is a verified erdo.ai address
   (this one is at example.com)*;
-- if Plain **cannot be read**, the reply needs a person too.
+- if Plain **cannot be read**, or the runner has no `PLAIN_REPLY_API_KEY`,
+  the reply needs a person too.
 
 Nothing a model wrote can change that answer. The customer's address is never
 taken from the brief, the draft, or the command. A person's approval covers
@@ -100,28 +104,30 @@ works; that detail goes in an internal note.
 
 ## Setting it up
 
-1. **A Plain machine user** (Settings → Machine users) with an API key. The
-   public name is what customers see on a reply, so name it for support. The
-   fleet's is *Weaver*, shown to customers as *Erdo Support*. Its key has
-   exactly these permissions:
+1. **A Plain machine user** (Settings → Machine users) with two API keys.
+   The public name is what customers see on a reply, so name it for support.
+   The fleet's is *Weaver*, shown to customers as *Erdo Support*. The two keys
+   differ by one permission:
 
-   | Permission | Used for |
-   | - | - |
-   | `thread:read` | reading the thread, its customer, and its status |
-   | `thread:search` | finding a thread when only erdo's ids are known |
-   | `thread:edit` | Investigating / Done status and agent status |
-   | `thread:reply` | the approved reply (`replyToThread`) |
-   | `note:create` | internal notes |
-   | `note:read` | reading the notes already on a thread |
-   | `customer:read` | reading the customer the engine decides the approver from |
-   | `timeline:read` | the reply readback |
+   | Permission | Used for | `PLAIN_API_KEY` (workers) | `PLAIN_REPLY_API_KEY` (engine) |
+   | - | - | - | - |
+   | `thread:read` | reading the thread, its customer, and its status | yes | yes |
+   | `thread:search` | finding a thread when only erdo's ids are known | yes | yes |
+   | `thread:edit` | Investigating / Done status and agent status | yes | yes |
+   | `thread:reply` | the approved reply (`replyToThread`) | **no** | yes |
+   | `note:create` | internal notes | yes | yes |
+   | `note:read` | reading the notes already on a thread | yes | yes |
+   | `customer:read` | reading the customer the engine decides the approver from | yes | yes |
+   | `timeline:read` | the reply readback | yes | yes |
 
-   No impersonation: replies come from the machine user, never as the customer.
+   No impersonation on either key: replies come from the machine user, never
+   as the customer. The split is what makes a reply structural rather than a
+   matter of the brief: a worker holding `PLAIN_API_KEY` can change a status
+   or write a note, and Plain refuses it if it tries to message the customer.
 
-2. **Store the key as a worker secret** (the fleet's is already stored and
-   installed on the hosted runner), then install it on the hosted runner
-   with the rest of the worker secrets (the list replaces the host's set
-   exactly, so name every secret it should keep):
+2. **Store the worker key as a worker secret** and install it on the hosted
+   runner with the rest of the worker secrets (the list replaces the host's
+   set exactly, so name every secret it should keep):
 
    ```bash
    weaver secret set PLAIN_API_KEY
@@ -129,6 +135,19 @@ works; that detail goes in an internal note.
    ```
 
    Ordinary work receives it only when its assignment selects it by name.
+
+   **Store the reply key in the executor-only store**, where no worker can
+   select it, and install it with the rest of the executor-only store:
+
+   ```bash
+   weaver secret set PLAIN_REPLY_API_KEY --executor
+   bin/weaver-gcp.sh push-env
+   ```
+
+   Weaver refuses `PLAIN_REPLY_API_KEY` anywhere else: `weaver secret set`
+   without `--executor` rejects it, and an assignment or probe that names it
+   fails before launch. `push-env` replaces the host's executor-only store
+   exactly, so run it from the checkout that holds your operator store.
 
 3. **Teach Pilot the reply rule** and push the rules file to the hosted Pilot
    with `bin/weaver-gcp.sh push-pilot-config ~/.pilot/pilot.toml`. The rule

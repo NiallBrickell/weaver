@@ -2,9 +2,10 @@
  * Plain (app.plain.com) — the support tool erdo mirrors its Help Requests
  * into. Weaver has no channel adapter for it: support workers keep a thread's
  * status and internal notes in sync themselves (reversible tracker sync,
- * kernel rule 7, with the worker credential PLAIN_API_KEY). What lives here is
- * only what the engine needs for the one irreversible act, a customer-facing
- * reply:
+ * kernel rule 7, with the worker credential PLAIN_API_KEY, issued without
+ * Plain's thread:reply scope). What lives here is only what the engine needs
+ * for the one irreversible act, a customer-facing reply, which alone holds the
+ * executor-only PLAIN_REPLY_API_KEY:
  *
  * - the exact command shape a reply must take (`weaver plain reply`), so the
  *   egress gate can recognise it and refuse every other route to a send;
@@ -20,7 +21,15 @@
 import { createHash } from 'node:crypto';
 
 export const PLAIN_API_URL = 'https://core-api.uk.plain.com/graphql/v1';
+/** The worker key: thread status and internal notes, never thread:reply. */
 export const PLAIN_API_KEY_NAME = 'PLAIN_API_KEY';
+/**
+ * The send key: the worker scopes plus thread:reply. It lives only in the
+ * executor-only secret store, no assignment may select it (secrets.ts refuses
+ * the name), and only the recognised `weaver plain reply` action, its
+ * `reply-sent` readback and the gate's customer readback ever hold it.
+ */
+export const PLAIN_REPLY_API_KEY_NAME = 'PLAIN_REPLY_API_KEY';
 /** A reply to a verified customer at exactly this domain may go to Pilot;
  * every other reply needs a person. */
 export const PLAIN_AUTO_REPLY_DOMAIN = 'erdo.ai';
@@ -73,7 +82,8 @@ export function plainReplyTextHash(text: string): string {
 /** Plain's customer-facing message mutations. Notes and status changes are
  * internal and absent on purpose. */
 const PLAIN_SEND_MUTATION = /\b(replyToThread|replyToEmail|sendNewEmail|sendChat|sendCustomerChat|sendSlackMessage|replyToSlackMessage|sendMSTeamsMessage|replyToMSTeamsMessage|sendDiscordMessage|replyToDiscordMessage)\b/;
-const PLAIN_REFERENCE = /plain\.com|\$\{?PLAIN_API_KEY\b|@team-plain/i;
+const PLAIN_KEY_REFERENCE = /\$\{?PLAIN_(?:REPLY_)?API_KEY\b/;
+const PLAIN_REFERENCE = /plain\.com|\$\{?PLAIN_(?:REPLY_)?API_KEY\b|@team-plain/i;
 const SCRIPT_RUNNER = /(^|[\s;&|(`])(node|python3?|ruby|perl|deno|bun|php|pwsh|npx|tsx)(\s|$)/;
 
 /**
@@ -89,24 +99,28 @@ export function plainSendOutsideReplyCommand(cmd: string): string | null {
   if (/\bweaver\s+plain\s+reply(\s|$)/.test(cmd)) return 'a `weaver plain reply` command in a shape the engine does not recognise';
   if (PLAIN_REFERENCE.test(cmd) && PLAIN_SEND_MUTATION.test(cmd)) return 'a Plain customer message sent outside `weaver plain reply`';
   // A script holding the key can send anything, and its text is not here.
-  if (/\$\{?PLAIN_API_KEY\b/.test(cmd) && SCRIPT_RUNNER.test(cmd)) return 'a script using PLAIN_API_KEY, whose requests the engine cannot see';
+  if (PLAIN_KEY_REFERENCE.test(cmd) && SCRIPT_RUNNER.test(cmd)) return 'a script using a Plain API key, whose requests the engine cannot see';
   return null;
 }
 
 /**
- * The applicable secrets an ACTION may hold. PLAIN_API_KEY can send to a
- * customer, so an action receives it only when its literal command is the
- * recognised reply the egress gate judged — the structural backstop that
- * makes a script or a model-driven action unable to reach a send the gate
- * never saw. Ordinary work still selects it by name for status and notes.
+ * The Plain credentials an ACTION holds. Neither worker-store Plain key ever
+ * reaches an action: PLAIN_API_KEY belongs to ordinary work (status, notes),
+ * and a PLAIN_REPLY_API_KEY misplaced in the worker store is dropped rather
+ * than trusted. The executor-only send key is added only when the action's
+ * literal command is the recognised reply the egress gate judged — the
+ * structural backstop that leaves a script or a model-driven action (run
+ * undefined) unable to reach a send the gate never saw. The same secrets
+ * serve the action's verify, which is how `reply-sent` reads back.
  */
-export function actionSecretsWithoutPlainSend(
+export function actionSecretsForPlain(
   secrets: Record<string, string>,
   run: string | undefined,
+  replyKey: string | undefined,
 ): Record<string, string> {
-  if (!(PLAIN_API_KEY_NAME in secrets) || parsePlainReplyCommand(run)) return secrets;
-  const { [PLAIN_API_KEY_NAME]: _withheld, ...rest } = secrets;
-  return rest;
+  const { [PLAIN_API_KEY_NAME]: _worker, [PLAIN_REPLY_API_KEY_NAME]: _misplaced, ...rest } = secrets;
+  const key = replyKey?.trim();
+  return key && parsePlainReplyCommand(run) ? { ...rest, [PLAIN_REPLY_API_KEY_NAME]: key } : rest;
 }
 
 // ---------------------------------------------------------------------------
@@ -309,9 +323,9 @@ export async function runPlainCli(argv: string[], io: PlainCliIO): Promise<numbe
     io.err(`not a Plain thread id: ${threadId}\n`);
     return 1;
   }
-  const apiKey = io.env[PLAIN_API_KEY_NAME]?.trim();
+  const apiKey = io.env[PLAIN_REPLY_API_KEY_NAME]?.trim();
   if (!apiKey) {
-    io.err(`${PLAIN_API_KEY_NAME} is not set for this command\n`);
+    io.err(`${PLAIN_REPLY_API_KEY_NAME} is not set for this command\n`);
     return sub === 'reply' ? 1 : 2;
   }
   const text = heredocText(await io.stdin());
