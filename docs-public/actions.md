@@ -80,7 +80,7 @@ Deterministic engine commands and their readbacks are bounded as complete proces
 
 The fleet reads text it did not write — support threads, error payloads, issues — and some of that text will try to steer it. So the decision about which pushes, pull requests, merges, and deploys need a person is not left to the coordinator or to Pilot. Weaver's engine makes it from facts neither of them can write, and it only ever makes an act *more* gated, never less.
 
-Before any push, `gh pr create`, `gh pr merge`, or deploy, the engine works out what the act changes itself: the commits a push sends, the branch a PR opens, or the merged PR's own file list read through a read-only token. The act needs a person, whatever approval mode the coordinator chose, when:
+Before any push, `gh pr create`, `gh pr ready`, `gh pr merge`, or deploy, the engine works out what the act changes itself: the commits a push sends, the branch a PR opens, or the merged PR's own file list read through a read-only token. The act needs a person, whatever approval mode the coordinator chose, when:
 
 - **It touches a sensitive path.** By default: `.github/**`, `**/auth/**`, `**/*auth*.{ts,go,py}`, `**/billing/**`, `**/payments/**`, `**/migrations/**`, `infra/**`, `deploy/**`, `**/Dockerfile*`, `**/*.tf`, and the files that brief every later agent run — `.claude/**`, `**/CLAUDE.md`, `**/AGENTS.md`, `**/.mcp.json`. Set `WEAVER_HUMAN_REVIEW_PATHS` to a comma-separated list of globs to replace the set. The card says exactly why: *touches .github/workflows/deploy.yml, a sensitive path: needs a person*.
 - **The engine cannot tell what it changes.** A missing checkout, a branch with no base, or a PR too large for GitHub's file list fails closed to a person.
@@ -101,7 +101,7 @@ A reply on a support thread is a send, so the engine applies the same idea to it
 
 ## Repo deconfliction
 
-Weaver conflict-checks its own state on every write; the same discipline extends across the git-repo seam. Before an action does an irreversible repo egress (`gh pr create`, `gh pr merge`, `git push`), Weaver looks at the shared state the egress is about to write into, and it draws a line between two very different findings.
+Weaver conflict-checks its own state on every write; the same discipline extends across the git-repo seam. Before an action does an irreversible repo egress (`gh pr create`, `gh pr ready`, `gh pr merge`, `git push`), Weaver looks at the shared state the egress is about to write into, and it draws a line between two very different findings.
 
 Another *open* PR changing the same files is **reported, not blocked**. Two branches touching one file is ordinary parallel development: they are separate refs, git merges them, and a real textual conflict surfaces at merge time where a rebase settles it. So the overlap is recorded on the workstream — which PR, whose, and the exact overlapping paths — where the author and the reviewer can see who else is in these files, and the action ships.
 

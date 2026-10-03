@@ -123,7 +123,7 @@ Model-authored constraints are advice. A coordinator-created child inherits its 
 
 **Workflows.** Fleet tokens request no `workflows` permission, so GitHub refuses any push touching a workflow file. The engine recognises that refusal (`isWorkflowPermissionRefusal`) as a known outcome with no effect — a `workflow-permission` reason, a blocker card telling a person to push or merge it, and a wake that forbids retrying — never as an unknown result.
 
-**The structural backstop.** The engine hands a write token only to a command whose literal text is `git push`, `gh pr create`, or `gh pr merge` (`matchesRepoEgressWrite` in [`src/deconflict.ts`](../src/deconflict.ts)), and every such shape is classified by the gate. Any other command runs with a read token GitHub will refuse to write with, so a shape the classifier misses on a hosted runner fails at GitHub rather than landing.
+**The structural backstop.** The engine hands a write token only to a command whose literal text is `git push`, `gh pr create`, `gh pr ready`, or `gh pr merge` (`matchesRepoEgressWrite` in [`src/deconflict.ts`](../src/deconflict.ts)), and every such shape is classified by the gate. Any other command runs with a read token GitHub will refuse to write with, so a shape the classifier misses on a hosted runner fails at GitHub rather than landing.
 
 ## Probes: engine-run checks, gated like actions
 
