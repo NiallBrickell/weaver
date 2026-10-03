@@ -119,6 +119,9 @@ test('isRepoEgressAction matches literal deterministic repo writes', () => {
   assert.equal(isRepoEgressAction(action({ run: 'gh pr create --fill' })), true);
   assert.equal(isRepoEgressAction(action({ run: 'gh pr merge 42 --merge' })), true);
   assert.equal(isRepoEgressAction(action({ run: 'git push origin HEAD' })), true);
+  assert.equal(isRepoEgressAction(action({ run: 'gh pr ready 42' })), true);
+  assert.equal(isRepoEgressAction(action({ run: 'gh pr ready 42 --undo' })), true);
+  assert.equal(isRepoEgressAction(action({ run: 'gh pr view 42' })), false);
 });
 
 test('isRepoEgressAction does not infer egress from deterministic read-only probes', () => {

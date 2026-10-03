@@ -191,7 +191,7 @@ is written into its URL, Git configuration, credential store, or command line.
   single wake tells the coordinator to place it on a runner that can resolve
   the path (or to name the repository explicitly).
 - A deterministic repo egress gets write scope only after approval and only
-  immediately before its literal `gh pr create`/`gh pr merge`/`git push`
+  immediately before its literal `gh pr create`/`gh pr ready`/`gh pr merge`/`git push`
   command. Merely using `gh`, `git fetch`, or another Git remote read does not
   receive write scope. Readback cannot push even if its shell command is wrong.
 - Tokens are cached only by repository and permission scope, and never beyond

@@ -27,7 +27,8 @@
  * recognise, `curl` at the GitHub API, `hub`, an aliased or `--mirror` push)
  * fails closed to human-only too. The structural backstop underneath all of
  * this: the engine hands a WRITE token only to a command whose literal text is
- * `git push`/`gh pr create`/`gh pr merge` (deconflict.ts matchesRepoEgressWrite),
+ * `git push`/`gh pr create`/`gh pr ready`/`gh pr merge` (deconflict.ts
+ * matchesRepoEgressWrite),
  * and every such shape is classified here. Anything else runs with a read token
  * GitHub will refuse to write with.
  *
@@ -232,7 +233,7 @@ export function untrustedMergePolicy(env: NodeJS.ProcessEnv = process.env): Untr
 // ---------------------------------------------------------------------------
 // Command classification
 
-export type EgressClass = 'push' | 'pr-create' | 'merge' | 'deploy' | 'customer-reply' | 'unclassified';
+export type EgressClass = 'push' | 'pr-create' | 'pr-ready' | 'merge' | 'deploy' | 'customer-reply' | 'unclassified';
 
 export type EgressShape =
   | {
@@ -249,6 +250,7 @@ export type EgressShape =
       command: string;
     }
   | { class: 'pr-create'; dir?: string; head?: string; base?: string; repo?: string; command: string }
+  | { class: 'pr-ready'; dir?: string; repo?: string; selector?: string; command: string }
   | { class: 'merge'; dir?: string; repo?: string; selector?: string; command: string }
   | { class: 'deploy'; command: string }
   /** A customer-facing support reply in the one recognised shape
@@ -386,7 +388,7 @@ function classifyGh(cmd: string, segment: string): EgressShape[] {
   const [group, sub] = args;
   const dir = dirOf(cmd, segment);
   const repo = optionValue(args, '-R', '--repo');
-  if (group === 'pr' && sub === 'merge') {
+  if (group === 'pr' && (sub === 'merge' || sub === 'ready')) {
     const rest = args.slice(2);
     let selector: string | undefined;
     for (let i = 0; i < rest.length; i++) {
@@ -395,6 +397,11 @@ function classifyGh(cmd: string, segment: string): EgressShape[] {
       if (a.startsWith('-')) continue;
       selector = a;
       break;
+    }
+    // Marking a PR ready (or back to draft with --undo) changes no code: it
+    // asks for review, and the merge stays separately gated.
+    if (sub === 'ready') {
+      return [{ class: 'pr-ready', ...(dir ? { dir } : {}), ...(repo ? { repo } : {}), ...(selector ? { selector } : {}), command: segment }];
     }
     return [{ class: 'merge', ...(dir ? { dir } : {}), ...(repo ? { repo } : {}), ...(selector ? { selector } : {}), command: segment }];
   }
@@ -800,6 +807,10 @@ export function evaluateEgressGate(input: EgressGateInput): EgressGateResult {
     } else if (shape.class === 'pr-create') {
       // Opening a PR changes nothing that ships; it is where review starts.
       identities.push(`pr-create:${shape.command}`);
+      continue;
+    } else if (shape.class === 'pr-ready') {
+      // Marking a PR ready changes no code either: it asks for review.
+      identities.push(`pr-ready:${shape.command}`);
       continue;
     } else {
       result = io.mergePaths(cwd, shape, env);

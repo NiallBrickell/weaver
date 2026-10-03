@@ -203,7 +203,7 @@ export async function repoEgressCollisions(
  */
 function matchesRepoEgressWrite(cmd: string): boolean {
   if (!cmd) return false;
-  if (/\bgh\s+pr\s+(create|merge)\b/.test(cmd)) return true;
+  if (/\bgh\s+pr\s+(create|merge|ready)\b/.test(cmd)) return true;
   // `git … push` — the branch/-C/config flags sit between `git` and `push`.
   return /\bgit\b[^&|;\n]*\bpush\b/.test(cmd);
 }

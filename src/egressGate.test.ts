@@ -153,6 +153,13 @@ test('every repo-write command shape is classified, and a shape the gate cannot 
   assert.equal(trunk.class, 'push');
   assert.equal(trunk.class === 'push' && trunk.intoTrunk, true, 'a push onto main is a merge in disguise');
   assert.deepEqual(cls('gh pr create --fill --head feat/x'), ['pr-create']);
+  assert.deepEqual(cls('gh pr ready 12 --repo octo/repo'), ['pr-ready']);
+  assert.deepEqual(cls('gh pr ready 12 --undo'), ['pr-ready']);
+  const ready = classifyEgressCommand('cd /repo && gh pr ready 12 -R octo/repo')[0]!;
+  assert.deepEqual(ready.class === 'pr-ready' ? { dir: ready.dir, repo: ready.repo, selector: ready.selector } : null, { dir: '/repo', repo: 'octo/repo', selector: '12' });
+  // Raw ready-for-review writes stay a person's act.
+  assert.deepEqual(cls("gh api graphql -f query='mutation { markPullRequestReadyForReview(input:{pullRequestId:\"x\"}) { clientMutationId } }'"), ['unclassified']);
+  assert.deepEqual(cls('gh api -X PATCH repos/octo/repo/pulls/12 -F draft=false'), ['unclassified']);
   assert.deepEqual(cls('gh pr merge 12 --merge --repo octo/repo'), ['merge']);
   assert.deepEqual(cls('gh pr merge --auto --merge'), ['merge']);
   assert.deepEqual(cls('gh api -X PUT repos/octo/repo/pulls/12/merge'), ['merge']);
@@ -236,6 +243,28 @@ test('a feature-branch push is not held for its paths: review happens at the mer
     assert.ok(asked.length >= 1, 'Pilot judges it like any clean act');
     assert.notEqual(asg.exec!.approvalMode, 'human-only');
     assert.deepEqual(asg.exec!.egressGate!.reasons, []);
+  });
+});
+
+test('gh pr ready gets the same gate outcome as gh pr create for trusted and untrusted origins', async () => {
+  await withPilot(() => 'approve', async (asked) => {
+    for (const origin of ['operator', 'untrusted'] as const) {
+      await makeStream(`ready-${origin}`, origin);
+      await addAction(`ready-${origin}`, 'true gh pr ready 12 --repo octo/repo');
+      await tick(`ready-${origin}`, { maxPasses: 0 });
+      const ready = await action(`ready-${origin}`);
+      assert.equal(ready.exec!.approval?.by, 'pilot', `${origin}: ready stays Pilot-eligible`);
+      assert.notEqual(ready.exec!.approvalMode, 'human-only');
+      assert.deepEqual(ready.exec!.egressGate!.reasons, []);
+
+      await makeStream(`create-${origin}`, origin);
+      await addAction(`create-${origin}`, 'true gh pr create --fill --head feat/x');
+      await tick(`create-${origin}`, { maxPasses: 0 });
+      const create = await action(`create-${origin}`);
+      assert.deepEqual(ready.exec!.egressGate!.reasons, create.exec!.egressGate!.reasons);
+      assert.equal(ready.exec!.approvalMode, create.exec!.approvalMode);
+    }
+    assert.ok(asked.length >= 4);
   });
 });
 
